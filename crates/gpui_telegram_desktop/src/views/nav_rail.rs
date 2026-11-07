@@ -156,6 +156,7 @@ impl Render for NavRail {
 
         div()
             .w(px(52.0))
+            .flex_shrink_0()
             .h_full()
             .bg(rgb(0x0E1621))
             .flex()

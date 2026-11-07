@@ -115,11 +115,15 @@ impl ContextInspector {
         }
     }
 
-    pub fn set_peer(&mut self, name: &str, username: &str, phone: &str, bio: &str, initials: &str, color: u32) {
+    pub fn set_peer(&mut self, name: &str, subtitle: &str, initials: &str, color: u32) {
         self.profile.name = name.to_string();
-        self.profile.username = username.to_string();
-        self.profile.phone = phone.to_string();
-        self.profile.bio = bio.to_string();
+        let slug = name
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>();
+        self.profile.username = format!("@{}", slug.trim_matches('_'));
+        self.profile.bio = format!("Status: {} • GPUI Telegram Desktop", subtitle);
         self.profile.avatar_initials = initials.to_string();
         self.profile.avatar_color = color;
     }
@@ -165,6 +169,7 @@ impl Render for ContextInspector {
             .w(px(320.0)) // Fixed 320px width per spec
             .flex_shrink_0()
             .h_full()
+            .overflow_hidden()
             .bg(rgb(0x17212B)) // Upstream inspector background
             .border_l_1()
             .border_color(rgb(0x0E1621))
@@ -232,6 +237,7 @@ impl Render for ContextInspector {
                 div()
                     .id("inspector-tab-scroll")
                     .flex_1()
+                    .min_h(px(0.0))
                     .w_full()
                     .p(px(16.0))
                     .overflow_y_scroll()

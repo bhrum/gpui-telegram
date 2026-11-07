@@ -355,7 +355,9 @@ impl Render for ChatSidebar {
 
         div()
             .w(px(288.0))
+            .flex_shrink_0()
             .h_full()
+            .overflow_hidden()
             .bg(rgb(0x17212B))
             .border_r_1()
             .border_color(rgb(0x0E1621))
@@ -365,6 +367,7 @@ impl Render for ChatSidebar {
             .child(
                 div()
                     .h(px(48.0))
+                    .flex_shrink_0()
                     .w_full()
                     .px(px(10.0))
                     .flex()
@@ -451,6 +454,7 @@ impl Render for ChatSidebar {
                 el.child(
                     div()
                         .h(px(37.0))
+                        .flex_shrink_0()
                         .w_full()
                         .px(px(10.0))
                         .bg(rgb(0x242F3D))
@@ -517,6 +521,7 @@ impl Render for ChatSidebar {
                 el.child(
                     div()
                         .h(px(44.0))
+                        .flex_shrink_0()
                         .w_full()
                         .px(px(10.0))
                         .flex()
@@ -562,6 +567,7 @@ impl Render for ChatSidebar {
                 el.child(
                     div()
                         .h(px(52.0))
+                        .flex_shrink_0()
                         .w_full()
                         .px(px(10.0))
                         .flex()
@@ -608,6 +614,7 @@ impl Render for ChatSidebar {
             .child(
                 div()
                     .h(px(36.0))
+                    .flex_shrink_0()
                     .w_full()
                     .px(px(8.0))
                     .flex()
@@ -671,6 +678,7 @@ impl Render for ChatSidebar {
                 div()
                     .id("sidebar-dialogs-scroll")
                     .flex_1()
+                    .min_h(px(0.0))
                     .w_full()
                     .overflow_y_scroll()
                     .flex()
@@ -687,6 +695,7 @@ impl Render for ChatSidebar {
                         div()
                             .cursor_pointer()
                             .h(px(62.0)) // Upstream exact metric: dialogsRowHeight: 62px
+                            .flex_shrink_0()
                             .w_full()
                             .px(px(10.0))
                             .py(px(8.0)) // dialogsRowPadding: margins(10, 8, 10, 8)

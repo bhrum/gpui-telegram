@@ -113,6 +113,7 @@ impl Render for CanonicalComposer {
         div()
             .relative()
             .w_full()
+            .flex_shrink_0()
             .bg(rgb(0x17212B)) // Upstream composer background
             .border_t_1()
             .border_color(rgb(0x0E1621))

@@ -138,9 +138,7 @@ impl AppShell {
                     }
                 });
                 shell.inspector.update(cx, |insp, insp_cx| {
-                    insp.profile.name = d.peer_name.clone();
-                    insp.profile.avatar_initials = d.avatar_initials.clone();
-                    insp.profile.avatar_color = d.avatar_color;
+                    insp.set_peer(&d.peer_name, subtitle, &d.avatar_initials, d.avatar_color);
                     insp_cx.notify();
                 });
             }
@@ -167,7 +165,18 @@ impl AppShell {
                     "Launch Talk Mode" => shell.show_talk_mode(cx),
                     "Remote Computer" => shell.show_remote_computer(cx),
                     "View Task Matrix" => shell.active_panel = ActiveWorkspacePanel::TaskCenter,
-                    _ => {}
+                    other => {
+                        let modal_title = format!("{} • GPUI Telegram Docs", other);
+                        shell.modal_container.update(cx, |mc, mc_cx| {
+                            mc.show_modal(
+                                modal_title,
+                                440.0,
+                                240.0,
+                                crate::components::ui::layers::LayerStackOption::CloseOther,
+                            );
+                            mc_cx.notify();
+                        });
+                    }
                 }
             }
             shell.inspector.update(cx, |insp, insp_cx| {
@@ -199,9 +208,16 @@ impl AppShell {
             cx.notify();
         }).detach();
 
-        // 5. Observe ContextInspector close button
+        // 5. Observe ContextInspector close button & shared media item clicks
         cx.observe(&inspector, |shell: &mut AppShell, insp: Entity<ContextInspector>, cx: &mut Context<AppShell>| {
-            let is_open = insp.read(cx).is_open;
+            let (is_open, media_open) = {
+                let i = insp.read(cx);
+                (i.is_open, i.pending_media_open.clone())
+            };
+            if let Some((url, is_video)) = media_open {
+                insp.update(cx, |i, _| i.pending_media_open = None);
+                shell.show_media_viewer(url, is_video, cx);
+            }
             shell.stage.update(cx, |st, _| {
                 st.is_inspector_open = is_open;
             });
@@ -444,8 +460,16 @@ impl AppShell {
     fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
 
-        // Escape closes any active overlay
+        // Escape closes any active modal or overlay
         if key == "escape" {
+            if self.modal_container.read(cx).is_modal_active() {
+                self.modal_container.update(cx, |mc, mc_cx| {
+                    mc.dismiss_top();
+                    mc_cx.notify();
+                });
+                cx.notify();
+                return;
+            }
             if self.media_viewer_overlay.is_some() {
                 self.hide_media_viewer();
                 cx.notify();
@@ -616,7 +640,9 @@ impl Render for AppShell {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w(px(0.0))
                     .h_full()
+                    .overflow_hidden()
                     .child(self.stage.clone())
                     .child(self.composer.clone())
                     .into_any_element(),
@@ -631,7 +657,10 @@ impl Render for AppShell {
                 el.child(
                     div()
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full()
+                        .occlude()
                         .child(overlay),
                 )
             })
@@ -639,7 +668,10 @@ impl Render for AppShell {
                 el.child(
                     div()
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full()
+                        .occlude()
                         .bg(rgba(0x00000088))
                         .flex()
                         .items_center()
@@ -651,7 +683,10 @@ impl Render for AppShell {
                 el.child(
                     div()
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full()
+                        .occlude()
                         .child(overlay),
                 )
             })
@@ -1060,6 +1095,7 @@ impl AppShell {
                     )
                     .child(
                         div()
+                            .cursor_pointer()
                             .w_full()
                             .h(px(44.0))
                             .rounded(px(8.0))
@@ -1069,11 +1105,69 @@ impl AppShell {
                             .px(px(14.0))
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if code.is_empty() { "• • • • •".to_string() } else { code.clone() }),
+                            .justify_between()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                if this.verification_code.is_empty() {
+                                    this.verification_code = "12345".to_string();
+                                } else {
+                                    this.is_authenticated = true;
+                                }
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .text_size(px(20.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child(if code.is_empty() { "• • • • •".to_string() } else { code.clone() }),
+                            )
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(0x8A9AA8))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.verification_code.clear();
+                                        cx.notify();
+                                    }))
+                                    .child("✕"),
+                            ),
+                    )
+                    // On-screen clickable numeric keypad for verification code
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(6.0))
+                            .children(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "⌫"].into_iter().map(|digit| {
+                                let d_str = digit.to_string();
+                                div()
+                                    .cursor_pointer()
+                                    .w(px(58.0))
+                                    .h(px(32.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                                        if d_str == "⌫" {
+                                            this.verification_code.pop();
+                                        } else if this.verification_code.len() < 6 {
+                                            this.verification_code.push_str(&d_str);
+                                            if this.verification_code.len() >= 5 {
+                                                this.is_authenticated = true;
+                                            }
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(digit)
+                            })),
                     )
                     // Auto-Fill Code & Sign In button
                     .child(
@@ -1119,7 +1213,9 @@ impl AppShell {
     fn render_task_center_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex_1()
+            .min_w(px(0.0))
             .h_full()
+            .overflow_hidden()
             .bg(rgb(0x0E1621))
             .p(px(24.0))
             .flex()
@@ -1155,20 +1251,30 @@ impl AppShell {
                     ),
             )
             .children([
-                ("Task #101 • 13-Module Upstream C++ Parity Audit", "COMPLETED • 3,441 / 3,441 files verified", 0x4CAF50),
-                ("Task #102 • Local SQLite WAL + FTS5 + Tantivy Indexer", "RUNNING • 0ms query latency", 0x2AABEE),
-                ("Task #103 • WebRTC Full-Duplex Talk Mode Audio Pipeline", "READY • 18ms P2P RTT", 0x1ABC9C),
-            ].into_iter().map(|(title, status, color)| {
+                ("Task #101 • 13-Module Upstream C++ Parity Audit", "COMPLETED • 3,441 / 3,441 files verified", 0x4CAF50, false),
+                ("Task #102 • Local SQLite WAL + FTS5 + Tantivy Indexer", "RUNNING • 0ms query latency", 0x2AABEE, false),
+                ("Task #103 • WebRTC Full-Duplex Talk Mode Audio Pipeline", "READY • 18ms P2P RTT", 0x1ABC9C, true),
+            ].into_iter().map(|(title, status, color, is_talk_task)| {
                 div()
+                    .cursor_pointer()
                     .w_full()
                     .p(px(16.0))
                     .rounded(px(10.0))
                     .bg(rgb(0x17212B))
                     .border_1()
                     .border_color(rgb(0x242F3D))
+                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
                     .flex()
                     .items_center()
                     .justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                        if is_talk_task {
+                            this.show_talk_mode(cx);
+                        } else {
+                            this.show_remote_computer(cx);
+                        }
+                        cx.notify();
+                    }))
                     .child(
                         div()
                             .text_size(px(14.0))
@@ -1189,7 +1295,9 @@ impl AppShell {
     fn render_mcp_tools_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex_1()
+            .min_w(px(0.0))
             .h_full()
+            .overflow_hidden()
             .bg(rgb(0x0E1621))
             .p(px(24.0))
             .flex()
@@ -1230,15 +1338,21 @@ impl AppShell {
                 ("remote_computer.webrtc_stream", "Encrypted E2EE Tunnel Active", 0x2AABEE),
             ].into_iter().map(|(tool, policy, color)| {
                 div()
+                    .cursor_pointer()
                     .w_full()
                     .p(px(16.0))
                     .rounded(px(10.0))
                     .bg(rgb(0x17212B))
                     .border_1()
                     .border_color(rgb(0x242F3D))
+                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
                     .flex()
                     .items_center()
                     .justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.show_remote_computer(cx);
+                        cx.notify();
+                    }))
                     .child(
                         div()
                             .text_size(px(14.0))
@@ -1259,7 +1373,9 @@ impl AppShell {
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex_1()
+            .min_w(px(0.0))
             .h_full()
+            .overflow_hidden()
             .bg(rgb(0x0E1621))
             .p(px(24.0))
             .flex()
@@ -1342,6 +1458,38 @@ impl AppShell {
                                 cx.notify();
                             }))
                             .child("🚪 Log Out (退出登录)"),
+                    ),
+            )
+            .child(
+                div()
+                    .cursor_pointer()
+                    .w_full()
+                    .p(px(16.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0x17212B))
+                    .border_1()
+                    .border_color(rgb(0x242F3D))
+                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.is_chinese_locale = !this.is_chinese_locale;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .child("🌐 Interface Language (界面语言切换)"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0x2AABEE))
+                            .child(if self.is_chinese_locale { "中文 (Simplified Chinese)" } else { "English (US)" }),
                     ),
             )
     }

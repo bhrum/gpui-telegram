@@ -97,8 +97,7 @@ impl Render for ComputerWorkbench {
         let quality_hd = self.is_quality_hd;
 
         div()
-            .flex_1()
-            .h_full()
+            .size_full()
             .bg(rgb(0x14181E))
             .flex()
             .flex_col()
@@ -106,6 +105,7 @@ impl Render for ComputerWorkbench {
             .child(
                 div()
                     .h(px(48.0))
+                    .flex_shrink_0()
                     .w_full()
                     .bg(rgb(0x1B2129))
                     .px(px(16.0))
@@ -202,6 +202,7 @@ impl Render for ComputerWorkbench {
             .child(
                 div()
                     .flex_1()
+                    .min_h(px(0.0))
                     .w_full()
                     .bg(rgb(0x0A0D10))
                     .p(px(12.0))
@@ -211,18 +212,24 @@ impl Render for ComputerWorkbench {
                     // Screen Mock Frame (Aspect 16:9)
                     .child(
                         div()
+                            .cursor_pointer()
                             .relative()
                             .w(px(720.0))
                             .h(px(405.0))
                             .rounded(px(8.0))
                             .bg(rgb(0x1E242C))
                             .border_1()
-                            .border_color(rgb(0x2A3542))
+                            .border_color(if mouse_cap { rgb(0x2AABEE) } else { rgb(0x2A3542) })
                             .overflow_hidden()
                             .flex()
                             .flex_col()
                             .justify_between()
                             .p(px(16.0))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.toggle_mouse_capture();
+                                this.device.fps = if this.device.fps == 60 { 120 } else { 60 };
+                                cx.notify();
+                            }))
                             // OS Desktop Mock Content
                             .child(
                                 div()

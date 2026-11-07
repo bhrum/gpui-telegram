@@ -58,7 +58,12 @@ impl Default for ModalContainer {
 impl Render for ModalContainer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_modal_active() {
-            return div().w(px(0.0)).h(px(0.0)).overflow_hidden().into_any_element();
+            return div()
+                .absolute()
+                .w(px(0.0))
+                .h(px(0.0))
+                .overflow_hidden()
+                .into_any_element();
         }
 
         let box_info = self.current_box().unwrap().clone();
@@ -67,6 +72,7 @@ impl Render for ModalContainer {
         let bg_color = rgba((0x101010 << 8) | (alpha_byte as u32));
 
         div()
+            .id("modal-container-root")
             .absolute()
             .top_0()
             .left_0()

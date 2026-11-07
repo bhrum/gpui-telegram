@@ -552,7 +552,9 @@ impl Render for ConversationStage {
 
         div()
             .flex_1()
-            .h_full()
+            .min_h(px(0.0))
+            .w_full()
+            .overflow_hidden()
             .bg(rgb(0x0E1621)) // Upstream history background color
             .flex()
             .flex_col()
@@ -560,6 +562,7 @@ impl Render for ConversationStage {
             .child(
                 div()
                     .h(px(52.0))
+                    .flex_shrink_0()
                     .w_full()
                     .bg(rgb(0x17212B))
                     .border_b_1()
@@ -685,6 +688,7 @@ impl Render for ConversationStage {
                 el.child(
                     div()
                         .h(px(36.0))
+                        .flex_shrink_0()
                         .w_full()
                         .bg(rgb(0x131E2A))
                         .border_b_1()
@@ -730,6 +734,7 @@ impl Render for ConversationStage {
                 div()
                     .id("stage-messages-scroll")
                     .flex_1()
+                    .min_h(px(0.0))
                     .w_full()
                     .px(px(24.0))
                     .py(px(16.0))
@@ -768,13 +773,21 @@ impl ConversationStage {
             MessageContent::Story { .. } => {
                 Some(("https://example.com/story_stream.mp4".to_string(), true))
             }
+            MessageContent::Location { latitude, longitude, .. } => {
+                Some((format!("https://maps.google.com/?q={},{}", latitude, longitude), false))
+            }
             _ => None,
         };
 
         let is_voice_msg = matches!(msg.content, MessageContent::Voice { .. });
         let is_call_msg = matches!(msg.content, MessageContent::Call { .. });
         let is_invoice_msg = matches!(msg.content, MessageContent::Invoice { .. });
-        let bubble = Self::render_message_bubble(&msg);
+        let text_pin_snippet = if let MessageContent::Text { ref text, .. } = msg.content {
+            Some(text.lines().next().unwrap_or(text).to_string())
+        } else {
+            None
+        };
+        let bubble = Self::render_message_bubble(&msg, cx);
 
         // Pre-build Poll vote buttons if message is an open Poll
         let poll_vote_bar: Option<AnyElement> = if let MessageContent::Poll { ref options, is_closed: false, .. } = msg.content {
@@ -905,11 +918,15 @@ impl ConversationStage {
                     .flex()
                     .flex_col()
                     .gap(px(4.0))
-                    // Main Message Bubble (clickable for Media/Voice/Call/Story/Invoice)
+                    // Main Message Bubble (clickable for Media/Voice/Call/Story/Invoice/Location/Text)
                     .child(
                         div()
                             .when(
-                                media_click_info.is_some() || is_voice_msg || is_call_msg || is_invoice_msg,
+                                media_click_info.is_some()
+                                    || is_voice_msg
+                                    || is_call_msg
+                                    || is_invoice_msg
+                                    || text_pin_snippet.is_some(),
                                 |el| el.cursor_pointer(),
                             )
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
@@ -921,6 +938,7 @@ impl ConversationStage {
                                         if let MessageContent::Voice {
                                             ref mut is_playing,
                                             ref mut playback_position_secs,
+                                            ref mut playback_speed,
                                             duration_secs,
                                             ..
                                         } = m.content
@@ -928,6 +946,14 @@ impl ConversationStage {
                                             *is_playing = !*is_playing;
                                             if *is_playing {
                                                 *playback_position_secs = (*playback_position_secs + 6.0) % (duration_secs as f32).max(1.0);
+                                            } else {
+                                                *playback_speed = if (*playback_speed - 1.0).abs() < 0.1 {
+                                                    1.5
+                                                } else if (*playback_speed - 1.5).abs() < 0.1 {
+                                                    2.0
+                                                } else {
+                                                    1.0
+                                                };
                                             }
                                         }
                                     }
@@ -946,6 +972,10 @@ impl ConversationStage {
                                         }
                                     }
                                     cx.notify();
+                                } else if let Some(ref snippet) = text_pin_snippet {
+                                    this.pinned_message = Some(snippet.clone());
+                                    this.toggle_reaction(msg_id, "👍");
+                                    cx.notify();
                                 }
                             }))
                             .child(bubble),
@@ -963,7 +993,7 @@ impl ConversationStage {
             .into_any_element()
     }
 
-    fn render_message_bubble(msg: &MessageItemModel) -> AnyElement {
+    fn render_message_bubble(msg: &MessageItemModel, cx: &mut Context<Self>) -> AnyElement {
         match &msg.content {
             MessageContent::Text { text, is_edited } => {
                 TextMessageView::render(msg, text, *is_edited).into_any_element()
@@ -1015,7 +1045,7 @@ impl ConversationStage {
                 total_votes,
                 is_closed,
                 selected_option_id,
-            } => PollMessageView::render(
+            } => PollMessageView::render_interactive(
                 msg,
                 question,
                 *poll_type,
@@ -1023,6 +1053,7 @@ impl ConversationStage {
                 *total_votes,
                 *is_closed,
                 *selected_option_id,
+                cx,
             ).into_any_element(),
             MessageContent::Service { text, service_type } => {
                 ServiceMessageView::render(text, *service_type).into_any_element()

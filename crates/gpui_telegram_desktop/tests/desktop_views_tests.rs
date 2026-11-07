@@ -461,3 +461,70 @@ fn test_app_shell_views_and_overlay_lifecycle() {
     let inspector = ContextInspector::new();
     assert!(inspector.is_open);
 }
+
+#[test]
+fn test_interactive_click_state_transitions_and_modal_container() {
+    // 1. Poll option deselection when voting across all 3 options
+    let mut stage = ConversationStage::new();
+    let poll_msg_id = 106;
+    stage.vote_poll(poll_msg_id, 1);
+    stage.vote_poll(poll_msg_id, 2);
+    stage.vote_poll(poll_msg_id, 3);
+    let msg = stage.messages.iter().find(|m| m.id == poll_msg_id).unwrap();
+    if let MessageContent::Poll { ref options, selected_option_id, .. } = msg.content {
+        assert_eq!(selected_option_id, Some(3));
+        let opt1 = options.iter().find(|o| o.id == 1).unwrap();
+        let opt2 = options.iter().find(|o| o.id == 2).unwrap();
+        let opt3 = options.iter().find(|o| o.id == 3).unwrap();
+        assert!(!opt1.is_selected, "Option 1 should be deselected");
+        assert!(!opt2.is_selected, "Option 2 should be deselected");
+        assert!(opt3.is_selected, "Newly voted option 3 should be selected");
+    } else {
+        panic!("Expected Poll message");
+    }
+
+    // 2. Text message click pins snippet and toggles reaction
+    stage.pinned_message = Some("Hey! Have you tested the new GPUI 120fps Telegram Desktop build?".to_string());
+    stage.toggle_reaction(101, "👍");
+    assert!(stage.pinned_message.as_deref().unwrap().contains("120fps"));
+    let msg101 = stage.messages.iter().find(|m| m.id == 101).unwrap();
+    assert!(msg101.reactions.iter().any(|r| r.emoji == "👍"));
+
+    // 3. ContextInspector peer synchronization, quick actions, and interactive sub-tabs
+    let mut inspector = ContextInspector::new();
+    inspector.set_peer("Rust Core Team", "12 members", "RC", 0xE67E22);
+    assert_eq!(inspector.profile.name, "Rust Core Team");
+    assert_eq!(inspector.profile.username, "@rust_core_team");
+    assert_eq!(inspector.profile.avatar_initials, "RC");
+    assert_eq!(inspector.profile.avatar_color, 0xE67E22);
+
+    inspector.is_secret_chat_active = !inspector.is_secret_chat_active;
+    assert!(inspector.is_secret_chat_active);
+    inspector.is_contact_blocked = !inspector.is_contact_blocked;
+    assert!(inspector.is_contact_blocked);
+    inspector.pending_media_open = Some(("https://gpui.rs/docs".to_string(), false));
+    assert_eq!(inspector.pending_media_open.as_ref().unwrap().0, "https://gpui.rs/docs");
+
+    inspector.shared_media.active_subtab = drawer::inspector_tabs::SharedMediaSubTab::Files;
+    assert_eq!(inspector.shared_media.active_subtab, drawer::inspector_tabs::SharedMediaSubTab::Files);
+    inspector.shared_media.active_subtab = drawer::inspector_tabs::SharedMediaSubTab::Voice;
+    assert_eq!(inspector.shared_media.active_subtab, drawer::inspector_tabs::SharedMediaSubTab::Voice);
+    inspector.shared_media.active_subtab = drawer::inspector_tabs::SharedMediaSubTab::Links;
+    assert_eq!(inspector.shared_media.active_subtab, drawer::inspector_tabs::SharedMediaSubTab::Links);
+
+    // 4. ModalContainer push/dismiss stack (including "Docs" inline bot keyboard modal)
+    let mut modal = ModalContainer::new();
+    assert!(!modal.is_modal_active());
+    modal.show_modal(
+        "Docs • GPUI Telegram Docs",
+        440.0,
+        240.0,
+        gpui_telegram_desktop::components::ui::layers::LayerStackOption::CloseOther,
+    );
+    assert!(modal.is_modal_active());
+    assert_eq!(modal.current_box().unwrap().title, "Docs • GPUI Telegram Docs");
+    assert!(modal.dismiss_top().is_some());
+    assert!(!modal.is_modal_active());
+}
+
+
