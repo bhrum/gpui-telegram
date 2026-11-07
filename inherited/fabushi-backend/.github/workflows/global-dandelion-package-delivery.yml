@@ -1,0 +1,96 @@
+name: Sign Reviewed Global Dandelion Package
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to sign; must match the preparation manifest exactly
+        required: true
+        default: '0.1.0'
+      preparation_release:
+        description: Same-repository draft holding preparation.zip
+        required: true
+        default: dandelion-preparation-fce746b
+      source_commit:
+        description: Exact source SHA recorded by the preparation
+        required: true
+        default: fce746baecc6bbd9f4b12d5862d886cf7f72eda5
+      preparation_artifact_id:
+        description: Actions artifact id of the reviewed preparation
+        required: true
+        default: '11794806976'
+      preparation_digest:
+        description: SHA-256 of the transferred preparation.zip
+        required: true
+        default: 6089817d720da2697e4b3c3019c626a6978c3b11c4c2282865951066a53df018
+      approve:
+        description: Also approve the release so hosts can install it
+        type: choice
+        options: ['false', 'true']
+        default: 'false'
+permissions:
+  contents: read
+  actions: read
+jobs:
+  signed-package:
+    # GitHub hides draft releases from read-only tokens. This protected
+    # canonical-main job requires same-repository draft-maintainer access.
+    # It does not perform release publication or change repository content.
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    env:
+      DANDELION_RELEASE_TOKEN: ${{ secrets.DANDELION_RELEASE_TOKEN }}
+      DANDELION_VERSION: ${{ inputs.version }}
+      DANDELION_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      DANDELION_PREPARATION_ARTIFACT_ID: ${{ inputs.preparation_artifact_id }}
+      DANDELION_PREPARATION_DIGEST: ${{ inputs.preparation_digest }}
+      RELEASE_TAG: v${{ inputs.version }}
+    steps:
+      - name: Require canonical main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download exact successful reviewed preparation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARATION_RELEASE: ${{ inputs.preparation_release }}
+        run: |
+          set -euo pipefail
+          # Private source artifacts cannot be read by a different repo's job
+          # token. Admin transfers the exact hashed archive to an unpublished
+          # same-repository draft; no cross-repository personal token is stored.
+          gh release download "$PREPARATION_RELEASE" --repo bhrumom/fabushi-backend --pattern preparation.zip
+      - name: Install signature verifier
+        run: python3 -m pip install cryptography==46.0.3
+      - name: Verify resources, sign through production, verify pinned public key
+        env:
+          FABUSHI_MARKETPLACE_REVIEW_TOKEN: ${{ secrets.FABUSHI_MARKETPLACE_REVIEW_TOKEN }}
+        run: python3 .github/scripts/deliver-dandelion-package.py
+      # Bytes are hosted on GitHub Releases; the release signature and the pinned
+      # trust root stay with the Marketplace. A cross-repository token writes to
+      # the mini-app repository; without one the job's own token publishes into
+      # this public repository, so no stored personal token is required.
+      # The catalog record is created here because the delivery pipeline owns the
+      # package digest; approval stays a separate, explicit decision.
+      - name: Publish signed bytes to GitHub Releases and make them installable
+        env:
+          DANDELION_RELEASE_TOKEN: ${{ secrets.DANDELION_RELEASE_TOKEN }}
+          DANDELION_HOST_TOKEN: ${{ github.token }}
+          DANDELION_HOST_REPOSITORY: ${{ github.repository }}
+          DANDELION_APPROVE: ${{ inputs.approve }}
+          FABUSHI_MARKETPLACE_REVIEW_TOKEN: ${{ secrets.FABUSHI_MARKETPLACE_REVIEW_TOKEN }}
+        run: |
+          set -euo pipefail
+          flags=""
+          if [ "$DANDELION_APPROVE" = "true" ]; then flags="--approve"; fi
+          python3 .github/scripts/publish-github-release.py $flags
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: global-dandelion-signed-delivery-${{ github.sha }}
+          path: signed-delivery

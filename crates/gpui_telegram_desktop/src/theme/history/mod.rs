@@ -1,0 +1,5 @@
+//! Submodule: crates/gpui_telegram_desktop/src/theme/history
+pub mod history_view_about_view_style;
+pub use history_view_about_view_style::HistoryViewAboutViewViewStyleSheet;
+pub mod history_view_voice_record_bar_style;
+pub use history_view_voice_record_bar_style::HistoryViewVoiceRecordBarViewControlsStyleSheet;

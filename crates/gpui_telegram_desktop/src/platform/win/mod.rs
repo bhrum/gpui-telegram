@@ -1,0 +1,39 @@
+//! Module definitions for `crates/gpui_telegram_desktop/src/platform/win`
+
+pub mod current_geo_location_win;
+pub mod file_utilities_win;
+pub mod integration_win;
+pub mod launcher_win;
+pub mod main_window_win;
+pub mod notifications_manager_win;
+pub mod overlay_widget_win;
+pub mod specific_win;
+pub mod text_recognition_win;
+pub mod translate_provider_win;
+pub mod tray_win;
+pub mod wallet_protection_win;
+pub mod webauthn_win;
+pub mod windows_app_user_model_id;
+pub mod windows_autostart_task;
+pub mod windows_dlls;
+pub mod windows_taskbar_buttons;
+pub mod windows_toast_activator;
+
+pub use current_geo_location_win::CurrentGeoLocationWinWin;
+pub use file_utilities_win::FileUtilitiesWinWin;
+pub use integration_win::IntegrationWinWin;
+pub use launcher_win::LauncherWinWin;
+pub use main_window_win::MainWindowWinWin;
+pub use notifications_manager_win::NotificationsManagerWinWin;
+pub use overlay_widget_win::OverlayWidgetWinWin;
+pub use specific_win::SpecificWinWin;
+pub use text_recognition_win::TextRecognitionWinWin;
+pub use translate_provider_win::TranslateProviderWinWin;
+pub use tray_win::TrayWinWin;
+pub use wallet_protection_win::WalletProtectionWinWin;
+pub use webauthn_win::WebauthnWinWin;
+pub use windows_app_user_model_id::WindowsAppUserModelIdWin;
+pub use windows_autostart_task::WindowsAutostartTaskWin;
+pub use windows_dlls::WindowsDllsWin;
+pub use windows_taskbar_buttons::WindowsTaskbarButtonsWin;
+pub use windows_toast_activator::WindowsToastActivatorWin;

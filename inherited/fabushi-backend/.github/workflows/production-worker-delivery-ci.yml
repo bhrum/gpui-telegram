@@ -1,0 +1,64 @@
+name: Production Worker Delivery CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/specs/production-worker-delivery.md"
+      - "docs/specs/marketplace-signing-bootstrap.md"
+      - "docs/specs/global-dandelion-package-delivery.md"
+      - ".github/scripts/*dandelion*.py"
+      - ".github/workflows/global-dandelion-package-delivery.yml"
+      - "fabushi/web/src/routes/extension-registry-gateway.js"
+      - "fabushi/web/tests/extension-registry-gateway.test.js"
+      - ".github/scripts/*marketplace*.mjs"
+      - ".github/workflows/marketplace-signing-bootstrap.yml"
+      - ".github/scripts/assert-worker-security-secrets.sh"
+      - ".github/scripts/run-wrangler-d1-migrations.sh"
+      - ".github/workflows/production-worker-delivery.yml"
+      - ".github/workflows/production-worker-delivery-ci.yml"
+      - "fabushi/web/tests/production-worker-delivery-contract.test.js"
+      - "fabushi/web/tests/extension-signing-routes.test.js"
+      - "fabushi/web/src/routes/extension-signing-routes.js"
+      - "fabushi/web/src/router.js"
+      - "fabushi/web/wrangler.toml"
+      - "fabushi/web/migrations/*human_call*.sql"
+      - "scripts/test-human-call-migration.py"
+      - ".github/workflows/official-mcp-platform-delivery.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-delivery-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Validate deployment guard syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n .github/scripts/assert-worker-security-secrets.sh
+          bash -n .github/scripts/run-wrangler-d1-migrations.sh
+      - name: Reject committed Worker secret literals
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Eq '^JWT_SECRET\s*=|ADMIN_EMAIL\s*=.*@|BEGIN (RSA )?PRIVATE KEY' fabushi/web/wrangler.toml
+      - name: Run canonical production delivery contracts
+        run: |
+          node --test fabushi/web/tests/production-worker-delivery-contract.test.js
+          node --test fabushi/web/tests/extension-signing-routes.test.js
+          node --test fabushi/web/tests/extension-registry-gateway.test.js
+          node --test .github/scripts/bootstrap-marketplace-worker.test.mjs
+
+      - name: Verify real SQLite migration ordering and data preservation
+        run: python3 scripts/test-human-call-migration.py
+      - name: Verify reviewed package delivery failure boundaries
+        run: |
+          python3 -m pip install cryptography==46.0.3
+          python3 .github/scripts/test-dandelion-package.py

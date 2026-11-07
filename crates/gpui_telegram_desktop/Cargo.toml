@@ -1,0 +1,26 @@
+[package]
+name = "gpui_telegram_desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gpui_telegram_desktop"
+path = "src/main.rs"
+
+[dependencies]
+gpui_telegram_core = { workspace = true }
+gpui_telegram_proto = { workspace = true }
+gpui_telegram_media = { workspace = true }
+gpui_telegram_client = { workspace = true }
+gpui_telegram_agent = { workspace = true }
+gpui_telegram_webrtc = { workspace = true }
+gpui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+fabushi-messaging-core = { path = "../../inherited/mahayana-messaging" }
+mahayana-node-agent-coordinator = { path = "../../inherited/node-agent-coordinator" }
+mahayana-host-runtime = { path = "../../inherited/host" }

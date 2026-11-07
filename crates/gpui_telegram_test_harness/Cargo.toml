@@ -1,0 +1,20 @@
+[package]
+name = "gpui_telegram_test_harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui_telegram_core = { workspace = true }
+gpui_telegram_proto = { workspace = true }
+gpui_telegram_media = { workspace = true }
+gpui_telegram_webrtc = { workspace = true }
+gpui_telegram_agent = { workspace = true }
+gpui_telegram_server = { workspace = true }
+gpui_telegram_client = { workspace = true }
+gpui_telegram_desktop = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

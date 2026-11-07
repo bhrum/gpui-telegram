@@ -1,0 +1,26 @@
+# Rust / Cargo build artifacts
+/target/
+**/target/
+.cargo-target-*/
+**/*.rs.bk
+*.pdb
+*.dSYM/
+
+# Local SQLite / Tantivy / Upload temporary test artifacts
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+/data/
+/tmp/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*.log

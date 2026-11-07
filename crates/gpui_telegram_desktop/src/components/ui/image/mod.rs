@@ -1,0 +1,9 @@
+//! Submodule: crates/gpui_telegram_desktop/src/components/ui/image
+pub mod image;
+pub use image::ImageImage;
+pub mod image_location;
+pub use image_location::ImageLocationImage;
+pub mod image_location_factory;
+pub use image_location_factory::ImageLocationFactoryImage;
+pub mod svg_preview;
+pub use svg_preview::SvgPreviewImage;

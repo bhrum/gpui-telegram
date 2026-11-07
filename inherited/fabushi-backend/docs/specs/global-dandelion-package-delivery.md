@@ -1,0 +1,43 @@
+# Global Dandelion reviewed package delivery
+
+Status: active implementation slice. Date: 2026-10-13.
+Parent: fabapp-manifest-signing-v1.md / OMA-001.
+
+The administrator requested completing publication as a proprietary mini app.
+Use the existing production signer, not a new signing authority. This slice
+produces an integrity-signed package, NOT a Registry approval or public listing.
+
+## Requirements and acceptance
+
+- GD-01: manual canonical-main production-environment workflow only. No PR
+  workflow receives reviewer credentials. Pin the preparation repository, exact
+  source SHA, successful Actions artifact ID and archive digest in reviewed code.
+  The private source artifact is administratively copied unchanged into an
+  unpublished same-repository draft transport. The runner's existing token reads
+  only that draft; GitHub requires maintainer-level contents access to see draft
+  releases, so that permission is limited to this protected main delivery job.
+  No personal/cross-repository credential is introduced. The
+  original archive digest remains mandatory and the draft must remain unpublished.
+- GD-02: validate ZIP members without extraction: bounded sizes/count, no duplicate,
+  absolute, traversal, symlink, encrypted or undeclared members. Verify every
+  declared resource size/hash and BUILD-INFO source before requesting a signature.
+- GD-03: bind app/publisher/version, deny network and empty capability request;
+  preserve the explicit offline-workbench/native-feature limitations.
+- GD-04: reviewer token exists only in the production runner environment and
+  HTTPS request header to the fixed production signing endpoint. Reject redirects.
+  Never print credential, response diagnostics or private key material.
+- GD-05: verify returned manifest equality and Ed25519 signature against the
+  independently pinned managed raw public key/key ID/epoch; reject changed trust.
+- GD-06: deterministic immutable .fabapp and public provenance include preparation
+  source, artifact digest, backend delivery source, signer identity and package
+  digest. Upload signed bytes only after all checks. No automatic release approval.
+- A retry of the same exact delivery may observe the registry's immutable
+  `SCAN_ALREADY_FINAL` response; the delivery script accepts only that explicit
+  terminal code and continues to the separately requested approval step. It
+  never accepts a missing, failed, or differently scoped scan.
+
+Tests run exclusively in GitHub Actions: corrupt/extra/duplicate/traversal/symlink
+resources, source mismatch, changed signer/manifest and valid fixture signature.
+Live acceptance requires the protected main workflow to sign via the real Worker.
+Registry scan, namespace ownership, release review/signature and installed desktop
+Host acceptance remain separate requirements; this slice cannot report them done.

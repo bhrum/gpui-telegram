@@ -1,0 +1,44 @@
+//! Module definitions for `crates/gpui_telegram_desktop/src/platform/mac`
+
+pub mod current_geo_location_mac;
+pub mod file_bookmark_mac;
+pub mod file_utilities_mac;
+pub mod global_menu_mac;
+pub mod integration_mac;
+pub mod launcher_mac;
+pub mod mac_iconv_helper;
+pub mod main_window_mac;
+pub mod native_event_mac;
+pub mod notifications_manager_mac;
+pub mod notifications_manager_mac_un;
+pub mod overlay_widget_mac;
+pub mod specific_mac;
+pub mod specific_mac_p;
+pub mod text_recognition_mac;
+pub mod touchbar;
+pub mod translate_provider_mac;
+pub mod tray_mac;
+pub mod wallet_protection_mac;
+pub mod webauthn_mac;
+pub mod window_title_mac;
+
+pub use current_geo_location_mac::CurrentGeoLocationMacMac;
+pub use file_bookmark_mac::FileBookmarkMacMac;
+pub use file_utilities_mac::FileUtilitiesMacMac;
+pub use global_menu_mac::GlobalMenuMacMac;
+pub use integration_mac::IntegrationMacMac;
+pub use launcher_mac::LauncherMacMac;
+pub use mac_iconv_helper::MacIconvHelperMac;
+pub use main_window_mac::MainWindowMacMac;
+pub use native_event_mac::NativeEventMacMac;
+pub use notifications_manager_mac::NotificationsManagerMacMac;
+pub use notifications_manager_mac_un::NotificationsManagerMacUnMac;
+pub use overlay_widget_mac::OverlayWidgetMacMac;
+pub use specific_mac::SpecificMacMac;
+pub use specific_mac_p::SpecificMacPMac;
+pub use text_recognition_mac::TextRecognitionMacMac;
+pub use translate_provider_mac::TranslateProviderMacMac;
+pub use tray_mac::TrayMacMac;
+pub use wallet_protection_mac::WalletProtectionMacMac;
+pub use webauthn_mac::WebauthnMacMac;
+pub use window_title_mac::WindowTitleMacMac;

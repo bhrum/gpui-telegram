@@ -1,0 +1,148 @@
+name: Official MCP platform delivery
+on:
+  workflow_dispatch:
+    inputs:
+      core_sha:
+        description: Verified canonical Platform Core main SHA
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: official-mcp-platform-production
+  cancel-in-progress: false
+jobs:
+  deliver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    env:
+      CORE_SHA: ${{ inputs.core_sha }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CF_API_TOKEN || secrets.WRANGLER_API_TOKEN || secrets.CLOUDFLARE_TOKEN || secrets.CF_TOKEN || vars.CLOUDFLARE_API_TOKEN || vars.CF_API_TOKEN || vars.WRANGLER_API_TOKEN || vars.CLOUDFLARE_TOKEN || vars.CF_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID || secrets.CF_ACCOUNT_ID || secrets.CF_ACCOUNT || secrets.CLOUDFLARE_ACCOUNT || vars.CLOUDFLARE_ACCOUNT_ID || vars.CF_ACCOUNT_ID || vars.CF_ACCOUNT || vars.CLOUDFLARE_ACCOUNT }}
+    steps:
+      - name: Require canonical backend main
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove exact Core main has passed broker verification
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const sha=process.env.CORE_SHA;
+            if(!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Invalid Core source SHA');
+            const owner='bhrumom',repo='fabushi-platform-core';
+            const main=await github.rest.repos.getBranch({owner,repo,branch:'main'});
+            if(main.data.commit.sha!==sha) throw new Error('Only current canonical Core main can deploy');
+            const runs=await github.rest.actions.listWorkflowRuns({owner,repo,workflow_id:'official-mcp-oauth.yml',head_sha:sha,per_page:100});
+            if(!runs.data.workflow_runs.some(r=>r.head_sha===sha&&r.head_branch==='main'&&r.conclusion==='success')) throw new Error('Exact Core main broker verification has not passed');
+      - name: Checkout canonical verified Core source
+        uses: actions/checkout@v6
+        with:
+          repository: bhrumom/fabushi-platform-core
+          ref: ${{ inputs.core_sha }}
+          path: core
+          persist-credentials: false
+      - name: Bind exact Core and backend revisions
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C core rev-parse HEAD)" = "$CORE_SHA"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/deploy/platform-worker -> target
+      - name: Install pinned Worker builder
+        run: cargo install worker-build --version 0.8.5 --locked
+      - name: Confirm existing signing and provider registrations
+        working-directory: core/third_party/mahayana/mahayana-rs/mahayana-platform-worker
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: 1007111102015-4n9lrivofv2g7ttqph2u8nknimr1vav5.apps.googleusercontent.com
+          GITHUB_OAUTH_CLIENT_ID: Ov23liS9LtBHoVaEvKnb
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.110.0 secret list > "$RUNNER_TEMP/mcp-secret-names.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/mahayana-platform/settings" \
+            > "$RUNNER_TEMP/mcp-worker-settings.json"
+          python3 - <<'PY'
+          import json,os
+          secrets={r['name'] for r in json.load(open(os.environ['RUNNER_TEMP']+'/mcp-secret-names.json'))}
+          settings=json.load(open(os.environ['RUNNER_TEMP']+'/mcp-worker-settings.json'))
+          assert settings.get('success') is True,'Unable to read deployed Worker bindings'
+          bindings=settings.get('result',{}).get('bindings',[])
+          by_name={b.get('name'):b for b in bindings if b.get('name')}
+          assert {'ACCESS_TOKEN_PRIVATE_KEY_PEM','ACCESS_TOKEN_PUBLIC_KEY_PEM'} <= secrets,'Existing account signing configuration missing'
+          expected={'GOOGLE':os.environ['GOOGLE_OAUTH_CLIENT_ID'],'GITHUB':os.environ['GITHUB_OAUTH_CLIENT_ID']}
+          for provider,expected_id in expected.items():
+              ok=False
+              for prefix in ('MCP_','OAUTH_'):
+                  id_name=prefix+provider+'_CLIENT_ID'
+                  secret_name=prefix+provider+'_CLIENT_SECRET'
+                  if secret_name not in secrets:
+                      continue
+                  if id_name in secrets:
+                      ok=True
+                      break
+                  binding=by_name.get(id_name)
+                  if binding and binding.get('type')=='plain_text' and binding.get('text')==expected_id:
+                      ok=True
+                      break
+              assert ok,'Provider registration incomplete: '+provider
+          PY
+      - name: Compile verified Worker source
+        working-directory: core/deploy/platform-worker
+        run: worker-build --release --no-panic-recovery --locked
+      - name: Capture ACCOUNT_DB recovery bookmark before mutation
+        working-directory: core/third_party/mahayana/mahayana-rs/mahayana-platform-worker
+        run: npx --yes wrangler@4.110.0 d1 time-travel info ACCOUNT_DB --json > "$RUNNER_TEMP/mcp-account-recovery.json"
+      - name: Apply additive account connection migrations
+        working-directory: core/third_party/mahayana/mahayana-rs/mahayana-platform-worker
+        run: npx --yes wrangler@4.110.0 d1 migrations apply ACCOUNT_DB --remote
+      - name: Deploy the verified platform artifact
+        working-directory: core/third_party/mahayana/mahayana-rs/mahayana-platform-worker
+        run: |
+          python3 - <<'PYBUILD'
+          from pathlib import Path
+          path=Path('wrangler.toml')
+          text=path.read_text()
+          hook='[build]\ncommand = "cd ../../../../deploy/platform-worker && worker-build --release --no-panic-recovery"\n'
+          assert text.count(hook)==1, 'Canonical build hook changed; refusing unverified rebuild'
+          path.write_text(text.replace(hook,''))
+          PYBUILD
+          npx --yes wrangler@4.110.0 deploy --config wrangler.toml
+      - name: Verify real public routing and credential boundary
+        run: |
+          set -euo pipefail
+          user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/154.0.0.0 Safari/537.36'
+          curl --fail --silent --show-error --max-time 30 -H "User-Agent: $user_agent" https://mahayana-platform.bhrumom.workers.dev/health | jq -e '.ok == true'
+          status=$(curl --silent --show-error --max-time 30 -D "$RUNNER_TEMP/mcp-route-headers" -o "$RUNNER_TEMP/mcp-route-body" -w '%{http_code}' -H "User-Agent: $user_agent" -H 'Content-Type: application/json' --data '{"pluginId":"fabushi-official-github"}' https://api.ombhrum.com/api/mcp/oauth/start)
+          test "$status" = 401
+          jq -e '.error == "session_required"' "$RUNNER_TEMP/mcp-route-body"
+          grep -qi '^x-fabushi-control-plane: mahayana-platform' "$RUNNER_TEMP/mcp-route-headers"
+          callback_status=$(curl --silent --show-error --max-time 30 -D "$RUNNER_TEMP/mcp-callback-headers" -o "$RUNNER_TEMP/mcp-callback-body" -w '%{http_code}' -H "User-Agent: $user_agent" 'https://api.ombhrum.com/api/mcp/oauth/callback?state=invalid&code=invalid')
+          test "$callback_status" = 410
+          jq -e '.error == "callback_expired"' "$RUNNER_TEMP/mcp-callback-body"
+          grep -qi '^x-fabushi-control-plane: mahayana-platform' "$RUNNER_TEMP/mcp-callback-headers"
+      - name: Record exact deployment provenance
+        run: |
+          jq -n --arg coreSha "$CORE_SHA" --arg backendSha "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{coreRepository:"bhrumom/fabushi-platform-core",coreSha:$coreSha,backendRepository:"bhrumom/fabushi-backend",backendSha:$backendSha,runId:$run,worker:"mahayana-platform",route:"https://api.ombhrum.com/api/mcp/oauth/start",result:"deployed; real provider consent and packaged acceptance still required"}' > official-mcp-delivery.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-mcp-delivery-${{ inputs.core_sha }}
+          if-no-files-found: error
+          path: |
+            official-mcp-delivery.json
+            ${{ runner.temp }}/mcp-account-recovery.json

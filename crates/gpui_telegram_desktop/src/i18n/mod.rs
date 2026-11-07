@@ -1,0 +1,30 @@
+//! Auto-generated module tree
+
+pub mod lang_cloud_manager;
+pub use lang_cloud_manager::LangCloudManager;
+pub mod lang_file_parser;
+pub use lang_file_parser::LangFileParser;
+pub mod lang_hardcoded;
+pub use lang_hardcoded::LangHardcoded;
+pub mod lang_instance;
+pub use lang_instance::LangInstance;
+pub mod lang_keys;
+pub use lang_keys::LangKeys;
+pub mod lang_numbers_animation;
+pub use lang_numbers_animation::{LangNumbersAnimation, StringWithNumbers};
+pub mod lang_pch;
+pub use lang_pch::LangPch;
+pub mod lang_tag;
+pub use lang_tag::LangTag;
+pub mod lang_text_entity;
+pub use lang_text_entity::LangTextEntity;
+pub mod lang_translator;
+pub use lang_translator::LangTranslator;
+pub mod lang_values;
+pub use lang_values::LangValues;
+pub mod translate_mtproto_provider;
+pub use translate_mtproto_provider::TranslateMtprotoProvider;
+pub mod translate_provider;
+pub use translate_provider::TranslateProvider;
+pub mod translate_url_provider;
+pub use translate_url_provider::TranslateUrlProvider;
