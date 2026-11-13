@@ -1,0 +1,203 @@
+name: GPUI Telegram CI & 1:1 Parity Verification
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpui-telegram-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CI: "true"
+
+jobs:
+  bootstrap-and-ledger-audit:
+    name: Bootstrap Sync & Ledger Closure Audit (3,441 Upstream Files)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout latest branch HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync Full 10,685-File Codebase from Drive if Uninitialized
+        run: |
+          if [ ! -f "Cargo.toml" ]; then
+            echo "Bootstrapping full GPUI-Telegram codebase into repository..."
+            python3 -m pip install -q gdown
+            mkdir -p /tmp/gpui_extract
+            python3 -m gdown --id 12nFUhZWJALT7nwPuTOHhhleoFvjjXLoI -O /tmp/base.zip
+            python3 -m gdown --id 1f7Rg57Hlc6LgFcwt9CU9Q9-HZOFMc-6v -O /tmp/overlay.tar.gz
+            unzip -q /tmp/base.zip -d /tmp/gpui_extract
+            cp -a /tmp/gpui_extract/gpui-telegram-68d422c645dc4232b2b03a73325c43b9596fed4b/. .
+            tar -xzf /tmp/overlay.tar.gz --exclude='.github/workflows/ci.yml' -C .
+            sed -i 's|bhrumom/gpui-telegram|bhrum/gpui-telegram|g' scripts/push_and_verify_gh_actions.sh
+            git checkout -- .github/workflows/ci.yml
+            rm -rf /tmp/base.zip /tmp/overlay.tar.gz /tmp/gpui_extract
+            git config user.name "bhrum"
+            git config user.email "bhrum@users.noreply.github.com"
+            git add -A
+            git commit -m "feat(desktop): migrate 1:1 telegramdesktop features & GPUI UI/UX parity"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo "Codebase already synced in repository (Cargo.toml present)."
+          fi
+
+      - name: Run 6-Gate Source-File Parity Ledger Verification (Static)
+        run: python3 scripts/verify_ledger_closure.py --ci-without-upstream --skip-cargo
+
+  macos-gpui-verify:
+    name: macOS Apple Silicon GPUI Build & Full Test Suite
+    runs-on: macos-14
+    needs: bootstrap-and-ledger-audit
+    timeout-minutes: 60
+    steps:
+      - name: Checkout synced branch HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Ensure Metal Shader Toolchain & Protobuf Compiler
+        run: |
+          xcode-select -p
+          xcrun -sdk macosx metal -v || xcodebuild -downloadComponent MetalToolchain || true
+          which protoc || brew install protobuf
+          which cmake || brew install cmake
+
+      - name: Install Rust Toolchain (>= 1.85 for Edition 2024)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cargo & Target Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "macos-14-gpui-telegram-v1"
+
+      - name: Gate 6.3 — Full Ledger Closure & Clean Workspace Compilation
+        run: python3 scripts/verify_ledger_closure.py --ci-without-upstream
+
+      - name: Check All Workspace Targets (Bins, Libs, Examples & Tests)
+        run: |
+          cargo check --workspace --all-targets
+          python3 scripts/clean_build_garbage.py
+
+      - name: Run GPUI Telegram Core, Client & 1:1 Desktop Parity Test Suites
+        run: |
+          cargo test --profile ci \
+            -p gpui_telegram_core \
+            -p gpui_telegram_proto \
+            -p gpui_telegram_media \
+            -p gpui_telegram_webrtc \
+            -p gpui_telegram_agent \
+            -p gpui_telegram_server \
+            -p gpui_telegram_client \
+            -p gpui_telegram_desktop \
+            -p gpui_telegram_test_harness \
+            -- --nocapture
+          python3 scripts/clean_build_garbage.py
+
+      - name: Run Inherited Messaging & Coordinator Contract Suites
+        run: |
+          cargo test --profile ci \
+            -p fabushi-messaging-core \
+            -p mahayana-node-agent-coordinator
+          python3 scripts/clean_build_garbage.py
+
+      - name: Build Release GPUI Desktop & Server Binaries (arm64-apple-darwin)
+        run: |
+          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+
+      - name: Upload macOS Apple Silicon Release Binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-telegram-macos-arm64
+          path: |
+            target/release/gpui_telegram_desktop
+            target/release/gpui_telegram_server
+          retention-days: 14
+
+      - name: Enforce Post-Build Workspace Hygiene
+        if: always()
+        run: python3 scripts/clean_build_garbage.py
+
+  linux-cross-platform-verify:
+    name: Linux X11/Wayland/Vulkan Cross-Platform Check & Tests
+    runs-on: ubuntu-24.04
+    needs: bootstrap-and-ledger-audit
+    timeout-minutes: 45
+    steps:
+      - name: Checkout synced branch HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Install Linux Graphics, Audio & Crypto System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            cmake \
+            protobuf-compiler \
+            clang \
+            libssl-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libvulkan-dev \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev
+
+      - name: Install Rust Toolchain (>= 1.85 for Edition 2024)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cargo & Target Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "ubuntu-24-gpui-telegram-v1"
+
+      - name: Check Full Workspace All-Targets on Linux
+        run: |
+          cargo check --workspace --all-targets
+          python3 scripts/clean_build_garbage.py
+
+      - name: Run Headless Protocol, Persistence & Desktop Model Tests on Linux
+        run: |
+          cargo test --profile ci \
+            -p gpui_telegram_core \
+            -p gpui_telegram_proto \
+            -p gpui_telegram_client \
+            -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
+          python3 scripts/clean_build_garbage.py
