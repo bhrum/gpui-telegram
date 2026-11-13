@@ -49,7 +49,8 @@ jobs:
             python3 -m gdown 12nFUhZWJALT7nwPuTOHhhleoFvjjXLoI -O /tmp/base.zip
             python3 -m gdown 1f7Rg57Hlc6LgFcwt9CU9Q9-HZOFMc-6v -O /tmp/overlay.tar.gz
             unzip -q /tmp/base.zip -d /tmp/gpui_extract
-            cp -a /tmp/gpui_extract/gpui-telegram-68d422c645dc4232b2b03a73325c43b9596fed4b/. .
+                        SRC_ROOT="$(dirname "$(find /tmp/gpui_extract -maxdepth 3 -name 'Cargo.toml' | awk '{ print length, $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)")"
+                                    cp -a "${SRC_ROOT}"/. .
             tar -xzf /tmp/overlay.tar.gz --exclude='.github/workflows/ci.yml' -C .
             sed -i 's|bhrumom/gpui-telegram|bhrum/gpui-telegram|g' scripts/push_and_verify_gh_actions.sh
             git checkout -- .github/workflows/ci.yml
