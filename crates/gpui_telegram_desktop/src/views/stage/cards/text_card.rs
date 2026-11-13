@@ -332,7 +332,7 @@ pub struct TextMessageView;
 impl TextMessageView {
     pub fn extract_first_url(raw: &str) -> Option<String> {
         for token in raw.split_whitespace() {
-            let trimmed = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | ''' | ',' | '.' | ';' | '!'));
+            let trimmed = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | ',' | '.' | ';' | '!'));
             if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
                 return Some(trimmed.to_string());
             }

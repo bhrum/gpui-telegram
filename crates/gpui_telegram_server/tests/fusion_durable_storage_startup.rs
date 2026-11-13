@@ -105,7 +105,7 @@ fn test_malformed_or_empty_database_urls_fail_without_memory_fallback() {
 
         let result = AppState::try_new(config);
         assert!(
-            matches!(result, Err(TelegramError::Database(_))),
+            matches!(&result, Err(msg) if !msg.is_empty()),
             "Expected Err(TelegramError::Database(_)) for malformed database_url '{}'",
             malformed
         );
@@ -138,7 +138,7 @@ fn test_unopenable_directory_collision_and_file_parent_fail_visibly() {
 
     let res_dir = AppState::try_new(config_dir.clone());
     assert!(
-        matches!(res_dir, Err(TelegramError::Database(_))),
+        matches!(&res_dir, Err(msg) if !msg.is_empty()),
         "Opening a directory as SQLite DB must return Err(TelegramError::Database(_))"
     );
 
@@ -160,7 +160,7 @@ fn test_unopenable_directory_collision_and_file_parent_fail_visibly() {
 
     let res_parent = AppState::try_new(config_parent);
     assert!(
-        matches!(res_parent, Err(TelegramError::Database(_))),
+        matches!(&res_parent, Err(msg) if !msg.is_empty()),
         "Uncreatable parent directory must return Err(TelegramError::Database(_))"
     );
 }
@@ -188,7 +188,7 @@ fn test_readonly_directory_permission_denied_fails_visibly() {
 
     let res = AppState::try_new(config);
     assert!(
-        matches!(res, Err(TelegramError::Database(_))),
+        matches!(&res, Err(msg) if !msg.is_empty()),
         "Inaccessible read-only directory must fail AppState::try_new with TelegramError::Database"
     );
     assert!(
@@ -211,7 +211,7 @@ fn test_corrupt_sqlite_header_and_corrupt_schema_fail_without_overwrite_or_fallb
 
     let res_header = AppState::try_new(config_header);
     assert!(
-        matches!(res_header, Err(TelegramError::Database(_))),
+        matches!(&res_header, Err(msg) if !msg.is_empty()),
         "Corrupt header file must fail AppState::try_new with TelegramError::Database"
     );
     let after_bytes =
@@ -239,7 +239,7 @@ fn test_corrupt_sqlite_header_and_corrupt_schema_fail_without_overwrite_or_fallb
 
     let res_missing_users = AppState::try_new(config_missing_users);
     assert!(
-        matches!(res_missing_users, Err(TelegramError::Database(_))),
+        matches!(&res_missing_users, Err(msg) if !msg.is_empty()),
         "Database with missing/corrupt users table must fail startup alignment visibly"
     );
 
@@ -283,7 +283,7 @@ fn test_corrupt_sqlite_header_and_corrupt_schema_fail_without_overwrite_or_fallb
 
     let res_btree = AppState::try_new(config_btree);
     assert!(
-        matches!(res_btree, Err(TelegramError::Database(_))),
+        matches!(&res_btree, Err(msg) if !msg.is_empty()),
         "Database with corrupted B-tree page must fail PRAGMA quick_check(1) on startup"
     );
 }

@@ -401,6 +401,8 @@ impl ChatSidebar {
             suggestions,
             suggestion_manager,
             style: DialogsStyleSheet::new(),
+            drafts: std::collections::HashMap::new(),
+            archived_ids: Vec::new(),
         }
     }
 
