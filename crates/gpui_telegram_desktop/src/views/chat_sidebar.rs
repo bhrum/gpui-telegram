@@ -419,37 +419,15 @@ impl ChatSidebar {
     }
 
     pub fn configure_for_cloud_workspace(&mut self, _server_url: &str) {
-        self.folders = vec![
-            ("All".to_string(), 0),
-            ("Personal".to_string(), 0),
-            ("Work".to_string(), 0),
-            ("Bots".to_string(), 0),
-            ("Unread".to_string(), 0),
-        ];
-
-        self.dialogs = vec![DialogItemModel {
-            id: 4,
-            peer_name: "Autonomous Agent Bot".to_string(),
-            avatar_initials: "🤖".to_string(),
-            avatar_color: 0x1ABC9C,
-            last_message: "Cloud AI Agent • Ready for prompts".to_string(),
-            timestamp: "Online".to_string(),
-            unread_count: 0,
-            is_muted: false,
-            is_pinned: true,
-            is_online: true,
-            typing_indicator: None,
-            delivery_status: DialogDeliveryStatus::Read,
-            folder: "Bots".to_string(),
-        }];
-
+        self.folders = vec![("All".to_string(), 0)];
+        self.dialogs.clear();
         self.stories.set_elements(vec![]);
         self.top_peers.set_entries(vec![]);
         self.suggestions.is_visible = false;
         self.suggestions.current_item = None;
-        self.inner_widget.total_rows = self.dialogs.len();
+        self.inner_widget.total_rows = 0;
         self.active_folder = "All".to_string();
-        self.active_chat_id = Some(4);
+        self.active_chat_id = None;
     }
 
     pub fn recompute_folder_badges(&mut self) {
