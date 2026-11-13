@@ -347,3 +347,219 @@ fn test_chat_sidebar_wiring() {
         Some(SuggestionPriority::PremiumGrace)
     );
 }
+
+#[test]
+fn test_sidebar_plus_menu_contact_group_creation_and_categorized_search() {
+    use gpui_telegram_desktop::views::chat_sidebar::{
+        AddContactKind, CreationInputField, SidebarCreationModal, TELEGRAM_SEARCH_CATEGORIES,
+        TELEGRAM_SEARCH_TAGS,
+    };
+
+    let mut sidebar = ChatSidebar::new();
+    let initial_len = sidebar.dialogs.len();
+
+    // 1. Toggle `+` menu next to search box
+    assert!(!sidebar.is_plus_menu_open);
+    sidebar.toggle_plus_menu();
+    assert!(sidebar.is_plus_menu_open);
+
+    // 2. Open Add Contact modal -> Create AI Bot sub-mode
+    sidebar.open_add_contact_modal(AddContactKind::AiBot);
+    assert!(!sidebar.is_plus_menu_open);
+    assert_eq!(sidebar.active_creation_modal, Some(SidebarCreationModal::AddContact));
+    assert_eq!(sidebar.contact_kind, AddContactKind::AiBot);
+    assert_eq!(sidebar.active_creation_field, CreationInputField::PrimaryName);
+
+    sidebar.push_creation_text("Coder AI Bot");
+    sidebar.cycle_creation_field();
+    assert_eq!(sidebar.active_creation_field, CreationInputField::SecondaryHandle);
+    sidebar.push_creation_text("@coder_ai");
+    sidebar.cycle_creation_field();
+    assert_eq!(sidebar.active_creation_field, CreationInputField::TertiaryPromptOrPhone);
+    sidebar.push_creation_text("Write clean Rust GPUI code.");
+
+    let created_bot_id = sidebar.submit_creation_modal().expect("Should create AI Bot dialog");
+    assert_eq!(sidebar.active_creation_modal, None);
+    assert_eq!(sidebar.dialogs.len(), initial_len + 1);
+    assert_eq!(sidebar.active_chat_id, Some(created_bot_id));
+    let pending_bot = sidebar
+        .pending_add_contact_request
+        .take()
+        .expect("Should emit PendingAddContactRequest for AI Bot");
+    assert!(pending_bot.is_bot);
+    assert_eq!(pending_bot.first_name, "Coder AI Bot");
+    assert_eq!(pending_bot.username.as_deref(), Some("coder_ai_bot"));
+    assert_eq!(
+        pending_bot.system_prompt.as_deref(),
+        Some("Write clean Rust GPUI code.")
+    );
+
+    // 3. Open Add Contact modal -> Add Friend sub-mode
+    sidebar.open_add_contact_modal(AddContactKind::Friend);
+    assert_eq!(sidebar.contact_kind, AddContactKind::Friend);
+    sidebar.push_creation_text("Linus Torvalds");
+    sidebar.cycle_creation_field();
+    sidebar.push_creation_text("linus_t");
+    sidebar.cycle_creation_field();
+    sidebar.push_creation_text("+15550100");
+    let created_friend_id = sidebar.submit_creation_modal().expect("Should create Friend dialog");
+    assert_eq!(sidebar.active_chat_id, Some(created_friend_id));
+    let pending_friend = sidebar
+        .pending_add_contact_request
+        .take()
+        .expect("Should emit PendingAddContactRequest for Friend");
+    assert!(!pending_friend.is_bot);
+    assert_eq!(pending_friend.first_name, "Linus Torvalds");
+    assert_eq!(pending_friend.username.as_deref(), Some("linus_t"));
+    assert_eq!(pending_friend.phone.as_deref(), Some("+15550100"));
+
+    // 4. Open Create Group modal -> test all 3 fields (Title, @username/numeric members, Description)
+    sidebar.open_create_group_modal();
+    assert_eq!(sidebar.active_creation_modal, Some(SidebarCreationModal::CreateGroup));
+    assert_eq!(sidebar.active_creation_field, CreationInputField::PrimaryName);
+    sidebar.push_creation_text("Telegram GPUI Architects");
+    sidebar.cycle_creation_field();
+    assert_eq!(sidebar.active_creation_field, CreationInputField::SecondaryHandle);
+    sidebar.push_creation_text("@coder_ai_bot, @linus_t, 42");
+    sidebar.cycle_creation_field();
+    assert_eq!(
+        sidebar.active_creation_field,
+        CreationInputField::TertiaryPromptOrPhone,
+        "CreateGroup Tab cycling must visit the 3rd field (Description/About)"
+    );
+    sidebar.push_creation_text("1:1 Telegram SourceFiles Rust parity group");
+    let created_group_id = sidebar.submit_creation_modal().expect("Should create Group dialog");
+    assert_eq!(sidebar.active_chat_id, Some(created_group_id));
+    let pending_group = sidebar
+        .pending_create_group_request
+        .take()
+        .expect("Should emit PendingCreateGroupRequest");
+    assert_eq!(pending_group.title, "Telegram GPUI Architects");
+    assert_eq!(pending_group.member_ids, vec![42]);
+    assert_eq!(
+        pending_group.member_usernames,
+        vec!["coder_ai_bot".to_string(), "linus_t".to_string()]
+    );
+    assert_eq!(
+        pending_group.about.as_deref(),
+        Some("1:1 Telegram SourceFiles Rust parity group")
+    );
+
+    // 5. Click into search box -> verify 10 Telegram search categories & tags & results
+    assert_eq!(TELEGRAM_SEARCH_CATEGORIES.len(), 10);
+    assert!(TELEGRAM_SEARCH_TAGS.len() >= 6);
+    sidebar.focus_search();
+    assert!(sidebar.search_focused);
+    assert_eq!(sidebar.active_search_category, "Chats");
+
+    let all_chat_results = sidebar.categorized_search_results();
+    assert!(!all_chat_results.is_empty());
+
+    sidebar.select_search_category("Apps");
+    assert_eq!(sidebar.active_search_category, "Apps");
+    let app_results = sidebar.categorized_search_results();
+    assert!(
+        app_results.iter().any(|r| r.title.contains("Bot")),
+        "Apps category should filter to AI Bot dialogs"
+    );
+    assert!(
+        !app_results.iter().any(|r| r.title == "Linus Torvalds"),
+        "Apps category must NOT include human contact dialogs"
+    );
+
+    sidebar.select_search_category("Channels");
+    let channel_results = sidebar.categorized_search_results();
+    assert!(
+        channel_results
+            .iter()
+            .any(|r| r.title == "Telegram GPUI Architects"),
+        "Channels category should include created group/channel"
+    );
+
+    // Populate remote search results and verify Downloads / Voice filtering does not include unrelated local chats
+    sidebar.remote_search_results = vec![
+        gpui_telegram_desktop::views::chat_sidebar::CategorizedSearchResult {
+            chat_id: created_group_id,
+            message_id: 101,
+            title: "Telegram GPUI Architects".to_string(),
+            subtitle: "architecture_spec.pdf".to_string(),
+            category: "files".to_string(),
+            timestamp: "刚刚".to_string(),
+            avatar_initials: "TG".to_string(),
+            avatar_color: 0x9B59B6,
+            is_bot: false,
+        },
+        gpui_telegram_desktop::views::chat_sidebar::CategorizedSearchResult {
+            chat_id: created_friend_id,
+            message_id: 102,
+            title: "Linus Torvalds".to_string(),
+            subtitle: "Voice message (0:14)".to_string(),
+            category: "voice".to_string(),
+            timestamp: "刚刚".to_string(),
+            avatar_initials: "LT".to_string(),
+            avatar_color: 0x2AABEE,
+            is_bot: false,
+        },
+    ];
+    sidebar.select_search_category("Downloads");
+    let download_results = sidebar.categorized_search_results();
+    assert!(
+        download_results
+            .iter()
+            .any(|r| r.subtitle == "architecture_spec.pdf"),
+        "Downloads category must include remote 'files'/'downloads' results"
+    );
+    sidebar.select_search_category("Voice");
+    let voice_results = sidebar.categorized_search_results();
+    assert!(
+        voice_results
+            .iter()
+            .any(|r| r.subtitle == "Voice message (0:14)"),
+        "Voice category must include remote voice search result"
+    );
+    assert!(
+        voice_results
+            .iter()
+            .all(|r| r.subtitle.to_lowercase().contains("voice")),
+        "Voice category must only return genuine voice results, not unrelated local dialogs"
+    );
+    assert!(
+        !voice_results
+            .iter()
+            .any(|r| r.title == "Alice Smith" || r.title == "Telegram GPUI Architects"),
+        "Unrelated dialogs must be excluded from Voice category"
+    );
+
+    sidebar.select_search_tag("#ai_summary");
+    assert_eq!(sidebar.active_search_tag, "#ai_summary");
+    sidebar.select_search_tag("#ai_summary"); // toggle off back to "all"
+    assert_eq!(sidebar.active_search_tag, "all");
+
+    sidebar.exit_search();
+    assert!(!sidebar.search_focused);
+    assert!(sidebar.search_query.is_empty());
+
+    // 6. Verify Chinese labels match Telegram screenshot media_1794178867127_7a80469d.jpg
+    let expected_labels = [
+        "聊天", "频道", "应用", "贴文", "图片", "视频", "链接", "文件", "音乐", "语音",
+    ];
+    let actual_labels: Vec<&str> = TELEGRAM_SEARCH_CATEGORIES.iter().map(|(_, l)| *l).collect();
+    assert_eq!(actual_labels, expected_labels);
+
+    // 7. Verify Contacts modal state and folder badge recomputation
+    assert!(!sidebar.is_contacts_modal_open);
+    sidebar.open_contacts_modal();
+    assert!(sidebar.is_contacts_modal_open);
+    assert!(!sidebar.is_plus_menu_open);
+    sidebar.close_contacts_modal();
+    assert!(!sidebar.is_contacts_modal_open);
+
+    sidebar.recompute_folder_badges();
+    let all_badge = sidebar
+        .folders
+        .iter()
+        .find(|f| f.0 == "All")
+        .map(|f| f.1)
+        .unwrap_or(0);
+    assert!(all_badge >= 1, "All folder unread badge should reflect real dialog unread counts");
+}

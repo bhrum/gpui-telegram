@@ -64,13 +64,13 @@ impl NavRail {
                 destination: NavDestination::Calls,
                 icon_label: "📞".to_string(),
                 tooltip: "Calls".to_string(),
-                unread_badge: 1,
+                unread_badge: 0,
             },
             NavItem {
                 destination: NavDestination::TaskCenter,
                 icon_label: "📋".to_string(),
                 tooltip: "Global Task Center (CAP-02)".to_string(),
-                unread_badge: 2,
+                unread_badge: 0,
             },
             NavItem {
                 destination: NavDestination::McpTools,
@@ -123,6 +123,15 @@ impl NavRail {
         }
     }
 
+    /// Programmatically synchronize the active destination without incrementing `trigger_counter`.
+    /// This prevents spurious observer re-triggers when returning to previous panels or closing overlays.
+    pub fn set_active_destination(&mut self, dest: NavDestination) {
+        self.active_destination = dest;
+        if let Some(idx) = self.items.iter().position(|it| it.destination == dest) {
+            self.selected_index = idx;
+        }
+    }
+
     pub fn set_unread(&mut self, dest: NavDestination, count: u32) {
         if let Some(it) = self.items.iter_mut().find(|it| it.destination == dest) {
             it.unread_badge = count;
@@ -142,6 +151,16 @@ impl NavRail {
     }
 }
 
+pub const NAV_RAIL_WIDTH: f32 = 52.0;
+pub const USERPIC_DIAMETER: f32 = 36.0;
+pub const NAV_AVATAR_SIZE: f32 = USERPIC_DIAMETER;
+pub const ONLINE_DOT_DIAMETER: f32 = 9.0;
+pub const NAV_ONLINE_DOT_SIZE: f32 = ONLINE_DOT_DIAMETER;
+pub const BUTTON_SIZE: f32 = 40.0;
+pub const NAV_BUTTON_SIZE: f32 = BUTTON_SIZE;
+pub const NAV_DIVIDER_WIDTH: f32 = 32.0;
+pub const NAV_DIVIDER_HEIGHT: f32 = 1.0;
+
 impl Default for NavRail {
     fn default() -> Self {
         Self::new()
@@ -155,7 +174,7 @@ impl Render for NavRail {
         let initials = self.account_initials.clone();
 
         div()
-            .w(px(52.0))
+            .w(px(NAV_RAIL_WIDTH))
             .flex_shrink_0()
             .h_full()
             .bg(rgb(0x0E1621))
@@ -175,8 +194,8 @@ impl Render for NavRail {
                     .child(
                         div()
                             .relative()
-                            .w(px(36.0))
-                            .h(px(36.0))
+                            .w(px(USERPIC_DIAMETER))
+                            .h(px(USERPIC_DIAMETER))
                             .rounded_full()
                             .bg(rgb(0x2AABEE))
                             .hover(|s| s.bg(rgb(0x40A7E3)))
@@ -201,8 +220,8 @@ impl Render for NavRail {
                                     .absolute()
                                     .bottom_0()
                                     .right_0()
-                                    .w(px(9.0))
-                                    .h(px(9.0))
+                                    .w(px(ONLINE_DOT_DIAMETER))
+                                    .h(px(ONLINE_DOT_DIAMETER))
                                     .rounded_full()
                                     .bg(if is_connected { rgb(0x4CAF50) } else { rgb(0xFF9800) })
                                     .border_1()
@@ -212,8 +231,8 @@ impl Render for NavRail {
                     // Divider Line
                     .child(
                         div()
-                            .w(px(32.0))
-                            .h(px(1.0))
+                            .w(px(NAV_DIVIDER_WIDTH))
+                            .h(px(NAV_DIVIDER_HEIGHT))
                             .bg(rgba(0xFFFFFF20)),
                     )
                     // Navigation Item Icons
@@ -233,8 +252,8 @@ impl Render for NavRail {
 
                         div()
                             .relative()
-                            .w(px(40.0))
-                            .h(px(40.0))
+                            .w(px(BUTTON_SIZE))
+                            .h(px(BUTTON_SIZE))
                             .rounded(px(8.0))
                             .bg(bg_color)
                             .hover(|s| s.bg(rgb(0x1F3B57)))

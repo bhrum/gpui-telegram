@@ -14,6 +14,12 @@ use crate::views::composer::{
     VoiceGestureState,
 };
 
+pub const MIN_COMPOSER_HEIGHT: f32 = 44.0;
+pub const MAX_COMPOSER_HEIGHT: f32 = 192.0;
+pub const LINE_HEIGHT: f32 = 20.0;
+pub const ACTION_BTN_WIDTH: f32 = 44.0;
+pub const ACTION_BTN_HEIGHT: f32 = 46.0;
+
 pub struct CanonicalComposer {
     pub ime_machine: ImeSafetyMachine,
     pub voice_gesture: VoiceGestureMachine,
@@ -39,6 +45,34 @@ impl CanonicalComposer {
             submitted_attachment: None,
             is_input_focused: true,
         }
+    }
+
+    /// Calculate effective line count considering explicit newlines and line length wrapping
+    pub fn calculate_line_count(&self) -> usize {
+        let text = self.ime_machine.text();
+        if text.is_empty() {
+            return 1;
+        }
+        let explicit_lines = text.split('\n').count();
+        let mut total_lines = 0;
+        for line in text.split('\n') {
+            let char_count = line.chars().count();
+            let wrapped = char_count / 48;
+            total_lines += 1 + wrapped;
+        }
+        total_lines.max(explicit_lines).max(1)
+    }
+
+    /// Dynamically compute composer container height clamped to [44.0, 192.0]
+    pub fn calculate_content_height(&self) -> Pixels {
+        let lines = self.calculate_line_count();
+        let computed = MIN_COMPOSER_HEIGHT + (lines.saturating_sub(1) as f32) * LINE_HEIGHT;
+        px(computed.clamp(MIN_COMPOSER_HEIGHT, MAX_COMPOSER_HEIGHT))
+    }
+
+    /// Whether the text buffer exceeds maximum view bounds and requires internal scrolling
+    pub fn is_overflow_scroll_active(&self) -> bool {
+        self.calculate_line_count() > 8
     }
 
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -233,41 +267,53 @@ impl Render for CanonicalComposer {
 
 impl CanonicalComposer {
     fn render_text_input_bar(&self, text: &str, is_empty: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let preedit = self.ime_machine.preedit_text().map(|s| s.to_string());
+        let preedit = self
+            .ime_machine
+            .preedit_text()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let is_focused = self.is_input_focused;
+        let show_placeholder = is_empty && preedit.is_none();
+
+        let composer_height = self.calculate_content_height();
+        let is_scrollable = self.is_overflow_scroll_active();
+        let inner_box_height = (f32::from(composer_height) - 8.0).clamp(36.0, 184.0);
 
         div()
-            .h(px(56.0))
             .w_full()
-            .px(px(16.0))
+            .min_h(px(MIN_COMPOSER_HEIGHT))
+            .max_h(px(MAX_COMPOSER_HEIGHT))
+            .h(composer_height)
+            .px(px(12.0))
+            .py(px(4.0))
             .flex()
-            .items_center()
-            .gap(px(10.0))
-            // Paperclip Attachment Button
+            .items_end() // Bottom-aligned action controls
+            .gap(px(8.0))
+            // 1. Paperclip Attachment Button: Exactly 44x46px bounds
             .child(
                 div()
                     .cursor_pointer()
-                    .w(px(36.0))
-                    .h(px(36.0))
-                    .rounded_full()
+                    .w(px(ACTION_BTN_WIDTH))
+                    .h(px(ACTION_BTN_HEIGHT))
+                    .rounded(px(6.0))
                     .hover(|s| s.bg(rgb(0x242F3D)))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(18.0))
-                    .text_color(if self.attachments_drawer.is_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+                    .text_size(px(20.0))
+                    .text_color(if self.attachments_drawer.is_open { rgb(0x40A7E3) } else { rgb(0x8A9AA8) })
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                         this.toggle_attachments();
                         cx.notify();
                     }))
                     .child("📎"),
             )
-            // Formatting Toggle Button (T)
+            // 2. Formatting Toggle Button (T): Compact 32x46 within alignment
             .child(
                 div()
                     .cursor_pointer()
-                    .w(px(28.0))
-                    .h(px(28.0))
+                    .w(px(32.0))
+                    .h(px(ACTION_BTN_HEIGHT))
                     .rounded(px(4.0))
                     .hover(|s| s.bg(rgb(0x242F3D)))
                     .flex()
@@ -275,24 +321,27 @@ impl CanonicalComposer {
                     .justify_center()
                     .text_size(px(14.0))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(if self.is_formatting_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+                    .text_color(if self.is_formatting_open { rgb(0x40A7E3) } else { rgb(0x8A9AA8) })
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                         this.toggle_formatting();
                         cx.notify();
                     }))
                     .child("T"),
             )
-            // Multi-line Text Input Field Container
+            // 3. Dynamic Growing Text Input Area
             .child(
                 div()
                     .cursor_pointer()
                     .flex_1()
-                    .h(px(38.0))
-                    .rounded(px(19.0))
+                    .min_h(px(36.0))
+                    .max_h(px(184.0))
+                    .h(px(inner_box_height))
+                    .rounded(px(18.0))
                     .bg(rgb(0x242F3D))
                     .border_1()
-                    .border_color(if is_focused { rgb(0x2AABEE) } else { rgba(0x00000000) })
+                    .border_color(if is_focused { rgb(0x40A7E3) } else { rgba(0x00000000) })
                     .px(px(14.0))
+                    .py(px(6.0))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -300,63 +349,97 @@ impl CanonicalComposer {
                         this.is_input_focused = true;
                         cx.notify();
                     }))
-                    // Draft text or placeholder
-                    .child(
-                        if is_empty {
-                            div()
-                                .text_size(px(14.0))
-                                .text_color(rgb(0x6B808D))
-                                .child("Write a message... (Type on keyboard & press Enter)")
-                        } else {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(2.0))
-                                .child(
-                                    div()
-                                        .text_size(px(14.0))
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child(text.to_string()),
-                                )
-                                // Active IME preedit underline
-                                .when_some(preedit, |el, p| {
-                                    el.child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .text_color(rgb(0x2AABEE))
-                                            .border_b_1()
-                                            .border_color(rgb(0x2AABEE))
-                                            .child(p),
-                                    )
-                                })
-                        },
-                    )
-                    // Emoji / Sticker Picker Icon
+                    // Text Viewport with overflow scroll
                     .child(
                         div()
-                            .cursor_pointer()
-                            .text_size(px(16.0))
-                            .text_color(if self.is_emoji_picker_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.toggle_emoji_picker();
-                                cx.notify();
-                            }))
-                            .child("😊"),
-                    ),
+                            .id("composer-text-viewport")
+                            .flex_1()
+                            .max_h(px(172.0))
+                            .when(is_scrollable, |el| el.overflow_y_scroll())
+                            .child(
+                                if show_placeholder {
+                                    div()
+                                        .text_size(px(14.0))
+                                        .text_color(rgb(0x6B808D))
+                                        .child(if is_focused {
+                                            "| Write a message... (输入消息并按 Enter 发送)"
+                                        } else {
+                                            "Write a message... (点击此处输入消息)"
+                                        })
+                                } else {
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .line_height(px(LINE_HEIGHT))
+                                                .text_color(rgb(0xFFFFFF))
+                                                .child(text.to_string()),
+                                        )
+                                        .when_some(preedit.clone(), |el, p| {
+                                            el.child(
+                                                div()
+                                                    .text_size(px(14.0))
+                                                    .text_color(rgb(0x40A7E3))
+                                                    .border_b_1()
+                                                    .border_color(rgb(0x40A7E3))
+                                                    .child(p),
+                                            )
+                                        })
+                                }
+                            )
+                    )
+                    // Inside Right Controls: Clear (✕)
+                    .when(!show_placeholder, |el| {
+                        el.child(
+                            div()
+                                .cursor_pointer()
+                                .px(px(4.0))
+                                .text_size(px(12.0))
+                                .text_color(rgb(0x8A9AA8))
+                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                    this.clear();
+                                    cx.notify();
+                                }))
+                                .child("✕"),
+                        )
+                    }),
             )
-            // Right Action: Send Button (if text) or Microphone (if empty)
+            // 4. Emoji Button: Exactly 44x46px bounds
+            .child(
+                div()
+                    .cursor_pointer()
+                    .w(px(ACTION_BTN_WIDTH))
+                    .h(px(ACTION_BTN_HEIGHT))
+                    .rounded(px(6.0))
+                    .hover(|s| s.bg(rgb(0x242F3D)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(20.0))
+                    .text_color(if self.is_emoji_picker_open { rgb(0x40A7E3) } else { rgb(0x8A9AA8) })
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.toggle_emoji_picker();
+                        cx.notify();
+                    }))
+                    .child("😊"),
+            )
+            // 5. Send / Voice Button: Exactly 44x46px bounds
             .child(
                 if is_empty {
                     div()
                         .cursor_pointer()
-                        .w(px(38.0))
-                        .h(px(38.0))
+                        .w(px(ACTION_BTN_WIDTH))
+                        .h(px(ACTION_BTN_HEIGHT))
                         .rounded_full()
                         .hover(|s| s.bg(rgb(0x242F3D)))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(18.0))
+                        .text_size(px(20.0))
                         .text_color(rgb(0x8A9AA8))
                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                             this.start_voice_recording(100.0, 200.0);
@@ -367,15 +450,15 @@ impl CanonicalComposer {
                 } else {
                     div()
                         .cursor_pointer()
-                        .w(px(38.0))
-                        .h(px(38.0))
+                        .w(px(ACTION_BTN_WIDTH))
+                        .h(px(ACTION_BTN_HEIGHT))
                         .rounded_full()
-                        .bg(rgb(0x2AABEE))
+                        .bg(rgb(0x40A7E3))
                         .hover(|s| s.bg(rgb(0x1E96D8)))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(16.0))
+                        .text_size(px(18.0))
                         .text_color(rgb(0xFFFFFF))
                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                             let msg = this.text().trim().to_string();

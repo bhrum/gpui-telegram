@@ -92,6 +92,25 @@ impl MessagePipeline {
             }
         }
 
+        // Acquire chat striped lock bucket to serialize message_id and pts generation
+        let _chat_guard = self.pts_engine.lock_chat(msg.chat_id);
+
+        // Re-check Tier 2 dedup under chat lock in case of concurrent identical sends
+        if let Some(nonce) = msg.client_nonce {
+            if let Some(dedup_row) = self.db.find_dedup_message(msg.sender_id.0, nonce)? {
+                if let Some(existing_record) = self.db.get_message(dedup_row.chat_id, dedup_row.message_id)? {
+                    let existing_item = Self::record_to_item(&existing_record)?;
+                    return Ok(PtsUpdate {
+                        chat_id: existing_item.chat_id,
+                        pts: dedup_row.pts,
+                        pts_count: 0,
+                        event: UpdateEvent::NewMessage(existing_item),
+                        timestamp_ms: dedup_row.created_at_ms,
+                    });
+                }
+            }
+        }
+
         // New message path: assign server message ID if client or unassigned
         if msg.id.0 <= 0 || msg.id.is_client() {
             msg.id = self.db.next_message_id(msg.chat_id)?;
@@ -192,7 +211,7 @@ impl MessagePipeline {
         record.edit_date_ms = Some(now_ms);
         record.pts = pts;
         record.flags_bitmask = item.flags.to_bits();
-        self.db.save_message(&record)?;
+        self.db.update_message(&record)?;
 
         Ok(update)
     }
@@ -209,7 +228,7 @@ impl MessagePipeline {
         for &id in &message_ids {
             if let Some(mut rec) = self.db.get_message(chat_id, id)? {
                 rec.deleted_at_ms = Some(now_ms);
-                self.db.save_message(&rec)?;
+                self.db.update_message(&rec)?;
             }
         }
 

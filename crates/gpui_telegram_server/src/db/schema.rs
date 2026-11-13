@@ -146,6 +146,20 @@ CREATE TABLE IF NOT EXISTS pts_sequences (
 ) STRICT;
 "#;
 
+pub const CREATE_CHAT_MESSAGE_SEQUENCES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS chat_message_sequences (
+    chat_id INTEGER PRIMARY KEY,
+    next_msg_id INTEGER NOT NULL DEFAULT 1,
+    account_generation INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms INTEGER NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO chat_message_sequences (chat_id, next_msg_id, account_generation, updated_at_ms)
+SELECT chat_id, COALESCE(MAX(message_id), 0), 1, unixepoch('now') * 1000
+FROM messages
+GROUP BY chat_id;
+"#;
+
+
 pub const CREATE_PTS_UPDATES_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS pts_updates (
     sequence_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,6 +202,115 @@ CREATE TABLE IF NOT EXISTS read_states (
 ) STRICT;
 "#;
 
+pub const CREATE_ORDERS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS orders (
+    order_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(user_id),
+    username TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    original_amount TEXT,
+    is_admin_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    platform TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
+"#;
+
+pub const CREATE_REDEEM_CODES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS redeem_codes (
+    code TEXT PRIMARY KEY,
+    days INTEGER NOT NULL,
+    plan_type TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    used_by_user_id INTEGER,
+    used_at_ms INTEGER,
+    created_at_ms INTEGER NOT NULL
+) STRICT;
+"#;
+
+pub const CREATE_REDEEM_CLAIMS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS redeem_claims (
+    code TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    claimed_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_redeem_claims_user ON redeem_claims(user_id);
+"#;
+
+pub const CREATE_USER_MEMBERSHIPS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS user_memberships (
+    user_id INTEGER PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    is_active INTEGER NOT NULL DEFAULT 0,
+    membership_type TEXT NOT NULL DEFAULT 'free',
+    expires_at_ms INTEGER,
+    updated_at_ms INTEGER NOT NULL
+) STRICT;
+"#;
+
+pub const CREATE_PAYMENT_RECEIPTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS payment_receipts (
+    order_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_trade_no TEXT UNIQUE,
+    amount TEXT NOT NULL,
+    received_at_ms INTEGER NOT NULL
+) STRICT;
+"#;
+
+pub const CREATE_PURCHASE_HISTORY_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS purchase_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    order_id TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    valid_from_ms INTEGER NOT NULL,
+    valid_to_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+) STRICT;
+"#;
+
+pub const MIGRATION_V11_USERS_AUTH_EXTENSIONS: &str = r#"
+ALTER TABLE users ADD COLUMN email TEXT;
+ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN alipay_user_id TEXT;
+ALTER TABLE users ADD COLUMN alipay_nickname TEXT;
+ALTER TABLE users ADD COLUMN alipay_avatar TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_alipay_user_id ON users(alipay_user_id) WHERE alipay_user_id IS NOT NULL;
+"#;
+
+pub const CREATE_ACCOUNT_EMAIL_CHALLENGES_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS account_email_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    attempts_left INTEGER NOT NULL DEFAULT 5,
+    cooldown_until_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_email_challenges_email ON account_email_challenges(email);
+"#;
+
+pub const CREATE_ACCOUNT_OAUTH_ATTEMPTS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS account_oauth_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    state TEXT NOT NULL,
+    status TEXT NOT NULL,
+    session_json TEXT,
+    delivered_at_ms INTEGER,
+    expires_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_oauth_attempts_state ON account_oauth_attempts(state);
+"#;
+
 pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_USERS_TABLE,
     CREATE_SESSIONS_TABLE,
@@ -199,9 +322,42 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_PTS_UPDATES_TABLE,
     CREATE_MESSAGE_DEDUP_TABLE,
     CREATE_READ_STATES_TABLE,
+    MIGRATION_V11_USERS_AUTH_EXTENSIONS,
+    CREATE_ACCOUNT_EMAIL_CHALLENGES_TABLE,
+    CREATE_ACCOUNT_OAUTH_ATTEMPTS_TABLE,
+    CREATE_ORDERS_TABLE,
+    CREATE_REDEEM_CODES_TABLE,
+    CREATE_REDEEM_CLAIMS_TABLE,
+    CREATE_USER_MEMBERSHIPS_TABLE,
+    CREATE_PAYMENT_RECEIPTS_TABLE,
+    CREATE_PURCHASE_HISTORY_TABLE,
+    CREATE_CHAT_MESSAGE_SEQUENCES_TABLE,
 ];
 
 // --- Database Row Representation Models ---
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmailChallengeRecord {
+    pub challenge_id: String,
+    pub email: String,
+    pub code_hash: String,
+    pub attempts_left: i32,
+    pub cooldown_until_ms: i64,
+    pub expires_at_ms: i64,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthAttemptRecord {
+    pub attempt_id: String,
+    pub provider: String,
+    pub state: String,
+    pub status: String,
+    pub session_json: Option<String>,
+    pub delivered_at_ms: Option<i64>,
+    pub expires_at_ms: i64,
+    pub created_at_ms: i64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserRecord {
@@ -363,4 +519,55 @@ pub struct ReadStateRecord {
     pub outbox_max_id: MsgId,
     pub unread_count: u32,
     pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrderRecord {
+    pub order_id: String,
+    pub user_id: UserId,
+    pub username: String,
+    pub plan: String,
+    pub amount: String,
+    pub original_amount: Option<String>,
+    pub is_admin_order: bool,
+    pub status: String,
+    pub platform: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedeemCodeRecord {
+    pub code: String,
+    pub days: u32,
+    pub plan_type: String,
+    pub used: bool,
+    pub used_by_user_id: Option<UserId>,
+    pub used_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMembershipRecord {
+    pub user_id: UserId,
+    pub is_active: bool,
+    pub membership_type: String,
+    pub expires_at_ms: Option<i64>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatMemberDetail {
+    pub chat_id: ChatId,
+    pub user_id: UserId,
+    pub username: Option<String>,
+    pub first_name: String,
+    pub last_name: Option<String>,
+    pub profile_photo_file_id: Option<String>,
+    pub role: String,
+    pub permissions_bitmask: u32,
+    pub admin_title: Option<String>,
+    pub admin_rights: u32,
+    pub banned_rights: u32,
+    pub joined_at_ms: i64,
 }

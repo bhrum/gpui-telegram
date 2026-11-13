@@ -1,0 +1,100 @@
+[
+  {
+    "task": "D001",
+    "model": "gemini-4-argon-high",
+    "exec_session": 31127,
+    "conversation_id": "d30370a0-25d5-4a5b-8e1d-4413c37b8972",
+    "events": ".agents/fusion-20261108/D001.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "implementation_delivered_verification_pending",
+    "worker_terminal_status": "SUCCESS"
+  },
+  {
+    "task": "D002",
+    "model": "gemini-4-argon-high",
+    "exec_session": 26854,
+    "conversation_id": "550a9225-7404-4df0-a4e3-c804bbec7402",
+    "events": ".agents/fusion-20261108/D002.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "partial_output_retained_review_required",
+    "worker_terminal_status": "ERROR"
+  },
+  {
+    "task": "D003",
+    "model": "gemini-4-argon-high",
+    "exec_session": 4737,
+    "conversation_id": "cbccb19e-df7b-4414-9098-41e64ed5c7fd",
+    "events": ".agents/fusion-20261108/D003.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "implementation_delivered_verification_pending",
+    "worker_terminal_status": "SUCCESS"
+  },
+  {
+    "task": "D004",
+    "model": "gemini-4-argon-high",
+    "exec_session": 52099,
+    "conversation_id": "e779302c-4a51-47e9-8421-eb90cdb571c8",
+    "events": ".agents/fusion-20261108/D004.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "resumed_after_explicit_user_instruction",
+    "resumed_events": ".agents/fusion-20261108/D004-resume2.events.jsonl"
+  },
+  {
+    "task": "S001",
+    "model": "gemini-4-argon-high",
+    "exec_session": 37889,
+    "conversation_id": "026d3912-d38d-4629-800f-1b33d62a698b",
+    "events": ".agents/fusion-20261108/S001.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "code_and_tests_delivered_independent_validation_required",
+    "resumed_events": ".agents/fusion-20261108/S001-resume1.events.jsonl",
+    "worker_terminal_status": "ERROR",
+    "worker_error": "The stream was interrupted. Please continue the task you were working on."
+  },
+  {
+    "task": "S002",
+    "model": "gemini-4-argon-high",
+    "exec_session": 93613,
+    "conversation_id": "d68be6ed-958d-4b02-86b5-2fe4cd3d6837",
+    "events": ".agents/fusion-20261108/S002.events.jsonl",
+    "mode": "accept-edits",
+    "builds_allowed": false,
+    "status": "resumed_after_explicit_user_instruction",
+    "resumed_events": ".agents/fusion-20261108/S002-resume2.events.jsonl"
+  },
+  {
+    "task": "R002",
+    "model": "gemini-4-argon-high",
+    "conversation_id": "0b8516a3-0ca3-4d13-8312-05f790dffc1f",
+    "audit_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/R002.events.jsonl",
+    "implementation_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/R002-implement.events.jsonl",
+    "status": "focused_tests_passed_release_pending",
+    "worker_terminal_status": "SUCCESS",
+    "builds_allowed": false
+  },
+  {
+    "task": "V001a",
+    "model": "gemini-4-argon-high",
+    "conversation_id": "43425c4b-52ca-4f4f-b411-7bf838a6f9e4",
+    "audit_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/V001.events.jsonl",
+    "implementation_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/V001a-implement-correct.events.jsonl",
+    "status": "in_progress",
+    "builds_allowed": false
+  },
+  {
+    "task": "S003",
+    "model": "gemini-4-argon-high",
+    "conversation_id": "5e8b8a99-1fb0-4437-9bf9-7a1064d4dc25",
+    "implementation_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/S003-implement.events.jsonl",
+    "status": "resumed_without_denied_source_read",
+    "builds_allowed": false,
+    "initial_worker_terminal_status": "SUCCESS_EMPTY_AFTER_DENIED_UPSTREAM_READ",
+    "denied_resource": "Telegram/SourceFiles/api/api_sending.cpp",
+    "resumed_events": "/Users/bhrum/Documents/Codex/2026-11-08/new-chat/work/argon-audits/S003-resume.events.jsonl"
+  }
+]

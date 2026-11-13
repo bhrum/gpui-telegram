@@ -13,6 +13,8 @@ pub enum IntroStepType {
     Signup,
     PasswordCheck,
     Email,
+    AlipayQr,
+    EmailRegister,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,6 +95,16 @@ impl IntroStep {
                 "Enter the verification code sent to your email.".to_string(),
                 false,
             ),
+            IntroStepType::AlipayQr => (
+                "Log in with Alipay".to_string(),
+                "Scan QR code with your Alipay app to log in.".to_string(),
+                false,
+            ),
+            IntroStepType::EmailRegister => (
+                "Email Registration".to_string(),
+                "Register a new account with email verification.".to_string(),
+                false,
+            ),
         };
 
         Self {
@@ -121,6 +133,8 @@ impl IntroStep {
             IntroStepType::Signup => "Sign up",
             IntroStepType::PasswordCheck => "Next",
             IntroStepType::Email => "Verify",
+            IntroStepType::AlipayQr => "Authorize",
+            IntroStepType::EmailRegister => "Register",
         }
     }
 

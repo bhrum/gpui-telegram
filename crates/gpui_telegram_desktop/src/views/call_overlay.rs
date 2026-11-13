@@ -38,25 +38,19 @@ pub struct CallOverlay {
 
 impl CallOverlay {
     pub fn new(peer_name: String) -> Self {
+        let persona_name = if peer_name.trim().is_empty() {
+            "Voice Call".to_string()
+        } else {
+            peer_name.clone()
+        };
         Self {
             peer_name,
-            persona_name: "Claw Assistant (Talk Mode)".to_string(),
+            persona_name,
             state: TalkModeState::Listening,
             is_connected: true,
-            transcript: vec![
-                TranscriptEntry {
-                    speaker: "You".to_string(),
-                    text: "How is the GPUI desktop view implementation progressing?".to_string(),
-                    is_user: true,
-                },
-                TranscriptEntry {
-                    speaker: "Claw Assistant".to_string(),
-                    text: "ConversationStage, 11 canonical message cards, and CanonicalComposer are complete and passing tests.".to_string(),
-                    is_user: false,
-                },
-            ],
+            transcript: Vec::new(),
             is_mic_muted: false,
-            latency_ms: 18,
+            latency_ms: 0,
             should_close: false,
         }
     }
@@ -97,10 +91,10 @@ impl Default for CallOverlay {
 impl Render for CallOverlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (orb_color, orb_glow, state_label) = match self.state {
-            TalkModeState::Connecting => (rgb(0x8A9AA8), rgba(0x8A9AA833), "Connecting WebRTC Full-Duplex..."),
-            TalkModeState::Listening => (rgb(0x2AABEE), rgba(0x2AABEE44), "Listening to you... (Click Orb to Simulate Turn)"),
-            TalkModeState::Thinking => (rgb(0x9B59B6), rgba(0x9B59B644), "Agent Thinking... (Click Orb to Continue)"),
-            TalkModeState::Speaking => (rgb(0x1ABC9C), rgba(0x1ABC9C44), "Agent Speaking... (Click Orb to Listen)"),
+            TalkModeState::Connecting => (rgb(0x8A9AA8), rgba(0x8A9AA833), "Connecting WebRTC..."),
+            TalkModeState::Listening => (rgb(0x2AABEE), rgba(0x2AABEE44), "Connected"),
+            TalkModeState::Thinking => (rgb(0x9B59B6), rgba(0x9B59B644), "Processing..."),
+            TalkModeState::Speaking => (rgb(0x1ABC9C), rgba(0x1ABC9C44), "Audio Active"),
             TalkModeState::Muted => (rgb(0xE53935), rgba(0xE5393533), "Microphone Muted"),
         };
 
@@ -138,7 +132,13 @@ impl Render for CallOverlay {
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(rgb(0x8A9AA8))
-                                    .child(format!("WebRTC P2P • {}ms latency", self.latency_ms)),
+                                    .child(if self.latency_ms > 0 {
+                                        format!("WebRTC P2P • {}ms latency", self.latency_ms)
+                                    } else if self.is_connected {
+                                        "WebRTC P2P • Connected".to_string()
+                                    } else {
+                                        "WebRTC P2P • Connecting...".to_string()
+                                    }),
                             ),
                     )
                     .child(
@@ -177,19 +177,7 @@ impl Render for CallOverlay {
                             .items_center()
                             .justify_center()
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                match this.state {
-                                    TalkModeState::Listening => {
-                                        this.set_state(TalkModeState::Thinking);
-                                        this.add_transcript("You", "Can you verify the 120fps GPUI pipeline?", true);
-                                    }
-                                    TalkModeState::Thinking => {
-                                        this.set_state(TalkModeState::Speaking);
-                                        this.add_transcript("Claw Assistant", "All 13 modules and GPU shaders are running at 0ms frame drop!", false);
-                                    }
-                                    _ => {
-                                        this.set_state(TalkModeState::Listening);
-                                    }
-                                }
+                                this.toggle_mute();
                                 cx.notify();
                             }))
                             // Inner Pulsing Orb
@@ -234,24 +222,39 @@ impl Render for CallOverlay {
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
-                    .children(transcript_slice.into_iter().map(|t| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if t.is_user { rgb(0x2AABEE) } else { rgb(0x1ABC9C) })
-                                    .child(t.speaker),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child(t.text),
-                            )
-                    })),
+                    .children(if transcript_slice.is_empty() {
+                        vec![
+                            div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(12.0))
+                                .text_color(rgb(0x8A9AA8))
+                                .child("Speech transcription will appear here when active.")
+                                .into_any_element()
+                        ]
+                    } else {
+                        transcript_slice.into_iter().map(|t| {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(if t.is_user { rgb(0x2AABEE) } else { rgb(0x1ABC9C) })
+                                        .child(t.speaker),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(rgb(0xFFFFFF))
+                                        .child(t.text),
+                                )
+                                .into_any_element()
+                        }).collect()
+                    }),
             )
             // 4. Bottom Controls: Mute, End Call, Speaker
             .child(
@@ -312,9 +315,8 @@ impl Render for CallOverlay {
                             .items_center()
                             .justify_center()
                             .text_size(px(18.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.set_state(TalkModeState::Speaking);
-                                cx.notify();
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_this, _event, _window, _cx| {
+                                // Speaker output toggle placeholder (preserved for hardware routing)
                             }))
                             .child("🔊"),
                     ),

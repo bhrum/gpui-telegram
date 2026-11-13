@@ -39,7 +39,7 @@ pub fn find_divider_index(dividers: &[i32], target: i32, exact: bool) -> usize {
             } else if idx >= dividers.len() {
                 dividers.len() - 1
             } else if exact {
-                idx
+                idx - 1
             } else {
                 let prev_dist = (target - dividers[idx - 1]).abs();
                 let next_dist = (dividers[idx] - target).abs();

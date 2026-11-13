@@ -25,8 +25,12 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             .unwrap_or(false);
 
         if !already_applied {
-            conn.execute_batch(migration_sql)
-                .map_err(|e| TelegramError::Database(format!("Migration v{} failed: {}", version, e)))?;
+            if let Err(e) = conn.execute_batch(migration_sql) {
+                let err_str = e.to_string();
+                if !err_str.contains("duplicate column name") {
+                    return Err(TelegramError::Database(format!("Migration v{} failed: {}", version, e)));
+                }
+            }
 
             let now_ms = chrono::Utc::now().timestamp_millis();
             conn.execute(
@@ -34,6 +38,8 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 (version, now_ms),
             )
             .map_err(|e| TelegramError::Database(format!("Failed to record migration v{}: {}", version, e)))?;
+        } else if migration_sql.contains("CREATE TABLE IF NOT EXISTS") {
+            let _ = conn.execute_batch(migration_sql);
         }
     }
 

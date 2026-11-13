@@ -22,38 +22,44 @@ Each module must complete all four steps before the orchestrator may advance to 
 3. **Step C — Test Build Packaging (`编译发布测试版`)**:
    Build runnable binaries (`cargo build --bin gpui_telegram_desktop --bin gpui_telegram_server`), clean build garbage (`clean_build_garbage.py`), and run unit + integration tests.
 4. **Step D — Module Acceptance Gate (`单模块独立验收`)**:
-   Verify **0 boilerplate pattern files** exist in that module. Reviewer, Challenger, and Forensic Auditor verify genuine implementation before marking the module `ACCEPTED`.
+   Verify **0 boilerplate pattern files** exist in that module as a static hygiene floor, then independently verify the 5 capability evidence stages defined in `docs/specs/fusion-parity-evidence-stages-20261108.md` (`file_mapped`, `entrypoint_reachable`, `behavior_tested`, `ui_evidence_captured`, `packaged_accepted`). Zero regex boilerplate matches alone CANNOT mark a module `ACCEPTED`.
+
+> [!WARNING]
+> **2026-11-08 Fusion Reacceptance Demotion Notice (`FUS-V001a`)**:
+> Prior `ACCEPTED` / `13 / 13 ACCEPTED (100.0%)` statuses recorded on 2026-11-06..07 were asserted primarily from file/symbol mapping and `scripts/verify_ledger_closure.py` Gate 6.2 regex boilerplate checks (`0` matches across Patterns A–D), while `docs/specs/ledger/index.json` still records `implemented_count: 0` and `verified_count: 0` across all 28 shards and multiple UI/server/agent surfaces remain unmounted or stubbed. All 13 modules are therefore demoted to active `REVIEW` (`0 / 13 ACCEPTED` for the 2026-11-08 fusion campaign) pending stage-by-stage verification. All original 2026-11-06..07 counts, dates, verdicts, and test summaries are preserved below as explicit historical claims.
 
 ---
 
 ## Master Module Acceptance & Burndown Table
 
-| Module # | Module Name | Shards | Upstream Files | Target Files | Baseline Stubs | Status | Design Doc Path |
-|---|---|---|---|---|---|---|---|
-| Module 01 | core & base | core.json | 276 | 182 | 102 | ACCEPTED | `docs/specs/modules/module_01_core_base.md` |
-| Module 02 | mtproto & api | mtproto.json, api.json | 192 | 100 | 93 | ACCEPTED | `docs/specs/modules/module_02_mtproto_api.md` |
-| Module 03 | storage & data | storage.json, data.json | 273 | 147 | 146 | ACCEPTED | `docs/specs/modules/module_03_storage_data.md` |
-| Module 04 | main & window & layout | main.json, window.json, layout.json | 161 | 86 | 62 | ACCEPTED | `docs/specs/modules/module_04_main_window_layout.md` |
-| Module 05 | dialogs | dialogs.json | 83 | 50 | 47 | ACCEPTED | `docs/specs/modules/module_05_dialogs.md` |
-| Module 06 | history | history.json | 302 | 155 | 153 | ACCEPTED | `docs/specs/modules/module_06_history.md` |
-| Module 07 | chat_helpers & inline_bots | chat_helpers.json, inline_bots.json | 77 | 40 | 38 | ACCEPTED | `docs/specs/modules/module_07_chat_helpers_inline_bots.md` |
-| Module 08 | ui & boxes | ui.json, boxes.json | 673 | 359 | 322 | ACCEPTED | `docs/specs/modules/module_08_ui_boxes.md` |
-| Module 09 | media & editor | media.json, editor.json | 246 | 130 | 126 | ACCEPTED | `docs/specs/modules/module_09_media_editor.md` |
-| Module 10 | calls | calls.json | 88 | 45 | 44 | ACCEPTED | `docs/specs/modules/module_10_calls.md` |
-| Module 11 | info & settings | info.json, settings.json | 373 | 198 | 180 | ACCEPTED | `docs/specs/modules/module_11_info_settings.md` |
-| Module 12 | intro & lang & platform | intro.json, lang.json, platform.json | 195 | 116 | 32 | ACCEPTED | `docs/specs/modules/module_12_*.md` |
-| Module 13 | statistics & payments & passport & export & iv & wallet | statistics.json, payments.json, passport.json, export.json, iv.json, wallet.json | 502 | 289 | 156 | ACCEPTED | `docs/specs/modules/module_13_*.md` |
-| **TOTAL** | **28 Subsystems** | **28 Shards** | **3,441** | **1,897** | **1,501** | **13 / 13 ACCEPTED (100.0%)** | - |
+| Module # | Module Name | Shards | Upstream Files | Target Files | Baseline Stubs | Status | Historical Claim (2026-11-06..07) | Design Doc Path |
+|---|---|---|---|---|---|---|---|---|
+| Module 01 | core & base | core.json | 276 | 182 | 102 | REVIEW | Historical Claim: ACCEPTED (2026-11-06; Gate 6.2 boilerplate=0 only; 0/276 verified in index.json) | `docs/specs/modules/module_01_core_base.md` |
+| Module 02 | mtproto & api | mtproto.json, api.json | 192 | 100 | 93 | REVIEW | Historical Claim: ACCEPTED (2026-11-06; Gate 6.2 boilerplate=0 only; 0/192 verified in index.json) | `docs/specs/modules/module_02_mtproto_api.md` |
+| Module 03 | storage & data | storage.json, data.json | 273 | 147 | 146 | REVIEW | Historical Claim: ACCEPTED (2026-11-06; Gate 6.2 boilerplate=0 only; 0/273 verified in index.json) | `docs/specs/modules/module_03_storage_data.md` |
+| Module 04 | main & window & layout | main.json, window.json, layout.json | 161 | 86 | 62 | REVIEW | Historical Claim: ACCEPTED (2026-11-06; Gate 6.2 boilerplate=0 only; 0/161 verified in index.json) | `docs/specs/modules/module_04_main_window_layout.md` |
+| Module 05 | dialogs | dialogs.json | 83 | 50 | 47 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/83 verified in index.json) | `docs/specs/modules/module_05_dialogs.md` |
+| Module 06 | history | history.json | 302 | 155 | 153 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/302 verified in index.json) | `docs/specs/modules/module_06_history.md` |
+| Module 07 | chat_helpers & inline_bots | chat_helpers.json, inline_bots.json | 77 | 40 | 38 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/77 verified in index.json) | `docs/specs/modules/module_07_chat_helpers_inline_bots.md` |
+| Module 08 | ui & boxes | ui.json, boxes.json | 673 | 359 | 322 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/673 verified in index.json) | `docs/specs/modules/module_08_ui_boxes.md` |
+| Module 09 | media & editor | media.json, editor.json | 246 | 130 | 126 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/246 verified in index.json) | `docs/specs/modules/module_09_media_editor.md` |
+| Module 10 | calls | calls.json | 88 | 45 | 44 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/88 verified in index.json) | `docs/specs/modules/module_10_calls.md` |
+| Module 11 | info & settings | info.json, settings.json | 373 | 198 | 180 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/373 verified in index.json) | `docs/specs/modules/module_11_info_settings.md` |
+| Module 12 | intro & lang & platform | intro.json, lang.json, platform.json | 195 | 116 | 32 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/195 verified in index.json) | `docs/specs/modules/module_12_*.md` |
+| Module 13 | statistics & payments & passport & export & iv & wallet | statistics.json, payments.json, passport.json, export.json, iv.json, wallet.json | 502 | 289 | 156 | REVIEW | Historical Claim: ACCEPTED (2026-11-07; Gate 6.2 boilerplate=0 only; 0/502 verified in index.json) | `docs/specs/modules/module_13_*.md` |
+| **TOTAL** | **28 Subsystems** | **28 Shards** | **3,441** | **1,897** | **1,501** | **0 / 13 ACCEPTED (13 / 13 REVIEW)** | **Historical Claim: 13 / 13 ACCEPTED (100.0% pre-fusion claim; not accepted for 2026-11-08 fusion)** | - |
 
 ---
 
 ## Detailed Module Specifications
 
 ### Module 01: core & base
-- **Status**: `ACCEPTED`
-- **Accepted Date**: 2026-11-06 (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: Unanimous APPROVE / CLEAN across 2 Reviewers, 2 Challengers, and 1 Forensic Auditor
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (276/276 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-06 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: 2026-11-06 (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: Unanimous APPROVE / CLEAN across 2 Reviewers, 2 Challengers, and 1 Forensic Auditor
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 182 target files in Module 01 (Patterns A/B/C/D completely eliminated).
   - 70/70 unit and integration tests passing (56 core tests + 14 desktop views tests).
   - Valid arm64 executable binaries: `gpui_telegram_desktop` (26.78MB) and `gpui_telegram_server` (25.42MB).
@@ -83,10 +89,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 02: mtproto & api
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-06T19:58:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_02_iter2_1, reviewer_module_02_iter2_2, challenger_module_02_iter2_1, challenger_module_02_iter2_2, and auditor_module_02_iter2
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (192/192 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: partial (focused server slice tests only)` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-06 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-06T19:58:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_02_iter2_1, reviewer_module_02_iter2_2, challenger_module_02_iter2_1, challenger_module_02_iter2_2, and auditor_module_02_iter2
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 100 target files in Module 02 (0 matches across Patterns A, B, C, D in all 100 targets; genuine implementation across 47 MTProto files and 59 API files).
   - Iteration 2 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: `mtproto_auth_key.rs` middle 128-bit `hash[8..24]` slice for `compute_msg_key`, `Sha1` lower 64-bit `hash[12..20]` for `compute_key_id`.
@@ -117,10 +125,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 03: storage & data
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-06T21:45:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_03_2_gen3, reviewer_module_03_1_gen3, challenger_module_03_1_gen3, challenger_module_03_2_gen3, and auditor_module_03_gen3
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (273/273 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: partial (focused server slice tests only)` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-06 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-06T21:45:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_03_2_gen3, reviewer_module_03_1_gen3, challenger_module_03_1_gen3, challenger_module_03_2_gen3, and auditor_module_03_gen3
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 147 target files in Module 03 (0 matches across Patterns A, B, C, D in all 147 targets; genuine implementation across 25 storage files and 122 data files).
   - Iteration 2 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: PeerId 64-bit shift and bitmask invariants, ChatAdminRights bitwise manipulations and restrictions expiration arithmetic, ChatFilters priority matching, DataStory 24h expiration bounds, DataPoll voting limits & exclusivity.
@@ -147,10 +157,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 04: main & window & layout
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-06T23:42:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_04_iter2_1, reviewer_module_04_iter2_2, challenger_module_04_iter2_1, challenger_module_04_iter2_2, and auditor_module_04_iter2
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (161/161 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-06 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-06T23:42:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_04_iter2_1, reviewer_module_04_iter2_2, challenger_module_04_iter2_1, challenger_module_04_iter2_2, and auditor_module_04_iter2
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 86 target files in Module 04 (0 matches across Patterns A, B, C, D in all 86 targets; 4 remediated app shell views and 3 theme files verified genuine; clean non-prohibited headers).
   - Iteration 2 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: MainDomain 3 standard / 6 premium account limits, single-flight passcode derivation lock, session freeze immutability, test DC shift isolation constant `0x4000_0000_0000_0000`, LayoutPosition 40,000 row shift encoding, LayoutSelection 15-item subgroup bitmask, LayoutDocumentGenericPreview 4-color categorization, LayoutMosaic boundary clamping and empty-row handling (`exact = false`).
@@ -181,10 +193,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 05: dialogs
-- **Status**: ACCEPTED
-- **Accepted Date**: 2026-11-07 (Iteration 1 Unanimous Consensus)
-- **Acceptance Verdict**: Unanimous 5/5 APPROVE + CLEAN across reviewer_module_05_1, reviewer_module_05_2, challenger_module_05_1, challenger_module_05_2, and auditor_module_05
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (83/83 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified (e.g. DialogsCommunityChatsList unmounted)` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: 2026-11-07 (Iteration 1 Unanimous Consensus)
+- **Historical Claim Verdict**: Unanimous 5/5 APPROVE + CLEAN across reviewer_module_05_1, reviewer_module_05_2, challenger_module_05_1, challenger_module_05_2, and auditor_module_05
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs across all 50 target files in Module 05 (Patterns A/B/C/D completely eliminated).
   - Gate 6.6 100.0% coverage verified (83/83 upstream source files documented across design docs, 0 omitted).
   - Mandate #18 Anti-Bluffing verified: 54 distinct upstream C++ and style line citations confirmed accurate on physical disk.
@@ -210,10 +224,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 06: history
-- **Status**: ACCEPTED
-- **Accepted Date**: 2026-11-07 (Iteration 1 Unanimous Consensus)
-- **Acceptance Verdict**: Unanimous 5/5 APPROVE + CLEAN across reviewer_module_06_1, reviewer_module_06_2, challenger_module_06_1, challenger_module_06_2, and auditor_module_06
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (302/302 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: partial (focused atomic message commit test only)` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: 2026-11-07 (Iteration 1 Unanimous Consensus)
+- **Historical Claim Verdict**: Unanimous 5/5 APPROVE + CLEAN across reviewer_module_06_1, reviewer_module_06_2, challenger_module_06_1, challenger_module_06_2, and auditor_module_06
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs across all 155 target files in Module 06 (Patterns A/B/C/D and dummy facades completely eliminated).
   - Gate 6.6 100.0% coverage verified (302/302 upstream source files documented across design docs, 0 omitted).
   - Mandate #18 Anti-Bluffing verified: 486 distinct upstream C++ and style line citations confirmed accurate on physical disk.
@@ -242,10 +258,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 07: chat_helpers & inline_bots
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T03:42:00Z` (5/5 Unanimous Consensus)
-- **Acceptance Verdict**: Unanimous 5/5 APPROVE + CLEAN across `reviewer_module_07_1`, `reviewer_module_07_2`, `challenger_module_07_1`, `challenger_module_07_2`, and `auditor_module_07`.
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (77/77 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T03:42:00Z` (5/5 Unanimous Consensus)
+- **Historical Claim Verdict**: Unanimous 5/5 APPROVE + CLEAN across `reviewer_module_07_1`, `reviewer_module_07_2`, `challenger_module_07_1`, `challenger_module_07_2`, and `auditor_module_07`.
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 40 target files in Module 07 (38 baseline stubs completely eradicated).
   - Gate 6.6 100.0% source coverage verified across all 77/77 upstream files (`omitted_from_design_doc == 0`).
   - 45/45 tests passing across `chat_helpers_input_subsystem_tests` (16), `stickers_inline_bots_subsystem_tests` (19), `chat_helpers_input_adversarial_oracle_tests` (5), and `stickers_inline_bots_adversarial_oracle_tests` (5) — including initial-timestamp guard fix in `RichPasteOfferThrottle::take` (`last_shown_ms == 0`).
@@ -271,10 +289,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 08: ui & boxes
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T05:08:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_08_1, reviewer_module_08_2, challenger_module_08_1, challenger_module_08_2, and auditor_module_08
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (673/673 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: stubbed (ModalContainer::render displays static banner instead of mounting 60+ box views)` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T05:08:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_08_1, reviewer_module_08_2, challenger_module_08_1, challenger_module_08_2, and auditor_module_08
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 359 target files in Module 08 (0 matches across Patterns A, B, C, D in all 359 targets; genuine implementation across 209 ui files and 150 boxes files).
   - Iteration 2 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: Core GPUI widget library (flat buttons, round buttons, text inputs, toasts, popup menus, scroll areas) and modal dialog box system (AbstractBox, PeerListBox, ConfirmBox, ShareBox, PasscodeBox, ReportBox).
@@ -303,10 +323,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 09: media & editor
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T06:05:00Z` (Iteration 1 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_09_1, reviewer_module_09_2, challenger_module_09_1, challenger_module_09_2, and auditor_module_09
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (246/246 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: stubbed (server media_upload_* discards chunks; media_stream returns 24-byte static RIFF header)` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T06:05:00Z` (Iteration 1 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_09_1, reviewer_module_09_2, challenger_module_09_1, challenger_module_09_2, and auditor_module_09
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 130 target files in Module 09 (0 matches across Patterns A, B, C, D in all 130 targets; genuine implementation across 81 media files and 49 editor files, 14,208 LOC).
   - Iteration 1 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: 100-bar waveform computation, 5-bit packing into 63 bytes, audio cubic volume curve, streaming range loader & 128KB chunk/LRU slice caching, media viewer lightbox zoom matrix and aspect cropping, stories 5000ms photo timing & hold-to-pause FSM, 45° angle snapping, sticky guidelines, rule-of-thirds 3x3 crop grid, video trim timeline timestamp formatting/parsing.
@@ -336,10 +358,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 10: calls
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T07:10:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_10_iter2_1, reviewer_module_10_iter2_2, challenger_module_10_iter2_1, challenger_module_10_iter2_2, and auditor_module_10_iter2
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (88/88 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T07:10:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_10_iter2_1, reviewer_module_10_iter2_2, challenger_module_10_iter2_1, challenger_module_10_iter2_2, and auditor_module_10_iter2
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 45 target files in Module 10 (0 matches across Patterns A, B, C, D in all 45 targets; genuine implementation across 44 WebRTC/calls files and 1 theme file, 5,557 LOC).
   - Iteration 2 Acceptance Gate: 5/5 unanimous APPROVE + CLEAN.
   - C++ source parity: 100% exact 333-emoji palette derived from upstream C++ `Data[]` (658 UTF-16 code units) and `Offsets[]` (334 entries), genuine modulo 333 reduction for fingerprint chunks, WebRTC call state machine FSM (signaling, ICE exchange, media stream negotiation), group call viewport tile layout, RHI blur shader uniforms, speaker volume slider with cubic curve and threshold stepping, push-to-talk delay interpolation.
@@ -367,10 +391,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 11: info & settings
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T09:30:00Z` (Iteration 2 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_11_r2_1, reviewer_module_11_r2_2, challenger_module_11_r2_1, challenger_module_11_r2_2, and auditor_module_11_r2
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (373/373 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T09:30:00Z` (Iteration 2 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_11_r2_1, reviewer_module_11_r2_2, challenger_module_11_r2_1, challenger_module_11_r2_2, and auditor_module_11_r2
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 198 target files in Module 11 (0 matches across Patterns A, B, C, D in all 198 targets; genuine GPUI Render implementations across all tab adapters and profile back button).
   - Gate 6.6 100.0% coverage verified (373/373 upstream source files documented across 12 design specifications in docs/specs/modules/, 0 omitted).
   - Mandate #18 Anti-Bluffing verified: exact .cpp and .style line citations, formulas, and tokens confirmed on physical disk.
@@ -398,10 +424,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 12: intro & lang & platform
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T10:40:00Z` (Iteration 1 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across Reviewer 1, Reviewer 2, Challenger 1, Challenger 2, and Forensic Auditor
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (195/195 mapped, 0 implemented, 0 verified in index.json)` | `entrypoint_reachable: unverified` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T10:40:00Z` (Iteration 1 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across Reviewer 1, Reviewer 2, Challenger 1, Challenger 2, and Forensic Auditor
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 116 target files in Module 12 (0 matches across Patterns A, B, C, D in all 116 targets; genuine GPUI Render implementations across intro, lang, and platform).
   - Gate 6.6 100.0% coverage verified (195/195 upstream source files documented across 5 design specifications in docs/specs/modules/module_12_*.md, 0 omitted).
   - Mandate #18 Anti-Bluffing verified: exact .cpp and .mm line citations, formulas, and platform tokens confirmed on physical disk.
@@ -431,10 +459,12 @@ Each module must complete all four steps before the orchestrator may advance to 
 ---
 
 ### Module 13: statistics & payments & passport & export & iv & wallet
-- **Status**: `ACCEPTED`
-- **Accepted Date**: `2026-11-07T12:05:00Z` (Iteration 1 Unanimous Consensus)
-- **Acceptance Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_13_1, reviewer_module_13_2, challenger_module_13_1, challenger_module_13_2, and auditor_module_13
-- **Verification Summary**:
+- **Status**: `REVIEW`
+- **Fusion 2026-11-08 Evidence Stage Summary**: `file_mapped: verified (502/502 mapped, 0 implemented, 0 verified in index.json; 5 shards unmapped to dedicated TCG-* capabilities)` | `entrypoint_reachable: stubbed (e.g. payments_checkout_process, gram_api_account, IvEditorBox, Task Center & MCP panels)` | `behavior_tested: unverified` | `ui_evidence_captured: unverified` | `packaged_accepted: unverified`
+- **Historical Pre-Fusion Claim (2026-11-07 — Not Fusion Acceptance)**: `ACCEPTED`
+- **Historical Claim Date**: `2026-11-07T12:05:00Z` (Iteration 1 Unanimous Consensus)
+- **Historical Claim Verdict**: 5/5 unanimous APPROVE + CLEAN across reviewer_module_13_1, reviewer_module_13_2, challenger_module_13_1, challenger_module_13_2, and auditor_module_13
+- **Historical Claim Verification Summary**:
   - 0 boilerplate stubs out of 289 target files in Module 13 (0 matches across Patterns A, B, C, D in all 289 targets; genuine GPUI Render and domain implementations across statistics, payments, passport, export, iv, and wallet).
   - Gate 6.6 100.0% coverage verified (502/502 upstream source files documented across 14 design specifications in docs/specs/modules/module_13_*.md, 0 omitted).
   - Mandate #18 Anti-Bluffing verified: exact .cpp and .h line citations, algorithms, crypto operations, and style tokens confirmed on physical disk.
@@ -472,9 +502,9 @@ Each module must complete all four steps before the orchestrator may advance to 
 
 ## Verification & Gate 6.2 Burndown Protocol
 
-The automated gate checker `scripts/verify_ledger_closure.py` enforces module compliance at every run:
-1. It parses this roadmap document to retrieve the acceptance status of all 13 modules.
-2. For each module, it counts how many target files match boilerplate patterns A, B, C, or D.
-3. It prints a structured live burndown table tracking the progress of eliminating fake stubs.
+The automated gate checker `scripts/verify_ledger_closure.py` enforces static module hygiene at every run, while `docs/specs/fusion-parity-evidence-stages-20261108.md` and `docs/verification/fusion-20261108/capability-coverage.json` govern full 5-stage fusion reacceptance:
+1. `scripts/verify_ledger_closure.py` parses this roadmap document to retrieve the status of all 13 modules (`REVIEW` during the 2026-11-08 fusion reacceptance campaign).
+2. For each module, it counts how many target files match boilerplate patterns A, B, C, or D, and runs Gate 6.6 design-doc source coverage checks for modules in `REVIEW`, `ACCEPTED`, or `DONE`.
+3. It prints a structured live burndown table tracking static boilerplate elimination.
 4. **Hard Veto**: If any module is marked `ACCEPTED` in this roadmap, Gate 6.2 asserts `boilerplate_count == 0` for that module. If any boilerplate remains, the script exits immediately with code `1`.
-5. When all 13 modules are marked `ACCEPTED`, the entire codebase will have 0 boilerplate files remaining, achieving genuine 1:1 Telegram parity.
+5. **Non-Sufficiency Rule (`FUS-V001a`)**: Having `0` matches for boilerplate patterns A–D is a necessary static prerequisite (`file_mapped` floor), NOT proof of runtime parity. No module or capability may be promoted from `REVIEW` to `ACCEPTED` for the 2026-11-08 fusion campaign until all five evidence stages (`file_mapped`, `entrypoint_reachable`, `behavior_tested`, `ui_evidence_captured`, `packaged_accepted`) are independently verified.

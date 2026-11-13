@@ -9,6 +9,7 @@ pub mod main_session;
 pub mod main_session_settings;
 pub mod mainwidget;
 pub mod mainwindow;
+pub mod preferences;
 pub mod session;
 
 pub use main::Main;
@@ -20,6 +21,11 @@ pub use main_session::MainSession;
 pub use main_session_settings::MainSessionSettings;
 pub use mainwidget::Mainwidget;
 pub use mainwindow::Mainwindow;
+pub use preferences::{
+    AppPreferences, AutoDownloadPreferences, ChatAppearancePreferences, LocalizationPreferences,
+    NotificationPreferences, ThemeMode,
+};
+
 
 pub struct TelegramApp;
 impl TelegramApp {

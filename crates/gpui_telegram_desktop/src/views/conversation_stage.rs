@@ -18,7 +18,208 @@
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;
-use crate::views::stage::cards::*;
+pub use crate::views::stage::cards::*;
+
+pub use crate::views::stage::cards::text_card::{
+    render_bubble_tail, BubbleRounding, BUBBLE_RADIUS_LARGE, BUBBLE_RADIUS_SMALL,
+    K_ATTACH_MESSAGE_TO_PREVIOUS_SECONDS_DELTA, MSG_MAX_WIDTH, MSG_MIN_WIDTH,
+    RichSpanKind, RichTextSpan, parse_markdown_spans,
+};
+
+pub fn parse_timestamp_seconds(ts: &str) -> Option<i64> {
+    let ts = ts.trim();
+    if let Ok(secs) = ts.parse::<i64>() {
+        return Some(secs);
+    }
+    let parts: Vec<&str> = ts.split(':').collect();
+    if parts.len() == 2 {
+        if let (Ok(h), Ok(m)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+            return Some(h * 3600 + m * 60);
+        }
+    } else if parts.len() == 3 {
+        if let (Ok(h), Ok(m), Ok(s)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>(), parts[2].parse::<i64>()) {
+            return Some(h * 3600 + m * 60 + s);
+        }
+    }
+    None
+}
+
+/// Compute consecutive message attachment flags (attached_prev, attached_next)
+/// based on identical sender, message direction, and 900-second threshold.
+pub fn compute_attachment(messages: &[MessageItemModel], index: usize) -> (bool, bool) {
+    if index >= messages.len() {
+        return (false, false);
+    }
+    let current = &messages[index];
+    if matches!(current.content, MessageContent::Service { .. }) {
+        return (false, false);
+    }
+
+    let attached_prev = if index > 0 {
+        let prev = &messages[index - 1];
+        if matches!(prev.content, MessageContent::Service { .. }) {
+            false
+        } else if prev.sender_id == current.sender_id && prev.direction == current.direction {
+            let prev_sec = parse_timestamp_seconds(&prev.timestamp);
+            let cur_sec = parse_timestamp_seconds(&current.timestamp);
+            match (prev_sec, cur_sec) {
+                (Some(p), Some(c)) => (c - p).abs() <= K_ATTACH_MESSAGE_TO_PREVIOUS_SECONDS_DELTA,
+                _ => true,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let attached_next = if index + 1 < messages.len() {
+        let next = &messages[index + 1];
+        if matches!(next.content, MessageContent::Service { .. }) {
+            false
+        } else if next.sender_id == current.sender_id && next.direction == current.direction {
+            let next_sec = parse_timestamp_seconds(&next.timestamp);
+            let cur_sec = parse_timestamp_seconds(&current.timestamp);
+            match (next_sec, cur_sec) {
+                (Some(n), Some(c)) => (n - c).abs() <= K_ATTACH_MESSAGE_TO_PREVIOUS_SECONDS_DELTA,
+                _ => true,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    (attached_prev, attached_next)
+}
+
+#[derive(Debug, Clone)]
+pub struct RowHeightCache {
+    pub measured_heights: std::collections::HashMap<u64, f32>,
+    pub prefix_sums: Vec<f32>,
+    pub total_height: f32,
+    pub dirty: bool,
+}
+
+impl RowHeightCache {
+    pub fn new() -> Self {
+        Self {
+            measured_heights: std::collections::HashMap::new(),
+            prefix_sums: Vec::new(),
+            total_height: 0.0,
+            dirty: true,
+        }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn len(&self) -> usize {
+        self.prefix_sums.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.prefix_sums.is_empty()
+    }
+
+    pub fn estimate_row_height(msg: &MessageItemModel, attached_prev: bool) -> f32 {
+        let margin = if attached_prev { 2.0 } else { 8.0 };
+        match &msg.content {
+            MessageContent::Service { .. } => 32.0,
+            MessageContent::Text { text, .. } => {
+                let explicit_lines = text.split('\n').count();
+                let char_wrap = text.len() / 42;
+                let lines = explicit_lines.max(char_wrap).max(1) as f32;
+                let reply_h = if msg.reply_to.is_some() { 28.0 } else { 0.0 };
+                let reaction_h = if !msg.reactions.is_empty() { 24.0 } else { 0.0 };
+                let bot_kb_h = if msg.bot_keyboard.is_some() { 38.0 } else { 0.0 };
+                (22.0 + reply_h + (lines * 18.0) + reaction_h + bot_kb_h + margin).max(42.0)
+            }
+            MessageContent::Media { caption, .. } => {
+                let caption_lines = caption.as_ref().map_or(0, |c| c.split('\n').count()) as f32;
+                240.0 + caption_lines * 18.0 + margin
+            }
+            MessageContent::Voice { .. } => 56.0 + margin,
+            MessageContent::Album { .. } => 260.0 + margin,
+            MessageContent::Location { .. } => 180.0 + margin,
+            MessageContent::Poll { options, .. } => 52.0 + (options.len() as f32 * 34.0) + 36.0 + margin,
+            MessageContent::Call { .. } => 60.0 + margin,
+            MessageContent::Story { .. } => 220.0 + margin,
+            MessageContent::Invoice { .. } => 240.0 + margin,
+            MessageContent::BotKeyboard { .. } => 60.0 + margin,
+        }
+    }
+
+    pub fn rebuild_prefix_sums(&mut self, messages: &[MessageItemModel]) {
+        self.prefix_sums.clear();
+        self.prefix_sums.reserve(messages.len());
+        let mut accum = 0.0;
+        for (idx, msg) in messages.iter().enumerate() {
+            let h = match self.measured_heights.get(&msg.id) {
+                Some(&measured) => measured,
+                None => {
+                    let attached_prev = idx > 0 && messages[idx - 1].sender_id == msg.sender_id;
+                    Self::estimate_row_height(msg, attached_prev)
+                }
+            };
+            accum += h;
+            self.prefix_sums.push(accum);
+        }
+        self.total_height = accum;
+        self.dirty = false;
+    }
+
+    pub fn visible_range(
+        &self,
+        scroll_top: f32,
+        viewport_height: f32,
+        overscan_px: f32,
+        total_items: usize,
+    ) -> (usize, usize) {
+        if total_items == 0 || self.prefix_sums.is_empty() {
+            return (0, 0);
+        }
+        let top_bound = (scroll_top - overscan_px).max(0.0);
+        let bottom_bound = scroll_top + viewport_height + overscan_px;
+
+        let start_idx = match self.prefix_sums.binary_search_by(|&val| {
+            val.partial_cmp(&top_bound).unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            Ok(ix) => ix,
+            Err(ix) => ix.min(total_items.saturating_sub(1)),
+        };
+
+        let end_idx = match self.prefix_sums.binary_search_by(|&val| {
+            val.partial_cmp(&bottom_bound).unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            Ok(ix) => ix,
+            Err(ix) => ix.min(total_items.saturating_sub(1)),
+        };
+
+        (start_idx, end_idx.max(start_idx).min(total_items.saturating_sub(1)))
+    }
+}
+
+impl Default for RowHeightCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageContextMenuState {
+    pub message_id: u64,
+    pub position: Point<Pixels>,
+    pub is_outgoing: bool,
+    pub is_pinned: bool,
+    pub text_snippet: Option<String>,
+}
 
 pub struct ConversationStage {
     pub active_chat_id: Option<u64>,
@@ -33,10 +234,48 @@ pub struct ConversationStage {
     pub pending_media_url: Option<(String, bool)>,
     pub pending_bot_action: Option<String>,
     pub chat_histories: std::collections::HashMap<u64, Vec<MessageItemModel>>,
+    pub chat_pinned_messages: std::collections::HashMap<u64, Option<String>>,
+    pub scroll_handle: ScrollHandle,
+    pub row_height_cache: RowHeightCache,
+    pub is_anchored_to_bottom: bool,
+    pub chat_scroll_positions: std::collections::HashMap<u64, (Point<Pixels>, bool)>,
+    pub unread_incoming_count: usize,
+    pub active_context_menu: Option<MessageContextMenuState>,
+    pub pending_reply: Option<ReplyReference>,
+    pub simulated_max_offset: Option<Size<Pixels>>,
 }
 
 impl ConversationStage {
     pub fn new() -> Self {
+        let mut stage = Self {
+            active_chat_id: None,
+            chat_title: "Select a chat".to_string(),
+            chat_subtitle: String::new(),
+            chat_avatar_initials: String::new(),
+            chat_avatar_color: 0x242F3D,
+            pinned_message: None,
+            messages: Vec::new(),
+            is_inspector_open: false,
+            pending_call_request: false,
+            pending_media_url: None,
+            pending_bot_action: None,
+            chat_histories: std::collections::HashMap::new(),
+            chat_pinned_messages: std::collections::HashMap::new(),
+            scroll_handle: ScrollHandle::new(),
+            row_height_cache: RowHeightCache::new(),
+            is_anchored_to_bottom: true,
+            chat_scroll_positions: std::collections::HashMap::new(),
+            unread_incoming_count: 0,
+            active_context_menu: None,
+            pending_reply: None,
+            simulated_max_offset: None,
+        };
+        stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
+        stage
+    }
+
+    /// Explicit fixture constructor for legacy card/layout tests. Never called by production code.
+    pub fn new_demo() -> Self {
         let mut stage = Self {
             active_chat_id: Some(1),
             chat_title: "Alice Smith".to_string(),
@@ -50,24 +289,96 @@ impl ConversationStage {
             pending_media_url: None,
             pending_bot_action: None,
             chat_histories: std::collections::HashMap::new(),
+            chat_pinned_messages: std::collections::HashMap::new(),
+            scroll_handle: ScrollHandle::new(),
+            row_height_cache: RowHeightCache::new(),
+            is_anchored_to_bottom: true,
+            chat_scroll_positions: std::collections::HashMap::new(),
+            unread_incoming_count: 0,
+            active_context_menu: None,
+            pending_reply: None,
+            simulated_max_offset: None,
         };
 
         stage.populate_demo_messages();
+        stage.chat_histories.insert(1, stage.messages.clone());
+        stage.chat_pinned_messages.insert(1, stage.pinned_message.clone());
         stage.populate_secondary_chat_histories();
+        stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
         stage
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.active_chat_id = None;
+        self.chat_title = "Select a chat".to_string();
+        self.chat_subtitle.clear();
+        self.chat_avatar_initials.clear();
+        self.chat_avatar_color = 0x242F3D;
+        self.pinned_message = None;
+        self.messages.clear();
+        self.is_inspector_open = false;
+        self.pending_call_request = false;
+        self.pending_media_url = None;
+        self.pending_bot_action = None;
+        self.unread_incoming_count = 0;
+        self.active_context_menu = None;
+        self.pending_reply = None;
+        self.simulated_max_offset = None;
+        self.scroll_handle.set_offset(Point::default());
+        self.is_anchored_to_bottom = true;
+        self.row_height_cache.measured_heights.clear();
+        self.row_height_cache.rebuild_prefix_sums(&self.messages);
+    }
+
+    pub fn reset(&mut self) {
+        self.clear_selection();
+        self.chat_histories.clear();
+        self.chat_pinned_messages.clear();
+        self.chat_scroll_positions.clear();
+    }
+
+    pub fn configure_for_cloud_workspace(&mut self, _server_url: &str, _username: Option<&str>) {
+        self.reset();
     }
 
     pub fn set_chat(&mut self, chat_id: u64, title: &str, subtitle: &str, initials: &str, color: u32) {
         if let Some(prev_id) = self.active_chat_id {
             self.chat_histories.insert(prev_id, self.messages.clone());
+            self.chat_pinned_messages.insert(prev_id, self.pinned_message.clone());
+            self.chat_scroll_positions.insert(prev_id, (self.scroll_handle.offset(), self.is_at_bottom()));
+        }
+        if self.active_chat_id != Some(chat_id) {
+            self.active_context_menu = None;
+            self.pending_reply = None;
         }
         self.active_chat_id = Some(chat_id);
         self.chat_title = title.to_string();
         self.chat_subtitle = subtitle.to_string();
         self.chat_avatar_initials = initials.to_string();
         self.chat_avatar_color = color;
-        if let Some(saved) = self.chat_histories.get(&chat_id) {
-            self.messages = saved.clone();
+
+        // 1. Cleanly load history without cross-chat bleeding
+        self.messages = self.chat_histories.get(&chat_id).cloned().unwrap_or_default();
+        self.row_height_cache.mark_dirty();
+
+        // 2. Cleanly load pinned banner without cross-chat bleeding
+        self.pinned_message = self.chat_pinned_messages.get(&chat_id).cloned().unwrap_or_else(|| {
+            self.messages.iter().find(|m| m.is_pinned).and_then(|m| match &m.content {
+                MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                _ => None,
+            })
+        });
+
+        // 3. Restore scroll position or scroll to bottom
+        if let Some(&(saved_offset, was_at_bottom)) = self.chat_scroll_positions.get(&chat_id) {
+            if !was_at_bottom {
+                self.scroll_handle.set_offset(saved_offset);
+                self.is_anchored_to_bottom = false;
+            } else {
+                self.scroll_to_bottom();
+            }
+        } else {
+            self.scroll_to_bottom();
         }
     }
 
@@ -76,7 +387,224 @@ impl ConversationStage {
     }
 
     pub fn add_message(&mut self, message: MessageItemModel) {
-        self.messages.push(message);
+        if message.is_pinned {
+            if let MessageContent::Text { ref text, .. } = message.content {
+                let snippet = text.lines().next().unwrap_or(text).to_string();
+                self.pinned_message = Some(snippet);
+                if let Some(cid) = self.active_chat_id {
+                    self.chat_pinned_messages.insert(cid, self.pinned_message.clone());
+                }
+            }
+        }
+        let is_outgoing = message.direction == MessageDirection::Outgoing;
+        let was_at_bottom = self.is_at_bottom();
+
+        self.messages.push(message.clone());
+        if let Some(cid) = self.active_chat_id {
+            self.chat_histories.entry(cid).or_default().push(message);
+        }
+        self.row_height_cache.mark_dirty();
+
+        if is_outgoing || was_at_bottom {
+            self.scroll_to_bottom();
+        } else {
+            self.unread_incoming_count += 1;
+        }
+    }
+
+    pub fn add_outgoing_text_message(&mut self, text: &str) {
+        let next_id = self.messages.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+        self.add_message(MessageItemModel {
+            id: next_id,
+            sender_id: 1,
+            sender_name: "Me".to_string(),
+            avatar_initials: "ME".to_string(),
+            avatar_color: 0x2AABEE,
+            direction: MessageDirection::Outgoing,
+            timestamp: "12:00".to_string(),
+            delivery_status: DeliveryStatus::Sent,
+            reply_to: None,
+            reactions: vec![],
+            content: MessageContent::Text {
+                text: text.to_string(),
+                is_edited: false,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        });
+    }
+
+    pub fn add_incoming_message(&mut self, sender_id: u64, text: &str) {
+        let next_id = self.messages.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+        self.add_message(MessageItemModel {
+            id: next_id,
+            sender_id,
+            sender_name: "Peer".to_string(),
+            avatar_initials: "PR".to_string(),
+            avatar_color: 0x9B59B6,
+            direction: MessageDirection::Incoming,
+            timestamp: "12:01".to_string(),
+            delivery_status: DeliveryStatus::Read,
+            reply_to: None,
+            reactions: vec![],
+            content: MessageContent::Text {
+                text: text.to_string(),
+                is_edited: false,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        });
+    }
+
+    /// Merges server-fetched historical messages with existing local messages,
+    /// deduplicating by message ID while preserving local pending/sending messages.
+    pub fn merge_historical_messages(&mut self, server_messages: Vec<MessageItemModel>) {
+        if self.messages.is_empty() {
+            self.messages = server_messages;
+            return;
+        }
+
+        // Keep local sending messages (id not yet confirmed by server)
+        let sending_messages: Vec<MessageItemModel> = self
+            .messages
+            .iter()
+            .filter(|m| m.delivery_status == DeliveryStatus::Sending)
+            .cloned()
+            .collect();
+
+        let mut existing_ids: std::collections::HashSet<u64> =
+            self.messages.iter().map(|m| m.id).collect();
+        let mut merged = self.messages.clone();
+
+        for s_msg in server_messages {
+            if !existing_ids.contains(&s_msg.id) {
+                existing_ids.insert(s_msg.id);
+                merged.push(s_msg);
+            }
+        }
+
+        // Re-append local sending items at the bottom
+        for sending in sending_messages {
+            if !existing_ids.contains(&sending.id) {
+                merged.push(sending);
+            }
+        }
+
+        self.messages = merged;
+    }
+
+    pub fn distance_from_bottom(&self) -> Pixels {
+        let max_y = self.max_scroll_offset().height;
+        let cur_y = -self.scroll_handle.offset().y;
+        (max_y - cur_y).max(px(0.0))
+    }
+
+    pub fn is_at_bottom(&self) -> bool {
+        let max_y = self.max_scroll_offset().height;
+        if max_y <= px(0.0) {
+            return true;
+        }
+        self.distance_from_bottom() <= px(48.0)
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_handle.scroll_to_bottom();
+        if let Some(sim) = self.simulated_max_offset {
+            self.scroll_handle.set_offset(Point::new(px(0.0), -sim.height));
+        }
+        self.is_anchored_to_bottom = true;
+        self.unread_incoming_count = 0;
+    }
+
+    pub fn set_simulated_scroll_offset(&mut self, offset: Point<Pixels>, max_offset: Size<Pixels>) {
+        self.scroll_handle.set_offset(offset);
+        self.simulated_max_offset = Some(max_offset);
+    }
+
+    pub fn max_scroll_offset(&self) -> Size<Pixels> {
+        if let Some(sim) = self.simulated_max_offset {
+            sim
+        } else {
+            self.scroll_handle.max_offset()
+        }
+    }
+
+    pub fn copy_message_text(&self, msg_id: u64) -> Option<String> {
+        self.messages.iter().find(|m| m.id == msg_id).and_then(|m| match &m.content {
+            MessageContent::Text { text, .. } => Some(text.clone()),
+            MessageContent::Media { caption, .. } => caption.clone(),
+            _ => None,
+        })
+    }
+
+    pub fn toggle_pin_message(&mut self, msg_id: u64) {
+        let mut new_pinned_state = false;
+        let mut snippet_opt = None;
+        if let Some(m) = self.messages.iter_mut().find(|m| m.id == msg_id) {
+            m.is_pinned = !m.is_pinned;
+            new_pinned_state = m.is_pinned;
+            if new_pinned_state {
+                snippet_opt = match &m.content {
+                    MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                    _ => Some("Pinned message".to_string()),
+                };
+            }
+        }
+        if new_pinned_state {
+            self.pinned_message = snippet_opt;
+        } else {
+            self.pinned_message = self.messages.iter().find(|m| m.is_pinned).and_then(|m| match &m.content {
+                MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                _ => Some("Pinned message".to_string()),
+            });
+        }
+        if let Some(cid) = self.active_chat_id {
+            self.chat_pinned_messages.insert(cid, self.pinned_message.clone());
+            if let Some(hist) = self.chat_histories.get_mut(&cid) {
+                if let Some(m) = hist.iter_mut().find(|m| m.id == msg_id) {
+                    m.is_pinned = new_pinned_state;
+                }
+            }
+        }
+    }
+
+    pub fn delete_message(&mut self, msg_id: u64) {
+        self.messages.retain(|m| m.id != msg_id);
+        if let Some(cid) = self.active_chat_id {
+            if let Some(hist) = self.chat_histories.get_mut(&cid) {
+                hist.retain(|m| m.id != msg_id);
+            }
+        }
+        self.row_height_cache.mark_dirty();
+    }
+
+    pub fn populate_stress_messages(&mut self, count: usize) {
+        self.messages.clear();
+        for i in 0..count {
+            self.messages.push(MessageItemModel {
+                id: (i + 1) as u64,
+                sender_id: if i % 2 == 0 { 1 } else { 2 },
+                sender_name: if i % 2 == 0 { "Alice".to_string() } else { "Bob".to_string() },
+                avatar_initials: if i % 2 == 0 { "AS".to_string() } else { "BB".to_string() },
+                avatar_color: 0x2AABEE,
+                direction: if i % 2 == 0 { MessageDirection::Incoming } else { MessageDirection::Outgoing },
+                timestamp: format!("{:02}:{:02}", (i / 60) % 24, i % 60),
+                delivery_status: DeliveryStatus::Read,
+                reply_to: None,
+                reactions: vec![],
+                content: MessageContent::Text {
+                    text: format!("Stress message index #{} with some arbitrary payload content to simulate variable text line wrapping in conversation history.", i),
+                    is_edited: false,
+                },
+                bot_keyboard: None,
+                is_pinned: false,
+            });
+        }
+        self.row_height_cache.mark_dirty();
+    }
+
+    pub fn compute_attachment(&self, idx: usize) -> (bool, bool) {
+        compute_attachment(&self.messages, idx)
     }
 
     pub fn vote_poll(&mut self, message_id: u64, option_id: u32) {
@@ -538,16 +1066,48 @@ impl Default for ConversationStage {
 
 impl Render for ConversationStage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_active_chat = self.active_chat_id.is_some();
         let title = self.chat_title.clone();
         let subtitle = self.chat_subtitle.clone();
         let initials = self.chat_avatar_initials.clone();
         let avatar_color = self.chat_avatar_color;
         let pinned = self.pinned_message.clone();
         let is_inspector_open = self.is_inspector_open;
-        let messages_snapshot = self.messages.clone();
-        let mut message_rows = Vec::with_capacity(messages_snapshot.len());
-        for msg in messages_snapshot {
-            message_rows.push(Self::render_interactive_message_row(msg, cx));
+
+        let total_msgs = self.messages.len();
+        if self.row_height_cache.is_dirty() || self.row_height_cache.len() != total_msgs {
+            self.row_height_cache.rebuild_prefix_sums(&self.messages);
+        }
+
+        let viewport_h = f32::from(self.scroll_handle.bounds().size.height).max(600.0);
+        let scroll_top = f32::from(-self.scroll_handle.offset().y).max(0.0);
+        let overscan_px = 300.0;
+
+        let (start_idx, end_idx) = self.row_height_cache.visible_range(scroll_top, viewport_h, overscan_px, total_msgs);
+
+        let top_spacer_height = if start_idx > 0 && !self.row_height_cache.prefix_sums.is_empty() {
+            self.row_height_cache.prefix_sums[(start_idx - 1).min(self.row_height_cache.prefix_sums.len() - 1)]
+        } else {
+            0.0
+        };
+
+        let bottom_spacer_height = if end_idx < total_msgs.saturating_sub(1) && !self.row_height_cache.prefix_sums.is_empty() {
+            (self.row_height_cache.total_height - self.row_height_cache.prefix_sums[end_idx.min(self.row_height_cache.prefix_sums.len() - 1)]).max(0.0)
+        } else {
+            0.0
+        };
+
+        let mut message_rows = Vec::with_capacity(if total_msgs == 0 { 0 } else { end_idx - start_idx + 1 });
+        if total_msgs > 0 {
+            for idx in start_idx..=end_idx.min(total_msgs.saturating_sub(1)) {
+                let (attached_prev, attached_next) = compute_attachment(&self.messages, idx);
+                message_rows.push(Self::render_interactive_message_row(
+                    &self.messages[idx],
+                    attached_prev,
+                    attached_next,
+                    cx,
+                ));
+            }
         }
 
         div()
@@ -571,31 +1131,34 @@ impl Render for ConversationStage {
                     .flex()
                     .items_center()
                     .justify_between()
-                    // Peer Info (Avatar + Title + Online Subtitle)
+                    // Peer Info (Avatar + Title + Subtitle)
                     .child(
                         div()
-                            .cursor_pointer()
+                            .when(has_active_chat, |el| {
+                                el.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                    this.toggle_inspector();
+                                    cx.notify();
+                                }))
+                            })
                             .flex()
                             .items_center()
                             .gap(px(12.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.toggle_inspector();
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .w(px(36.0))
-                                    .h(px(36.0))
-                                    .rounded_full()
-                                    .bg(rgb(avatar_color))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(rgb(0xFFFFFF))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_size(px(13.0))
-                                    .child(initials),
-                            )
+                            .when(has_active_chat || !initials.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .w(px(36.0))
+                                        .h(px(36.0))
+                                        .rounded_full()
+                                        .bg(rgb(avatar_color))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(rgb(0xFFFFFF))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_size(px(13.0))
+                                        .child(initials),
+                                )
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -604,84 +1167,88 @@ impl Render for ConversationStage {
                                         div()
                                             .text_size(px(14.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
+                                            .text_color(if has_active_chat { rgb(0xFFFFFF) } else { rgb(0x8A9AA8) })
                                             .child(title),
                                     )
-                                    .child(
-                                        div()
-                                            .text_size(px(12.0))
-                                            .text_color(rgb(0x8A9AA8))
-                                            .child(subtitle),
-                                    ),
+                                    .when(!subtitle.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .text_size(px(12.0))
+                                                .text_color(rgb(0x8A9AA8))
+                                                .child(subtitle),
+                                        )
+                                    }),
                             ),
                     )
                     // Action Icons (Audio Call, Video Call, Remote Computer, Drawer Toggle)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(14.0))
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .px(px(6.0))
-                                    .py(px(4.0))
-                                    .rounded(px(6.0))
-                                    .hover(|s| s.bg(rgb(0x242F3D)))
-                                    .text_size(px(16.0))
-                                    .text_color(rgb(0x8A9AA8))
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                        this.pending_call_request = true;
-                                        cx.notify();
-                                    }))
-                                    .child("📞"),
-                            )
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .px(px(6.0))
-                                    .py(px(4.0))
-                                    .rounded(px(6.0))
-                                    .hover(|s| s.bg(rgb(0x242F3D)))
-                                    .text_size(px(16.0))
-                                    .text_color(rgb(0x8A9AA8))
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                        this.pending_bot_action = Some("Remote Computer".to_string());
-                                        cx.notify();
-                                    }))
-                                    .child("🖥️"),
-                            )
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .px(px(6.0))
-                                    .py(px(4.0))
-                                    .rounded(px(6.0))
-                                    .hover(|s| s.bg(rgb(0x242F3D)))
-                                    .text_size(px(16.0))
-                                    .text_color(rgb(0x8A9AA8))
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                        this.pending_media_url = Some(("https://example.com/demo.mp4".to_string(), true));
-                                        cx.notify();
-                                    }))
-                                    .child("🎬"),
-                            )
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .px(px(6.0))
-                                    .py(px(4.0))
-                                    .rounded(px(6.0))
-                                    .hover(|s| s.bg(rgb(0x242F3D)))
-                                    .text_size(px(16.0))
-                                    .text_color(if is_inspector_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
-                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                        this.toggle_inspector();
-                                        cx.notify();
-                                    }))
-                                    .child("ℹ️"),
-                            ),
-                    ),
+                    .when(has_active_chat, |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(14.0))
+                                .child(
+                                    div()
+                                        .cursor_pointer()
+                                        .px(px(6.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .hover(|s| s.bg(rgb(0x242F3D)))
+                                        .text_size(px(16.0))
+                                        .text_color(rgb(0x8A9AA8))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                            this.pending_call_request = true;
+                                            cx.notify();
+                                        }))
+                                        .child("📞"),
+                                )
+                                .child(
+                                    div()
+                                        .cursor_pointer()
+                                        .px(px(6.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .hover(|s| s.bg(rgb(0x242F3D)))
+                                        .text_size(px(16.0))
+                                        .text_color(rgb(0x8A9AA8))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                            this.pending_bot_action = Some("Remote Computer".to_string());
+                                            cx.notify();
+                                        }))
+                                        .child("🖥️"),
+                                )
+                                .child(
+                                    div()
+                                        .cursor_pointer()
+                                        .px(px(6.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .hover(|s| s.bg(rgb(0x242F3D)))
+                                        .text_size(px(16.0))
+                                        .text_color(rgb(0x8A9AA8))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                            this.pending_media_url = Some(("https://example.com/demo.mp4".to_string(), true));
+                                            cx.notify();
+                                        }))
+                                        .child("🎬"),
+                                )
+                                .child(
+                                    div()
+                                        .cursor_pointer()
+                                        .px(px(6.0))
+                                        .py(px(4.0))
+                                        .rounded(px(6.0))
+                                        .hover(|s| s.bg(rgb(0x242F3D)))
+                                        .text_size(px(16.0))
+                                        .text_color(if is_inspector_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                            this.toggle_inspector();
+                                            cx.notify();
+                                        }))
+                                        .child("ℹ️"),
+                                ),
+                        )
+                    }),
             )
             // 2. Pinned Message Bar (if any)
             .when_some(pinned, |el, pin_text| {
@@ -739,16 +1306,144 @@ impl Render for ConversationStage {
                     .px(px(24.0))
                     .py(px(16.0))
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
                     .flex()
                     .flex_col()
-                    .gap(px(12.0))
-                    .children(message_rows),
+                    .gap(px(0.0))
+                    .when(!has_active_chat && total_msgs == 0, |el| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .px(px(14.0))
+                                        .py(px(6.0))
+                                        .rounded_full()
+                                        .bg(rgb(0x182533))
+                                        .text_size(px(13.0))
+                                        .text_color(rgb(0x8A9AA8))
+                                        .child("Select a chat"),
+                                ),
+                        )
+                    })
+                    .when(top_spacer_height > 0.0, |el| {
+                        el.child(div().id("stage-top-spacer").w_full().h(px(top_spacer_height)).flex_shrink_0())
+                    })
+                    .children(message_rows)
+                    .when(bottom_spacer_height > 0.0, |el| {
+                        el.child(div().id("stage-bottom-spacer").w_full().h(px(bottom_spacer_height)).flex_shrink_0())
+                    }),
             )
+            .when_some(self.active_context_menu.clone(), |el, menu| {
+                let msg_id = menu.message_id;
+                let is_pinned = menu.is_pinned;
+                let text = menu.text_snippet.clone();
+
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.active_context_menu = None;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .absolute()
+                                .left(menu.position.x)
+                                .top(menu.position.y)
+                                .w(px(160.0))
+                                .bg(rgb(0x212D3B))
+                                .border_1()
+                                .border_color(rgb(0x2B5278))
+                                .rounded(px(8.0))
+                                .shadow_lg()
+                                .py(px(4.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.0))
+                                .when(text.is_some(), |m| {
+                                    let t = text.unwrap();
+                                    m.child(Self::render_menu_item("📋", "Copy Text", false, cx.listener(move |this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
+                                        this.active_context_menu = None;
+                                        cx.notify();
+                                    })))
+                                })
+                                .child(Self::render_menu_item("↩️", "Reply", false, cx.listener(move |this, _, _, cx| {
+                                    let sender_name = this.messages.iter().find(|m| m.id == msg_id).map(|m| m.sender_name.clone()).unwrap_or_else(|| "User".to_string());
+                                    let snippet = this.messages.iter().find(|m| m.id == msg_id).map(|m| match &m.content {
+                                        MessageContent::Text { text, .. } => text.lines().next().unwrap_or(text).to_string(),
+                                        _ => "Message".to_string(),
+                                    }).unwrap_or_default();
+                                    this.pending_reply = Some(ReplyReference {
+                                        message_id: msg_id,
+                                        sender_name,
+                                        snippet,
+                                    });
+                                    this.active_context_menu = None;
+                                    cx.notify();
+                                })))
+                                .child(Self::render_menu_item("↪️", "Forward", false, cx.listener(move |this, _, _, cx| {
+                                    this.active_context_menu = None;
+                                    cx.notify();
+                                })))
+                                .child(Self::render_menu_item(
+                                    "📌",
+                                    if is_pinned { "Unpin" } else { "Pin" },
+                                    false,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.toggle_pin_message(msg_id);
+                                        this.active_context_menu = None;
+                                        cx.notify();
+                                    })
+                                ))
+                                .child(Self::render_menu_item("🗑️", "Delete", true, cx.listener(move |this, _, _, cx| {
+                                    this.delete_message(msg_id);
+                                    this.active_context_menu = None;
+                                    cx.notify();
+                                })))
+                        )
+                )
+            })
     }
 }
 
 impl ConversationStage {
-    fn render_interactive_message_row(msg: MessageItemModel, cx: &mut Context<Self>) -> AnyElement {
+    fn render_menu_item(
+        icon: &'static str,
+        label: &'static str,
+        is_danger: bool,
+        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .cursor_pointer()
+            .px(px(12.0))
+            .py(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .hover(|s| s.bg(rgb(0x2B5278)))
+            .on_mouse_down(MouseButton::Left, handler)
+            .child(div().text_size(px(13.0)).child(icon))
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(if is_danger { rgb(0xE05D5D) } else { rgb(0xFFFFFF) })
+                    .child(label),
+            )
+    }
+
+    fn render_interactive_message_row(
+        msg: &MessageItemModel,
+        attached_prev: bool,
+        attached_next: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let msg_id = msg.id;
         let is_outgoing = msg.is_outgoing();
 
@@ -780,14 +1475,9 @@ impl ConversationStage {
         };
 
         let is_voice_msg = matches!(msg.content, MessageContent::Voice { .. });
-        let is_call_msg = matches!(msg.content, MessageContent::Call { .. });
         let is_invoice_msg = matches!(msg.content, MessageContent::Invoice { .. });
-        let text_pin_snippet = if let MessageContent::Text { ref text, .. } = msg.content {
-            Some(text.lines().next().unwrap_or(text).to_string())
-        } else {
-            None
-        };
-        let bubble = Self::render_message_bubble(&msg, cx);
+        let rounding = BubbleRounding::compute(is_outgoing, attached_prev, attached_next);
+        let bubble = Self::render_message_bubble(msg, rounding, cx);
 
         // Pre-build Poll vote buttons if message is an open Poll
         let poll_vote_bar: Option<AnyElement> = if let MessageContent::Poll { ref options, is_closed: false, .. } = msg.content {
@@ -907,9 +1597,21 @@ impl ConversationStage {
         }
 
         let row_align = if is_outgoing {
-            div().w_full().flex_shrink_0().flex().justify_end()
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .mt(px(if attached_prev { 0.0 } else { 6.0 }))
+                .mb(px(2.0))
         } else {
-            div().w_full().flex_shrink_0().flex().justify_start()
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .flex()
+                .justify_start()
+                .mt(px(if attached_prev { 0.0 } else { 6.0 }))
+                .mb(px(2.0))
         };
 
         row_align
@@ -924,9 +1626,7 @@ impl ConversationStage {
                             .when(
                                 media_click_info.is_some()
                                     || is_voice_msg
-                                    || is_call_msg
-                                    || is_invoice_msg
-                                    || text_pin_snippet.is_some(),
+                                    || is_invoice_msg,
                                 |el| el.cursor_pointer(),
                             )
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
@@ -936,67 +1636,80 @@ impl ConversationStage {
                                 } else if is_voice_msg {
                                     if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
                                         if let MessageContent::Voice {
-                                            ref mut is_playing,
-                                            ref mut playback_position_secs,
-                                            ref mut playback_speed,
-                                            duration_secs,
-                                            ..
-                                        } = m.content
-                                        {
-                                            *is_playing = !*is_playing;
-                                            if *is_playing {
-                                                *playback_position_secs = (*playback_position_secs + 6.0) % (duration_secs as f32).max(1.0);
-                                            } else {
-                                                *playback_speed = if (*playback_speed - 1.0).abs() < 0.1 {
-                                                    1.5
-                                                } else if (*playback_speed - 1.5).abs() < 0.1 {
-                                                    2.0
-                                                } else {
-                                                    1.0
-                                                };
-                                            }
-                                        }
-                                    }
-                                    cx.notify();
-                                } else if is_call_msg {
-                                    this.pending_call_request = true;
-                                    cx.notify();
-                                } else if is_invoice_msg {
-                                    if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
-                                        if let MessageContent::Invoice { ref mut status, .. } = m.content {
-                                            *status = match *status {
-                                                InvoiceStatus::Pending => InvoiceStatus::Paid,
-                                                InvoiceStatus::Paid => InvoiceStatus::Refunded,
-                                                InvoiceStatus::Refunded => InvoiceStatus::Paid,
-                                            };
-                                        }
-                                    }
-                                    cx.notify();
-                                } else if let Some(ref snippet) = text_pin_snippet {
-                                    this.pinned_message = Some(snippet.clone());
-                                    this.toggle_reaction(msg_id, "👍");
-                                    cx.notify();
-                                }
+                                             ref mut is_playing,
+                                             ref mut playback_position_secs,
+                                             ref mut playback_speed,
+                                             duration_secs,
+                                             ..
+                                         } = m.content
+                                         {
+                                             *is_playing = !*is_playing;
+                                             if *is_playing {
+                                                 *playback_position_secs = (*playback_position_secs + 6.0) % (duration_secs as f32).max(1.0);
+                                             } else {
+                                                 *playback_speed = if (*playback_speed - 1.0).abs() < 0.1 {
+                                                     1.5
+                                                 } else if (*playback_speed - 1.5).abs() < 0.1 {
+                                                     2.0
+                                                 } else {
+                                                     1.0
+                                                 };
+                                             }
+                                         }
+                                     }
+                                     cx.notify();
+                                 } else if is_invoice_msg {
+                                     if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
+                                         if let MessageContent::Invoice { ref mut status, .. } = m.content {
+                                             *status = match *status {
+                                                 InvoiceStatus::Pending => InvoiceStatus::Paid,
+                                                 InvoiceStatus::Paid => InvoiceStatus::Refunded,
+                                                 InvoiceStatus::Refunded => InvoiceStatus::Paid,
+                                             };
+                                         }
+                                     }
+                                     cx.notify();
+                                 }
+                             }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                                let is_pinned = this.messages.iter().find(|m| m.id == msg_id).map(|m| m.is_pinned).unwrap_or(false);
+                                let text_snippet = this.messages.iter().find(|m| m.id == msg_id).and_then(|m| match &m.content {
+                                    MessageContent::Text { text, .. } => Some(text.clone()),
+                                    MessageContent::Media { caption, .. } => caption.clone(),
+                                    _ => None,
+                                });
+                                this.active_context_menu = Some(MessageContextMenuState {
+                                    message_id: msg_id,
+                                    position: event.position,
+                                    is_outgoing,
+                                    is_pinned,
+                                    text_snippet,
+                                });
+                                cx.notify();
                             }))
                             .child(bubble),
-                    )
-                    .when_some(poll_vote_bar, |el, bar| el.child(bar))
-                    .when_some(bot_kb_element, |el, kb| el.child(kb))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .children(reaction_pills),
-                    ),
-            )
-            .into_any_element()
-    }
+                     )
+                     .when_some(poll_vote_bar, |el, bar| el.child(bar))
+                     .when_some(bot_kb_element, |el, kb| el.child(kb))
+                     .child(
+                         div()
+                             .flex()
+                             .items_center()
+                             .gap(px(4.0))
+                             .children(reaction_pills),
+                     ),
+             )
+             .into_any_element()
+     }
 
-    fn render_message_bubble(msg: &MessageItemModel, cx: &mut Context<Self>) -> AnyElement {
+    fn render_message_bubble(
+        msg: &MessageItemModel,
+        rounding: BubbleRounding,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match &msg.content {
             MessageContent::Text { text, is_edited } => {
-                TextMessageView::render(msg, text, *is_edited).into_any_element()
+                TextMessageView::render(msg, text, *is_edited, rounding).into_any_element()
             }
             MessageContent::Media {
                 media_type,
@@ -1017,6 +1730,7 @@ impl ConversationStage {
                 *file_size_bytes,
                 caption.as_deref(),
                 *is_streaming,
+                rounding,
             ).into_any_element(),
             MessageContent::Voice {
                 duration_secs,
@@ -1031,9 +1745,10 @@ impl ConversationStage {
                 *playback_position_secs,
                 *is_playing,
                 *playback_speed,
+                rounding,
             ).into_any_element(),
             MessageContent::Album { items, caption } => {
-                AlbumMessageView::render(msg, items, caption.as_deref()).into_any_element()
+                AlbumMessageView::render(msg, items, caption.as_deref(), rounding).into_any_element()
             }
             MessageContent::Location { latitude, longitude, title, address } => {
                 LocationMessageView::render(msg, *latitude, *longitude, title, address).into_any_element()

@@ -126,6 +126,7 @@ pub struct VideoNoteItem {
 pub enum MessageContent {
     Text {
         text: String,
+        #[serde(default)]
         entities: Vec<MessageEntity>,
     },
     Media(MediaItem),
@@ -173,6 +174,25 @@ impl MessageContent {
         Self::Text {
             text: text.into(),
             entities,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_text_content_omitting_entities() {
+        let json_str = r#"{"type":"Text","data":{"text":"Hello world without entities"}}"#;
+        let content: MessageContent = serde_json::from_str(json_str)
+            .expect("Should deserialize text content when entities field is omitted");
+        match content {
+            MessageContent::Text { text, entities } => {
+                assert_eq!(text, "Hello world without entities");
+                assert!(entities.is_empty());
+            }
+            _ => panic!("Expected MessageContent::Text variant"),
         }
     }
 }

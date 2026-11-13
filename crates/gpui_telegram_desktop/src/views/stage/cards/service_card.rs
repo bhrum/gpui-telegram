@@ -20,11 +20,14 @@ impl ServiceMessageView {
             .w_full()
             .flex()
             .justify_center()
-            .py(px(4.0))
+            .mt(px(10.0))
+            .mb(px(2.0))
             .child(
                 div()
-                    .px(px(12.0))
-                    .py(px(4.0))
+                    .pl(px(12.0))
+                    .pr(px(12.0))
+                    .pt(px(3.0))
+                    .pb(px(4.0))
                     .rounded_full()
                     .bg(rgba(0x00000055)) // Translucent centered service pill
                     .flex()
@@ -33,7 +36,7 @@ impl ServiceMessageView {
                     .child(
                         div()
                             .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(0xD1E0EC))
                             .child(format!("{}{}", icon, text)),
                     ),

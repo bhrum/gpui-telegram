@@ -1,29 +1,41 @@
-//! Canonical Album Message Card (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.4.4).
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use super::models::{AlbumItem, MediaType, MessageItemModel};
+use super::text_card::{render_bubble_tail, BubbleRounding, MSG_MAX_WIDTH, MSG_MIN_WIDTH};
 
 pub struct AlbumMessageView;
 
 impl AlbumMessageView {
+    pub fn render_default(
+        message: &MessageItemModel,
+        items: &[AlbumItem],
+        caption: Option<&str>,
+    ) -> impl IntoElement {
+        Self::render(message, items, caption, BubbleRounding::default())
+    }
+
     pub fn render(
         message: &MessageItemModel,
         items: &[AlbumItem],
         caption: Option<&str>,
+        rounding: BubbleRounding,
     ) -> impl IntoElement {
         let is_outgoing = message.is_outgoing();
         let bg_color = if is_outgoing { rgb(0x2B5278) } else { rgb(0x182533) };
         let count = items.len();
 
         div()
+            .relative()
             .flex()
             .flex_col()
-            .max_w(px(340.0))
-            .rounded(px(14.0))
+            .min_w(px(MSG_MIN_WIDTH))
+            .max_w(px(MSG_MAX_WIDTH))
+            .rounded_tl(px(rounding.top_left))
+            .rounded_tr(px(rounding.top_right))
+            .rounded_bl(px(rounding.bottom_left))
+            .rounded_br(px(rounding.bottom_right))
             .bg(bg_color)
             .p(px(4.0))
-            .overflow_hidden()
             // Album Grid Mosaic
             .child(
                 div()
@@ -91,5 +103,8 @@ impl AlbumMessageView {
                             .child(message.timestamp.clone()),
                     ),
             )
+            .when(rounding.has_tail, |el| {
+                el.child(render_bubble_tail(message.direction, bg_color))
+            })
     }
 }

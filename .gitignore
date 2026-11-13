@@ -24,3 +24,9 @@ Thumbs.db
 *.swp
 *.swo
 *.log
+
+# Local runs, release binaries, and upload staging
+/.agents/
+/artifacts/
+/dist/
+/crates/gpui_telegram_server/data/

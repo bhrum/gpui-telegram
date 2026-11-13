@@ -11,6 +11,13 @@
 use gpui::*;
 use crate::views::drawer::inspector_tabs::*;
 
+pub const DRAWER_WIDTH: f32 = 320.0;
+pub const CONTEXT_INSPECTOR_WIDTH: f32 = DRAWER_WIDTH;
+pub const HEADER_HEIGHT: f32 = 54.0;
+pub const CONTEXT_INSPECTOR_HEADER_HEIGHT: f32 = HEADER_HEIGHT;
+pub const AVATAR_SIZE: f32 = 80.0;
+pub const CONTEXT_INSPECTOR_AVATAR_SIZE: f32 = AVATAR_SIZE;
+
 pub struct ContextInspector {
     pub is_open: bool,
     pub active_tab: InspectorTab,
@@ -25,6 +32,48 @@ pub struct ContextInspector {
 
 impl ContextInspector {
     pub fn new() -> Self {
+        let profile = ProfileTabModel {
+            name: String::new(),
+            username: String::new(),
+            phone: String::new(),
+            bio: String::new(),
+            avatar_initials: String::new(),
+            avatar_color: 0,
+            is_notifications_enabled: true,
+        };
+
+        let members = MembersTabModel {
+            members: Vec::new(),
+            search_query: String::new(),
+        };
+
+        let shared_media = SharedMediaTabModel {
+            active_subtab: SharedMediaSubTab::Media,
+            media_count: 0,
+            files: Vec::new(),
+            links: Vec::new(),
+        };
+
+        let settings = SettingsTabModel {
+            e2ee_fingerprint: String::new(),
+            auto_delete_period: "Off".to_string(),
+            notification_sound: "Default (Aurora)".to_string(),
+        };
+
+        Self {
+            is_open: false,
+            active_tab: InspectorTab::Profile,
+            profile,
+            members,
+            shared_media,
+            settings,
+            is_secret_chat_active: false,
+            is_contact_blocked: false,
+            pending_media_open: None,
+        }
+    }
+
+    pub fn new_demo() -> Self {
         let profile = ProfileTabModel {
             name: "Alice Smith".to_string(),
             username: "@alice_smith".to_string(),
@@ -115,15 +164,63 @@ impl ContextInspector {
         }
     }
 
+    fn clear_peer_facts(&mut self) {
+        self.profile = ProfileTabModel {
+            name: String::new(),
+            username: String::new(),
+            phone: String::new(),
+            bio: String::new(),
+            avatar_initials: String::new(),
+            avatar_color: 0,
+            is_notifications_enabled: true,
+        };
+        self.members = MembersTabModel {
+            members: Vec::new(),
+            search_query: String::new(),
+        };
+        self.shared_media = SharedMediaTabModel {
+            active_subtab: SharedMediaSubTab::Media,
+            media_count: 0,
+            files: Vec::new(),
+            links: Vec::new(),
+        };
+        self.settings = SettingsTabModel {
+            e2ee_fingerprint: String::new(),
+            auto_delete_period: "Off".to_string(),
+            notification_sound: "Default (Aurora)".to_string(),
+        };
+        self.is_secret_chat_active = false;
+        self.is_contact_blocked = false;
+        self.pending_media_open = None;
+    }
+
+    pub fn clear_peer(&mut self) {
+        self.is_open = false;
+        self.active_tab = InspectorTab::Profile;
+        self.clear_peer_facts();
+    }
+
+    pub fn configure_for_cloud_workspace(&mut self, _server_url: &str) {
+        self.clear_peer();
+    }
+
     pub fn set_peer(&mut self, name: &str, subtitle: &str, initials: &str, color: u32) {
+        if name.trim().is_empty() {
+            self.clear_peer();
+            return;
+        }
+
+        let is_same_peer = !self.profile.name.is_empty()
+            && self.profile.name == name
+            && self.profile.avatar_initials == initials
+            && self.profile.avatar_color == color;
+
+        if !is_same_peer {
+            self.clear_peer_facts();
+        }
+
         self.profile.name = name.to_string();
-        let slug = name
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect::<String>();
-        self.profile.username = format!("@{}", slug.trim_matches('_'));
-        self.profile.bio = format!("Status: {} • GPUI Telegram Desktop", subtitle);
+        self.profile.bio = subtitle.to_string();
         self.profile.avatar_initials = initials.to_string();
         self.profile.avatar_color = color;
     }
@@ -166,7 +263,7 @@ impl Render for ContextInspector {
         let auto_del = self.settings.auto_delete_period.clone();
 
         div()
-            .w(px(320.0)) // Fixed 320px width per spec
+            .w(px(DRAWER_WIDTH)) // Fixed 320px width per spec
             .flex_shrink_0()
             .h_full()
             .overflow_hidden()
@@ -175,10 +272,10 @@ impl Render for ContextInspector {
             .border_color(rgb(0x0E1621))
             .flex()
             .flex_col()
-            // 1. Header (height 52px matching stage header)
+            // 1. Header (height 54px per upstream info.style:41 & SPEC-02)
             .child(
                 div()
-                    .h(px(52.0))
+                    .h(px(HEADER_HEIGHT))
                     .flex_shrink_0()
                     .w_full()
                     .px(px(16.0))

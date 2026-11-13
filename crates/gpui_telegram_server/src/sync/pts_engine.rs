@@ -2,7 +2,7 @@ use crate::db::ServerDatabase;
 use gpui_telegram_core::error::{Result, TelegramError};
 use gpui_telegram_core::types::ChatId;
 use gpui_telegram_proto::sync::{PtsUpdate, SyncGetDifferenceRequest, SyncGetDifferenceResponse, UpdateEvent};
-use parking_lot::Mutex;
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use rusqlite::params;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ pub const JOURNAL_RETENTION_MAX_AGE_MS: i64 = 30 * 24 * 3600 * 1000; // 30 days
 #[derive(Clone)]
 pub struct PtsEngine {
     db: Arc<ServerDatabase>,
-    striped_locks: Arc<Vec<Mutex<()>>>,
+    striped_locks: Arc<Vec<ReentrantMutex<()>>>,
 }
 
 impl std::fmt::Debug for PtsEngine {
@@ -32,7 +32,7 @@ impl PtsEngine {
     pub fn new(db: Arc<ServerDatabase>) -> Self {
         let mut locks = Vec::with_capacity(STRIPED_LOCK_BUCKETS);
         for _ in 0..STRIPED_LOCK_BUCKETS {
-            locks.push(Mutex::new(()));
+            locks.push(ReentrantMutex::new(()));
         }
         Self {
             db,
@@ -50,8 +50,8 @@ impl PtsEngine {
         &self.db
     }
 
-    /// Acquires the striped lock bucket for `chat_id`.
-    fn lock_chat(&self, chat_id: ChatId) -> parking_lot::MutexGuard<'_, ()> {
+    /// Acquires the striped reentrant lock bucket for `chat_id`.
+    pub fn lock_chat(&self, chat_id: ChatId) -> ReentrantMutexGuard<'_, ()> {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         chat_id.hash(&mut hasher);
         let bucket = (hasher.finish() as usize) % STRIPED_LOCK_BUCKETS;

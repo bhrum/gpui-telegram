@@ -22,12 +22,45 @@ impl std::fmt::Debug for SqlitePool {
 impl SqlitePool {
     /// Opens or creates a SQLite database file at `path` and applies WAL pragmas.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let path_buf = path.as_ref().to_path_buf();
-        if let Some(parent) = path_buf.parent() {
-            std::fs::create_dir_all(parent).map_err(TelegramError::from)?;
+        let path_ref = path.as_ref();
+        if path_ref == Path::new(":memory:") {
+            return Self::open_in_memory();
         }
 
-        let conn = Connection::open(&path_buf).map_err(|e| TelegramError::Database(e.to_string()))?;
+        let path_str = path_ref.to_string_lossy();
+        if path_ref.as_os_str().is_empty() || path_str.trim().is_empty() {
+            return Err(TelegramError::Database(
+                "Database file path cannot be empty".to_string(),
+            ));
+        }
+
+        let path_buf = path_ref.to_path_buf();
+        if path_buf.is_dir() {
+            return Err(TelegramError::Database(format!(
+                "Database path '{}' is a directory",
+                path_buf.display()
+            )));
+        }
+
+        if let Some(parent) = path_buf.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    TelegramError::Database(format!(
+                        "Failed to create database directory '{}': {}",
+                        parent.display(),
+                        e
+                    ))
+                })?;
+            }
+        }
+
+        let conn = Connection::open(&path_buf).map_err(|e| {
+            TelegramError::Database(format!(
+                "Failed to open SQLite database '{}': {}",
+                path_buf.display(),
+                e
+            ))
+        })?;
         Self::apply_pragmas(&conn)?;
 
         Ok(Self {
@@ -47,7 +80,7 @@ impl SqlitePool {
         })
     }
 
-    /// Applies recommended high-performance SQLite pragmas.
+    /// Applies recommended high-performance SQLite pragmas and verifies database integrity.
     pub fn apply_pragmas(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             r#"
@@ -60,6 +93,17 @@ impl SqlitePool {
             "#,
         )
         .map_err(|e| TelegramError::Database(format!("Failed to apply pragmas: {}", e)))?;
+
+        let integrity: String = conn
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .map_err(|e| TelegramError::Database(format!("SQLite integrity check failed: {}", e)))?;
+        if !integrity.eq_ignore_ascii_case("ok") {
+            return Err(TelegramError::Database(format!(
+                "SQLite integrity check failed: {}",
+                integrity
+            )));
+        }
+
         Ok(())
     }
 
