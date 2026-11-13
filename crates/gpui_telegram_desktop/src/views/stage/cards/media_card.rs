@@ -1,12 +1,36 @@
-//! Canonical Media Message Card (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.4.2).
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use super::models::{MediaType, MessageItemModel};
+use super::text_card::{render_bubble_tail, BubbleRounding, MSG_MAX_WIDTH, MSG_MIN_WIDTH};
 
 pub struct MediaMessageView;
 
 impl MediaMessageView {
+    pub fn render_default(
+        message: &MessageItemModel,
+        media_type: MediaType,
+        url: &str,
+        width: u32,
+        height: u32,
+        duration_secs: Option<u32>,
+        file_size_bytes: u64,
+        caption: Option<&str>,
+        is_streaming: bool,
+    ) -> impl IntoElement {
+        Self::render(
+            message,
+            media_type,
+            url,
+            width,
+            height,
+            duration_secs,
+            file_size_bytes,
+            caption,
+            is_streaming,
+            BubbleRounding::default(),
+        )
+    }
+
     pub fn render(
         message: &MessageItemModel,
         media_type: MediaType,
@@ -17,6 +41,7 @@ impl MediaMessageView {
         _file_size_bytes: u64,
         caption: Option<&str>,
         is_streaming: bool,
+        rounding: BubbleRounding,
     ) -> impl IntoElement {
         let is_outgoing = message.is_outgoing();
         let bg_color = if is_outgoing { rgb(0x2B5278) } else { rgb(0x182533) };
@@ -25,13 +50,17 @@ impl MediaMessageView {
         let card_h = (card_w / aspect).clamp(180.0, 360.0);
 
         div()
+            .relative()
             .flex()
             .flex_col()
-            .max_w(px(340.0))
-            .rounded(px(14.0))
+            .min_w(px(MSG_MIN_WIDTH))
+            .max_w(px(MSG_MAX_WIDTH))
+            .rounded_tl(px(rounding.top_left))
+            .rounded_tr(px(rounding.top_right))
+            .rounded_bl(px(rounding.bottom_left))
+            .rounded_br(px(rounding.bottom_right))
             .bg(bg_color)
             .p(px(4.0))
-            .overflow_hidden()
             // Media Preview Thumbnail Area
             .child(
                 div()
@@ -140,6 +169,9 @@ impl MediaMessageView {
                                 .child(message.timestamp.clone()),
                         ),
                 )
+            })
+            .when(rounding.has_tail, |el| {
+                el.child(render_bubble_tail(message.direction, bg_color))
             })
     }
 }

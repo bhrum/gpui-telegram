@@ -1,25 +1,22 @@
 //! ContextInspectorDrawer 320px Right Drawer (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.5).
 //!
-//! Full 1:1 Telegram Desktop (`tdesktop`) Right Info Panel (`info/*`):
-//! - Profile Tab (Avatar, Name, @username, Phone, Bio, Notifications switch, Send Gift 🎁,
-//!   Export Chat 📤, Secret Chat E2EE 🔐, Block Contact)
-//! - Members Tab (Member count, Owner/Admin/Bot badges, + Add Member)
-//! - Shared Media Tab (Media, Files, Voice, Links sub-tabs)
-//! - Settings & Analytics Tab (333-Emoji E2EE Key Fingerprint, Auto-Delete Timer,
-//!   Notification Sound, plus Channel Growth & Boost Level 8 Progress Analytics!)
+//! Sub-components:
+//! 1. Drawer Header (Title, Close Button).
+//! 2. Four Main Tabs:
+//!    - Profile Tab (80px avatar, info, notifications switch, actions)
+//!    - Members Tab (member count, admin badges, add action)
+//!    - Shared Media Tab (Media, Files, Audio, Links sub-tabs)
+//!    - Settings Tab (E2EE fingerprint, auto-delete, sounds)
 
-use crate::views::drawer::inspector_tabs::*;
-use crate::views::tdesktop_theme::TdesktopThemePalette;
-use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_telegram_webrtc::CallsEmojiFingerprint;
+use crate::views::drawer::inspector_tabs::*;
 
-#[derive(Debug, Clone)]
-pub enum InspectorQuickAction {
-    OpenStarGift,
-    OpenExportChat,
-    StartAudioCall,
-}
+pub const DRAWER_WIDTH: f32 = 320.0;
+pub const CONTEXT_INSPECTOR_WIDTH: f32 = DRAWER_WIDTH;
+pub const HEADER_HEIGHT: f32 = 54.0;
+pub const CONTEXT_INSPECTOR_HEADER_HEIGHT: f32 = HEADER_HEIGHT;
+pub const AVATAR_SIZE: f32 = 80.0;
+pub const CONTEXT_INSPECTOR_AVATAR_SIZE: f32 = AVATAR_SIZE;
 
 pub struct ContextInspector {
     pub is_open: bool,
@@ -31,17 +28,58 @@ pub struct ContextInspector {
     pub is_secret_chat_active: bool,
     pub is_contact_blocked: bool,
     pub pending_media_open: Option<(String, bool)>,
-
-    // 1:1 Extended Channel Statistics & Boosts + Theme
     pub channel_boost_level: u32,
     pub channel_boosts_current: u32,
     pub channel_boosts_target: u32,
-    pub pending_quick_action: Option<InspectorQuickAction>,
-    pub palette: TdesktopThemePalette,
 }
 
 impl ContextInspector {
     pub fn new() -> Self {
+        let profile = ProfileTabModel {
+            name: String::new(),
+            username: String::new(),
+            phone: String::new(),
+            bio: String::new(),
+            avatar_initials: String::new(),
+            avatar_color: 0,
+            is_notifications_enabled: true,
+        };
+
+        let members = MembersTabModel {
+            members: Vec::new(),
+            search_query: String::new(),
+        };
+
+        let shared_media = SharedMediaTabModel {
+            active_subtab: SharedMediaSubTab::Media,
+            media_count: 0,
+            files: Vec::new(),
+            links: Vec::new(),
+        };
+
+        let settings = SettingsTabModel {
+            e2ee_fingerprint: String::new(),
+            auto_delete_period: "Off".to_string(),
+            notification_sound: "Default (Aurora)".to_string(),
+        };
+
+        Self {
+            is_open: false,
+            active_tab: InspectorTab::Profile,
+            profile,
+            members,
+            shared_media,
+            settings,
+            is_secret_chat_active: false,
+            is_contact_blocked: false,
+            pending_media_open: None,
+            channel_boost_level: 8,
+            channel_boosts_current: 24,
+            channel_boosts_target: 30,
+        }
+    }
+
+    pub fn new_demo() -> Self {
         let profile = ProfileTabModel {
             name: "Alice Smith".to_string(),
             username: "@alice_smith".to_string(),
@@ -113,14 +151,8 @@ impl ContextInspector {
             ],
         };
 
-        let fp = CallsEmojiFingerprint::from_sha256([
-            0x4A, 0x91, 0x2C, 0x8F, 0x11, 0x7E, 0x33, 0xD2, 0x9B, 0x05, 0x64, 0xE1, 0x77, 0x19,
-            0xA8, 0x5C, 0x3E, 0x82, 0xF0, 0x14, 0x6D, 0xB3, 0x29, 0x71, 0xC6, 0x48, 0x95, 0x0E,
-            0x52, 0xDF, 0x83, 0x1A,
-        ]);
-
         let settings = SettingsTabModel {
-            e2ee_fingerprint: fp.as_emoji_string(),
+            e2ee_fingerprint: "🔐 🌟 🚀 ⚡ 🛡️".to_string(),
             auto_delete_period: "Off".to_string(),
             notification_sound: "Default (Aurora)".to_string(),
         };
@@ -136,22 +168,68 @@ impl ContextInspector {
             is_contact_blocked: false,
             pending_media_open: None,
             channel_boost_level: 8,
-            channel_boosts_current: 34,
-            channel_boosts_target: 40,
-            pending_quick_action: None,
-            palette: TdesktopThemePalette::default(),
+            channel_boosts_current: 24,
+            channel_boosts_target: 30,
         }
     }
 
+    fn clear_peer_facts(&mut self) {
+        self.profile = ProfileTabModel {
+            name: String::new(),
+            username: String::new(),
+            phone: String::new(),
+            bio: String::new(),
+            avatar_initials: String::new(),
+            avatar_color: 0,
+            is_notifications_enabled: true,
+        };
+        self.members = MembersTabModel {
+            members: Vec::new(),
+            search_query: String::new(),
+        };
+        self.shared_media = SharedMediaTabModel {
+            active_subtab: SharedMediaSubTab::Media,
+            media_count: 0,
+            files: Vec::new(),
+            links: Vec::new(),
+        };
+        self.settings = SettingsTabModel {
+            e2ee_fingerprint: String::new(),
+            auto_delete_period: "Off".to_string(),
+            notification_sound: "Default (Aurora)".to_string(),
+        };
+        self.is_secret_chat_active = false;
+        self.is_contact_blocked = false;
+        self.pending_media_open = None;
+    }
+
+    pub fn clear_peer(&mut self) {
+        self.is_open = false;
+        self.active_tab = InspectorTab::Profile;
+        self.clear_peer_facts();
+    }
+
+    pub fn configure_for_cloud_workspace(&mut self, _server_url: &str) {
+        self.clear_peer();
+    }
+
     pub fn set_peer(&mut self, name: &str, subtitle: &str, initials: &str, color: u32) {
+        if name.trim().is_empty() {
+            self.clear_peer();
+            return;
+        }
+
+        let is_same_peer = !self.profile.name.is_empty()
+            && self.profile.name == name
+            && self.profile.avatar_initials == initials
+            && self.profile.avatar_color == color;
+
+        if !is_same_peer {
+            self.clear_peer_facts();
+        }
+
         self.profile.name = name.to_string();
-        let slug = name
-            .to_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect::<String>();
-        self.profile.username = format!("@{}", slug.trim_matches('_'));
-        self.profile.bio = format!("Status: {} • GPUI Telegram Desktop", subtitle);
+        self.profile.bio = subtitle.to_string();
         self.profile.avatar_initials = initials.to_string();
         self.profile.avatar_color = color;
     }
@@ -189,26 +267,24 @@ impl Render for ContextInspector {
             return div().w(px(0.0)).h_full().overflow_hidden().into_any_element();
         }
 
-        let pal = self.palette;
         let active_tab = self.active_tab;
-        let boost_lvl = self.channel_boost_level;
-        let boost_cur = self.channel_boosts_current;
-        let boost_tgt = self.channel_boosts_target;
+        let notif_enabled = self.profile.is_notifications_enabled;
+        let auto_del = self.settings.auto_delete_period.clone();
 
         div()
-            .w(px(320.0))
+            .w(px(DRAWER_WIDTH)) // Fixed 320px width per spec
             .flex_shrink_0()
             .h_full()
             .overflow_hidden()
-            .bg(rgb(pal.dialogs_bg))
+            .bg(rgb(0x17212B)) // Upstream inspector background
             .border_l_1()
-            .border_color(rgb(pal.border_fg))
+            .border_color(rgb(0x0E1621))
             .flex()
             .flex_col()
-            // 1. Header (52px)
+            // 1. Header (height 54px per upstream info.style:41 & SPEC-02)
             .child(
                 div()
-                    .h(px(52.0))
+                    .h(px(HEADER_HEIGHT))
                     .flex_shrink_0()
                     .w_full()
                     .px(px(16.0))
@@ -216,17 +292,17 @@ impl Render for ContextInspector {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(rgb(pal.border_fg))
+                    .border_color(rgb(0x0E1621))
                     .child(
                         div()
                             .text_size(px(15.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(pal.text_primary))
+                            .text_color(rgb(0xFFFFFF))
                             .child(match active_tab {
-                                InspectorTab::Profile => "Profile Info",
-                                InspectorTab::Members => "Members & Admins",
-                                InspectorTab::SharedMedia => "Shared Media",
-                                InspectorTab::Settings => "Security & Stats",
+                                InspectorTab::Profile => "User Info",
+                                InspectorTab::Members => "Chat Members",
+                                InspectorTab::SharedMedia => "Shared Content",
+                                InspectorTab::Settings => "Chat Settings",
                             }),
                     )
                     .child(
@@ -235,213 +311,156 @@ impl Render for ContextInspector {
                             .px(px(6.0))
                             .py(px(2.0))
                             .rounded(px(4.0))
-                            .hover(move |s| s.bg(rgb(pal.input_bg)))
-                            .text_size(px(15.0))
-                            .text_color(rgb(pal.text_secondary))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.close();
-                                    cx.notify();
-                                }),
-                            )
+                            .hover(|s| s.bg(rgb(0x242F3D)))
+                            .text_size(px(16.0))
+                            .text_color(rgb(0x8A9AA8))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.close();
+                                cx.notify();
+                            }))
                             .child("✕"),
                     ),
             )
-            // 2. Tab Navigation Strip (Profile, Members, Media, Stats/Settings)
+            // 2. Tab Navigation Strip (Profile, Members, Shared, Settings)
             .child(
                 div()
                     .h(px(40.0))
                     .flex_shrink_0()
                     .w_full()
                     .px(px(8.0))
-                    .border_b_1()
-                    .border_color(rgb(pal.border_fg))
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .children(
-                        [
-                            (InspectorTab::Profile, "资料"),
-                            (InspectorTab::SharedMedia, "媒体"),
-                            (InspectorTab::Members, "成员"),
-                            (InspectorTab::Settings, "统计/加密"),
-                        ]
-                        .into_iter()
-                        .map(|(tab, label)| {
-                            let is_sel = active_tab == tab;
-                            div()
-                                .cursor_pointer()
-                                .px(px(8.0))
-                                .py(px(5.0))
-                                .rounded(px(6.0))
-                                .bg(if is_sel {
-                                    rgb(pal.accent)
-                                } else {
-                                    rgba(0x00000000)
-                                })
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(if is_sel {
-                                    rgb(0xFFFFFF)
-                                } else {
-                                    rgb(pal.text_secondary)
-                                })
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        this.set_tab(tab);
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(label)
-                        }),
-                    ),
+                    .justify_around()
+                    .border_b_1()
+                    .border_color(rgb(0x0E1621))
+                    .child(Self::render_tab_button("Profile", InspectorTab::Profile, active_tab, cx))
+                    .child(Self::render_tab_button("Members", InspectorTab::Members, active_tab, cx))
+                    .child(Self::render_tab_button("Media", InspectorTab::SharedMedia, active_tab, cx))
+                    .child(Self::render_tab_button("Settings", InspectorTab::Settings, active_tab, cx)),
             )
-            // 3. Scrollable Tab Body + 1:1 Telegram Action Shortcuts
+            // 3. Tab Body
             .child(
                 div()
-                    .id("inspector-drawer-body-scroll")
+                    .id("inspector-tab-scroll")
                     .flex_1()
                     .min_h(px(0.0))
                     .w_full()
-                    .p(px(14.0))
+                    .p(px(16.0))
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
                     .child(match active_tab {
-                        InspectorTab::Profile => div()
+                        InspectorTab::Profile => InspectorTabsView::render_profile(
+                            &self.profile,
+                            self.is_secret_chat_active,
+                            self.is_contact_blocked,
+                            cx,
+                        ).into_any_element(),
+                        InspectorTab::Members => InspectorTabsView::render_members(&self.members, cx).into_any_element(),
+                        InspectorTab::SharedMedia => InspectorTabsView::render_shared_media(&self.shared_media, cx).into_any_element(),
+                        InspectorTab::Settings => InspectorTabsView::render_settings(&self.settings, cx).into_any_element(),
+                    })
+                    .child(
+                        div()
+                            .pt(px(8.0))
+                            .border_t_1()
+                            .border_color(rgb(0x242F3D))
                             .flex()
                             .flex_col()
-                            .gap(px(12.0))
-                            .child(InspectorTabsView::render_profile(
-                                &self.profile,
-                                self.is_secret_chat_active,
-                                self.is_contact_blocked,
-                                cx,
-                            ))
-                            // Extra 1:1 Quick Action Buttons: Gift, Call, Export
+                            .gap(px(8.0))
                             .child(
                                 div()
+                                    .cursor_pointer()
+                                    .w_full()
+                                    .py(px(8.0))
+                                    .px(px(12.0))
+                                    .rounded(px(8.0))
+                                    .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
                                     .flex()
-                                    .gap(px(6.0))
+                                    .items_center()
+                                    .justify_between()
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.profile.is_notifications_enabled = !this.profile.is_notifications_enabled;
+                                        cx.notify();
+                                    }))
                                     .child(
                                         div()
-                                            .cursor_pointer()
-                                            .flex_1()
-                                            .py(px(7.0))
-                                            .rounded(px(8.0))
-                                            .bg(rgba(0xF1C40F22))
-                                            .flex()
-                                            .justify_center()
-                                            .text_size(px(11.5))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xF1C40F))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _e, _w, cx| {
-                                                    this.pending_quick_action =
-                                                        Some(InspectorQuickAction::OpenStarGift);
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("🎁 赠送礼物"),
-                                    )
-                                    .child(
-                                        div()
-                                            .cursor_pointer()
-                                            .flex_1()
-                                            .py(px(7.0))
-                                            .rounded(px(8.0))
-                                            .bg(rgb(pal.input_bg))
-                                            .flex()
-                                            .justify_center()
-                                            .text_size(px(11.5))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(pal.accent))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _e, _w, cx| {
-                                                    this.pending_quick_action =
-                                                        Some(InspectorQuickAction::OpenExportChat);
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("📤 导出记录"),
-                                    ),
-                            )
-                            .into_any_element(),
-                        InspectorTab::Members => {
-                            InspectorTabsView::render_members(&self.members, cx).into_any_element()
-                        }
-                        InspectorTab::SharedMedia => {
-                            InspectorTabsView::render_shared_media(&self.shared_media, cx)
-                                .into_any_element()
-                        }
-                        InspectorTab::Settings => div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.0))
-                            .child(InspectorTabsView::render_settings(&self.settings, cx))
-                            // Channel / Group Statistics & Boosts Card (`info/channel_statistics`)
-                            .child(
-                                div()
-                                    .p(px(12.0))
-                                    .rounded(px(10.0))
-                                    .bg(rgb(0x1B2836))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(8.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.5))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0x2AABEE))
-                                            .child(format!(
-                                                "📈 频道数据与助力等级 • Level {}",
-                                                boost_lvl
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(11.5))
-                                            .text_color(rgb(0x8A9AA8))
-                                            .child(format!(
-                                                "当前助力: {} / {} Boosts • 7日阅读增长 +24.8%",
-                                                boost_cur, boost_tgt
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .cursor_pointer()
-                                            .py(px(6.0))
-                                            .rounded(px(6.0))
-                                            .bg(rgb(0x2AABEE))
-                                            .flex()
-                                            .justify_center()
                                             .text_size(px(12.0))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(rgb(0xFFFFFF))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _e, _w, cx| {
-                                                    this.channel_boosts_current += 1;
-                                                    if this.channel_boosts_current
-                                                        >= this.channel_boosts_target
-                                                    {
-                                                        this.channel_boost_level += 1;
-                                                        this.channel_boosts_target += 10;
-                                                    }
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child("⚡ 立即助力频道 (Boost Channel)"),
+                                            .child("🔔 Notifications"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if notif_enabled { rgb(0x4CAF50) } else { rgb(0xE53935) })
+                                            .child(if notif_enabled { "ON" } else { "MUTED" }),
                                     ),
                             )
-                            .into_any_element(),
-                    }),
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .w_full()
+                                    .py(px(8.0))
+                                    .px(px(12.0))
+                                    .rounded(px(8.0))
+                                    .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        let next = match this.settings.auto_delete_period.as_str() {
+                                            "Off" => "24 Hours",
+                                            "24 Hours" => "7 Days",
+                                            _ => "Off",
+                                        };
+                                        this.set_auto_delete_period(next);
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child("⏱️ Auto-Delete Timer"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(0x2AABEE))
+                                            .child(auto_del),
+                                    ),
+                            ),
+                    ),
             )
             .into_any_element()
+    }
+}
+
+impl ContextInspector {
+    fn render_tab_button(label: &str, tab: InspectorTab, active: InspectorTab, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_selected = tab == active;
+        div()
+            .cursor_pointer()
+            .h_full()
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .border_b_2()
+            .border_color(if is_selected { rgb(0x2AABEE) } else { rgba(0x00000000) })
+            .text_size(px(12.0))
+            .font_weight(if is_selected { FontWeight::BOLD } else { FontWeight::NORMAL })
+            .text_color(if is_selected { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+            .hover(|s| s.text_color(rgb(0xFFFFFF)))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                this.set_tab(tab);
+                cx.notify();
+            }))
+            .child(label.to_string())
     }
 }

@@ -24,6 +24,10 @@ pub struct GatewayHub {
     next_msg_id: Arc<AtomicI64>,
     /// Server presentation sequence counter (PTS)
     next_pts: Arc<AtomicU64>,
+    /// Optional attached message pipeline for real persistence and deduplication
+    pipeline: Arc<RwLock<Option<Arc<crate::messaging::pipeline::MessagePipeline>>>>,
+    /// Optional attached server database for membership queries
+    db: Arc<RwLock<Option<Arc<crate::db::ServerDatabase>>>>,
 }
 
 impl Default for GatewayHub {
@@ -33,6 +37,8 @@ impl Default for GatewayHub {
             chat_subscribers: Arc::new(RwLock::new(HashMap::new())),
             next_msg_id: Arc::new(AtomicI64::new(1001)),
             next_pts: Arc::new(AtomicU64::new(1)),
+            pipeline: Arc::new(RwLock::new(None)),
+            db: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -40,6 +46,25 @@ impl Default for GatewayHub {
 impl GatewayHub {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn new_with_pipeline(
+        pipeline: Arc<crate::messaging::pipeline::MessagePipeline>,
+        db: Arc<crate::db::ServerDatabase>,
+    ) -> Self {
+        let hub = Self::default();
+        *hub.pipeline.write() = Some(pipeline);
+        *hub.db.write() = Some(db);
+        hub
+    }
+
+    pub fn set_pipeline(
+        &self,
+        pipeline: Arc<crate::messaging::pipeline::MessagePipeline>,
+        db: Arc<crate::db::ServerDatabase>,
+    ) {
+        *self.pipeline.write() = Some(pipeline);
+        *self.db.write() = Some(db);
     }
 
     /// Register an active WebSocket connection sender for a user
@@ -134,6 +159,15 @@ impl GatewayHub {
             .insert(user_id);
     }
 
+    /// Returns a set of user IDs that are subscribed to a chat
+    pub fn get_chat_subscribers(&self, chat_id: i64) -> HashSet<UserId> {
+        self.chat_subscribers
+            .read()
+            .get(&chat_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Unsubscribe user from chat events
     pub fn unsubscribe_chat(&self, chat_id: i64, user_id: UserId) {
         let mut chats = self.chat_subscribers.write();
@@ -167,57 +201,148 @@ impl GatewayHub {
                 let _ = reply_tx.send(WsServerFrame::Pong { nonce });
             }
             WsClientFrame::Sync(req) => {
-                let current_pts = self.current_pts();
-                let resp = SyncGetDifferenceResponse::new(
-                    req.chat_id,
-                    Vec::new(),
-                    Vec::new(),
-                    current_pts,
-                    false,
-                );
-                let _ = reply_tx.send(WsServerFrame::SyncDiff(resp));
+                let maybe_pipeline = self.pipeline.read().clone();
+                if let Some(pipeline) = maybe_pipeline {
+                    match pipeline.pts_engine().get_difference(&req) {
+                        Ok(resp) => {
+                            let _ = reply_tx.send(WsServerFrame::SyncDiff(resp));
+                        }
+                        Err(e) => {
+                            let _ = reply_tx.send(WsServerFrame::Error {
+                                code: 500,
+                                message: format!("Sync error: {e}"),
+                                details: None,
+                            });
+                        }
+                    }
+                } else {
+                    let current_pts = self.current_pts();
+                    let resp = SyncGetDifferenceResponse::new(
+                        req.chat_id,
+                        Vec::new(),
+                        Vec::new(),
+                        current_pts,
+                        false,
+                    );
+                    let _ = reply_tx.send(WsServerFrame::SyncDiff(resp));
+                }
             }
             WsClientFrame::SendMessage(req) => {
-                let msg_id = MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst));
-                let pts = self.next_pts();
-                let now = Utc::now();
-                let peer_id = PeerId::User(user_id);
-                let to_peer = PeerId::Chat(req.chat_id);
+                let maybe_pipeline = self.pipeline.read().clone();
+                let maybe_db = self.db.read().clone();
 
-                let message = MessageItem {
-                    id: msg_id,
-                    chat_id: req.chat_id,
-                    peer_id,
-                    to_peer,
-                    sender_id: user_id,
-                    topic_id: req.topic_id,
-                    flags: MessageFlags {
-                        is_out: true,
-                        ..Default::default()
-                    },
-                    date: now,
-                    edit_date: None,
-                    content: req.content,
-                    reply_to: req.reply_to.map(ReplyHeader::new),
-                    forward_info: None,
-                    reactions: Vec::new(),
-                    client_nonce: Some(req.client_nonce),
-                };
+                if let Some(pipeline) = maybe_pipeline {
+                    let msg = MessageItem {
+                        id: MessageId(0), // Pipeline allocates sequential server message ID
+                        chat_id: req.chat_id,
+                        peer_id: PeerId::User(user_id),
+                        to_peer: PeerId::Chat(req.chat_id),
+                        sender_id: user_id,
+                        topic_id: req.topic_id,
+                        flags: MessageFlags {
+                            is_out: true,
+                            ..Default::default()
+                        },
+                        date: Utc::now(),
+                        edit_date: None,
+                        content: req.content,
+                        reply_to: req.reply_to.map(ReplyHeader::new),
+                        forward_info: None,
+                        reactions: Vec::new(),
+                        client_nonce: Some(req.client_nonce),
+                    };
 
-                // 1. Reply Ack to the sender socket
-                let _ = reply_tx.send(WsServerFrame::Ack {
-                    correlation_id: 0,
-                    client_nonce: req.client_nonce,
-                    message_id: msg_id.0,
-                    pts,
-                });
+                    match pipeline.process_incoming_message(msg) {
+                        Ok(pts_update) => {
+                            let (msg_id, pts) = match &pts_update.event {
+                                UpdateEvent::NewMessage(item) => (item.id.0, pts_update.pts),
+                                _ => (0, pts_update.pts),
+                            };
 
-                // 2. Broadcast PtsPush to all devices of user and to chat subscribers
-                let update = UpdateEvent::NewMessage(message);
-                let pts_update = PtsUpdate::new(req.chat_id, pts, 1, update, now.timestamp_millis());
+                            // 1. Reply Ack to the sending socket
+                            let _ = reply_tx.send(WsServerFrame::Ack {
+                                correlation_id: 0,
+                                client_nonce: req.client_nonce,
+                                message_id: msg_id,
+                                pts,
+                            });
 
-                self.broadcast_to_user(user_id, WsServerFrame::PtsPush(pts_update.clone()));
-                self.broadcast_to_chat(req.chat_id.0, WsServerFrame::PtsPush(pts_update));
+                            // 2. Broadcast PtsPush to all active sockets of sender (multi-device sync)
+                            self.broadcast_to_user(user_id, WsServerFrame::PtsPush(pts_update.clone()));
+
+                            // 3. Broadcast PtsPush to all active sockets of chat members
+                            let mut recipient_users = HashSet::new();
+                            if let Some(ref db) = maybe_db {
+                                if let Ok(members) = db.get_chat_members(req.chat_id) {
+                                    for m in members {
+                                        if m != user_id {
+                                            recipient_users.insert(m);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. Include any explicit topic/channel subscribers
+                            if let Some(extra_subs) = self.chat_subscribers.read().get(&req.chat_id.0) {
+                                for &sub in extra_subs {
+                                    if sub != user_id {
+                                        recipient_users.insert(sub);
+                                    }
+                                }
+                            }
+
+                            for recipient in recipient_users {
+                                self.broadcast_to_user(recipient, WsServerFrame::PtsPush(pts_update.clone()));
+                            }
+                        }
+                        Err(e) => {
+                            let _ = reply_tx.send(WsServerFrame::Error {
+                                code: 500,
+                                message: format!("Failed to process message: {e}"),
+                                details: None,
+                            });
+                        }
+                    }
+                } else {
+                    // Fallback path when pipeline is unattached (standalone unit tests)
+                    let msg_id = MessageId(self.next_msg_id.fetch_add(1, Ordering::SeqCst));
+                    let pts = self.next_pts();
+                    let now = Utc::now();
+                    let peer_id = PeerId::User(user_id);
+                    let to_peer = PeerId::Chat(req.chat_id);
+
+                    let message = MessageItem {
+                        id: msg_id,
+                        chat_id: req.chat_id,
+                        peer_id,
+                        to_peer,
+                        sender_id: user_id,
+                        topic_id: req.topic_id,
+                        flags: MessageFlags {
+                            is_out: true,
+                            ..Default::default()
+                        },
+                        date: now,
+                        edit_date: None,
+                        content: req.content,
+                        reply_to: req.reply_to.map(ReplyHeader::new),
+                        forward_info: None,
+                        reactions: Vec::new(),
+                        client_nonce: Some(req.client_nonce),
+                    };
+
+                    let _ = reply_tx.send(WsServerFrame::Ack {
+                        correlation_id: 0,
+                        client_nonce: req.client_nonce,
+                        message_id: msg_id.0,
+                        pts,
+                    });
+
+                    let update = UpdateEvent::NewMessage(message);
+                    let pts_update = PtsUpdate::new(req.chat_id, pts, 1, update, now.timestamp_millis());
+                    self.broadcast_to_user(user_id, WsServerFrame::PtsPush(pts_update.clone()));
+                    self.broadcast_to_chat(req.chat_id.0, WsServerFrame::PtsPush(pts_update));
+                }
             }
             WsClientFrame::EditMessage(req) => {
                 let pts = self.next_pts();

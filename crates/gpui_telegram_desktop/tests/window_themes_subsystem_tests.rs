@@ -190,7 +190,7 @@ fn test_theme_system_embedded_and_recipes() {
 
     // Builtin schemes
     let night_scheme = WindowThemesEmbeddedThemes::scheme_for(BuiltinTheme::Night);
-    assert_eq!(night_scheme.background, 0x18222D);
+    assert_eq!(night_scheme.background, 0x17212B);
     assert_eq!(night_scheme.bubble_out, 0x2B5278);
 
     let green_scheme = WindowThemesEmbeddedThemes::scheme_for(BuiltinTheme::NightGreen);

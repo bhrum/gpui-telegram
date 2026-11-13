@@ -1,12 +1,30 @@
-//! Canonical Voice Message Card with 5-bit Waveform Renderer (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.4.3).
-//! Upstream reference: `tdesktop/Telegram/SourceFiles/history/view/media/history_view_voice.cpp`.
-
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use super::models::MessageItemModel;
+use super::text_card::{render_bubble_tail, BubbleRounding, MSG_MAX_WIDTH, MSG_MIN_WIDTH};
 
 pub struct VoiceMessageView;
 
 impl VoiceMessageView {
+    pub fn render_default(
+        message: &MessageItemModel,
+        duration_secs: u32,
+        waveform_5bit: &[u8],
+        playback_position_secs: f32,
+        is_playing: bool,
+        playback_speed: f32,
+    ) -> impl IntoElement {
+        Self::render(
+            message,
+            duration_secs,
+            waveform_5bit,
+            playback_position_secs,
+            is_playing,
+            playback_speed,
+            BubbleRounding::default(),
+        )
+    }
+
     pub fn render(
         message: &MessageItemModel,
         duration_secs: u32,
@@ -14,6 +32,7 @@ impl VoiceMessageView {
         playback_position_secs: f32,
         is_playing: bool,
         playback_speed: f32,
+        rounding: BubbleRounding,
     ) -> impl IntoElement {
         let is_outgoing = message.is_outgoing();
         let bg_color = if is_outgoing { rgb(0x2B5278) } else { rgb(0x182533) };
@@ -25,14 +44,22 @@ impl VoiceMessageView {
         let played_bars_count = ((waveform_5bit.len() as f32) * progress_ratio).round() as usize;
 
         div()
+            .relative()
             .flex()
             .items_center()
             .gap(px(12.0))
+            .min_w(px(MSG_MIN_WIDTH))
+            .max_w(px(MSG_MAX_WIDTH))
             .w(px(320.0))
-            .rounded(px(14.0))
+            .rounded_tl(px(rounding.top_left))
+            .rounded_tr(px(rounding.top_right))
+            .rounded_bl(px(rounding.bottom_left))
+            .rounded_br(px(rounding.bottom_right))
             .bg(bg_color)
-            .px(px(12.0))
-            .py(px(8.0))
+            .pl(px(11.0))
+            .pr(px(11.0))
+            .pt(px(8.0))
+            .pb(px(8.0))
             // 1. Play / Pause Circular Button (36px)
             .child(
                 div()
@@ -124,5 +151,8 @@ impl VoiceMessageView {
                             ),
                     ),
             )
+            .when(rounding.has_tail, |el| {
+                el.child(render_bubble_tail(message.direction, bg_color))
+            })
     }
 }

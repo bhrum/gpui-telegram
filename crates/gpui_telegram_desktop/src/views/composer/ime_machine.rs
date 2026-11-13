@@ -43,6 +43,8 @@ pub struct ImeSafetyMachine {
     pub state: ImeState,
     pub text_buffer: String,
     pub cursor_index: usize,
+    /// Fence flag preventing trailing Cocoa Return keydown from dispatching a message
+    pub just_committed: bool,
 }
 
 impl ImeSafetyMachine {
@@ -51,6 +53,7 @@ impl ImeSafetyMachine {
             state: ImeState::Idle,
             text_buffer: String::new(),
             cursor_index: 0,
+            just_committed: false,
         }
     }
 
@@ -61,11 +64,13 @@ impl ImeSafetyMachine {
             state: ImeState::Idle,
             text_buffer,
             cursor_index,
+            just_committed: false,
         }
     }
 
     /// Called when OS IME begins composition
     pub fn on_ime_start(&mut self) {
+        self.just_committed = false;
         self.state = ImeState::Composing {
             preedit_text: String::new(),
             cursor_pos: 0,
@@ -74,6 +79,7 @@ impl ImeSafetyMachine {
 
     /// Called as user types phonetic/radical keystrokes in IME preedit window
     pub fn on_ime_update(&mut self, preedit: &str, cursor_pos: usize) {
+        self.just_committed = false;
         self.state = ImeState::Composing {
             preedit_text: preedit.to_string(),
             cursor_pos,
@@ -86,17 +92,33 @@ impl ImeSafetyMachine {
         self.state = ImeState::Committed {
             committed_text: committed.to_string(),
         };
-        // Reset back to Idle for subsequent inputs
-        self.state = ImeState::Idle;
+        // Set fence flag so trailing Return keydown within this tick is absorbed
+        self.just_committed = true;
     }
 
     /// Called when IME composition is canceled without committing
     pub fn on_ime_cancel(&mut self) {
+        self.just_committed = false;
         self.state = ImeState::Idle;
+    }
+
+    /// Reset commit fence when user types non-IME characters or explicit resets
+    pub fn reset_commit_fence(&mut self) {
+        self.just_committed = false;
+        if matches!(self.state, ImeState::Committed { .. }) {
+            self.state = ImeState::Idle;
+        }
     }
 
     /// Process Enter key press with IME safety guard
     pub fn handle_enter_key(&mut self, is_shift: bool) -> KeyAction {
+        // If just committed via IME, consume the fence and suppress sending
+        if self.just_committed {
+            self.just_committed = false;
+            self.state = ImeState::Idle;
+            return KeyAction::ImeCandidateChosen;
+        }
+
         match &self.state {
             ImeState::Composing { preedit_text, .. } => {
                 // If IME is composing, Enter selects the preedit text
@@ -104,7 +126,12 @@ impl ImeSafetyMachine {
                 self.on_ime_commit(&committed);
                 KeyAction::ImeCandidateChosen
             }
-            ImeState::Idle | ImeState::Committed { .. } => {
+            ImeState::Committed { .. } => {
+                self.state = ImeState::Idle;
+                self.just_committed = false;
+                KeyAction::ImeCandidateChosen
+            }
+            ImeState::Idle => {
                 if is_shift {
                     self.insert_text("\n");
                     KeyAction::InsertNewline
@@ -118,6 +145,12 @@ impl ImeSafetyMachine {
     }
 
     pub fn insert_text(&mut self, text: &str) {
+        if !self.is_composing() {
+            self.just_committed = false;
+            if matches!(self.state, ImeState::Committed { .. }) {
+                self.state = ImeState::Idle;
+            }
+        }
         if self.cursor_index >= self.text_buffer.len() {
             self.text_buffer.push_str(text);
             self.cursor_index = self.text_buffer.len();
@@ -142,6 +175,7 @@ impl ImeSafetyMachine {
         self.text_buffer.clear();
         self.cursor_index = 0;
         self.state = ImeState::Idle;
+        self.just_committed = false;
     }
 
     pub fn text(&self) -> &str {
@@ -150,6 +184,10 @@ impl ImeSafetyMachine {
 
     pub fn is_composing(&self) -> bool {
         matches!(self.state, ImeState::Composing { .. })
+    }
+
+    pub fn is_composing_or_committed(&self) -> bool {
+        self.just_committed || matches!(self.state, ImeState::Composing { .. } | ImeState::Committed { .. })
     }
 
     pub fn preedit_text(&self) -> Option<&str> {

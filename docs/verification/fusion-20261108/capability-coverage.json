@@ -1,0 +1,2765 @@
+{
+  "schema_version": 2,
+  "campaign_id": "fusion-20261108",
+  "spec_ref": "docs/specs/fusion-parity-evidence-stages-20261108.md",
+  "status": "incomplete",
+  "note": "Scope inventory only; all capabilities require current behavioral evidence. No cap on child task count. Six inherited aggregate domains do not prove all Fabushi functions covered; their source owners must be expanded.",
+  "upstream_telegram_revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+  "inherited_fabushi_baseline": "fabushi-unified-design-20261105",
+  "stage_definitions": {
+    "file_mapped": "Upstream C++ or inherited Fabushi files are mapped in existing on-disk ledger shards with pinned revision/SHA256. Does not prove reachability or runtime behavior.",
+    "entrypoint_reachable": "Target Rust/GPUI symbols are wired into live AppShell or Axum router call graphs without dead-code suppression, static placeholder banners, or bare pub use * shims.",
+    "behavior_tested": "Positive and negative behavioral tests against real durable state/storage pass with recorded candidate provenance.",
+    "ui_evidence_captured": "Actual running GPUI binary renders and interactive state transitions are captured and verified against upstream Telegram reference behavior.",
+    "packaged_accepted": "Packaged application passes end-to-end service flows, restart/reconnect durability, signing/update/rollback, and retained Fabushi regression checks."
+  },
+  "stage_summary": {
+    "file_mapped": {
+      "verified": 48,
+      "partial": 4,
+      "missing_shard": 6
+    },
+    "entrypoint_reachable": {
+      "verified": 0,
+      "stubbed": 15,
+      "unverified": 43
+    },
+    "behavior_tested": {
+      "verified": 0,
+      "partial": 4,
+      "unverified": 54
+    },
+    "ui_evidence_captured": {
+      "verified": 0,
+      "unverified": 58
+    },
+    "packaged_accepted": {
+      "verified": 0,
+      "unverified": 58
+    }
+  },
+  "ledger_coverage_gaps": {
+    "referenced_shards_missing_on_disk": [
+      "inherited_host.json",
+      "inherited_messaging.json",
+      "inherited_node.json",
+      "overview.json",
+      "poll.json",
+      "profile.json",
+      "webauthn.json"
+    ],
+    "shards_present_on_disk_but_unreferenced_in_capabilities": [
+      "iv.json",
+      "passport.json",
+      "payments.json",
+      "statistics.json",
+      "wallet.json"
+    ],
+    "unreferenced_shard_file_count": 467,
+    "follow_up_tasks": [
+      "FUS-V001b",
+      "FUS-V001c",
+      "FUS-V001d",
+      "FUS-V001e",
+      "FUS-V001f"
+    ]
+  },
+  "capabilities": [
+    {
+      "capability_id": "TCG-N01",
+      "capability": "Auth & Registration",
+      "upstream_anchors": "`api/`, `intro/`, `webauthn/`",
+      "candidate_owners": "`gpui_telegram_core`, `gpui_telegram_server`, `gpui_telegram_client`",
+      "ledger_shards": "`api.json`, `intro.json`, `webauthn.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`api/`, `intro/`, `webauthn/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "partial",
+          "existing_shards": ["api.json", "intro.json"],
+          "missing_shards": ["webauthn.json"],
+          "shard_mapped_files": 154,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N01 and FUS-A001/A002 QR & callback verification audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "QR challenge decoding, callback verification, replay/tamper rejection, and durable session recovery remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 12"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N01",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N02",
+      "capability": "Sessions & Security (2FA)",
+      "upstream_anchors": "`core/`, `settings/sections/`, `storage/`",
+      "candidate_owners": "`gpui_telegram_core`, `gpui_telegram_server`",
+      "ledger_shards": "`core.json`, `settings.json`, `storage.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`core/`, `settings/sections/`, `storage/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["core.json", "settings.json", "storage.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 444,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N02 runtime reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "2FA SRP password verification, active session revocation, and passcode lock persistence remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 01", "Module 03", "Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N02",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N03",
+      "capability": "Dialogs & Folder Tabs",
+      "upstream_anchors": "`dialogs/`, `boxes/filters/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`dialogs.json`, `boxes.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`dialogs/`, `boxes/filters/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["dialogs.json", "boxes.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 302,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["ChatSidebar::configure_for_cloud_workspace fabricates initial peers (FUS-D001 pending); DialogsCommunityChatsList in views/sidebar/dialogs_community_chats_list.rs does not implement Render and is unmounted."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Authenticated dialog list hydration, folder tab filtering, and sidebar resize (FUS-D001, FUS-U003) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 05", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N03",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N04",
+      "capability": "Messages & Chat Bubbles",
+      "upstream_anchors": "`history/`, `ui/chat/`, `data/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_core`",
+      "ledger_shards": "`history.json`, `ui.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/`, `ui/chat/`, `data/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json", "ui.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 982,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server HTTP /api/v1/messages/history and /api/v1/messages/send in server.rs:1468-1486 are stubbed (FUS-S003/S004 pending); ConversationStage cloud init audit (FUS-D002) pending."]
+        },
+        "behavior_tested": {
+          "status": "partial",
+          "verified_runs": [
+            {
+              "run_id": "20261108T212341",
+              "suite": "fusion_atomic_message_commit",
+              "passed": 6,
+              "total": 6
+            }
+          ],
+          "unverified_scope": "Focused pipeline commit test passed (6/6), but HTTP/WS route integration (FUS-S003/S004), incoming message projection (FUS-D006), and GPUI bubble rendering remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 06", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N04",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N05",
+      "capability": "Input Composer & IME Safety",
+      "upstream_anchors": "`chat_helpers/compose/`, `history/view/controls/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`chat_helpers.json`, `history.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`chat_helpers/compose/`, `history/view/controls/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["chat_helpers.json", "history.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 359,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N05 and FUS-D005/D007 composer send/reply/forward reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "IME composition safety, single outgoing transport retry identity (FUS-D005), and reply/forward commands (FUS-D007) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06", "Module 07"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N05",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N06",
+      "capability": "Media & Attachments Pipeline",
+      "upstream_anchors": "`storage/`, `data/`, `ui/chat/attach/`",
+      "candidate_owners": "`gpui_telegram_media`, `gpui_telegram_server`",
+      "ledger_shards": "`storage.json`, `data.json`, `ui.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`storage/`, `data/`, `ui/chat/attach/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["storage.json", "data.json", "ui.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 727,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server media_upload_init/chunk/finalize in server.rs:1807-1846 discard uploaded bytes without CAS persistence (FUS-M001/M003/M004 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "File picker selection, chunked upload persistence, and GPUI image/album decoding (FUS-M001..M004) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N06",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N07",
+      "capability": "Voice Notes & 5-Bit Waveforms",
+      "upstream_anchors": "`media/audio/`, `data/data_document.cpp`",
+      "candidate_owners": "`gpui_telegram_media`, `gpui_telegram_desktop`",
+      "ledger_shards": "`media.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`media/audio/`, `data/data_document.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["media.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 377,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N07 and FUS-M005/M006 voice capture/playback audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Device audio capture, 5-bit waveform encoding, and audible playback (FUS-M005/M006) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N07",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N08",
+      "capability": "Audio Player Floating Bar",
+      "upstream_anchors": "`media/player/`, `history/view/controls/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_media`",
+      "ledger_shards": "`media.json`, `history.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`media/player/`, `history/view/controls/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["media.json", "history.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 453,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N08 and FUS-M006 floating player reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Real audio position/pause/seek and resource release (FUS-M006) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06", "Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N08",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N09",
+      "capability": "Round Video Notes",
+      "upstream_anchors": "`media/clip/`, `editor/video/`",
+      "candidate_owners": "`gpui_telegram_media`, `gpui_telegram_desktop`",
+      "ledger_shards": "`media.json`, `editor.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`media/clip/`, `editor/video/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["media.json", "editor.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 246,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N09 round video clip & timeline editor reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Round video capture, circular mask playback, and trim timeline behavior remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N09",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N10",
+      "capability": "Media Viewer Lightbox",
+      "upstream_anchors": "`media/view/`, `media/stories/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`media.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`media/view/`, `media/stories/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["media.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 151,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N10 and FUS-M004 media viewer overlay reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Lightbox zoom/pan/rotate, gallery navigation, and actual decoded pixel rendering remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N10",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N11",
+      "capability": "Groups & Supergroups",
+      "upstream_anchors": "`data/`, `boxes/peers/`, `api/`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_server`",
+      "ledger_shards": "`data.json`, `boxes.json`, `api.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`data/`, `boxes/peers/`, `api/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["data.json", "boxes.json", "api.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 561,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server chat create/list/get wired in FUS-S001; peer management boxes in views/boxes/ remain unmounted behind ModalContainer::render."]
+        },
+        "behavior_tested": {
+          "status": "partial",
+          "verified_runs": [
+            {
+              "run_id": "20261108T212435",
+              "suite": "fusion_durable_chat_routes",
+              "passed": 8,
+              "total": 8
+            }
+          ],
+          "unverified_scope": "Focused durable chat create/list/get passed (8/8), but membership mutations (FUS-I002), admin rights, and GPUI group management flows remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 03", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N11",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N12",
+      "capability": "Channels & Broadcasts",
+      "upstream_anchors": "`data/`, `info/channel_statistics/`, `api/`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_server`",
+      "ledger_shards": "`data.json`, `info.json`, `api.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`data/`, `info/channel_statistics/`, `api/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["data.json", "info.json", "api.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 594,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N12 channel broadcast and statistics reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "partial",
+          "verified_runs": [
+            {
+              "run_id": "20261108T212435",
+              "suite": "fusion_durable_chat_routes",
+              "passed": 8,
+              "total": 8
+            }
+          ],
+          "unverified_scope": "Focused chat create/list/get passed (8/8), but broadcast-only posting permissions, subscriber counts, and channel statistics remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 03", "Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N12",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N13",
+      "capability": "Forum Topics & Threads",
+      "upstream_anchors": "`data/data_forum_topic.cpp`, `dialogs/ui/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_server`",
+      "ledger_shards": "`data.json`, `dialogs.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`data/data_forum_topic.cpp`, `dialogs/ui/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["data.json", "dialogs.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 309,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N13 forum topic list and thread drawer reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Forum topic creation, per-topic unread state, and thread history routing remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 05"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N13",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N14",
+      "capability": "Reactions & Emoji Popups",
+      "upstream_anchors": "`history/view/reactions/`, `ui/controls/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`history.json`, `ui.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/view/reactions/`, `ui/controls/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json", "ui.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 756,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server HTTP messages_reaction in server.rs:1517-1529 increments pts without durable reaction persistence (FUS-S007 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Durable per-user reaction replacement, retry idempotence, and cross-device reaction sync (FUS-S007) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N14",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N15",
+      "capability": "Stickers & Lottie Animations",
+      "upstream_anchors": "`chat_helpers/`, `data/stickers/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_media`",
+      "ledger_shards": "`chat_helpers.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`chat_helpers/`, `data/stickers/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["chat_helpers.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 283,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N15 sticker selector and Lottie frame renderer reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Sticker set installation, TGS/Lottie decompression, and GPU frame upload remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 07"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N15",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N16",
+      "capability": "Polls & Quizzes",
+      "upstream_anchors": "`poll/`, `boxes/polls.style`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_proto`",
+      "ledger_shards": "`poll.json`, `boxes.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`poll/`, `boxes/polls.style`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "partial",
+          "existing_shards": ["boxes.json"],
+          "missing_shards": ["poll.json"],
+          "shard_mapped_files": 219,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["CreatePollBox in views/boxes/create_poll_box.rs has #![allow(dead_code)] and is not mounted by ModalContainer::render (views/app_shell/modal_container.rs:137-140)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Interactive poll creation modal (FUS-U001), vote submission, and quiz explanation reveal remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N16",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N17",
+      "capability": "Pinned Messages Banner",
+      "upstream_anchors": "`history/view/history_view_pinned_bar.cpp`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`history.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/view/history_view_pinned_bar.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 302,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N17 pinned message bar and server pin persistence reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Multi-pin cycling, jump-to-message scroll, and server pin state persistence remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N17",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N18",
+      "capability": "Scheduled & Silent Send",
+      "upstream_anchors": "`history/view/controls/history_view_send_button.cpp`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_server`",
+      "ledger_shards": "`history.json`, `chat_helpers.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/view/controls/history_view_send_button.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json", "chat_helpers.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 359,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N18 send button menu and server scheduled queue reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Scheduled message queue persistence, due delivery, and silent send notification suppression remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06", "Module 07"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N18",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N19",
+      "capability": "Edit, Delete & Tombstones",
+      "upstream_anchors": "`history/history_item.cpp`, `api/api_sending.cpp`",
+      "candidate_owners": "`gpui_telegram_proto`, `gpui_telegram_server`",
+      "ledger_shards": "`history.json`, `api.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/history_item.cpp`, `api/api_sending.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json", "api.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 418,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server HTTP messages_edit and messages_delete in server.rs:1488-1515 increment pts without durable SQLite mutation (FUS-S005/S006 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Author/role edit & delete authorization, tombstone persistence across restart, and cross-device propagation (FUS-S005/S006) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 06"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N19",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N20",
+      "capability": "PTS Sequence Sync Engine",
+      "upstream_anchors": "`api/api_updates.cpp`, `storage/storage_account.cpp`",
+      "candidate_owners": "`gpui_telegram_proto`, `gpui_telegram_server`",
+      "ledger_shards": "`api.json`, `storage.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`api/api_updates.cpp`, `storage/storage_account.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["api.json", "storage.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 163,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N20 and FUS-S009 difference recovery reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "partial",
+          "verified_runs": [
+            {
+              "run_id": "20261108T212341",
+              "suite": "fusion_atomic_message_commit",
+              "passed": 6,
+              "total": 6
+            }
+          ],
+          "unverified_scope": "Focused atomic PTS allocation under message commit passed (6/6), but real difference recovery across gaps/reconnect (FUS-S009) remains unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 03"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N20",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N21",
+      "capability": "Full-Text Search Engine",
+      "upstream_anchors": "`storage/storage_databases.cpp`, `dialogs/`",
+      "candidate_owners": "`gpui_telegram_server`, `gpui_telegram_desktop`",
+      "ledger_shards": "`storage.json`, `dialogs.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`storage/storage_databases.cpp`, `dialogs/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["storage.json", "dialogs.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 130,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server HTTP search_messages in server.rs:1958-1967 returns empty hits array without querying Tantivy SearchIndex."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Authenticated message indexing, membership-scoped search queries, and GPUI search result navigation remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 05"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N21",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N22",
+      "capability": "Shared Media Archive Tabs",
+      "upstream_anchors": "`info/media/`, `overview/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`info.json`, `overview.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`info/media/`, `overview/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "partial",
+          "existing_shards": ["info.json"],
+          "missing_shards": ["overview.json"],
+          "shard_mapped_files": 252,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N22 and FUS-I003 shared media query reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Peer-scoped shared media/files/links/voice tab queries and truthful empty state (FUS-I003) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N22",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N23",
+      "capability": "Context Inspector Drawer",
+      "upstream_anchors": "`info/`, `info/profile/`, `info/members/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`info.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`info/`, `info/profile/`, `info/members/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["info.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 252,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["ContextInspector cloud initialization fabricates peer profile state on empty selection (FUS-D003 pending verification); peer detail hydration (FUS-I001) pending."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Authoritative peer detail hydration, selection fencing, and no stale peer disclosure (FUS-D003, FUS-I001) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N23",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N24",
+      "capability": "1-on-1 VoIP Audio/Video",
+      "upstream_anchors": "`calls/`, `calls/ui/`, `calls/group/`",
+      "candidate_owners": "`gpui_telegram_webrtc`, `gpui_telegram_desktop`",
+      "ledger_shards": "`calls.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`calls/`, `calls/ui/`, `calls/group/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["calls.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 88,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N24 WebRTC signaling and GPUI call overlay reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Live 1-on-1 call signaling, ICE negotiation, and media stream teardown remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 10"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N24",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N25",
+      "capability": "Group Voice/Video Chats",
+      "upstream_anchors": "`calls/group/`, `calls/group/ui/`",
+      "candidate_owners": "`gpui_telegram_webrtc`, `gpui_telegram_desktop`",
+      "ledger_shards": "`calls.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`calls/group/`, `calls/group/ui/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["calls.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 88,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N25 group call stage and participant grid reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Group call participant join/leave, mute state, and video tile layout remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 10"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N25",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N26",
+      "capability": "Low-Latency Screen Share",
+      "upstream_anchors": "`calls/group/ui/desktop_capture_choose_source.cpp`",
+      "candidate_owners": "`gpui_telegram_webrtc`, `gpui_telegram_desktop`",
+      "ledger_shards": "`calls.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`calls/group/ui/desktop_capture_choose_source.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["calls.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 88,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N26 desktop capture source chooser and WebRTC video track reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "OS screen/window enumeration, capture frame pipeline, and permission denial handling remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 10"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N26",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N27",
+      "capability": "Inline Keyboards & Bots",
+      "upstream_anchors": "`inline_bots/`, `boxes/compose_ai_box.cpp`",
+      "candidate_owners": "`gpui_telegram_proto`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inline_bots.json`, `boxes.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`inline_bots/`, `boxes/compose_ai_box.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["inline_bots.json", "boxes.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 239,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N27 inline bot query popup and callback button dispatch reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Inline bot query debouncing, result selection, and callback query acknowledgement remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 07", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N27",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N28",
+      "capability": "Mini Apps Sandboxed Frame",
+      "upstream_anchors": "`boxes/url_auth_box_content.cpp`, `ui/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`boxes.json`, `ui.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`boxes/url_auth_box_content.cpp`, `ui/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["boxes.json", "ui.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 673,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N28 Mini Apps webview/sandboxed frame and url_auth_box mounting audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "URL auth consent, Mini App bridge message validation, and origin isolation remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N28",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N29",
+      "capability": "Contacts & Address Book",
+      "upstream_anchors": "`boxes/add_contact_box.cpp`, `data/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`boxes.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`boxes/add_contact_box.cpp`, `data/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["boxes.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 445,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N29 and FUS-U001 AddContactBox modal mounting audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Contact import/addition, block/unblock state, and server contact list sync remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N29",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N30",
+      "capability": "User Profile & Presence",
+      "upstream_anchors": "`profile/`, `info/profile/`, `data/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_proto`",
+      "ledger_shards": "`profile.json`, `info.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`profile/`, `info/profile/`, `data/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "partial",
+          "existing_shards": ["info.json", "data.json"],
+          "missing_shards": ["profile.json"],
+          "shard_mapped_files": 478,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N30 and FUS-I001 authoritative user profile and presence hydration audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Truthful online/last-seen presence, bio/username hydration, and profile photo updates remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N30",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N31",
+      "capability": "Chat Settings & Theme Engine",
+      "upstream_anchors": "`settings/`, `window/themes/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`settings.json`, `window.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`settings/`, `window/themes/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["settings.json", "window.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 249,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N31 and FUS-U002 settings persistence wiring audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Theme switching, wallpaper customization, and settings persistence across restart (FUS-U002) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 04", "Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N31",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N32",
+      "capability": "System Notifications & Badges",
+      "upstream_anchors": "`platform/mac/`, `data/notify/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`platform.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`platform/mac/`, `data/notify/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["platform.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 358,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N32 macOS notification dispatch and dock badge reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Per-peer mute schedules, OS notification delivery, and unread dock badge synchronization remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 12"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N32",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N33",
+      "capability": "Privacy & Security Controls",
+      "upstream_anchors": "`settings/sections/settings_privacy_controllers.cpp`",
+      "candidate_owners": "`gpui_telegram_server`, `gpui_telegram_desktop`",
+      "ledger_shards": "`settings.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`settings/sections/settings_privacy_controllers.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["settings.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 121,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N33 privacy rule controller and server enforcement reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Last-seen/phone/profile-photo visibility rules, exception lists, and server-side enforcement remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N33",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N34",
+      "capability": "Storage & Cache Management",
+      "upstream_anchors": "`settings/sections/settings_local_storage.cpp`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_desktop`",
+      "ledger_shards": "`settings.json`, `storage.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`settings/sections/settings_local_storage.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["settings.json", "storage.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 168,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N34 local cache breakdown and eviction UI reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Cache size accounting by category, TTL eviction, and manual clear-cache execution remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N34",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N35",
+      "capability": "Proxy & Network Diagnostics",
+      "upstream_anchors": "`boxes/connection_box.cpp`, `mtproto/`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_desktop`",
+      "ledger_shards": "`boxes.json`, `mtproto.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`boxes/connection_box.cpp`, `mtproto/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["boxes.json", "mtproto.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 295,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N35 ConnectionBox mounting and client proxy transport wiring audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "SOCKS5/HTTP/MTProxy configuration, ping measurement, and truthful offline/connecting states remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 02", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N35",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N36",
+      "capability": "Draft Sync & Realtime Preview",
+      "upstream_anchors": "`dialogs/ui/dialogs_layout.cpp`, `data/`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_desktop`",
+      "ledger_shards": "`dialogs.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`dialogs/ui/dialogs_layout.cpp`, `data/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["dialogs.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 309,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N36 composer draft persistence and dialog row preview reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Local and cloud draft persistence across chat switches and app restarts remains unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 05"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N36",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N37",
+      "capability": "Archive & Custom Filter Tabs",
+      "upstream_anchors": "`dialogs/`, `boxes/filters/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`dialogs.json`, `boxes.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`dialogs/`, `boxes/filters/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["dialogs.json", "boxes.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 302,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N37 and FUS-U003 server-backed folders and archive drawer reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Archive folder toggle, custom filter creation/ordering, and server folder sync (FUS-U003) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 05", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N37",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N38",
+      "capability": "Stories Top Strip & Viewer",
+      "upstream_anchors": "`media/stories/`, `data/data_stories.cpp`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_media`",
+      "ledger_shards": "`media.json`, `data.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`media/stories/`, `data/data_stories.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["media.json", "data.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 377,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N38 story ribbon and full-screen story player reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Story ring unread state, 24h expiration, hold-to-pause, and story reaction/reply submission remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N38",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N39",
+      "capability": "Secret Chats & E2EE Ratchet",
+      "upstream_anchors": "`storage/details/storage_file_utilities.cpp`",
+      "candidate_owners": "`gpui_telegram_core`, `gpui_telegram_proto`",
+      "ledger_shards": "`storage.json`, `core.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`storage/details/storage_file_utilities.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["storage.json", "core.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 323,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N39 secret chat DH handshake and inherited fabushi_messaging_core::secret_chat integration audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "End-to-end key exchange, forward secrecy ratcheting, and local key destruction on close remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 01", "Module 03"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N39",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N40",
+      "capability": "Self-Destruct Timers (TTL)",
+      "upstream_anchors": "`ui/controls/ttl_media.style`, `history/`",
+      "candidate_owners": "`gpui_telegram_core`, `gpui_telegram_desktop`",
+      "ledger_shards": "`ui.json`, `history.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`ui/controls/ttl_media.style`, `history/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["ui.json", "history.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 756,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N40 TTL countdown timer and server expiration purge reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "View-once/TTL media timer start on open, automatic deletion upon expiry, and storage purge remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N40",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N41",
+      "capability": "Location & Live Location",
+      "upstream_anchors": "`ui/controls/location_picker.style`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_proto`",
+      "ledger_shards": "`ui.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`ui/controls/location_picker.style`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["ui.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 454,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N41 location picker and live coordinate update reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Coordinate attachment, map tile preview, and live location beacon expiration remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N41",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N42",
+      "capability": "Web Link Previews (OpenGraph)",
+      "upstream_anchors": "`history/view/history_view_webpage.cpp`",
+      "candidate_owners": "`gpui_telegram_server`, `gpui_telegram_desktop`",
+      "ledger_shards": "`history.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`history/view/history_view_webpage.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["history.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 302,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N42 webpage preview card and composer preview dismissal reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "OpenGraph metadata extraction, SSRF safety, and message webpage card rendering remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 06"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N42",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N43",
+      "capability": "Export Chat History (JSON)",
+      "upstream_anchors": "`export/`, `export/view/`, `export/output/`",
+      "candidate_owners": "`gpui_telegram_client`, `gpui_telegram_desktop`",
+      "ledger_shards": "`export.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`export/`, `export/view/`, `export/output/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["export.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 35,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N43 export wizard modal mounting and JSON/HTML writer reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Authenticated history pagination export, media download bundling, and cancellation cleanup remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N43",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N44",
+      "capability": "Language & Localization",
+      "upstream_anchors": "`lang/`, `lang/lang_keys.h`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`lang.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`lang/`, `lang/lang_keys.h`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["lang.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 25,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N44 language pack selector and live UI string reload reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Cloud language pack download, pluralization rules, and persisted locale switching remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 12"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N44",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N45",
+      "capability": "Telegram Keybindings",
+      "upstream_anchors": "`settings/settings_key_navigation.cpp`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`settings.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`settings/settings_key_navigation.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["settings.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 121,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N45 GPUI keymap registration and custom shortcut editor reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Keyboard dialog navigation, search focus shortcuts, and custom keybinding persistence remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N45",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N46",
+      "capability": "Custom Window Frame (Metal)",
+      "upstream_anchors": "`window/window_main_menu.cpp`, `platform/mac/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`window.json`, `platform.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`window/window_main_menu.cpp`, `platform/mac/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["window.json", "platform.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 260,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N46 window geometry, titlebar controls, and main menu drawer reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Window bounds persistence, fullscreen/minimize transitions, and macOS traffic-light inset behavior remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 04", "Module 12"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N46",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N47",
+      "capability": "Drag-and-Drop & Clipboard",
+      "upstream_anchors": "`boxes/send_files_box.cpp`, `window/`",
+      "candidate_owners": "`gpui_telegram_desktop`",
+      "ledger_shards": "`boxes.json`, `window.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`boxes/send_files_box.cpp`, `window/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["boxes.json", "window.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 347,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N47 and FUS-M003 SendFilesBox modal mounting and OS drag-drop target audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "External file drop target, clipboard image paste preview, and caption compression toggles remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 04", "Module 08"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N47",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N48",
+      "capability": "Auto-Download Policy Rules",
+      "upstream_anchors": "`settings/sections/settings_data_and_storage.cpp`",
+      "candidate_owners": "`gpui_telegram_client`",
+      "ledger_shards": "`settings.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`settings/sections/settings_data_and_storage.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["settings.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 121,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N48 auto-download policy evaluation and settings UI reachability audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Peer-type (private/group/channel) media size limits and automatic background pre-fetching remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 11"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N48",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N49",
+      "capability": "Multi-Account Switching",
+      "upstream_anchors": "`window/window_main_menu.cpp`, `core/`",
+      "candidate_owners": "`gpui_telegram_desktop`, `gpui_telegram_client`",
+      "ledger_shards": "`window.json`, `core.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`window/window_main_menu.cpp`, `core/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["window.json", "core.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 404,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N49 and FUS-D004 multi-account switching and session isolation audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Account slot limits, isolated local storage/tokens per account, and live account switching remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 01", "Module 04"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N49",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N50",
+      "capability": "Account Scope Generation Fencing",
+      "upstream_anchors": "`data/data_session.cpp`, `core/`",
+      "candidate_owners": "`gpui_telegram_core`, `gpui_telegram_client`",
+      "ledger_shards": "`data.json`, `core.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`data/data_session.cpp`, `core/`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["data.json", "core.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 502,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-TCG-N50 and FUS-D004 generation fencing across async responses and account switches."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Stale async response dropping after account/peer switch (FUS-D004) remains unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 01", "Module 03"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N50",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N51",
+      "capability": "Chunked Media Upload Pipeline",
+      "upstream_anchors": "`storage/file_upload.cpp`",
+      "candidate_owners": "`gpui_telegram_media`, `gpui_telegram_server`",
+      "ledger_shards": "`storage.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`storage/file_upload.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["storage.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 47,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server chunked media upload handlers in server.rs:1807-1846 discard bytes without committing to CAS (FUS-M001 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Resumable part storage, SHA-256 verification, and size/ownership rejection (FUS-M001) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N51",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "TCG-N52",
+      "capability": "Range-Request Media Stream",
+      "upstream_anchors": "`data/data_streaming.cpp`",
+      "candidate_owners": "`gpui_telegram_server`, `gpui_telegram_media`",
+      "ledger_shards": "`data.json`, `media.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "upstream_tdesktop",
+        "revision": "f985723b552b30fe1c17d377d57f44e61a15a8c4",
+        "anchors": "`data/data_streaming.cpp`"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "verified",
+          "existing_shards": ["data.json", "media.json"],
+          "missing_shards": [],
+          "shard_mapped_files": 377,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Server media_stream in server.rs:1885-1899 returns static 24-byte RIFF WAVE header instead of range-streaming stored media (FUS-M002 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "HTTP 206 byte-range round-trip, 416 invalid range rejection, and access control (FUS-M002) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 03", "Module 09"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-TCG-N52",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-01",
+      "capability": "AI Multi-Agent ACP Runner",
+      "upstream_anchors": "`source/host` (ACP runner, thinking loop)",
+      "candidate_owners": "`gpui_telegram_agent`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_host.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`source/host` (ACP runner, thinking loop)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_host.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["AcpRunner in crates/gpui_telegram_agent/src/acp/runner.rs:64-90,219-224 wires NoopRoutedToolBridge, EphemeralCheckpointStore, and canned response text (FUS-F001 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Real provider/tool execution, cancellation, and checkpoint restart (FUS-F001) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_host.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-01",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-02",
+      "capability": "Global Task Center & Cron FSM",
+      "upstream_anchors": "`source/host` (7-state task FSM, 5-field cron)",
+      "candidate_owners": "`gpui_telegram_agent`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_host.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`source/host` (7-state task FSM, 5-field cron)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_host.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["AppShell::render_task_center_panel in views/shell.rs:4954-4993 renders a static 4-item array instead of querying GlobalTasksWorkspace/TaskFsm (FUS-F003/F004 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Persisted running/waiting/terminal task projection and scheduled cron execution (FUS-F003/F004) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_host.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-02",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-03",
+      "capability": "MCP & Plugin Tools Ecosystem",
+      "upstream_anchors": "`source/host` (Stdio/SSE MCP, PermissionDock)",
+      "candidate_owners": "`gpui_telegram_agent`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_host.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`source/host` (Stdio/SSE MCP, PermissionDock)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_host.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["AppShell::render_mcp_tools_panel in views/shell.rs:5041-5076 renders a static 4-item array and server mcp_tool_call in server.rs:2423-2435 returns a synthetic string without invoking McpRegistry (FUS-F002 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Registered MCP executor routing, permission approval dock, and error propagation (FUS-F002) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_host.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-03",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-04",
+      "capability": "Remote Computer Control (CUA)",
+      "upstream_anchors": "`source/node-agent-coordinator` (VNC frame stream)",
+      "candidate_owners": "`gpui_telegram_agent`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_node.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`source/node-agent-coordinator` (VNC frame stream)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_node.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["CuaExecutor::execute in crates/gpui_telegram_agent/src/computer/cua_executor.rs:27-34 logs and returns a formatted string without executing OS/VNC actions; server computer_action_execute in server.rs:2547-2560 returns static JSON (FUS-F005/F006 pending)."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Authorized remote device inventory, live frame/input transport, lease expiry, and user takeover (FUS-F005/F006) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_node.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-04",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-05",
+      "capability": "Full-Duplex Talk Mode & Energy",
+      "upstream_anchors": "`source/host` (realtime audio VAD, barge-in)",
+      "candidate_owners": "`gpui_telegram_media`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_host.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`source/host` (realtime audio VAD, barge-in)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_host.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "unverified",
+          "verified_entrypoints": [],
+          "blocking_findings": ["Pending FUS-AUDIT-CAP-05 and FUS-F007 full-duplex mic/STT/model/TTS and barge-in integration audit."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "Full-duplex audio capture, VAD barge-in interruption, and session reconnect (FUS-F007) remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_host.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-05",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    },
+    {
+      "capability_id": "CAP-06",
+      "capability": "A2UI Declarative Cards",
+      "upstream_anchors": "`native/mahayana-messaging` (rich cards)",
+      "candidate_owners": "`gpui_telegram_proto`, `gpui_telegram_desktop`",
+      "ledger_shards": "`inherited_messaging.json`",
+      "state": "requires_behavior_audit",
+      "scope_source": "docs/specs/01-telegram-1to1-feature-inventory.md",
+      "source_oracle": {
+        "kind": "inherited_fabushi",
+        "revision": "fabushi-unified-design-20261105",
+        "anchors": "`native/mahayana-messaging` (rich cards)"
+      },
+      "evidence_stages": {
+        "file_mapped": {
+          "status": "missing_shard",
+          "existing_shards": [],
+          "missing_shards": ["inherited_messaging.json"],
+          "shard_mapped_files": 0,
+          "shard_implemented_count": 0,
+          "shard_verified_count": 0
+        },
+        "entrypoint_reachable": {
+          "status": "stubbed",
+          "verified_entrypoints": [],
+          "blocking_findings": ["crates/gpui_telegram_server/src/domain.rs and crates/gpui_telegram_desktop/src/domain.rs are 9-line unused pub use fabushi_messaging_core::* shims; payments_checkout_process.rs and gram_api_account.rs have zero imports from fabushi_messaging_core."]
+        },
+        "behavior_tested": {
+          "status": "unverified",
+          "verified_runs": [],
+          "unverified_scope": "A2UI card payload validation, interactive card action dispatch, and fabushi_messaging_core engine wiring remain unverified."
+        },
+        "ui_evidence_captured": { "status": "unverified", "artifacts": [] },
+        "packaged_accepted": { "status": "unverified", "artifacts": [] }
+      },
+      "historical_claims": {
+        "pre_fusion_roadmap_modules": ["Module 13 (historical aggregate narrative only; dedicated inherited_messaging.json missing on disk)"],
+        "pre_fusion_claimed_status": "ACCEPTED (historical Gate 6.2 boilerplate-0 claim, 2026-11-06..07)",
+        "disposition": "historical_claim_retained_not_accepted_for_fusion_20261108"
+      },
+      "next_task": {
+        "id": "FUS-AUDIT-CAP-06",
+        "deliverable": "Source-version pinned reachable behavior inventory, missing cases, and separately owned atomic implementation tasks with positive/negative acceptance oracles",
+        "acceptance": "Coordinator verifies source references and runtime reachability; historical ledger status is not completion"
+      }
+    }
+  ]
+}

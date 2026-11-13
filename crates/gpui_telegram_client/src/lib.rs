@@ -1,17 +1,26 @@
 pub mod cache;
 pub mod client;
+pub mod config;
 pub mod net;
 pub mod session_persistence;
 pub mod sync;
 
 pub use cache::LocalStore;
 pub use client::TelegramClient;
-pub use net::{HttpClient, WsChannel};
+pub use config::{ClientConfig, ConfigSource, StoredSession};
+pub use net::{
+    AddContactHttpRequest, AddContactHttpResponse, AgentRunRequest, AgentRunResponse,
+    AlipayPollResponse, AlipayStartResponse, AlipayUserDto, AuthResponse, ChatSummary,
+    ConnectionStatus, CreateChatPayload, CreateChatResponse, EmailRegisterRequest,
+    EmailSendCodeRequest, EmailSendCodeResponse, HistoricalMessageItem, HttpClient,
+    HttpClientError, LoginRequest, RegisterRequest, SearchResultItemDto, SendMessageHttpRequest,
+    SendMessageResponse, ServerStatusResponse, UserMeResponse, WsChannel, WsTransport,
+};
 pub use session_persistence::{
     AccountSessionRecord, ActiveDeviceSession, PersistedClientState, ProxyEndpointRecord,
     SessionPersistenceBridge, WalletTransactionRecord,
 };
-pub use sync::ClientSyncCoordinator;
+pub use sync::{ClientSyncCoordinator, SyncOutcome};
 
 pub mod data;
 pub use data::*;

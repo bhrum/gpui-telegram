@@ -27,7 +27,7 @@ impl SettingsCallsSections {
             input_device: "Default Microphone".into(),
             output_device: "Default Output Device".into(),
             camera_device: "FaceTime HD Camera".into(),
-            mic_level: 0.35,
+            mic_level: 0.0,
             mic_test_active: false,
             p2p_mode: "My Contacts".into(),
             accept_calls: true,
@@ -115,7 +115,11 @@ impl Default for SettingsCallsSections {
 
 impl Render for SettingsCallsSections {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mic_pct = (self.mic_level * 100.0).clamp(0.0, 100.0);
+        let mic_pct = if self.mic_test_active {
+            (self.mic_level * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
 
         div()
             .flex()

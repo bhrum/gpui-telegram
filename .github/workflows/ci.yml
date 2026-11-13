@@ -3,8 +3,12 @@ name: GPUI Telegram CI & 1:1 Parity Verification
 on:
   push:
     branches: [main, master, dev]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 concurrency:
   group: gpui-telegram-ci-${{ github.ref }}
@@ -42,26 +46,42 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          shared-key: "macos-15-gpui-telegram-v1"
+          shared-key: "macos-15-gpui-telegram-v2"
       - name: Check Workspace & All Targets
         run: |
           cargo check --workspace
           cargo check --workspace --all-targets
       - name: Gate 6.3 Ledger Closure Verification
         run: python3 scripts/verify_ledger_closure.py --ci-without-upstream
-      - name: Run GPUI Telegram & Inherited Test Suites
+      - name: Run GPUI Telegram & Inherited Deterministic Test Suites
         run: |
-          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_media -p gpui_telegram_webrtc -p gpui_telegram_agent -p gpui_telegram_server -p gpui_telegram_client -p gpui_telegram_desktop -p gpui_telegram_test_harness -p fabushi-messaging-core -p mahayana-node-agent-coordinator
+          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_media -p gpui_telegram_webrtc -p gpui_telegram_agent -p gpui_telegram_server -p gpui_telegram_test_harness -p fabushi-messaging-core -p mahayana-node-agent-coordinator
+          cargo test --profile ci -p gpui_telegram_client --lib --test auth_client_tests
+          cargo test --profile ci -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests --test auth_wizard_tabs_tests --test dialogs_widget_subsystem_tests --test window_themes_subsystem_tests --test fusion_inspector_truth_tests --test fusion_shell_truth_tests --test fusion_sidebar_truth_tests --test fusion_stage_truth_tests --test milestone_1_nav_calls_regression_tests --test milestone_3_settings_regression_tests
           python3 scripts/clean_build_garbage.py
-      - name: Build Release GPUI Binaries
-        run: cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+      - name: Build Release GPUI Binaries & Package macOS App Bundle
+        run: |
+          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+          python3 scripts/package_release.py --version 1.0.0 --skip-clean
       - uses: actions/upload-artifact@v4
         with:
           name: gpui-telegram-macos-arm64
           path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
             target/release/gpui_telegram_desktop
             target/release/gpui_telegram_server
-          retention-days: 14
+          retention-days: 30
+      - name: Upload macOS Release Assets on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          cp target/release/gpui_telegram_server "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64"
+          shasum -a 256 "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" >> dist/SHA256SUMS
+          gh release upload "$TAG_NAME" dist/*.tar.gz "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" dist/SHA256SUMS --clobber
 
   linux-cross-platform-verify:
     name: Linux X11/Wayland/Vulkan Cross-Platform Check & Tests
@@ -77,12 +97,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          shared-key: "ubuntu-24-gpui-telegram-v2"
+          shared-key: "ubuntu-24-gpui-telegram-v3"
+      - name: Patch Legacy xattr-0.2.3 ENOATTR for Linux libc
+        run: |
+          cargo fetch
+          python3 -c 'import glob,json,os; [([open(p,"w").write(open(p).read().replace("::libc::ENOATTR","::libc::ENODATA").replace("libc::ENOATTR","libc::ENODATA")) for p in glob.glob(d+"/src/**/*.rs",recursive=True) if "ENOATTR" in open(p).read()], json.dump({**json.load(open(d+"/.cargo-checksum.json")),"files":{}},open(d+"/.cargo-checksum.json","w"))) for d in glob.glob(os.path.expanduser("~/.cargo/registry/src/*/xattr-0.2.3"))]'
       - name: Check Full Workspace All-Targets on Linux
         run: |
           cargo check --workspace --all-targets
           python3 scripts/clean_build_garbage.py
       - name: Run Protocol, Persistence & Desktop Tests on Linux
         run: |
-          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_client -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
+          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_client --lib --test auth_client_tests
+          cargo test --profile ci -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
           python3 scripts/clean_build_garbage.py
+      - name: Build & Upload Linux Release Binaries on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+          tar -czf "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" -C target/release gpui_telegram_desktop gpui_telegram_server
+          gh release upload "$TAG_NAME" "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" --clobber

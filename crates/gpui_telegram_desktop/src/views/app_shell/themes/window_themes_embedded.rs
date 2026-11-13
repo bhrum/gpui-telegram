@@ -43,8 +43,8 @@ impl WindowThemesEmbeddedThemes {
                 background: 0xFFFFFF,
                 sidebar_bg: 0xF1F1F1,
                 bubble_in: 0xFFFFFF,
-                bubble_out: 0xEEFFDE,
-                accent: 0x2AABEE,
+                bubble_out: 0xDEF1FD,
+                accent: 0x40A7E3,
             },
             BuiltinTheme::DefaultClassic => EmbeddedPaletteScheme {
                 theme,
@@ -56,7 +56,7 @@ impl WindowThemesEmbeddedThemes {
             },
             BuiltinTheme::Night => EmbeddedPaletteScheme {
                 theme,
-                background: 0x18222D,
+                background: 0x17212B,
                 sidebar_bg: 0x0E1621,
                 bubble_in: 0x182533,
                 bubble_out: 0x2B5278,
