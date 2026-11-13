@@ -761,6 +761,31 @@ impl AppShell {
         cx.notify();
     }
 
+    pub fn open_alipay_browser_url(url: &str) -> bool {
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        let cmd = std::process::Command::new("open").arg(url).spawn();
+        #[cfg(target_os = "linux")]
+        let cmd = std::process::Command::new("xdg-open").arg(url).spawn();
+        #[cfg(target_os = "windows")]
+        let cmd = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+        cmd.is_ok()
+    }
+
+    pub fn open_alipay_web_auth(&mut self, cx: &mut Context<Self>) {
+        if self.alipay_is_loading {
+            return;
+        }
+        if let Some(url) = self.alipay_auth_url.clone() {
+            let _ = Self::open_alipay_browser_url(&url);
+            cx.notify();
+        } else {
+            self.start_alipay_flow(cx);
+        }
+    }
+
     pub fn start_alipay_flow(&mut self, cx: &mut Context<Self>) {
         self.alipay_is_loading = true;
         self.alipay_status_text = if self.is_chinese_locale {
@@ -811,7 +836,9 @@ impl AppShell {
             if ok {
                 if let Some(att_id) = launched_attempt_id {
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                        let _ = client.runtime().spawn(async {
+                            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                        }).await;
 
                         let should_continue = weak_shell.update(app, |shell, _cx| {
                             shell.alipay_poll_generation == poll_gen
@@ -2405,6 +2432,8 @@ impl AppShell {
                     "enter" => {
                         if let Some(p) = self.ime_preedit.take() {
                             self.insert_committed_text(&p, cx);
+                        } else if self.auth_wizard_tab == AuthWizardTab::AlipayQr {
+                            self.open_alipay_web_auth(cx);
                         } else if self.auth_wizard_tab == AuthWizardTab::EmailRegister {
                             self.submit_email_register(cx);
                         } else if self.is_register_mode {
