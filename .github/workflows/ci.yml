@@ -1,0 +1,88 @@
+name: GPUI Telegram CI & 1:1 Parity Verification
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: gpui-telegram-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CI: "true"
+
+jobs:
+  ledger-parity-audit:
+    name: Ledger Closure & Static Parity Audit (3,441 Upstream Files)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run 6-Gate Source-File Parity Ledger Verification
+        run: python3 scripts/verify_ledger_closure.py --ci-without-upstream --skip-cargo
+
+  macos-gpui-verify:
+    name: macOS Apple Silicon GPUI Build & Full Test Suite
+    runs-on: macos-15
+    needs: ledger-parity-audit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Metal Shader Toolchain & Protobuf
+        run: |
+          xcrun -sdk macosx metal -v || xcodebuild -downloadComponent MetalToolchain || true
+          which protoc || brew install protobuf
+          which cmake || brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "macos-15-gpui-telegram-v1"
+      - name: Check Workspace & All Targets
+        run: |
+          cargo check --workspace
+          cargo check --workspace --all-targets
+      - name: Gate 6.3 Ledger Closure Verification
+        run: python3 scripts/verify_ledger_closure.py --ci-without-upstream
+      - name: Run GPUI Telegram & Inherited Test Suites
+        run: |
+          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_media -p gpui_telegram_webrtc -p gpui_telegram_agent -p gpui_telegram_server -p gpui_telegram_client -p gpui_telegram_desktop -p gpui_telegram_test_harness -p fabushi-messaging-core -p mahayana-node-agent-coordinator
+          python3 scripts/clean_build_garbage.py
+      - name: Build Release GPUI Binaries
+        run: cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-telegram-macos-arm64
+          path: |
+            target/release/gpui_telegram_desktop
+            target/release/gpui_telegram_server
+          retention-days: 14
+
+  linux-cross-platform-verify:
+    name: Linux X11/Wayland/Vulkan Cross-Platform Check & Tests
+    runs-on: ubuntu-24.04
+    needs: ledger-parity-audit
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake protobuf-compiler clang libclang-dev libssl-dev libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libasound2-dev libfontconfig1-dev libfreetype6-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "ubuntu-24-gpui-telegram-v2"
+      - name: Check Full Workspace All-Targets on Linux
+        run: |
+          cargo check --workspace --all-targets
+          python3 scripts/clean_build_garbage.py
+      - name: Run Protocol, Persistence & Desktop Tests on Linux
+        run: |
+          cargo test --profile ci -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_client -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
+          python3 scripts/clean_build_garbage.py
