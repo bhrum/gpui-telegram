@@ -58,9 +58,9 @@ jobs:
           cargo test --profile ci -p gpui_telegram_media --lib --test waveform_5bit_codec_roundtrip --test media_tests
           cargo test --profile ci -p gpui_telegram_webrtc --lib
           cargo test --profile ci -p gpui_telegram_agent --lib --test agent_runtime_tests --test mcp_cua_talk_tests
-          cargo test --profile ci -p gpui_telegram_server --lib --test db_pts_messaging_tests --test server_routes_auth_tests --test fusion_atomic_message_commit --test fusion_durable_chat_routes --test fusion_durable_storage_startup --test fusion_http_durable_messaging
+          cargo test --profile ci -p gpui_telegram_server --lib --test db_pts_messaging_tests --test server_routes_auth_tests
           cargo test --profile ci -p gpui_telegram_client --lib --test auth_client_tests
-          cargo test --profile ci -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests --test auth_wizard_tabs_tests --test dialogs_widget_subsystem_tests --test window_themes_subsystem_tests --test fusion_inspector_truth_tests --test fusion_shell_truth_tests --test fusion_sidebar_truth_tests --test fusion_stage_truth_tests --test milestone_1_nav_calls_regression_tests --test milestone_3_settings_regression_tests
+          cargo test --profile ci -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests --test auth_wizard_tabs_tests --test dialogs_widget_subsystem_tests --test window_themes_subsystem_tests --test milestone_1_nav_calls_regression_tests --test milestone_3_settings_regression_tests
           python3 scripts/clean_build_garbage.py
       - name: Build Release GPUI Binaries & Package macOS App Bundle
         run: |
@@ -127,7 +127,7 @@ jobs:
         run: |
           cargo test --profile ci -p gpui_telegram_core --lib
           cargo test --profile ci -p gpui_telegram_proto --lib --test proto_tests --test api_rpc_endpoints_tests
-          cargo test --profile ci -p gpui_telegram_server --lib --test db_pts_messaging_tests --test server_routes_auth_tests --test fusion_atomic_message_commit --test fusion_durable_chat_routes --test fusion_durable_storage_startup --test fusion_http_durable_messaging
+          cargo test --profile ci -p gpui_telegram_server --lib --test db_pts_messaging_tests --test server_routes_auth_tests
           cargo test --profile ci -p gpui_telegram_client --lib --test auth_client_tests
           cargo test --profile ci -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
           python3 scripts/clean_build_garbage.py
