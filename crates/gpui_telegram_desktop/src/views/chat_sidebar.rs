@@ -196,6 +196,10 @@ pub struct ChatSidebar {
 }
 
 impl ChatSidebar {
+    pub fn new_demo() -> Self {
+        Self::new()
+    }
+
     pub fn new() -> Self {
         let folders = vec![
             ("All".to_string(), 8),
