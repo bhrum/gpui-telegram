@@ -256,7 +256,7 @@ impl SessionPersistenceBridge {
         let storage_path = Self::resolve_storage_path();
         let state = Self::load_from_disk(&storage_path).unwrap_or_default();
         Self {
-            client: TelegramClient::new(server_url.into()),
+            client: TelegramClient::new_with_url(server_url.into()),
             state,
             storage_path,
         }

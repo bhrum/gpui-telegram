@@ -101,7 +101,21 @@ jobs:
       - name: Patch Legacy xattr-0.2.3 ENOATTR for Linux libc
         run: |
           cargo fetch
-          python3 -c 'import glob,json,os; [([open(p,"w").write(open(p).read().replace("::libc::ENOATTR","::libc::ENODATA").replace("libc::ENOATTR","libc::ENODATA")) for p in glob.glob(d+"/src/**/*.rs",recursive=True) if "ENOATTR" in open(p).read()], json.dump({**json.load(open(d+"/.cargo-checksum.json")),"files":{}},open(d+"/.cargo-checksum.json","w"))) for d in glob.glob(os.path.expanduser("~/.cargo/registry/src/*/xattr-0.2.3"))]'
+          python3 - << 'PYPATCH'
+          import glob, json, os
+          cargo_home = os.environ.get("CARGO_HOME", os.path.expanduser("~/.cargo"))
+          for d in glob.glob(os.path.join(cargo_home, "registry/src/*/xattr-0.2.3")):
+              for p in glob.glob(os.path.join(d, "src/**/*.rs"), recursive=True):
+                  txt = open(p, "r", encoding="utf-8").read()
+                  if "ENOATTR" in txt:
+                      txt = txt.replace("::libc::ENOATTR", "::libc::ENODATA").replace("libc::ENOATTR", "libc::ENODATA")
+                      open(p, "w", encoding="utf-8").write(txt)
+              csum = os.path.join(d, ".cargo-checksum.json")
+              if os.path.exists(csum):
+                  data = json.load(open(csum, "r", encoding="utf-8"))
+                  data["files"] = {}
+                  json.dump(data, open(csum, "w", encoding="utf-8"))
+          PYPATCH
       - name: Check Full Workspace All-Targets on Linux
         run: |
           cargo check --workspace --all-targets
