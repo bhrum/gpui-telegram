@@ -1,0 +1,408 @@
+{
+  "format_version": 4,
+  "project_id": "GPUI-TELEGRAM-PARITY",
+  "spec_revision": "SPEC-01",
+  "upstream_root": "Telegram/SourceFiles/",
+  "total_source_files": 3441,
+  "total_mapped_files": 3441,
+  "omitted_count": 0,
+  "unmapped_count": 0,
+  "shards_count": 28,
+  "shards": [
+    {
+      "subsystem": "api",
+      "json_path": "docs/specs/ledger/shards/api.json",
+      "md_path": "docs/specs/ledger/shards/api.md",
+      "file_count": 116,
+      "mapped_count": 116,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N01",
+        "TCG-N02",
+        "TCG-N11",
+        "TCG-N12"
+      ]
+    },
+    {
+      "subsystem": "boxes",
+      "json_path": "docs/specs/ledger/shards/boxes.json",
+      "md_path": "docs/specs/ledger/shards/boxes.md",
+      "file_count": 219,
+      "mapped_count": 219,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N03",
+        "TCG-N11",
+        "TCG-N12"
+      ]
+    },
+    {
+      "subsystem": "calls",
+      "json_path": "docs/specs/ledger/shards/calls.json",
+      "md_path": "docs/specs/ledger/shards/calls.md",
+      "file_count": 88,
+      "mapped_count": 88,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N24",
+        "TCG-N25",
+        "TCG-N26"
+      ]
+    },
+    {
+      "subsystem": "chat_helpers",
+      "json_path": "docs/specs/ledger/shards/chat_helpers.json",
+      "md_path": "docs/specs/ledger/shards/chat_helpers.md",
+      "file_count": 57,
+      "mapped_count": 57,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N11",
+        "TCG-N15",
+        "TCG-N27",
+        "TCG-N40"
+      ]
+    },
+    {
+      "subsystem": "core",
+      "json_path": "docs/specs/ledger/shards/core.json",
+      "md_path": "docs/specs/ledger/shards/core.md",
+      "file_count": 276,
+      "mapped_count": 276,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N02",
+        "TCG-N09",
+        "TCG-N11"
+      ]
+    },
+    {
+      "subsystem": "data",
+      "json_path": "docs/specs/ledger/shards/data.json",
+      "md_path": "docs/specs/ledger/shards/data.md",
+      "file_count": 226,
+      "mapped_count": 226,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N02",
+        "TCG-N04",
+        "TCG-N11"
+      ]
+    },
+    {
+      "subsystem": "dialogs",
+      "json_path": "docs/specs/ledger/shards/dialogs.json",
+      "md_path": "docs/specs/ledger/shards/dialogs.md",
+      "file_count": 83,
+      "mapped_count": 83,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N03",
+        "TCG-N11",
+        "TCG-N13",
+        "TCG-N15"
+      ]
+    },
+    {
+      "subsystem": "editor",
+      "json_path": "docs/specs/ledger/shards/editor.json",
+      "md_path": "docs/specs/ledger/shards/editor.md",
+      "file_count": 95,
+      "mapped_count": 95,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N06",
+        "TCG-N08",
+        "TCG-N09",
+        "TCG-N15"
+      ]
+    },
+    {
+      "subsystem": "export",
+      "json_path": "docs/specs/ledger/shards/export.json",
+      "md_path": "docs/specs/ledger/shards/export.md",
+      "file_count": 35,
+      "mapped_count": 35,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N43"
+      ]
+    },
+    {
+      "subsystem": "history",
+      "json_path": "docs/specs/ledger/shards/history.json",
+      "md_path": "docs/specs/ledger/shards/history.md",
+      "file_count": 302,
+      "mapped_count": 302,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N02",
+        "TCG-N04",
+        "TCG-N07"
+      ]
+    },
+    {
+      "subsystem": "info",
+      "json_path": "docs/specs/ledger/shards/info.json",
+      "md_path": "docs/specs/ledger/shards/info.md",
+      "file_count": 252,
+      "mapped_count": 252,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N11",
+        "TCG-N12",
+        "TCG-N14",
+        "TCG-N15"
+      ]
+    },
+    {
+      "subsystem": "inline_bots",
+      "json_path": "docs/specs/ledger/shards/inline_bots.json",
+      "md_path": "docs/specs/ledger/shards/inline_bots.md",
+      "file_count": 20,
+      "mapped_count": 20,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N27"
+      ]
+    },
+    {
+      "subsystem": "intro",
+      "json_path": "docs/specs/ledger/shards/intro.json",
+      "md_path": "docs/specs/ledger/shards/intro.md",
+      "file_count": 38,
+      "mapped_count": 38,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N01"
+      ]
+    },
+    {
+      "subsystem": "iv",
+      "json_path": "docs/specs/ledger/shards/iv.json",
+      "md_path": "docs/specs/ledger/shards/iv.md",
+      "file_count": 147,
+      "mapped_count": 147,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N09",
+        "TCG-N21",
+        "TCG-N31"
+      ]
+    },
+    {
+      "subsystem": "lang",
+      "json_path": "docs/specs/ledger/shards/lang.json",
+      "md_path": "docs/specs/ledger/shards/lang.md",
+      "file_count": 25,
+      "mapped_count": 25,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N44"
+      ]
+    },
+    {
+      "subsystem": "layout",
+      "json_path": "docs/specs/ledger/shards/layout.json",
+      "md_path": "docs/specs/ledger/shards/layout.md",
+      "file_count": 12,
+      "mapped_count": 12,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N04"
+      ]
+    },
+    {
+      "subsystem": "main",
+      "json_path": "docs/specs/ledger/shards/main.json",
+      "md_path": "docs/specs/ledger/shards/main.md",
+      "file_count": 21,
+      "mapped_count": 21,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N46"
+      ]
+    },
+    {
+      "subsystem": "media",
+      "json_path": "docs/specs/ledger/shards/media.json",
+      "md_path": "docs/specs/ledger/shards/media.md",
+      "file_count": 151,
+      "mapped_count": 151,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N06",
+        "TCG-N07",
+        "TCG-N08",
+        "TCG-N09"
+      ]
+    },
+    {
+      "subsystem": "mtproto",
+      "json_path": "docs/specs/ledger/shards/mtproto.json",
+      "md_path": "docs/specs/ledger/shards/mtproto.md",
+      "file_count": 76,
+      "mapped_count": 76,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N20",
+        "TCG-N35"
+      ]
+    },
+    {
+      "subsystem": "passport",
+      "json_path": "docs/specs/ledger/shards/passport.json",
+      "md_path": "docs/specs/ledger/shards/passport.md",
+      "file_count": 29,
+      "mapped_count": 29,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02"
+      ]
+    },
+    {
+      "subsystem": "payments",
+      "json_path": "docs/specs/ledger/shards/payments.json",
+      "md_path": "docs/specs/ledger/shards/payments.md",
+      "file_count": 53,
+      "mapped_count": 53,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N14",
+        "TCG-N24"
+      ]
+    },
+    {
+      "subsystem": "platform",
+      "json_path": "docs/specs/ledger/shards/platform.json",
+      "md_path": "docs/specs/ledger/shards/platform.md",
+      "file_count": 132,
+      "mapped_count": 132,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N01",
+        "TCG-N10",
+        "TCG-N17"
+      ]
+    },
+    {
+      "subsystem": "settings",
+      "json_path": "docs/specs/ledger/shards/settings.json",
+      "md_path": "docs/specs/ledger/shards/settings.md",
+      "file_count": 121,
+      "mapped_count": 121,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N01",
+        "TCG-N02",
+        "TCG-N11",
+        "TCG-N14"
+      ]
+    },
+    {
+      "subsystem": "statistics",
+      "json_path": "docs/specs/ledger/shards/statistics.json",
+      "md_path": "docs/specs/ledger/shards/statistics.md",
+      "file_count": 43,
+      "mapped_count": 43,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N12",
+        "TCG-N37"
+      ]
+    },
+    {
+      "subsystem": "storage",
+      "json_path": "docs/specs/ledger/shards/storage.json",
+      "md_path": "docs/specs/ledger/shards/storage.md",
+      "file_count": 47,
+      "mapped_count": 47,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N11",
+        "TCG-N34",
+        "TCG-N37",
+        "TCG-N51"
+      ]
+    },
+    {
+      "subsystem": "ui",
+      "json_path": "docs/specs/ledger/shards/ui.json",
+      "md_path": "docs/specs/ledger/shards/ui.md",
+      "file_count": 454,
+      "mapped_count": 454,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N07",
+        "TCG-N08",
+        "TCG-N09"
+      ]
+    },
+    {
+      "subsystem": "wallet",
+      "json_path": "docs/specs/ledger/shards/wallet.json",
+      "md_path": "docs/specs/ledger/shards/wallet.md",
+      "file_count": 195,
+      "mapped_count": 195,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "CAP-06",
+        "TCG-N15",
+        "TCG-N31",
+        "TCG-N35"
+      ]
+    },
+    {
+      "subsystem": "window",
+      "json_path": "docs/specs/ledger/shards/window.json",
+      "md_path": "docs/specs/ledger/shards/window.md",
+      "file_count": 128,
+      "mapped_count": 128,
+      "implemented_count": 0,
+      "verified_count": 0,
+      "primary_features": [
+        "TCG-N02",
+        "TCG-N11",
+        "TCG-N15",
+        "TCG-N31"
+      ]
+    }
+  ]
+}

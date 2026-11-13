@@ -1,0 +1,21 @@
+//! Module definitions for `crates/gpui_telegram_desktop/src/views/drawer/userpic`
+
+pub mod info_userpic_bubble_wrap;
+pub mod info_userpic_color_circle_button;
+pub mod info_userpic_colors_editor;
+pub mod info_userpic_emoji_builder;
+pub mod info_userpic_emoji_builder_common;
+pub mod info_userpic_emoji_builder_layer;
+pub mod info_userpic_emoji_builder_menu_item;
+pub mod info_userpic_emoji_builder_preview;
+pub mod info_userpic_emoji_builder_widget;
+
+pub use info_userpic_bubble_wrap::InfoUserpicBubbleWrapUserpic;
+pub use info_userpic_color_circle_button::InfoUserpicColorCircleButtonUserpic;
+pub use info_userpic_colors_editor::InfoUserpicColorsEditorUserpic;
+pub use info_userpic_emoji_builder::InfoUserpicEmojiBuilderUserpic;
+pub use info_userpic_emoji_builder_common::InfoUserpicEmojiBuilderCommonUserpic;
+pub use info_userpic_emoji_builder_layer::InfoUserpicEmojiBuilderLayerUserpic;
+pub use info_userpic_emoji_builder_menu_item::InfoUserpicEmojiBuilderMenuItemUserpic;
+pub use info_userpic_emoji_builder_preview::InfoUserpicEmojiBuilderPreviewUserpic;
+pub use info_userpic_emoji_builder_widget::InfoUserpicEmojiBuilderWidgetUserpic;

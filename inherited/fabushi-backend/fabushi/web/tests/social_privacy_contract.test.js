@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const socialHandler = readFileSync(join(root, 'src/handlers/social.js'), 'utf8');
+const migration = readFileSync(join(root, 'migrations/20260503_social_follow_privacy.sql'), 'utf8');
+
+test('social follow privacy migration creates required D1 tables and indexes', () => {
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS user_follows/i);
+  assert.match(migration, /UNIQUE\(follower_username, following_username\)/i);
+  assert.match(migration, /UNIQUE\(follower_user_id, following_user_id\)/i);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_user_follows_follower/i);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_user_follows_following/i);
+  assert.match(migration, /CREATE INDEX IF NOT EXISTS idx_user_follows_follower_user_id/i);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS user_practice_privacy/i);
+  assert.match(migration, /user_id INTEGER UNIQUE/i);
+  assert.match(migration, /show_practice_name INTEGER DEFAULT 1 NOT NULL/i);
+  assert.match(migration, /show_duration INTEGER DEFAULT 1 NOT NULL/i);
+  assert.match(migration, /show_chant_count INTEGER DEFAULT 1 NOT NULL/i);
+});
+
+test('social handler protects follow and privacy endpoints with auth', () => {
+  const exportedHandlers = [
+    'handleToggleFollow',
+    'handleGetFollowList',
+    'handleGetFollowSummary',
+    'handleGetPracticePrivacy',
+    'handleUpdatePracticePrivacy',
+  ];
+
+  for (const name of exportedHandlers) {
+    assert.match(socialHandler, new RegExp(`export async function ${name}`));
+  }
+
+  assert.match(socialHandler, /requireAuthIdentity\(request, env, db\)/);
+  assert.match(socialHandler, /backfillSocialUserId\(db, auth\)/);
+  assert.match(socialHandler, /cannot follow yourself/);
+  assert.match(socialHandler, /SELECT id, username\s+FROM users\s+WHERE username = \?/);
+});
+
+test('social handler exposes follow list, summary, toggle, and privacy persistence contracts', () => {
+  assert.match(socialHandler, /INSERT OR IGNORE INTO user_follows/);
+  assert.match(socialHandler, /follower_user_id/);
+  assert.match(socialHandler, /following_user_id/);
+  assert.match(socialHandler, /DELETE FROM user_follows WHERE id = \?/);
+  assert.match(socialHandler, /followerCount/);
+  assert.match(socialHandler, /followingCount/);
+  assert.match(socialHandler, /isFollowing/);
+  assert.match(socialHandler, /LIMIT \? OFFSET \?/);
+  assert.match(socialHandler, /ON CONFLICT\(username\) DO UPDATE SET/);
+  assert.match(socialHandler, /leaderboard:practice:v4/);
+});

@@ -1,0 +1,54 @@
+//! Module definitions for `crates/gpui_telegram_desktop/src/views/drawer`
+
+pub mod bot;
+pub mod channel_statistics;
+pub mod common_groups;
+pub mod community;
+pub mod community_requests;
+pub mod downloads;
+pub mod global_media;
+pub mod info_content_widget;
+pub mod info_controller;
+pub mod info_flexible_scroll;
+pub mod info_layer_widget;
+pub mod info_memento;
+pub mod info_section_widget;
+pub mod info_top_bar;
+pub mod info_wrap_widget;
+pub mod media;
+pub mod members;
+pub mod overview_checkbox;
+pub mod overview_layout;
+pub mod overview_layout_delegate;
+pub mod peer_gifts;
+pub mod polls;
+pub mod profile;
+pub mod profile_back_button;
+pub mod profile_block_widget;
+pub mod profile_cover_drop_area;
+pub mod reactions_list;
+pub mod requests_list;
+pub mod saved;
+pub mod settings;
+pub mod similar_peers;
+pub mod statistics;
+pub mod stories;
+pub mod userpic;
+
+pub use info_content_widget::InfoContentWidget;
+pub use info_controller::InfoController;
+pub use info_flexible_scroll::InfoFlexibleScroll;
+pub use info_layer_widget::InfoLayerWidget;
+pub use info_memento::InfoMemento;
+pub use info_section_widget::InfoSectionWidget;
+pub use info_top_bar::InfoTopBar;
+pub use info_wrap_widget::InfoWrapWidget;
+pub use overview_checkbox::OverviewCheckbox;
+pub use overview_layout::OverviewLayout;
+pub use overview_layout_delegate::OverviewLayoutDelegate;
+pub use profile_back_button::ProfileBackButton;
+pub use profile_block_widget::ProfileBlockWidget;
+pub use profile_cover_drop_area::ProfileCoverDropArea;
+
+pub mod inspector_tabs;
+pub use inspector_tabs::*;

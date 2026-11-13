@@ -1,0 +1,657 @@
+{
+  "subsystem": "lang",
+  "file_count": 25,
+  "entries": [
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_cloud_manager.cpp",
+      "source_sha256": "f1caeae3d7e739d0214ddd58b4dd3d67b005dc12dbb751a07da0bfb9f1bd1f59",
+      "source_line_count": 701,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "ConfirmSwitchBox",
+        "NotReadyBox"
+      ],
+      "source_methods_and_signals": [
+        "Ui::hideLayer",
+        "ConfirmSwitchBox::ConfirmSwitchBox",
+        "ConfirmSwitchBox::prepare",
+        "tr::lng_language_switch_title",
+        "tr::lng_language_switch_link",
+        "tr::lng_language_switch_apply",
+        "tr::lng_cancel",
+        "NotReadyBox::NotReadyBox",
+        "NotReadyBox::prepare",
+        "tr::lng_language_not_ready_title",
+        "tr::lng_language_not_ready_about",
+        "tr::lng_language_not_ready_link",
+        "tr::lng_box_ok",
+        "CloudManager::CloudManager",
+        "Core::App"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_cloud_manager.rs",
+      "target_symbol": "LangCloudManager",
+      "verification_test_id": "tests/test_tcg_n44_lang_cloud_manager.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_cloud_manager.h",
+      "source_sha256": "4c09b5c3801dd40786664ead7e9e443ddc59f02faaa730548c146cef0b02d7e4",
+      "source_line_count": 114,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "Instance",
+        "Pack",
+        "Language",
+        "CloudManager",
+        "ValueRequest",
+        "Languages"
+      ],
+      "source_methods_and_signals": [
+        "ParseLanguage",
+        "CloudManager",
+        "requestLanguageList",
+        "requestLangPackDifference",
+        "applyLangPackDifference",
+        "setCurrentVersions",
+        "resetToDefault",
+        "switchWithWarning",
+        "switchToLanguage",
+        "switchToTestLanguage",
+        "setSuggestedLanguage",
+        "suggestedLanguage",
+        "packRequestId",
+        "packTypeFromId",
+        "canApplyWithoutRestart"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_cloud_manager.rs",
+      "target_symbol": "LangCloudManager",
+      "verification_test_id": "tests/test_tcg_n44_lang_cloud_manager.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_file_parser.cpp",
+      "source_sha256": "8651f8925bb2395b3529048a763dd727060839a6503f386a5a9ab85ee9d6318f",
+      "source_line_count": 212,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "FileParser::FileParser",
+        "parse::stripComments",
+        "FileParser::parse",
+        "FileParser::errors",
+        "FileParser::warnings",
+        "FileParser::readKeyValue",
+        "QString::fromUtf8",
+        "FileParser::ReadFile",
+        "QFileInfo::exists",
+        "_request",
+        "error",
+        "QByteArray"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_file_parser.rs",
+      "target_symbol": "LangFileParser",
+      "verification_test_id": "tests/test_tcg_n44_lang_file_parser.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_file_parser.h",
+      "source_sha256": "0b20c72cff0619e6b82261fc9f77c8ee6bdefe7c9894865b3eded5e51462c381",
+      "source_line_count": 56,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "FileParser",
+        "Result"
+      ],
+      "source_methods_and_signals": [
+        "ReadFile",
+        "found",
+        "parse",
+        "error",
+        "warning",
+        "readKeyValue"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_file_parser.rs",
+      "target_symbol": "LangFileParser",
+      "verification_test_id": "tests/test_tcg_n44_lang_file_parser.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_hardcoded.h",
+      "source_sha256": "3431715f0a56423556edd0b02fbfa37920003293509f235c0d54fcf3ed788a58",
+      "source_line_count": 74,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "FavedSetTitle",
+        "CallErrorIncompatible",
+        "ServerError",
+        "ClearPathFailed",
+        "ProxyConfigError",
+        "NoAuthorizationBot",
+        "SecureSaveError",
+        "SecureAcceptError",
+        "PassportCorrupted",
+        "PassportCorruptedChange",
+        "PassportCorruptedReset",
+        "PassportCorruptedResetSure",
+        "UnknownSecureScanError",
+        "EmailConfirmationExpired",
+        "AutostartEnableError"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_hardcoded.rs",
+      "target_symbol": "LangHardcoded",
+      "verification_test_id": "tests/test_tcg_n44_lang_hardcoded.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_instance.cpp",
+      "source_sha256": "92607475b9b74d22d8f2bbf0c9d3db5024e58a6722155bb6df9e039830510b0a",
+      "source_line_count": 824,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "ValueParser",
+        "Instance"
+      ],
+      "source_methods_and_signals": [
+        "ValueParser::ValueParser",
+        "ValueParser::appendToResult",
+        "QString::fromUtf8",
+        "ValueParser::logError",
+        "ValueParser::readTag",
+        "ValueParser::parse",
+        "qthelp::regex_match",
+        "QString::fromLatin1",
+        "Instance::Instance",
+        "Instance::switchToId",
+        "Instance::setBaseId",
+        "Instance::switchToCustomFile",
+        "Local::writeLangPack",
+        "Instance::reset",
+        "ranges::fill"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_instance.rs",
+      "target_symbol": "LangInstance",
+      "verification_test_id": "tests/test_tcg_n44_lang_instance.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_instance.h",
+      "source_sha256": "968e0c19a4111f7e72026bd681f5936cd8285954f05eee6bc789dbb9ae305134",
+      "source_line_count": 161,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "Language",
+        "Instance",
+        "Pack",
+        "PrivateTag"
+      ],
+      "source_methods_and_signals": [
+        "CloudLangPackName",
+        "CustomLanguageId",
+        "DefaultLanguage",
+        "Instance",
+        "switchToId",
+        "switchToCustomFile",
+        "systemLangCode",
+        "langPackName",
+        "cloudLangCode",
+        "id",
+        "idChanges",
+        "baseId",
+        "name",
+        "nativeName",
+        "isCustom"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_instance.rs",
+      "target_symbol": "LangInstance",
+      "verification_test_id": "tests/test_tcg_n44_lang_instance.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_keys.cpp",
+      "source_sha256": "28675b9fb94c0750cdccd0d9dcb3dd6f56ed2b5a1e10862ff4fa4b72aea1fe69",
+      "source_line_count": 298,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "QDate::currentDate",
+        "tr::lng_full_name",
+        "tr::lng_month_day_year",
+        "QString::number",
+        "tr::lng_month_day",
+        "tr::lng_month_year",
+        "tr::lng_mediaview_date_time",
+        "langDateMaybeWithYear",
+        "withYear",
+        "withoutYear",
+        "langFirstNameGoesSecond",
+        "langFullName",
+        "langDayOfMonth",
+        "langDayOfMonthFull",
+        "langDayOfMonthShort"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_keys.rs",
+      "target_symbol": "LangKeys",
+      "verification_test_id": "tests/test_tcg_n44_lang_keys.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_keys.h",
+      "source_sha256": "cc6c978f350d2c25f9a172db4f7079cfbf8294379da2c4d80154d76f8568f78f",
+      "source_line_count": 55,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "rpl::Updated"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_keys.rs",
+      "target_symbol": "LangKeys",
+      "verification_test_id": "tests/test_tcg_n44_lang_keys.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_numbers_animation.cpp",
+      "source_sha256": "1c7d05016ea5827c2c9977a35adbed50246c1ba53d4707d3b037e49a3a6074b0",
+      "source_line_count": 30,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "namespace Lang"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_numbers_animation.rs",
+      "target_symbol": "LangNumbersAnimation",
+      "verification_test_id": "tests/test_tcg_n44_lang_numbers_animation.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_numbers_animation.h",
+      "source_sha256": "af2d96c7cf9f962df5dae3172e383d8ff73293f79b6b9fdbc0a3aed77586bc70",
+      "source_line_count": 35,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "StartReplacements",
+        "ReplaceTag"
+      ],
+      "source_methods_and_signals": [
+        "Call"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_numbers_animation.rs",
+      "target_symbol": "LangNumbersAnimation",
+      "verification_test_id": "tests/test_tcg_n44_lang_numbers_animation.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_pch.h",
+      "source_sha256": "0a0e05b035b2bf7772d3e0493f29e3b264a574b49bcaf44c3350b77a4c5dadef",
+      "source_line_count": 14,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [
+        "#include <QtCore/QString>",
+        "#include <QtCore/QDateTime>",
+        "#include <rpl/rpl.h>"
+      ],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_pch.rs",
+      "target_symbol": "LangPch",
+      "verification_test_id": "tests/test_tcg_n44_lang_pch.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_tag.cpp",
+      "source_sha256": "b145db542ca85a7250337f597a4301448efaf082db9d65e62aa203f579ca1737",
+      "source_line_count": 1059,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "PluralsKey",
+        "ChoosePluralMethod"
+      ],
+      "source_methods_and_signals": [
+        "QChar::toLower",
+        "PluralsKey::PluralsKey",
+        "QString::number",
+        "details::IsNonDefaultPlural",
+        "ChoosePlural1",
+        "ChoosePlural2fil",
+        "ChoosePlural2tzm",
+        "ChoosePlural2is",
+        "ChoosePlural2mk",
+        "ChoosePlural2ak",
+        "ChoosePlural2am",
+        "ChoosePlural2hy",
+        "ChoosePlural2si",
+        "ChoosePlural2bh",
+        "ChoosePlural2af"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_tag.rs",
+      "target_symbol": "LangTag",
+      "verification_test_id": "tests/test_tcg_n44_lang_tag.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_tag.h",
+      "source_sha256": "4da5a962192a295a5c1b8560b1a202f5654b1e43dfa8e69eb1dd27925bfc5ca7",
+      "source_line_count": 76,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "CreditsAmount",
+        "lngtag_count",
+        "ShortenedCount",
+        "PluralResult",
+        "StartReplacements",
+        "ReplaceTag"
+      ],
+      "source_methods_and_signals": [
+        "Plural",
+        "UpdatePluralRules",
+        "Call",
+        "Replace"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_tag.rs",
+      "target_symbol": "LangTag",
+      "verification_test_id": "tests/test_tcg_n44_lang_tag.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_text_entity.cpp",
+      "source_sha256": "1753e62222058f335d70ae6ec3b46dc43d838c42f9170b88e50c05b047a005ec",
+      "source_line_count": 75,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "namespace Lang"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_text_entity.rs",
+      "target_symbol": "LangTextEntity",
+      "verification_test_id": "tests/test_tcg_n44_lang_text_entity.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_text_entity.h",
+      "source_sha256": "5a7ae8e31d27727b4911afc4972d0916ac701e421857dbcfb45ca5195643f4fb",
+      "source_line_count": 225,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "StartReplacements",
+        "ReplaceTag",
+        "UpperProjection",
+        "MarkedProjection",
+        "RichProjection",
+        "BoldProjection",
+        "SemiboldProjection",
+        "ItalicProjection",
+        "UnderlineProjection",
+        "StrikeOutProjection",
+        "LinkProjection",
+        "UrlProjection"
+      ],
+      "source_methods_and_signals": [
+        "Text::RichLangValue",
+        "Text::Bold",
+        "Text::Wrapped",
+        "Text::Semibold",
+        "Text::Italic",
+        "Text::Underline",
+        "Text::StrikeOut",
+        "Text::Link",
+        "Call",
+        "Replace"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_text_entity.rs",
+      "target_symbol": "LangTextEntity",
+      "verification_test_id": "tests/test_tcg_n44_lang_text_entity.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_translator.cpp",
+      "source_sha256": "8a01016dba300bb08d9d5b2392e7572e78477133bb79dff47bdf671e29e07576",
+      "source_line_count": 54,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "Translator::translate",
+        "tr::lng_mac_menu_services",
+        "tr::lng_mac_menu_hide_telegram",
+        "tr::lng_mac_menu_hide_others",
+        "tr::lng_mac_menu_show_all",
+        "tr::lng_mac_menu_preferences",
+        "tr::lng_mac_menu_quit_telegram",
+        "tr::lng_mac_menu_about_telegram",
+        "tr::lng_mac_menu_cut",
+        "tr::lng_mac_menu_copy",
+        "tr::lng_mac_menu_paste",
+        "tr::lng_mac_menu_select_all",
+        "tr::lng_mac_menu_edit",
+        "Platform::IsWindows",
+        "tr::lng_wnd_menu_undo"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_translator.rs",
+      "target_symbol": "LangTranslator",
+      "verification_test_id": "tests/test_tcg_n44_lang_translator.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_translator.h",
+      "source_sha256": "82cc9d4e3279d81d9255b5bd9a117047317cb06247cfca731c2465c15721d61a",
+      "source_line_count": 20,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "Translator"
+      ],
+      "source_methods_and_signals": [
+        "translate"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_translator.rs",
+      "target_symbol": "LangTranslator",
+      "verification_test_id": "tests/test_tcg_n44_lang_translator.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/lang_values.h",
+      "source_sha256": "3c80dbc1e97d7de16767432642021e7e091875178d72e96a7ebe02c79bf5c271",
+      "source_line_count": 175,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "lngtag_count",
+        "ReplaceUnwrap",
+        "Producer",
+        "S"
+      ],
+      "source_methods_and_signals": [
+        "details::Current",
+        "TagValue",
+        "rpl::Value"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/lang_values.rs",
+      "target_symbol": "LangValues",
+      "verification_test_id": "tests/test_tcg_n44_lang_values.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_mtproto_provider.cpp",
+      "source_sha256": "5b0b1c0edf92c44f9f2ecc098584d0f4f8519ec768481cfdf930d1e39531bed0",
+      "source_line_count": 167,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "MTProtoTranslateProvider",
+        "Flag"
+      ],
+      "source_methods_and_signals": [
+        "Api::ParseTextWithEntities",
+        "ranges::all_of",
+        "TranslateProvider::requestBatch",
+        "Api::EntitiesToMTP",
+        "CreateMTProtoTranslateProvider"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_mtproto_provider.rs",
+      "target_symbol": "TranslateMtprotoProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_mtproto_provider.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_mtproto_provider.h",
+      "source_sha256": "c148ac0ec287dc811ca6e38666fb31d4e5ce81cf090e2129a4ef87dfedc69182",
+      "source_line_count": 21,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "Session"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_mtproto_provider.rs",
+      "target_symbol": "TranslateMtprotoProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_mtproto_provider.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_provider.cpp",
+      "source_sha256": "6b54a45c7c89c6448f740baed0b3a46bc60d6240c435dc77091cac7426b0636d",
+      "source_line_count": 70,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "Core::App",
+        "Platform::IsTranslateProviderAvailable",
+        "Platform::CreateTranslateProvider",
+        "OptionTranslateUrlTemplate",
+        "CreateTranslateProvider",
+        "CreateUrlTranslateProvider",
+        "CreateMTProtoTranslateProvider",
+        "PrepareTranslateProviderRequest"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_provider.rs",
+      "target_symbol": "TranslateProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_provider.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_provider.h",
+      "source_sha256": "b5ace24680d816a90738e71617322340499392fe93091ed41bb1550efa1adb63",
+      "source_line_count": 30,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "PeerData",
+        "MsgId",
+        "Session"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_provider.rs",
+      "target_symbol": "TranslateProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_provider.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_url_provider.cpp",
+      "source_sha256": "ed00c39cff5f58ecc2cc9cd7d425821365e0c6b69de2bb0e6e6f158f8b799799",
+      "source_line_count": 249,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "JsonLine",
+        "UrlTranslateProvider"
+      ],
+      "source_methods_and_signals": [
+        "Language::Recognize",
+        "QString::number",
+        "QString::fromUtf8",
+        "QJsonDocument::fromJson",
+        "ranges::sort",
+        "QString::fromLatin1",
+        "QObject::connect",
+        "QString",
+        "CollectJsonLines",
+        "CreateUrlTranslateProvider"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_url_provider.rs",
+      "target_symbol": "TranslateUrlProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_url_provider.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/lang/translate_url_provider.h",
+      "source_sha256": "faf48145294a3e852e0335cf266a77634052553088bf5b7f5b4c131273c27184",
+      "source_line_count": 17,
+      "subsystem": "lang",
+      "feature_id": "TCG-N44",
+      "source_classes_and_structs": [
+        "namespace Ui"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": null,
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/i18n/translate_url_provider.rs",
+      "target_symbol": "TranslateUrlProvider",
+      "verification_test_id": "tests/test_tcg_n44_translate_url_provider.rs"
+    }
+  ]
+}

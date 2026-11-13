@@ -1,0 +1,282 @@
+{
+  "subsystem": "layout",
+  "file_count": 12,
+  "entries": [
+    {
+      "source_path": "Telegram/SourceFiles/layout/abstract_layout_item.cpp",
+      "source_sha256": "63cc0c87c3e63d699a9463286b54be183a4a93fb991a1eee747ff6605445d51d",
+      "source_line_count": 57,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "AbstractLayoutItem::AbstractLayoutItem",
+        "AbstractLayoutItem::maxWidth",
+        "AbstractLayoutItem::minHeight",
+        "AbstractLayoutItem::resizeGetHeight",
+        "AbstractLayoutItem::width",
+        "AbstractLayoutItem::height",
+        "AbstractLayoutItem::setPosition",
+        "AbstractLayoutItem::position",
+        "AbstractLayoutItem::setShiftX",
+        "AbstractLayoutItem::setShiftY",
+        "AbstractLayoutItem::shift",
+        "AbstractLayoutItem::hasPoint",
+        "AbstractLayoutItem::~AbstractLayoutItem"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/abstract_layout_item.rs",
+      "target_symbol": "AbstractLayoutItem",
+      "verification_test_id": "tests/test_tcg_n04_abstract_layout_item.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/abstract_layout_item.h",
+      "source_sha256": "79ce26c89d2be1957b6400523bf2232dda7cb5b1603d28d72fd824c018e3e1ab",
+      "source_line_count": 61,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [
+        "PaintContextBase",
+        "AbstractLayoutItem"
+      ],
+      "source_methods_and_signals": [
+        "selecting",
+        "AbstractLayoutItem",
+        "resizeGetHeight",
+        "setPosition",
+        "setShiftX",
+        "setShiftY",
+        "~AbstractLayoutItem"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/abstract_layout_item.rs",
+      "target_symbol": "AbstractLayoutItem",
+      "verification_test_id": "tests/test_tcg_n04_abstract_layout_item.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_document_generic_preview.cpp",
+      "source_sha256": "ddb6ad644065b01ab71ba6fedf79c67137cfa3c2ad8d0623f8cf209dcd7b5699",
+      "source_line_count": 144,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "DocumentGenericPreview::icon",
+        "DocumentGenericPreview::Create",
+        "tr::lng_in_dlg_sticker",
+        "tr::lng_message_empty",
+        "Ui::CachedRoundCorners",
+        "QString",
+        "BuildFromColorIndex"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_document_generic_preview.rs",
+      "target_symbol": "LayoutDocumentGenericPreview",
+      "verification_test_id": "tests/test_tcg_n04_layout_document_generic_preview.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_document_generic_preview.h",
+      "source_sha256": "574d25fc24e9589a690b2fd2cb2e51714e755431f9f3102f05f87dbdfa74cc83",
+      "source_line_count": 26,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [
+        "DocumentGenericPreview"
+      ],
+      "source_methods_and_signals": [
+        "Create"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_document_generic_preview.rs",
+      "target_symbol": "LayoutDocumentGenericPreview",
+      "verification_test_id": "tests/test_tcg_n04_layout_document_generic_preview.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_item_base.cpp",
+      "source_sha256": "108ca03bdf889d2cb5a8b7178cceb98d6bdfb4e71345e443620c2d6dafab1149",
+      "source_line_count": 22,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "LayoutItemBase::getState",
+        "LayoutItemBase::adjustSelection"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_item_base.rs",
+      "target_symbol": "LayoutItemBase",
+      "verification_test_id": "tests/test_tcg_n04_layout_item_base.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_item_base.h",
+      "source_sha256": "57905ef915a7dcf981bb8bbacf99b73641f4c3f2d3d448849897d0ee555cdcc1",
+      "source_line_count": 33,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [
+        "TextState",
+        "StateRequest",
+        "LayoutItemBase"
+      ],
+      "source_methods_and_signals": [
+        "initDimensions"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_item_base.rs",
+      "target_symbol": "LayoutItemBase",
+      "verification_test_id": "tests/test_tcg_n04_layout_item_base.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_mosaic.cpp",
+      "source_sha256": "7ba4cf6bc1cacc9472607e13168998cda1fefafbda66656efaac2f50837e8b73",
+      "source_line_count": 379,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "AbstractMosaicLayout::AbstractMosaicLayout",
+        "AbstractMosaicLayout::rowHeightAt",
+        "AbstractMosaicLayout::countDesiredHeight",
+        "AbstractMosaicLayout::findByPoint",
+        "Layout::PositionToIndex",
+        "AbstractMosaicLayout::findRect",
+        "style::RightToLeft",
+        "AbstractMosaicLayout::setRightSkip",
+        "AbstractMosaicLayout::setPadding",
+        "AbstractMosaicLayout::setFullWidth",
+        "AbstractMosaicLayout::empty",
+        "AbstractMosaicLayout::rowsCount",
+        "AbstractMosaicLayout::itemAt",
+        "Layout::IndexToPosition",
+        "AbstractMosaicLayout::maybeItemAt"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_mosaic.rs",
+      "target_symbol": "LayoutMosaic",
+      "verification_test_id": "tests/test_tcg_n04_layout_mosaic.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_mosaic.h",
+      "source_sha256": "f5d0bc8cc00e22936f563870c80ac0a9d7293c795f4af43013c773a72c219bbe",
+      "source_line_count": 167,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [
+        "FoundItem",
+        "AbstractMosaicLayout",
+        "Row",
+        "MosaicLayout",
+        "Parent"
+      ],
+      "source_methods_and_signals": [
+        "AbstractMosaicLayout::addItems",
+        "Parent::addItems",
+        "Parent::itemAt",
+        "Parent::maybeItemAt",
+        "Parent::forEach",
+        "Parent::paint",
+        "Parent::validateExistingRows",
+        "AbstractMosaicLayout",
+        "setRightSkip",
+        "setPadding",
+        "setFullWidth",
+        "clearRows",
+        "addItems",
+        "addItem",
+        "rowFinalize"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_mosaic.rs",
+      "target_symbol": "LayoutMosaic",
+      "verification_test_id": "tests/test_tcg_n04_layout_mosaic.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_position.cpp",
+      "source_sha256": "f0721fa4a3a6a7d7d3e21f646593d749b79caf16894b1d2ed1f9f40d4b351748",
+      "source_line_count": 31,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "IndexToPosition",
+        "PositionToIndex"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_position.rs",
+      "target_symbol": "LayoutPosition",
+      "verification_test_id": "tests/test_tcg_n04_layout_position.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_position.h",
+      "source_sha256": "50ca837dd9afc610fca7d3fa4c23ef2bc4c4b0a24d71ad548abe99b3172c8ccd",
+      "source_line_count": 21,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [
+        "Position"
+      ],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_position.rs",
+      "target_symbol": "LayoutPosition",
+      "verification_test_id": "tests/test_tcg_n04_layout_position.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_selection.cpp",
+      "source_sha256": "c77357c44a2f23be7974aab0521460d92efdaae2c3df9e92a7c8d7121a745bc4",
+      "source_line_count": 43,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [
+        "IsSubGroupSelection",
+        "IsGroupItemSelection",
+        "FirstGroupItemIndex",
+        "AddGroupItemSelection"
+      ],
+      "style_tokens_and_metrics": [],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_selection.rs",
+      "target_symbol": "LayoutSelection",
+      "verification_test_id": "tests/test_tcg_n04_layout_selection.rs"
+    },
+    {
+      "source_path": "Telegram/SourceFiles/layout/layout_selection.h",
+      "source_sha256": "c033a33d4cf763cd4070fef3e38e4b84ae4c056eeb249e4f8fb444596d97eb0a",
+      "source_line_count": 25,
+      "subsystem": "layout",
+      "feature_id": "TCG-N04",
+      "source_classes_and_structs": [],
+      "source_methods_and_signals": [],
+      "style_tokens_and_metrics": [
+        "asset:layout_selection.h"
+      ],
+      "disposition": "gpui_ui_1to1",
+      "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
+      "target_rust_gpui_path": "crates/gpui_telegram_desktop/src/views/stage/layout/layout_selection.rs",
+      "target_symbol": "LayoutSelection",
+      "verification_test_id": "tests/test_tcg_n04_layout_selection.rs"
+    }
+  ]
+}
