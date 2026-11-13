@@ -123,6 +123,8 @@ impl Render for IntroWidget {
             IntroStepType::Signup => self.signup_view.render_view(),
             IntroStepType::PasswordCheck => self.password_check_view.render_view(),
             IntroStepType::Email => self.email_view.render_view(),
+            IntroStepType::AlipayQr => self.qr_view.render_view(),
+            IntroStepType::EmailRegister => self.email_view.render_view(),
         };
 
         div()

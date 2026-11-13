@@ -1,36 +1,76 @@
-//! AppShell: Full 1:1 Telegram Desktop (`tdesktop`) Root View Orchestration.
+//! AppShell: Root Desktop View Orchestration (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.1).
 //!
-//! Connects all 28 Telegram Desktop subsystems into a single cohesive GPUI runtime:
-//! - Full Intro / Login Wizard (`Start -> Phone / QR / Passkey -> Code -> 2FA Cloud Password -> SignUp`) + Proxy Shield 🛡️
-//! - Local Passcode Lock Screen (`🔒 Cmd+L`)
-//! - Slide-Over Left Hamburger Main Menu (`WindowMainMenu` with Multi-Account Switcher, Emoji Status, Night Mode)
-//! - 4-Column Responsive Workspace (`NavRail` + `ChatSidebar` + `ConversationStage` + `CanonicalComposer` + `ContextInspector`)
-//! - 11-Section Interactive Settings Center (`SettingsWorkspaceView`)
-//! - 16 Interactive Modal Boxes & Fullscreen Overlays (`ActiveModalDialog`, `CallOverlay`, `MediaViewer`, `ComputerWorkbench`)
-//! - Persistent Client Session Bridge (`SessionPersistenceBridge` -> `TelegramClient` + `LocalStore` + HTML/JSON Export + TON/Stars Wallet)
+//! Layout Structure:
+//! - Interactive Telegram Desktop Login / Intro Wizard (`Start -> Phone / QR Code -> Code -> Authenticated`)
+//! - Authenticated 4-Column Workspace:
+//!   `[ NavRail (52px) ] [ ChatSidebar (288px) ] [ ConversationStage (flex-1) + CanonicalComposer ] [ ContextInspector (320px) ]`
+//! - Overlays:
+//!   - Full-Duplex Talk Mode Orb Overlay (`CallOverlay`)
+//!   - Remote Computer Workbench Overlay (`ComputerWorkbench`)
+//!   - Media Viewer Lightbox Overlay (`MediaViewer`)
 
 use crate::views::{
-    ActiveModalDialog, CallOverlay, CanonicalComposer, ChatSidebar, ComputerWorkbench,
-    ContextInspector, ConversationStage, MainMenuCommand, MainMenuDrawer, MediaViewer,
-    ModalActionOutcome, ModalContainer, ModalDialogKind, NavRail, SettingsMutation,
-    SettingsPageId, SettingsWorkspaceView, TdesktopThemeMode, TdesktopThemePalette,
-    canonical_composer::ComposerSpecialRequest,
-    chat_sidebar::{DialogDeliveryStatus, DialogItemModel},
-    context_inspector::InspectorQuickAction,
-    conversation_stage::StageActionRequest,
+    composer::KeyAction,
+    CallOverlay, CanonicalComposer, ChatSidebar, ComputerWorkbench, ContextInspector,
+    ConversationStage, MediaViewer, ModalContainer, NavRail,
     nav_rail::NavDestination,
-    stage::cards::{
-        AlbumItem, DeliveryStatus, InlineButtonType, InlineKeyboardButton, InvoiceStatus,
-        MediaType, MessageContent, MessageDirection, MessageItemModel, PollOption, PollType,
-        ReplyReference,
+    chat_sidebar::{
+        CategorizedSearchResult, CreationInputField, DialogDeliveryStatus, DialogItemModel,
+        PendingAddContactRequest, PendingCreateGroupRequest,
     },
-    tr_str,
+    stage::cards::{
+        AlbumItem, DeliveryStatus, InlineButtonType, InlineKeyboardButton, MediaType,
+        MessageContent, MessageDirection, MessageItemModel, PollOption, PollType,
+    },
 };
-use gpui::prelude::FluentBuilder;
+use crate::app::preferences::AppPreferences;
+use crate::views::settings::sections::{
+    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsBlockedPeersSections,
+    SettingsBusinessSections, SettingsCallsSections, SettingsChatSections,
+    SettingsCreditsSections, SettingsFoldersSections, SettingsGlobalTtlSections,
+    SettingsInformationSections, SettingsLocalPasscodeSections, SettingsLocalStorageSections,
+    SettingsMainSections, SettingsNotificationsReactionsSections, SettingsNotificationsSections,
+    SettingsNotificationsTypeSections, SettingsPasskeysSections, SettingsPremiumSections,
+    SettingsPrivacySecuritySections, SettingsShortcutsSections, SettingsWebsitesSections,
+};
+use crate::views::settings::settings_power_saving::SettingsPowerSaving;
+use crate::views::settings::settings_search::SettingsSearch;
+use crate::views::settings::settings_type::SettingsSectionType;
 use gpui::*;
+use gpui::prelude::FluentBuilder;
+use gpui_telegram_client::storage::Localstorage;
+
 use gpui_telegram_client::{
-    AccountSessionRecord, SessionPersistenceBridge, WalletTransactionRecord,
+    net::http_client::{
+        AddContactHttpRequest, AlipayPollResponse, AlipayStartResponse, EmailRegisterRequest,
+        EmailSendCodeRequest, EmailSendCodeResponse,
+    },
+    AgentRunRequest, AuthResponse, ChatSummary, ClientConfig, ConnectionStatus, HttpClientError,
+    LoginRequest, RegisterRequest, SendMessageHttpRequest, StoredSession, SyncOutcome,
+    TelegramClient,
 };
+use gpui_telegram_core::types::ChatId;
+use gpui_telegram_proto::sync::{
+    PtsUpdate, SyncGetDifferenceRequest, SyncGetDifferenceResponse, UpdateEvent,
+};
+use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
+use std::ops::Range;
+use std::sync::Arc;
+
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+fn utf16_offset_to_utf8(s: &str, utf16_offset: usize) -> usize {
+    let mut current_utf16 = 0;
+    for (byte_idx, ch) in s.char_indices() {
+        if current_utf16 >= utf16_offset {
+            return byte_idx;
+        }
+        current_utf16 += ch.len_utf16();
+    }
+    s.len()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginWizardStep {
@@ -38,13 +78,30 @@ pub enum LoginWizardStep {
     Phone,
     QrCode,
     Code,
-    TwoFactorPassword,
-    SignUp,
+}
+
+/// Multi-tab navigation modes for the Login Wizard card (Milestone 2 F8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthWizardTab {
+    #[default]
+    PasswordLogin,
+    AlipayQr,
+    EmailRegister,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginInputField {
+    Username,
+    Password,
+    FirstName,
+    Email,
+    EmailCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveWorkspacePanel {
     Chats,
+    Calls,
     TaskCenter,
     McpTools,
     Settings,
@@ -52,1351 +109,967 @@ pub enum ActiveWorkspacePanel {
 
 pub struct AppShell {
     pub nav_rail: Entity<NavRail>,
-    pub main_menu: Entity<MainMenuDrawer>,
     pub sidebar: Entity<ChatSidebar>,
     pub stage: Entity<ConversationStage>,
     pub composer: Entity<CanonicalComposer>,
     pub inspector: Entity<ContextInspector>,
-    pub settings_view: Entity<SettingsWorkspaceView>,
-    pub active_modal: Entity<ActiveModalDialog>,
     pub modal_container: Entity<ModalContainer>,
     pub talk_mode_overlay: Option<Entity<CallOverlay>>,
     pub computer_overlay: Option<Entity<ComputerWorkbench>>,
     pub media_viewer_overlay: Option<Entity<MediaViewer>>,
-    pub persistence: SessionPersistenceBridge,
-    pub palette: TdesktopThemePalette,
     pub is_authenticated: bool,
-    pub is_passcode_locked: bool,
-    pub unlock_pin_input: String,
     pub login_step: LoginWizardStep,
     pub country_code: String,
     pub phone_number: String,
     pub verification_code: String,
-    pub two_factor_input: String,
-    pub signup_name_input: String,
-    pub require_2fa_on_login: bool,
     pub login_error: Option<String>,
     pub is_chinese_locale: bool,
-    pub clipboard_buffer: String,
-    pub toast_banner: Option<String>,
     pub active_panel: ActiveWorkspacePanel,
+    pub last_handled_nav_dest: Option<NavDestination>,
+    pub last_handled_nav_trigger: u64,
     pub focus_handle: FocusHandle,
     pub next_message_id: u64,
+    pub client: Arc<TelegramClient>,
+    pub session_token: Option<String>,
+    pub session_id: Option<String>,
+    pub user_id: Option<u64>,
+    pub username: Option<String>,
+    pub is_authenticating: bool,
+    pub username_input: String,
+    pub password_input: String,
+    pub first_name_input: String,
+    pub is_register_mode: bool,
+    pub active_login_field: LoginInputField,
+    pub ime_preedit: Option<String>,
+    pub just_committed_ime: bool,
+    pub ws_stream_started: bool,
+    pub last_dispatched_search_seq: u64,
+
+    // --- Milestone 2 (F8) Login Wizard Additions ---
+    pub auth_wizard_tab: AuthWizardTab,
+
+    // Alipay QR Login State
+    pub alipay_attempt_id: Option<String>,
+    pub alipay_auth_url: Option<String>,
+    pub alipay_qr_payload: Option<String>,
+    pub alipay_status_text: String,
+    pub alipay_is_loading: bool,
+    pub alipay_poll_generation: u64,
+
+    // Email Registration State
+    pub email_input: String,
+    pub email_code_input: String,
+    pub email_code_cooldown: u32,
+    pub email_cooldown_generation: u64,
+    pub is_sending_email_code: bool,
+
+    // Milestone 3: Feature F9, F10, F11 Settings Router, Materialization & Preferences
+    pub settings_section: SettingsSectionType,
+    pub settings_stack: Vec<SettingsSectionType>,
+    pub settings_main: Entity<SettingsMainSections>,
+    pub settings_information: Entity<SettingsInformationSections>,
+    pub settings_notifications: Entity<SettingsNotificationsSections>,
+    pub settings_notif_reactions: Entity<SettingsNotificationsReactionsSections>,
+    pub settings_notif_type: Entity<SettingsNotificationsTypeSections>,
+    pub settings_privacy: Entity<SettingsPrivacySecuritySections>,
+    pub settings_blocked_peers: Entity<SettingsBlockedPeersSections>,
+    pub settings_active_sessions: Entity<SettingsActiveSessionsSections>,
+    pub settings_local_passcode: Entity<SettingsLocalPasscodeSections>,
+    pub settings_passkeys: Entity<SettingsPasskeysSections>,
+    pub settings_global_ttl: Entity<SettingsGlobalTtlSections>,
+    pub settings_websites: Entity<SettingsWebsitesSections>,
+    pub settings_chat: Entity<SettingsChatSections>,
+    pub settings_folders: Entity<SettingsFoldersSections>,
+    pub settings_advanced: Entity<SettingsAdvancedSections>,
+    pub settings_local_storage: Entity<SettingsLocalStorageSections>,
+    pub settings_power_saving: Entity<SettingsPowerSaving>,
+    pub settings_calls: Entity<SettingsCallsSections>,
+    pub settings_credits: Entity<SettingsCreditsSections>,
+    pub settings_premium: Entity<SettingsPremiumSections>,
+    pub settings_shortcuts: Entity<SettingsShortcutsSections>,
+    pub settings_business: Entity<SettingsBusinessSections>,
+    pub settings_search: Entity<SettingsSearch>,
+    pub preferences: AppPreferences,
+    pub local_storage: Localstorage,
 }
+
 
 impl AppShell {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let persistence = SessionPersistenceBridge::default();
-        let init_mode = TdesktopThemeMode::from_name(&persistence.state.theme_name);
-        let palette = TdesktopThemePalette::build(
-            init_mode,
-            persistence.state.accent_color,
-            persistence.state.font_size_px,
-            persistence.state.bubble_radius_px,
-        );
-        let is_zh = persistence.state.language_id.starts_with("zh");
-        let init_accounts = persistence.state.accounts.clone();
-        let init_active_acc = persistence.state.active_account_id;
-        let init_proxies = persistence.state.proxies.clone();
-        let init_state_snap = persistence.state.clone();
+        let config = ClientConfig::resolve();
+        let client = Arc::new(TelegramClient::new(config));
+        Self::new_with_client(client, cx)
+    }
 
+    pub fn new_with_client(client: Arc<TelegramClient>, cx: &mut Context<Self>) -> Self {
+        client
+            .ws_transport
+            .set_max_reconnect_attempts(client.config.max_reconnect_attempts);
+        let server_url_init = client.config.server_url.clone();
         let nav_rail = cx.new(|_| NavRail::new());
-        let main_menu = cx.new(|_| {
-            let mut mm = MainMenuDrawer::new(init_accounts, init_active_acc);
-            mm.is_night_mode = palette.mode.is_dark();
-            mm.language_id = init_state_snap.language_id.clone();
-            mm
-        });
         let sidebar = cx.new(|_| {
             let mut sb = ChatSidebar::new();
-            sb.palette = palette;
-            sb.has_local_passcode = init_state_snap.local_passcode_pin.is_some();
-            for (cf_name, cf_unread) in &init_state_snap.custom_folders {
-                if !sb.folders.iter().any(|(n, _)| n == cf_name) {
-                    sb.folders.push((cf_name.clone(), *cf_unread));
-                }
-            }
+            sb.configure_for_cloud_workspace(&server_url_init);
             sb
         });
         let stage = cx.new(|_| {
             let mut st = ConversationStage::new();
-            st.palette = palette;
-            st.show_translate_banner = init_state_snap.show_translate_bar;
+            st.configure_for_cloud_workspace(&server_url_init, None);
             st
         });
-        let composer = cx.new(|_| {
-            let mut comp = CanonicalComposer::new();
-            comp.palette = palette;
-            comp
-        });
+        let composer = cx.new(|_| CanonicalComposer::new());
         let inspector = cx.new(|_| {
             let mut insp = ContextInspector::new();
-            insp.palette = palette;
+            insp.configure_for_cloud_workspace(&server_url_init);
             insp
         });
-        let settings_view = cx.new(|_| SettingsWorkspaceView::new(init_state_snap, palette));
-        let active_modal = cx.new(|_| ActiveModalDialog::new(init_proxies));
         let modal_container = cx.new(|_| ModalContainer::new());
         let focus_handle = cx.focus_handle();
 
-        // 1. Observe NavRail
-        cx.observe(
-            &nav_rail,
-            |shell: &mut AppShell, rail: Entity<NavRail>, cx: &mut Context<AppShell>| {
-                let (dest, logout_req) = {
-                    let r = rail.read(cx);
-                    (r.active_destination, r.logout_requested)
-                };
-                if logout_req {
-                    rail.update(cx, |r, _| r.logout_requested = false);
-                    shell.is_authenticated = false;
-                    shell.login_step = LoginWizardStep::Start;
-                    shell.verification_code.clear();
-                    cx.notify();
-                    return;
-                }
-                match dest {
-                    NavDestination::Chats
-                    | NavDestination::Folders
-                    | NavDestination::SavedMessages => {
-                        shell.active_panel = ActiveWorkspacePanel::Chats;
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            match dest {
-                                NavDestination::Chats => sb.select_folder("All"),
-                                NavDestination::Folders => sb.select_folder("Work"),
-                                NavDestination::SavedMessages => sb.select_dialog(3),
-                                _ => {}
-                            }
-                            sb_cx.notify();
-                        });
-                    }
-                    NavDestination::Calls => {
-                        shell.open_modal(ModalDialogKind::CallsHistory, cx);
-                    }
-                    NavDestination::TalkMode => {
-                        shell.show_talk_mode(cx);
-                    }
-                    NavDestination::RemoteComputer => {
-                        shell.show_remote_computer(cx);
-                    }
-                    NavDestination::TaskCenter => {
-                        shell.active_panel = ActiveWorkspacePanel::TaskCenter;
-                    }
-                    NavDestination::McpTools => {
-                        shell.active_panel = ActiveWorkspacePanel::McpTools;
-                    }
-                    NavDestination::Settings => {
-                        shell.active_panel = ActiveWorkspacePanel::Settings;
-                    }
-                }
-                cx.notify();
-            },
-        )
-        .detach();
+        let settings_main = cx.new(|_| SettingsMainSections::new());
+        let settings_information = cx.new(|_| SettingsInformationSections::new());
+        let settings_notifications = cx.new(|_| SettingsNotificationsSections::new());
+        let settings_notif_reactions = cx.new(|_| SettingsNotificationsReactionsSections::new());
+        let settings_notif_type = cx.new(|_| SettingsNotificationsTypeSections::new("All Chats"));
+        let settings_privacy = cx.new(|_| SettingsPrivacySecuritySections::new());
+        let settings_blocked_peers = cx.new(|_| SettingsBlockedPeersSections::new());
+        let settings_active_sessions = cx.new(|_| SettingsActiveSessionsSections::new());
+        let settings_local_passcode = cx.new(|_| SettingsLocalPasscodeSections::new());
+        let settings_passkeys = cx.new(|_| SettingsPasskeysSections::new());
+        let settings_global_ttl = cx.new(|_| SettingsGlobalTtlSections::new());
+        let settings_websites = cx.new(|_| SettingsWebsitesSections::new());
+        let settings_chat = cx.new(|_| SettingsChatSections::new());
+        let settings_folders = cx.new(|_| SettingsFoldersSections::new());
+        let settings_advanced = cx.new(|_| SettingsAdvancedSections::new());
+        let settings_local_storage = cx.new(|_| SettingsLocalStorageSections::new());
+        let settings_power_saving = cx.new(|_| SettingsPowerSaving::new());
+        let settings_calls = cx.new(|_| SettingsCallsSections::new());
+        let settings_credits = cx.new(|_| SettingsCreditsSections::new());
+        let settings_premium = cx.new(|_| SettingsPremiumSections::new());
+        let settings_shortcuts = cx.new(|_| SettingsShortcutsSections::new());
+        let settings_business = cx.new(|_| SettingsBusinessSections::new());
+        let settings_search = cx.new(|_| SettingsSearch::with_default_entries());
 
-        // 2. Observe MainMenuDrawer (Hamburger Slide-Over Menu)
-        cx.observe(
-            &main_menu,
-            |shell: &mut AppShell, mm: Entity<MainMenuDrawer>, cx: &mut Context<AppShell>| {
-                let cmd_opt = mm.update(cx, |m, _| m.pending_command.take());
-                let Some(cmd) = cmd_opt else {
-                    return;
-                };
-                match cmd {
-                    MainMenuCommand::SwitchAccount(acc_id) => {
-                        shell.persistence.state.active_account_id = acc_id;
-                        shell.persistence.save_to_disk();
-                        let acc = shell.persistence.active_account();
-                        shell.toast_banner =
-                            Some(format!("✓ 已切换至账号: {} (@{})", acc.display_name, acc.username));
-                        shell.sync_theme_and_state(cx);
-                    }
-                    MainMenuCommand::AddAccount => {
-                        if shell.persistence.state.accounts.len() < 6 {
-                            let new_id = (shell.persistence.state.accounts.len() + 1) as u32;
-                            shell.persistence.state.accounts.push(AccountSessionRecord {
-                                account_id: new_id,
-                                display_name: format!("Account #{}", new_id),
-                                username: format!("tg_user_{}", new_id),
-                                phone: format!("+1 555 010{}", new_id),
-                                bio: "Multi-account GPUI session".to_string(),
-                                emoji_status: "✨".to_string(),
-                                is_premium: true,
-                                is_verified: false,
-                                avatar_initials: format!("A{}", new_id),
-                                avatar_color: 0x1ABC9C,
-                                unread_chats: 0,
-                            });
-                            shell.persistence.state.active_account_id = new_id;
-                            shell.persistence.save_to_disk();
-                            shell.toast_banner =
-                                Some(format!("✓ 已新增并登录第 {} 个账号", new_id));
-                            shell.sync_theme_and_state(cx);
-                        }
-                    }
-                    MainMenuCommand::SetEmojiStatus(em) => {
-                        let cur_id = shell.persistence.state.active_account_id;
-                        if let Some(acc) = shell
-                            .persistence
-                            .state
-                            .accounts
-                            .iter_mut()
-                            .find(|a| a.account_id == cur_id)
-                        {
-                            acc.emoji_status = em.clone();
-                        }
-                        shell.persistence.save_to_disk();
-                        shell.toast_banner = Some(format!("✓ 已更新个人动态状态为 {}", em));
-                        shell.sync_theme_and_state(cx);
-                    }
-                    MainMenuCommand::MyProfile => {
-                        shell.active_panel = ActiveWorkspacePanel::Settings;
-                        shell.settings_view.update(cx, |sv, sv_cx| {
-                            sv.active_page = SettingsPageId::Account;
-                            sv_cx.notify();
-                        });
-                    }
-                    MainMenuCommand::NewGroup => {
-                        shell.open_modal(ModalDialogKind::NewGroup, cx);
-                    }
-                    MainMenuCommand::NewChannel => {
-                        shell.open_modal(ModalDialogKind::NewChannel, cx);
-                    }
-                    MainMenuCommand::Contacts => {
-                        shell.open_modal(ModalDialogKind::Contacts, cx);
-                    }
-                    MainMenuCommand::Calls => {
-                        shell.open_modal(ModalDialogKind::CallsHistory, cx);
-                    }
-                    MainMenuCommand::SavedMessages => {
-                        shell.active_panel = ActiveWorkspacePanel::Chats;
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.select_dialog(3);
-                            sb_cx.notify();
-                        });
-                    }
-                    MainMenuCommand::WalletAndStars => {
-                        shell.active_panel = ActiveWorkspacePanel::Settings;
-                        shell.settings_view.update(cx, |sv, sv_cx| {
-                            sv.active_page = SettingsPageId::TonWallet;
-                            sv_cx.notify();
-                        });
-                    }
-                    MainMenuCommand::ExportData => {
-                        let ctitle = shell.stage.read(cx).chat_title.clone();
-                        shell.open_modal(
-                            ModalDialogKind::ExportData {
-                                chat_title: ctitle,
-                            },
-                            cx,
-                        );
-                    }
-                    MainMenuCommand::Settings => {
-                        shell.active_panel = ActiveWorkspacePanel::Settings;
-                    }
-                    MainMenuCommand::ToggleNightMode => {
-                        let next_mode = if shell.palette.mode.is_dark() {
-                            TdesktopThemeMode::Day
-                        } else {
-                            TdesktopThemeMode::Night
-                        };
-                        shell.persistence.state.theme_name = next_mode.as_name().to_string();
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    MainMenuCommand::ShortcutsLegend => {
-                        shell.open_modal(ModalDialogKind::ShortcutsLegend, cx);
-                    }
-                    MainMenuCommand::AboutTelegram => {
-                        shell.open_modal(ModalDialogKind::AboutTelegram, cx);
-                    }
-                }
-                cx.notify();
-            },
-        )
-        .detach();
+        // Observe SettingsMainSections navigation clicks
+        cx.observe(&settings_main, |shell: &mut AppShell, main: Entity<SettingsMainSections>, cx: &mut Context<AppShell>| {
+            if let Some(target) = main.update(cx, |m, _| m.active_section.take()) {
+                shell.navigate_settings_to(target, cx);
+            }
+        }).detach();
 
-        // 3. Observe ChatSidebar
-        cx.observe(
-            &sidebar,
-            |shell: &mut AppShell, sb: Entity<ChatSidebar>, cx: &mut Context<AppShell>| {
-                let (selected_dialog, story_peer, search_focused, burger, lock_req, forum_topic) = {
-                    let s = sb.read(cx);
-                    (
-                        s.selected_dialog().cloned(),
-                        s.story_clicked_peer.clone(),
-                        s.search_focused,
-                        s.hamburger_clicked,
-                        s.lock_clicked,
-                        s.active_forum_topic.clone(),
-                    )
-                };
-                if burger {
-                    sb.update(cx, |s, _| s.hamburger_clicked = false);
-                    shell.main_menu.update(cx, |mm, mm_cx| {
-                        mm.is_open = true;
-                        mm_cx.notify();
-                    });
-                }
-                if lock_req {
-                    sb.update(cx, |s, _| s.lock_clicked = false);
-                    if shell.persistence.state.local_passcode_pin.is_some() {
-                        shell.is_passcode_locked = true;
-                        shell.unlock_pin_input.clear();
-                    }
-                }
-                if search_focused {
-                    shell.composer.update(cx, |c, _| c.is_input_focused = false);
-                }
-                if let Some(peer) = story_peer {
-                    sb.update(cx, |s, _| s.story_clicked_peer = None);
-                    shell.open_modal(ModalDialogKind::StoriesViewer { peer_name: peer }, cx);
-                }
-                if let Some(d) = selected_dialog {
-                    let prev_chat_id = shell.stage.read(cx).active_chat_id;
-                    if prev_chat_id != Some(d.id) {
-                        shell.active_panel = ActiveWorkspacePanel::Chats;
-                        // Save previous draft and restore new chat's draft
-                        if let Some(prev_id) = prev_chat_id {
-                            let cur_draft = shell.composer.read(cx).text().to_string();
-                            sb.update(cx, |s, _| s.set_draft(prev_id, cur_draft.clone()));
-                            if cur_draft.trim().is_empty() {
-                                shell.persistence.state.drafts_by_chat.remove(&prev_id);
-                            } else {
-                                shell
-                                    .persistence
-                                    .state
-                                    .drafts_by_chat
-                                    .insert(prev_id, cur_draft);
-                            }
-                        }
-                        let restored_draft = shell
-                            .persistence
-                            .state
-                            .drafts_by_chat
-                            .get(&d.id)
-                            .cloned()
-                            .unwrap_or_default();
-                        shell.composer.update(cx, |comp, comp_cx| {
-                            comp.cancel_reply_or_edit();
-                            comp.set_text(restored_draft);
-                            comp_cx.notify();
-                        });
+        // Hydrate preferences from disk & Localstorage
+        let app_dir = ClientConfig::get_app_dir();
+        let mut local_storage = Localstorage::new(&app_dir);
+        let _ = local_storage.start();
+        let preferences = AppPreferences::load(&app_dir, &local_storage);
+        let is_chinese_locale = preferences.localization.language_code.starts_with("zh");
 
-                        let subtitle = if d.id == 2 {
-                            "1,240 members, 84 online"
-                        } else if d.is_online {
-                            "online"
-                        } else {
-                            "last seen recently"
-                        };
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.set_chat(
-                                d.id,
-                                &d.peer_name,
-                                subtitle,
-                                &d.avatar_initials,
-                                d.avatar_color,
-                            );
-                            st_cx.notify();
-                        });
-                        shell.inspector.update(cx, |insp, insp_cx| {
-                            insp.set_peer(
-                                &d.peer_name,
-                                subtitle,
-                                &d.avatar_initials,
-                                d.avatar_color,
-                            );
-                            insp_cx.notify();
-                        });
-                    }
-                    if let Some((fid, ref tname)) = forum_topic {
-                        if fid == d.id {
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.active_topic_badge = Some(tname.clone());
-                                st_cx.notify();
-                            });
-                        }
-                    }
-                }
-                cx.notify();
-            },
-        )
-        .detach();
-
-        // 4. Observe ConversationStage
-        cx.observe(
-            &stage,
-            |shell: &mut AppShell, st: Entity<ConversationStage>, cx: &mut Context<AppShell>| {
-                let (call_req, media_req, bot_act, insp_open, stage_act) = st.update(cx, |s, _| {
-                    (
-                        s.pending_call_request,
-                        s.pending_media_url.take(),
-                        s.pending_bot_action.take(),
-                        s.is_inspector_open,
-                        s.pending_stage_action.take(),
-                    )
+        // 1. Observe NavRail clicks (Destinations, Overlays, Logout)
+        cx.observe(&nav_rail, |shell: &mut AppShell, rail: Entity<NavRail>, cx: &mut Context<AppShell>| {
+            let (dest, logout_req, trigger) = {
+                let r = rail.read(cx);
+                (r.active_destination, r.logout_requested, r.trigger_counter)
+            };
+            if logout_req {
+                rail.update(cx, |r, _| {
+                    r.logout_requested = false;
+                    r.is_connected = false;
                 });
-                if call_req {
-                    st.update(cx, |s, _| s.pending_call_request = false);
-                    shell.show_talk_mode(cx);
-                }
-                if let Some((url, is_video)) = media_req {
-                    shell.show_media_viewer(url, is_video, cx);
-                }
-                if let Some(action) = bot_act {
-                    match action.as_str() {
-                        "Launch Talk Mode" => shell.show_talk_mode(cx),
-                        "Remote Computer" => shell.show_remote_computer(cx),
-                        "View Task Matrix" => shell.active_panel = ActiveWorkspacePanel::TaskCenter,
-                        other => {
-                            shell.open_modal(
-                                ModalDialogKind::InstantView {
-                                    title: format!("{} • Telegram Instant View", other),
-                                    url: "https://telegram.org/blog/gpui-desktop".to_string(),
-                                    body_paragraphs: vec![
-                                        "Telegram Desktop GPUI renders the complete 28-subsystem messaging architecture natively via Metal and Vulkan shaders at 120fps.".to_string(),
-                                        "Every component—from 5-bit voice waveforms and 333-emoji E2EE WebRTC verification to Forum Topics, Instant View, and self-custodial TON Wallet—operates with zero DOM overhead.".to_string(),
-                                    ],
-                                },
-                                cx,
-                            );
-                        }
-                    }
-                }
-                if let Some(act) = stage_act {
-                    match act {
-                        StageActionRequest::ReplyToMessage {
-                            message_id,
-                            sender_name,
-                            snippet,
-                        } => {
-                            shell.composer.update(cx, |comp, comp_cx| {
-                                comp.begin_reply(message_id, sender_name, snippet);
-                                comp_cx.notify();
-                            });
-                        }
-                        StageActionRequest::EditMessage {
-                            message_id,
-                            current_text,
-                        } => {
-                            shell.composer.update(cx, |comp, comp_cx| {
-                                comp.begin_edit(message_id, current_text);
-                                comp_cx.notify();
-                            });
-                        }
-                        StageActionRequest::ForwardMessages(ids) => {
-                            let snip = format!("{} selected message(s)", ids.len());
-                            shell.open_modal(
-                                ModalDialogKind::ForwardMessages {
-                                    message_ids: ids,
-                                    preview_snippet: snip,
-                                },
-                                cx,
-                            );
-                        }
-                        StageActionRequest::DeleteMessages(ids) => {
-                            let peer = shell.stage.read(cx).chat_title.clone();
-                            shell.open_modal(
-                                ModalDialogKind::DeleteMessages {
-                                    message_ids: ids,
-                                    peer_name: peer,
-                                },
-                                cx,
-                            );
-                        }
-                        StageActionRequest::TranslateMessage(txt) => {
-                            shell.open_modal(
-                                ModalDialogKind::TranslateMessage { original_text: txt },
-                                cx,
-                            );
-                        }
-                        StageActionRequest::CopyText(txt) => {
-                            shell.clipboard_buffer = txt;
-                            shell.toast_banner =
-                                Some("📋 消息文本已复制到剪贴板 (Copied to Clipboard)".to_string());
-                        }
-                        StageActionRequest::OpenInstantView { title, url } => {
-                            shell.open_modal(
-                                ModalDialogKind::InstantView {
-                                    title,
-                                    url,
-                                    body_paragraphs: vec![
-                                        "Telegram Instant View loads web articles in zero milliseconds with native typography, dark/sepia themes, and adjustable zoom.".to_string(),
-                                        "Upstream reference: Telegram/SourceFiles/iv/iv_controller.cpp & iv_markdown_view.cpp.".to_string(),
-                                    ],
-                                },
-                                cx,
-                            );
-                        }
-                        StageActionRequest::OpenCreatePoll => {
-                            shell.open_modal(ModalDialogKind::CreatePoll, cx);
-                        }
-                        StageActionRequest::OpenExportChat => {
-                            let ctitle = shell.stage.read(cx).chat_title.clone();
-                            shell.open_modal(
-                                ModalDialogKind::ExportData {
-                                    chat_title: ctitle,
-                                },
-                                cx,
-                            );
-                        }
-                        StageActionRequest::PaidStarReaction(_) => {
-                            if shell.persistence.state.stars_balance > 0 {
-                                shell.persistence.state.stars_balance -= 1;
-                                shell.persistence.save_to_disk();
-                                shell.toast_banner = Some(format!(
-                                    "⭐ 已发送星币赞赏反应！剩余星币: {} Stars",
-                                    shell.persistence.state.stars_balance
-                                ));
-                                shell.sync_theme_and_state(cx);
-                            }
-                        }
-                    }
-                }
-                shell.inspector.update(cx, |insp, insp_cx| {
-                    if insp.is_open != insp_open {
-                        insp.is_open = insp_open;
-                        insp_cx.notify();
-                    }
-                });
-                cx.notify();
-            },
-        )
-        .detach();
+                shell.logout(cx);
+                return;
+            }
 
-        // 5. Observe CanonicalComposer
-        cx.observe(
-            &composer,
-            |shell: &mut AppShell, comp: Entity<CanonicalComposer>, cx: &mut Context<AppShell>| {
-                let (msg_opt, att_opt, spec_opt, focused, live_draft) =
-                    comp.update(cx, |c, _| {
-                        (
-                            c.submitted_message.take(),
-                            c.submitted_attachment.take(),
-                            c.special_request.take(),
-                            c.is_input_focused,
-                            c.text().to_string(),
-                        )
-                    });
-                if focused {
-                    shell.sidebar.update(cx, |sb, _| sb.search_focused = false);
-                }
-                if let Some(cid) = shell.stage.read(cx).active_chat_id {
+            // Click-intent & Change-detection Guard:
+            // Background notifications (e.g. WebSocket connection updates in line 913,
+            // unread count updates, or badge updates) notify `nav_rail` but DO NOT
+            // increment `trigger_counter`.
+            // Ignore if trigger hasn't changed AND destination hasn't changed.
+            if shell.last_handled_nav_trigger == trigger && shell.last_handled_nav_dest == Some(dest) {
+                return;
+            }
+            shell.last_handled_nav_trigger = trigger;
+            shell.last_handled_nav_dest = Some(dest);
+
+            match dest {
+                NavDestination::Chats | NavDestination::Folders | NavDestination::SavedMessages => {
+                    shell.active_panel = ActiveWorkspacePanel::Chats;
                     shell.sidebar.update(cx, |sb, sb_cx| {
-                        sb.set_draft(cid, live_draft);
+                        match dest {
+                            NavDestination::Chats => sb.select_folder("All"),
+                            NavDestination::Folders => sb.select_folder("Work"),
+                            NavDestination::SavedMessages => sb.select_dialog(3),
+                            _ => {}
+                        }
                         sb_cx.notify();
                     });
                 }
-                if let Some(text) = msg_opt {
-                    shell.handle_composer_text_submission(text, false, cx);
+                NavDestination::Calls => {
+                    shell.active_panel = ActiveWorkspacePanel::Calls;
                 }
-                if let Some(kind) = att_opt {
-                    shell.append_outgoing_attachment(&kind, cx);
+                NavDestination::TalkMode => {
+                    shell.show_talk_mode(cx);
                 }
-                if let Some(spec) = spec_opt {
-                    match spec {
-                        ComposerSpecialRequest::OpenMediaEditor { is_video } => {
-                            shell.open_modal(
-                                ModalDialogKind::MediaEditor {
-                                    initial_caption: String::new(),
-                                    is_video,
-                                },
-                                cx,
-                            );
-                        }
-                        ComposerSpecialRequest::OpenCreatePollModal => {
-                            shell.open_modal(ModalDialogKind::CreatePoll, cx);
-                        }
-                        ComposerSpecialRequest::OpenStarGiftModal => {
-                            let peer = shell.stage.read(cx).chat_title.clone();
-                            shell.open_modal(ModalDialogKind::StarGifts { peer_name: peer }, cx);
-                        }
-                        ComposerSpecialRequest::SendInteractiveDice(dice_em) => {
-                            let roll = (shell.next_message_id % 6) + 1;
-                            let txt = if dice_em == "🎰" {
-                                "🎰 Slot Machine spun: 【 7️⃣ | 7️⃣ | 7️⃣ 】 JACKPOT!".to_string()
-                            } else {
-                                format!("{} Interactive Roll Result: {} / 6!", dice_em, roll)
-                            };
-                            shell.append_outgoing_text(txt, None, cx);
-                        }
-                        ComposerSpecialRequest::SendStickerCard { emoji, pack_name } => {
-                            shell.append_outgoing_text(
-                                format!("{} [Sticker • {}]", emoji, pack_name),
-                                None,
-                                cx,
-                            );
-                        }
-                        ComposerSpecialRequest::SendGifAnimation { title } => {
-                            let msg_id = shell.alloc_msg_id();
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.add_message(MessageItemModel {
-                                    id: msg_id,
-                                    sender_id: 1,
-                                    sender_name: "You".to_string(),
-                                    avatar_initials: "ME".to_string(),
-                                    avatar_color: 0x3498DB,
-                                    direction: MessageDirection::Outgoing,
-                                    timestamp: "Just now".to_string(),
-                                    delivery_status: DeliveryStatus::Read,
-                                    reply_to: None,
-                                    reactions: vec![],
-                                    content: MessageContent::Media {
-                                        media_type: MediaType::Video,
-                                        url: "https://example.com/sticker.gif.mp4".to_string(),
-                                        width: 480,
-                                        height: 320,
-                                        duration_secs: Some(4),
-                                        file_size_bytes: 420_000,
-                                        caption: Some(format!("🎞️ {}", title)),
-                                        is_streaming: true,
-                                    },
-                                    bot_keyboard: None,
-                                    is_pinned: false,
-                                });
-                                st_cx.notify();
-                            });
-                        }
-                        ComposerSpecialRequest::SendSilentMessage(txt) => {
-                            shell.handle_composer_text_submission(
-                                format!("🔕 [Silent] {}", txt),
-                                true,
-                                cx,
-                            );
-                            shell.toast_banner =
-                                Some("🔕 已静默发送，对方不会收到提示音".to_string());
-                        }
-                        ComposerSpecialRequest::SendScheduledMessage {
-                            text,
-                            schedule_label,
-                        } => {
-                            let sid = shell.alloc_msg_id();
-                            let cid = shell.stage.read(cx).active_chat_id.unwrap_or(1);
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.scheduled_messages.entry(cid).or_default().push((
-                                    sid,
-                                    text,
-                                    schedule_label.clone(),
-                                ));
-                                st.show_scheduled_section = true;
-                                st_cx.notify();
-                            });
-                            shell.toast_banner = Some(format!(
-                                "📅 消息已加入定时发送队列 ({})",
-                                schedule_label
-                            ));
-                        }
-                        ComposerSpecialRequest::CommitEditedMessage {
-                            message_id,
-                            new_text,
-                        } => {
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.edit_message_text(message_id, new_text);
-                                st_cx.notify();
-                            });
-                            shell.toast_banner = Some("✓ 消息修改已保存 (Message Edited)".to_string());
-                        }
-                    }
+                NavDestination::RemoteComputer => {
+                    shell.show_remote_computer(cx);
                 }
-                cx.notify();
-            },
-        )
-        .detach();
-
-        // 6. Observe ContextInspector
-        cx.observe(
-            &inspector,
-            |shell: &mut AppShell, insp: Entity<ContextInspector>, cx: &mut Context<AppShell>| {
-                let (is_open, media_open, quick_act) = insp.update(cx, |i, _| {
-                    (
-                        i.is_open,
-                        i.pending_media_open.take(),
-                        i.pending_quick_action.take(),
-                    )
-                });
-                if let Some((url, is_video)) = media_open {
-                    if url.starts_with("http") && !url.ends_with(".jpg") && !url.ends_with(".mp4") {
-                        shell.open_modal(
-                            ModalDialogKind::InstantView {
-                                title: "Shared Link • Instant View".to_string(),
-                                url,
-                                body_paragraphs: vec![
-                                    "Opened directly from Right Info Drawer Shared Links tab.".to_string(),
-                                ],
-                            },
-                            cx,
-                        );
+                NavDestination::TaskCenter => {
+                    shell.active_panel = ActiveWorkspacePanel::TaskCenter;
+                }
+                NavDestination::McpTools => {
+                    shell.active_panel = ActiveWorkspacePanel::McpTools;
+                }
+                NavDestination::Settings => {
+                    if shell.active_panel == ActiveWorkspacePanel::Settings {
+                        shell.settings_section = SettingsSectionType::Main;
+                        shell.settings_stack.clear();
                     } else {
-                        shell.show_media_viewer(url, is_video, cx);
+                        shell.active_panel = ActiveWorkspacePanel::Settings;
                     }
                 }
-                if let Some(qa) = quick_act {
-                    match qa {
-                        InspectorQuickAction::OpenStarGift => {
-                            let peer = shell.stage.read(cx).chat_title.clone();
-                            shell.open_modal(ModalDialogKind::StarGifts { peer_name: peer }, cx);
-                        }
-                        InspectorQuickAction::OpenExportChat => {
-                            let ctitle = shell.stage.read(cx).chat_title.clone();
-                            shell.open_modal(
-                                ModalDialogKind::ExportData {
-                                    chat_title: ctitle,
-                                },
-                                cx,
-                            );
-                        }
-                        InspectorQuickAction::StartAudioCall => {
-                            shell.show_talk_mode(cx);
-                        }
-                    }
-                }
-                shell.stage.update(cx, |st, _| {
-                    st.is_inspector_open = is_open;
+            }
+            cx.notify();
+        }).detach();
+
+
+        // 2. Observe ChatSidebar clicks (Dialog selection, Story click, Search focus, + Creation Modal, Categorized Search)
+        cx.observe(&sidebar, |shell: &mut AppShell, sb: Entity<ChatSidebar>, cx: &mut Context<AppShell>| {
+            let (
+                selected_dialog,
+                story_peer,
+                search_focused,
+                has_creation_modal,
+                pending_contact,
+                pending_group,
+                search_query,
+                search_cat,
+                search_seq,
+            ) = sb.update(cx, |s, _| {
+                (
+                    s.selected_dialog().cloned(),
+                    s.story_clicked_peer.take(),
+                    s.search_focused,
+                    s.active_creation_modal.is_some(),
+                    s.pending_add_contact_request.take(),
+                    s.pending_create_group_request.take(),
+                    s.search_query.clone(),
+                    s.active_search_category.clone(),
+                    s.search_request_seq,
+                )
+            });
+            if search_focused || has_creation_modal {
+                shell.composer.update(cx, |c, _| c.is_input_focused = false);
+            }
+            if let Some(contact_req) = pending_contact {
+                shell.dispatch_add_contact(contact_req, cx);
+            }
+            if let Some(group_req) = pending_group {
+                shell.dispatch_create_group(group_req, cx);
+            }
+            if search_focused && search_seq > 0 && shell.last_dispatched_search_seq != search_seq {
+                shell.dispatch_categorized_search(search_query, search_cat, search_seq, cx);
+            }
+            if let Some(peer) = story_peer {
+                shell.show_media_viewer(format!("https://t.me/stories/{}", peer), false, cx);
+            }
+            if let Some(d) = selected_dialog {
+                shell.active_panel = ActiveWorkspacePanel::Chats;
+                shell.last_handled_nav_dest = Some(NavDestination::Chats);
+                shell.nav_rail.update(cx, |r, _| {
+                    r.set_active_destination(NavDestination::Chats);
                 });
-                cx.notify();
-            },
-        )
-        .detach();
+                let subtitle = if d.is_online { "online" } else { "last seen recently" };
+                shell.stage.update(cx, |st, st_cx| {
+                    if st.active_chat_id != Some(d.id) {
+                        st.set_chat(d.id, &d.peer_name, subtitle, &d.avatar_initials, d.avatar_color);
+                        st_cx.notify();
+                    }
+                });
+                shell.inspector.update(cx, |insp, insp_cx| {
+                    insp.set_peer(&d.peer_name, subtitle, &d.avatar_initials, d.avatar_color);
+                    insp_cx.notify();
+                });
+                shell.load_historical_messages(d.id, cx);
+            }
+            cx.notify();
+        }).detach();
 
-        // 7. Observe ActiveModalDialog (16 Interactive Modals)
-        cx.observe(
-            &active_modal,
-            |shell: &mut AppShell, md: Entity<ActiveModalDialog>, cx: &mut Context<AppShell>| {
-                let outcome_opt = md.update(cx, |m, _| m.pending_outcome.take());
-                let Some(outcome) = outcome_opt else {
-                    return;
-                };
-                match outcome {
-                    ModalActionOutcome::CreatePollSubmitted {
-                        question,
-                        poll_type,
-                        options,
-                    } => {
-                        let msg_id = shell.alloc_msg_id();
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.add_message(MessageItemModel {
-                                id: msg_id,
-                                sender_id: 1,
-                                sender_name: "You".to_string(),
-                                avatar_initials: "ME".to_string(),
-                                avatar_color: 0x3498DB,
-                                direction: MessageDirection::Outgoing,
-                                timestamp: "Just now".to_string(),
-                                delivery_status: DeliveryStatus::Read,
-                                reply_to: None,
-                                reactions: vec![],
-                                content: MessageContent::Poll {
-                                    question,
-                                    poll_type,
-                                    options,
-                                    total_votes: 0,
-                                    is_closed: false,
-                                    selected_option_id: None,
-                                },
-                                bot_keyboard: None,
-                                is_pinned: false,
-                            });
-                            st_cx.notify();
+        // 3. Observe ConversationStage clicks (Call button, Inspector toggle, Media lightbox, Bot Keyboard)
+        cx.observe(&stage, |shell: &mut AppShell, st: Entity<ConversationStage>, cx: &mut Context<AppShell>| {
+            let (call_req, media_req, bot_act, insp_open) = {
+                let s = st.read(cx);
+                (s.pending_call_request, s.pending_media_url.clone(), s.pending_bot_action.clone(), s.is_inspector_open)
+            };
+            if call_req {
+                st.update(cx, |s, _| s.pending_call_request = false);
+                shell.show_talk_mode(cx);
+            }
+            if let Some((url, is_video)) = media_req {
+                st.update(cx, |s, _| s.pending_media_url = None);
+                shell.show_media_viewer(url, is_video, cx);
+            }
+            if let Some(action) = bot_act {
+                st.update(cx, |s, _| s.pending_bot_action = None);
+                match action.as_str() {
+                    "Launch Talk Mode" => shell.show_talk_mode(cx),
+                    "Remote Computer" => shell.show_remote_computer(cx),
+                    "View Task Matrix" => {
+                        shell.active_panel = ActiveWorkspacePanel::TaskCenter;
+                        shell.last_handled_nav_dest = Some(NavDestination::TaskCenter);
+                        shell.nav_rail.update(cx, |r, _| {
+                            r.set_active_destination(NavDestination::TaskCenter);
                         });
                     }
-                    ModalActionOutcome::ForwardToChat {
-                        target_chat_id,
-                        message_ids,
-                        show_sender,
-                        ..
-                    } => {
-                        let forwarded_blobs: Vec<(String, String)> = {
-                            let st = shell.stage.read(cx);
-                            st.messages
-                                .iter()
-                                .filter(|m| message_ids.contains(&m.id))
-                                .map(|m| {
-                                    (
-                                        m.sender_name.clone(),
-                                        ConversationStage::extract_message_snippet(m),
-                                    )
-                                })
-                                .collect()
-                        };
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.select_dialog(target_chat_id);
-                            sb_cx.notify();
-                        });
-                        if let Some(d) = shell
-                            .sidebar
-                            .read(cx)
-                            .dialogs
-                            .iter()
-                            .find(|d| d.id == target_chat_id)
-                            .cloned()
-                        {
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.set_chat(
-                                    d.id,
-                                    &d.peer_name,
-                                    "online",
-                                    &d.avatar_initials,
-                                    d.avatar_color,
-                                );
-                                st_cx.notify();
-                            });
-                        }
-                        for (orig_author, body) in forwarded_blobs {
-                            let txt = if show_sender {
-                                format!("↪ Forwarded from {}\n{}", orig_author, body)
-                            } else {
-                                body
-                            };
-                            shell.append_outgoing_text(txt, None, cx);
-                        }
-                        shell.toast_banner = Some("✓ 消息已成功转发".to_string());
-                    }
-                    ModalActionOutcome::CreateGroupSubmitted {
-                        title,
-                        members_count,
-                        enable_forum_topics,
-                    } => {
-                        let new_cid = (shell.sidebar.read(cx).dialogs.len() + 10) as u64;
-                        let init: String = title
-                            .split_whitespace()
-                            .filter_map(|w| w.chars().next())
-                            .take(2)
-                            .collect::<String>()
-                            .to_uppercase();
-                        let initials = if init.is_empty() {
-                            "GP".to_string()
-                        } else {
-                            init
-                        };
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.dialogs.insert(
-                                0,
-                                DialogItemModel {
-                                    id: new_cid,
-                                    peer_name: title.clone(),
-                                    avatar_initials: initials.clone(),
-                                    avatar_color: 0x9B59B6,
-                                    last_message: format!(
-                                        "Group created • {} members",
-                                        members_count
-                                    ),
-                                    timestamp: "Just now".to_string(),
-                                    unread_count: 0,
-                                    is_muted: false,
-                                    is_pinned: false,
-                                    is_online: true,
-                                    typing_indicator: None,
-                                    delivery_status: DialogDeliveryStatus::Read,
-                                    folder: "Work".to_string(),
-                                },
+                    other => {
+                        let modal_title = format!("{} • GPUI Telegram Docs", other);
+                        shell.modal_container.update(cx, |mc, mc_cx| {
+                            mc.show_modal(
+                                modal_title,
+                                440.0,
+                                240.0,
+                                crate::components::ui::layers::LayerStackOption::CloseOther,
                             );
-                            if enable_forum_topics {
-                                sb.forum_chat_ids.push(new_cid);
-                            }
-                            sb.select_dialog(new_cid);
-                            sb_cx.notify();
+                            mc_cx.notify();
                         });
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.set_chat(
-                                new_cid,
-                                &title,
-                                &format!("{} members", members_count),
-                                &initials,
-                                0x9B59B6,
-                            );
-                            st_cx.notify();
-                        });
-                        shell.toast_banner = Some(format!("👥 已创建群组「{}」", title));
-                    }
-                    ModalActionOutcome::CreateChannelSubmitted {
-                        title,
-                        username_slug,
-                        is_public,
-                    } => {
-                        let new_cid = (shell.sidebar.read(cx).dialogs.len() + 20) as u64;
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.dialogs.insert(
-                                0,
-                                DialogItemModel {
-                                    id: new_cid,
-                                    peer_name: title.clone(),
-                                    avatar_initials: "📢".to_string(),
-                                    avatar_color: 0x2AABEE,
-                                    last_message: format!(
-                                        "{} channel • t.me/{}",
-                                        if is_public { "Public" } else { "Private" },
-                                        username_slug
-                                    ),
-                                    timestamp: "Just now".to_string(),
-                                    unread_count: 0,
-                                    is_muted: false,
-                                    is_pinned: false,
-                                    is_online: false,
-                                    typing_indicator: None,
-                                    delivery_status: DialogDeliveryStatus::Read,
-                                    folder: "All".to_string(),
-                                },
-                            );
-                            sb.select_dialog(new_cid);
-                            sb_cx.notify();
-                        });
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.set_chat(new_cid, &title, "1 subscriber", "📢", 0x2AABEE);
-                            st_cx.notify();
-                        });
-                        shell.toast_banner = Some(format!("📢 已创建频道「{}」", title));
-                    }
-                    ModalActionOutcome::OpenContactChat {
-                        name,
-                        initials,
-                        color,
-                    } => {
-                        let existing_id = shell
-                            .sidebar
-                            .read(cx)
-                            .dialogs
-                            .iter()
-                            .find(|d| d.peer_name == name)
-                            .map(|d| d.id);
-                        let target_id = if let Some(eid) = existing_id {
-                            eid
-                        } else {
-                            let nid = (shell.sidebar.read(cx).dialogs.len() + 30) as u64;
-                            shell.sidebar.update(cx, |sb, _| {
-                                sb.dialogs.push(DialogItemModel {
-                                    id: nid,
-                                    peer_name: name.clone(),
-                                    avatar_initials: initials.clone(),
-                                    avatar_color: color,
-                                    last_message: "Say hello on Telegram GPUI!".to_string(),
-                                    timestamp: "Now".to_string(),
-                                    unread_count: 0,
-                                    is_muted: false,
-                                    is_pinned: false,
-                                    is_online: true,
-                                    typing_indicator: None,
-                                    delivery_status: DialogDeliveryStatus::Read,
-                                    folder: "Personal".to_string(),
-                                });
-                            });
-                            nid
-                        };
-                        shell.active_panel = ActiveWorkspacePanel::Chats;
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.select_dialog(target_id);
-                            sb_cx.notify();
-                        });
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.set_chat(target_id, &name, "online", &initials, color);
-                            st_cx.notify();
-                        });
-                    }
-                    ModalActionOutcome::StartCallWithPeer { peer_name, is_video } => {
-                        let overlay = cx.new(|_| {
-                            let mut ov = CallOverlay::new(peer_name);
-                            ov.is_camera_on = is_video;
-                            ov
-                        });
-                        cx.observe(
-                            &overlay,
-                            |sh: &mut AppShell, ov: Entity<CallOverlay>, cx: &mut Context<AppShell>| {
-                                if ov.read(cx).should_close {
-                                    sh.hide_talk_mode();
-                                    cx.notify();
-                                }
-                            },
-                        )
-                        .detach();
-                        shell.talk_mode_overlay = Some(overlay);
-                    }
-                    ModalActionOutcome::SelectProxy { proxy_id } => {
-                        for p in &mut shell.persistence.state.proxies {
-                            p.enabled = p.id == proxy_id;
-                        }
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some("🛡️ 已切换 MTProto 网络代理线路".to_string());
-                    }
-                    ModalActionOutcome::AddProxy(rec) => {
-                        for p in &mut shell.persistence.state.proxies {
-                            p.enabled = false;
-                        }
-                        shell.persistence.state.proxies.push(rec);
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some("🛡️ 新代理服务器已添加并激活".to_string());
-                    }
-                    ModalActionOutcome::CopyToClipboard(txt) => {
-                        shell.clipboard_buffer = txt.clone();
-                        shell.toast_banner = Some(format!("📋 已复制: {}", txt));
-                    }
-                    ModalActionOutcome::SendEditedMedia {
-                        is_video,
-                        aspect_label,
-                        rotation_deg,
-                        has_spoiler,
-                        uncompressed_file,
-                        caption,
-                    } => {
-                        let msg_id = shell.alloc_msg_id();
-                        let meta_tag = format!(
-                            "[{} • {}°{}{}] {}",
-                            aspect_label,
-                            rotation_deg,
-                            if has_spoiler { " • ✨Spoiler" } else { "" },
-                            if uncompressed_file {
-                                " • Original"
-                            } else {
-                                ""
-                            },
-                            if caption.is_empty() {
-                                "Edited Media"
-                            } else {
-                                &caption
-                            }
-                        );
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.add_message(MessageItemModel {
-                                id: msg_id,
-                                sender_id: 1,
-                                sender_name: "You".to_string(),
-                                avatar_initials: "ME".to_string(),
-                                avatar_color: 0x3498DB,
-                                direction: MessageDirection::Outgoing,
-                                timestamp: "Just now".to_string(),
-                                delivery_status: DeliveryStatus::Read,
-                                reply_to: None,
-                                reactions: vec![],
-                                content: MessageContent::Media {
-                                    media_type: if is_video {
-                                        MediaType::Video
-                                    } else {
-                                        MediaType::Photo
-                                    },
-                                    url: "https://example.com/edited_media.jpg".to_string(),
-                                    width: 1920,
-                                    height: 1080,
-                                    duration_secs: if is_video { Some(32) } else { None },
-                                    file_size_bytes: 4_800_000,
-                                    caption: Some(meta_tag),
-                                    is_streaming: is_video,
-                                },
-                                bot_keyboard: None,
-                                is_pinned: false,
-                            });
-                            st_cx.notify();
-                        });
-                    }
-                    ModalActionOutcome::ConfirmDeleteMessages { message_ids, .. } => {
-                        let n = message_ids.len();
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.delete_messages_by_ids(&message_ids);
-                            st_cx.notify();
-                        });
-                        shell.toast_banner = Some(format!("🗑 已删除 {} 条消息", n));
-                    }
-                    ModalActionOutcome::SetLocalPasscode(pin_opt) => {
-                        let enabled = pin_opt.is_some();
-                        shell.persistence.state.local_passcode_pin = pin_opt;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some(if enabled {
-                            "🔒 本地锁屏密码已启用（点击左上角 🔒 或按 Cmd+L 即可锁屏）".to_string()
-                        } else {
-                            "🔓 已关闭本地锁屏密码".to_string()
-                        });
-                    }
-                    ModalActionOutcome::SendStarGift {
-                        emoji,
-                        title,
-                        stars,
-                    } => {
-                        shell.persistence.state.stars_balance =
-                            shell.persistence.state.stars_balance.saturating_sub(stars);
-                        shell.persistence.save_to_disk();
-                        let msg_id = shell.alloc_msg_id();
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.add_message(MessageItemModel {
-                                id: msg_id,
-                                sender_id: 1,
-                                sender_name: "You".to_string(),
-                                avatar_initials: "ME".to_string(),
-                                avatar_color: 0x3498DB,
-                                direction: MessageDirection::Outgoing,
-                                timestamp: "Just now".to_string(),
-                                delivery_status: DeliveryStatus::Read,
-                                reply_to: None,
-                                reactions: vec![],
-                                content: MessageContent::Invoice {
-                                    title: format!("{} {}", emoji, title),
-                                    description: "Collectible Telegram Star Gift (可展示于个人主页或兑换星币)".to_string(),
-                                    amount_stars: stars,
-                                    currency: "Telegram Stars".to_string(),
-                                    status: InvoiceStatus::Paid,
-                                    receipt_id: Some(format!("GIFT-{}", msg_id)),
-                                },
-                                bot_keyboard: None,
-                                is_pinned: false,
-                            });
-                            st_cx.notify();
-                        });
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner =
-                            Some(format!("🎁 已送出礼物「{} {}」(-{} ⭐)", emoji, title, stars));
-                    }
-                    ModalActionOutcome::RunChatExport { format_json } => {
-                        let (ctitle, rows) = {
-                            let st = shell.stage.read(cx);
-                            let exported_rows: Vec<(String, String, String)> = st
-                                .messages
-                                .iter()
-                                .map(|m| {
-                                    (
-                                        m.sender_name.clone(),
-                                        m.timestamp.clone(),
-                                        ConversationStage::extract_message_snippet(m),
-                                    )
-                                })
-                                .collect();
-                            (st.chat_title.clone(), exported_rows)
-                        };
-                        let out_path =
-                            shell
-                                .persistence
-                                .export_chat_archive(&ctitle, format_json, &rows);
-                        md.update(cx, |m, m_cx| {
-                            m.export_status_path = Some(out_path.clone());
-                            m_cx.notify();
-                        });
-                        shell.toast_banner = Some(format!("📤 聊天记录已导出至 {}", out_path));
-                    }
-                    ModalActionOutcome::SendStoryReply { peer_name, text } => {
-                        shell.append_outgoing_text(
-                            format!("⭕ [Replied to {}'s Story]: {}", peer_name, text),
-                            None,
-                            cx,
-                        );
                     }
                 }
-                cx.notify();
-            },
-        )
-        .detach();
-
-        // 8. Observe SettingsWorkspaceView
-        cx.observe(
-            &settings_view,
-            |shell: &mut AppShell,
-             sv: Entity<SettingsWorkspaceView>,
-             cx: &mut Context<AppShell>| {
-                let mut_opt = sv.update(cx, |s, _| s.pending_mutation.take());
-                let Some(mutation) = mut_opt else {
-                    return;
-                };
-                match mutation {
-                    SettingsMutation::CloseSettings => {
-                        shell.active_panel = ActiveWorkspacePanel::Chats;
-                    }
-                    SettingsMutation::LogOut => {
-                        shell.is_authenticated = false;
-                        shell.login_step = LoginWizardStep::Start;
-                        shell.verification_code.clear();
-                    }
-                    SettingsMutation::SetThemeMode(m) => {
-                        shell.persistence.state.theme_name = m.as_name().to_string();
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::SetAccentColor(col) => {
-                        shell.persistence.state.accent_color = col;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::SetFontSize(sz) => {
-                        shell.persistence.state.font_size_px = sz;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::SetBubbleRadius(rad) => {
-                        shell.persistence.state.bubble_radius_px = rad;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::ToggleSendWithEnter => {
-                        shell.persistence.state.send_with_enter =
-                            !shell.persistence.state.send_with_enter;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::SetLanguage(lid) => {
-                        shell.is_chinese_locale = lid.starts_with("zh");
-                        shell.persistence.state.language_id = lid;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::ToggleTranslateBar => {
-                        shell.persistence.state.show_translate_bar =
-                            !shell.persistence.state.show_translate_bar;
-                        shell.persistence.save_to_disk();
-                        let show = shell.persistence.state.show_translate_bar;
-                        shell.stage.update(cx, |st, st_cx| {
-                            st.show_translate_banner = show;
-                            st_cx.notify();
-                        });
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::AddCustomFolder(fname) => {
-                        if !shell
-                            .persistence
-                            .state
-                            .custom_folders
-                            .iter()
-                            .any(|(n, _)| n == &fname)
-                        {
-                            shell
-                                .persistence
-                                .state
-                                .custom_folders
-                                .push((fname.clone(), 0));
-                            shell.persistence.save_to_disk();
-                            shell.sidebar.update(cx, |sb, sb_cx| {
-                                sb.folders.push((fname, 0));
-                                sb_cx.notify();
-                            });
-                            shell.sync_theme_and_state(cx);
-                        }
-                    }
-                    SettingsMutation::RemoveCustomFolder(fname) => {
-                        shell
-                            .persistence
-                            .state
-                            .custom_folders
-                            .retain(|(n, _)| n != &fname);
-                        shell.persistence.save_to_disk();
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            sb.folders.retain(|(n, _)| n != &fname);
-                            sb_cx.notify();
-                        });
-                        shell.sync_theme_and_state(cx);
-                    }
-                    SettingsMutation::ClearLocalCache => {
-                        shell.persistence.state.cache_media_mb = 0.0;
-                        shell.persistence.state.cache_files_mb = 0.0;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner =
-                            Some("🧹 本地媒体与文件缓存已全部释放 (0.0 MB)".to_string());
-                    }
-                    SettingsMutation::OpenProxyModal => {
-                        shell.open_modal(ModalDialogKind::ConnectionProxy, cx);
-                    }
-                    SettingsMutation::OpenPasscodeModal => {
-                        shell.open_modal(ModalDialogKind::PasscodeSetup, cx);
-                    }
-                    SettingsMutation::OpenExportModal => {
-                        let ctitle = shell.stage.read(cx).chat_title.clone();
-                        shell.open_modal(
-                            ModalDialogKind::ExportData {
-                                chat_title: ctitle,
-                            },
-                            cx,
-                        );
-                    }
-                    SettingsMutation::LockNow => {
-                        shell.is_passcode_locked = true;
-                        shell.unlock_pin_input.clear();
-                    }
-                    SettingsMutation::RevokeSession(sid) => {
-                        shell
-                            .persistence
-                            .state
-                            .active_devices
-                            .retain(|d| d.session_id != sid || d.is_current);
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some("✓ 远程会话已安全注销".to_string());
-                    }
-                    SettingsMutation::BuyOrTopUpStars(amt) => {
-                        shell.persistence.state.stars_balance += amt;
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some(format!("⭐ 成功充值 {} Telegram Stars！", amt));
-                    }
-                    SettingsMutation::SendTonDemoTransfer => {
-                        if shell.persistence.state.ton_balance >= 5.0 {
-                            shell.persistence.state.ton_balance -= 5.0;
-                            shell.persistence.state.wallet_transactions.insert(
-                                0,
-                                WalletTransactionRecord {
-                                    tx_id: format!("TON-TX-{}", shell.next_message_id),
-                                    title: "Instant TON Transfer".to_string(),
-                                    peer: "Alice Smith".to_string(),
-                                    amount_ton: -5.0,
-                                    amount_stars: 0,
-                                    timestamp: "Just now".to_string(),
-                                    is_incoming: false,
-                                },
-                            );
-                            shell.persistence.save_to_disk();
-                            shell.sync_theme_and_state(cx);
-                            shell.toast_banner = Some("💎 已成功广播 5.00 TON 链上转账".to_string());
-                        }
-                    }
-                    SettingsMutation::UpdateBio(new_bio) => {
-                        let cur_id = shell.persistence.state.active_account_id;
-                        if let Some(acc) = shell
-                            .persistence
-                            .state
-                            .accounts
-                            .iter_mut()
-                            .find(|a| a.account_id == cur_id)
-                        {
-                            acc.bio = new_bio;
-                        }
-                        shell.persistence.save_to_disk();
-                        shell.sync_theme_and_state(cx);
-                        shell.toast_banner = Some("✓ 个人简介已更新".to_string());
-                    }
+            }
+            shell.inspector.update(cx, |insp, insp_cx| {
+                if insp.is_open != insp_open {
+                    insp.is_open = insp_open;
+                    insp_cx.notify();
                 }
-                cx.notify();
-            },
-        )
-        .detach();
+            });
+            cx.notify();
+        }).detach();
 
-        Self {
+        // 4. Observe CanonicalComposer (Send message, Send attachment/voice, Input focus)
+        cx.observe(&composer, |shell: &mut AppShell, comp: Entity<CanonicalComposer>, cx: &mut Context<AppShell>| {
+            let (msg_opt, att_opt, focused) = {
+                let c = comp.read(cx);
+                (c.submitted_message.clone(), c.submitted_attachment.clone(), c.is_input_focused)
+            };
+            if focused {
+                shell.sidebar.update(cx, |sb, _| sb.search_focused = false);
+            }
+            if let Some(text) = msg_opt {
+                comp.update(cx, |c, _| c.submitted_message = None);
+                shell.append_outgoing_text(text, cx);
+            }
+            if let Some(kind) = att_opt {
+                comp.update(cx, |c, _| c.submitted_attachment = None);
+                shell.append_outgoing_attachment(&kind, cx);
+            }
+            cx.notify();
+        }).detach();
+
+        // 5. Observe ContextInspector close button & shared media item clicks
+        cx.observe(&inspector, |shell: &mut AppShell, insp: Entity<ContextInspector>, cx: &mut Context<AppShell>| {
+            let (is_open, media_open) = {
+                let i = insp.read(cx);
+                (i.is_open, i.pending_media_open.clone())
+            };
+            if let Some((url, is_video)) = media_open {
+                insp.update(cx, |i, _| i.pending_media_open = None);
+                shell.show_media_viewer(url, is_video, cx);
+            }
+            shell.stage.update(cx, |st, _| {
+                st.is_inspector_open = is_open;
+            });
+            cx.notify();
+        }).detach();
+
+        let shell_instance = Self {
             nav_rail,
-            main_menu,
             sidebar,
             stage,
             composer,
             inspector,
-            settings_view,
-            active_modal,
             modal_container,
             talk_mode_overlay: None,
             computer_overlay: None,
             media_viewer_overlay: None,
-            persistence,
-            palette,
             is_authenticated: false,
-            is_passcode_locked: false,
-            unlock_pin_input: String::new(),
             login_step: LoginWizardStep::Start,
             country_code: "+86".to_string(),
             phone_number: "138 0013 8000".to_string(),
             verification_code: String::new(),
-            two_factor_input: String::new(),
-            signup_name_input: "Bhrum Developer".to_string(),
-            require_2fa_on_login: false,
             login_error: None,
-            is_chinese_locale: is_zh,
-            clipboard_buffer: String::new(),
-            toast_banner: None,
+            is_chinese_locale,
             active_panel: ActiveWorkspacePanel::Chats,
+            last_handled_nav_dest: Some(NavDestination::Chats),
+            last_handled_nav_trigger: 0,
             focus_handle,
             next_message_id: 900,
+            client: client.clone(),
+            session_token: None,
+            session_id: None,
+            user_id: None,
+            username: None,
+            is_authenticating: false,
+            username_input: String::new(),
+            password_input: String::new(),
+            first_name_input: String::new(),
+            is_register_mode: false,
+            active_login_field: LoginInputField::Username,
+            ime_preedit: None,
+            just_committed_ime: false,
+            ws_stream_started: false,
+            last_dispatched_search_seq: 0,
+            auth_wizard_tab: AuthWizardTab::PasswordLogin,
+            alipay_attempt_id: None,
+            alipay_auth_url: None,
+            alipay_qr_payload: None,
+            alipay_status_text: String::new(),
+            alipay_is_loading: false,
+            alipay_poll_generation: 0,
+            email_input: String::new(),
+            email_code_input: String::new(),
+            email_code_cooldown: 0,
+            email_cooldown_generation: 0,
+            is_sending_email_code: false,
+            settings_section: SettingsSectionType::Main,
+            settings_stack: Vec::new(),
+            settings_main,
+            settings_information,
+            settings_notifications,
+            settings_notif_reactions,
+            settings_notif_type,
+            settings_privacy,
+            settings_blocked_peers,
+            settings_active_sessions,
+            settings_local_passcode,
+            settings_passkeys,
+            settings_global_ttl,
+            settings_websites,
+            settings_chat,
+            settings_folders,
+            settings_advanced,
+            settings_local_storage,
+            settings_power_saving,
+            settings_calls,
+            settings_credits,
+            settings_premium,
+            settings_shortcuts,
+            settings_business,
+            settings_search,
+            preferences,
+            local_storage,
+        };
+
+
+        // Hydrate stored session on startup if present
+        if let Some(stored) = ClientConfig::load_session() {
+            let client_clone = client.clone();
+            let token = stored.token.clone();
+            let session_id = stored.session_id.clone();
+            let username = stored.username.clone();
+
+            cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+                let verify_res = client_clone.http_client.get_me(&token).await;
+                let _ = weak_shell.update(app, |shell, cx| {
+                    match verify_res {
+                        Ok(me) => {
+                            let resolved_user = me.username.or(Some(username));
+                            let srv_url = shell.client.config.server_url.clone();
+                            shell.is_authenticated = true;
+                            shell.session_token = Some(token.clone());
+                            shell.session_id = Some(session_id);
+                            shell.user_id = Some(me.user_id);
+                            shell.username = resolved_user.clone();
+                            shell.client.ws_transport.set_token(Some(token));
+                            shell.client.ws_transport.start();
+                            shell.start_ws_inbound_stream(cx);
+                            shell.refresh_chats(cx);
+                            shell.sidebar.update(cx, |sb, sb_cx| {
+                                sb.configure_for_cloud_workspace(&srv_url);
+                                sb_cx.notify();
+                            });
+                            shell.stage.update(cx, |st, st_cx| {
+                                st.configure_for_cloud_workspace(&srv_url, resolved_user.as_deref());
+                                st_cx.notify();
+                            });
+                            shell.inspector.update(cx, |insp, insp_cx| {
+                                insp.configure_for_cloud_workspace(&srv_url);
+                                insp_cx.notify();
+                            });
+                            cx.notify();
+                        }
+                        Err(_) => {
+                            ClientConfig::clear_session();
+                            shell.login_error =
+                                Some("Saved session expired. Please sign in again.".to_string());
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
         }
+
+        shell_instance
+    }
+
+    pub fn apply_authenticated_session(&mut self, auth: AuthResponse, cx: &mut Context<Self>) {
+        let srv_url = self.client.config.server_url.clone();
+        self.is_authenticated = true;
+        self.session_token = Some(auth.token.clone());
+        self.session_id = Some(auth.session_id.clone());
+        self.user_id = Some(auth.user_id);
+        self.username = Some(auth.username.clone());
+        self.ime_preedit = None;
+        self.client.ws_transport.set_token(Some(auth.token.clone()));
+        self.client.ws_transport.start();
+        self.start_ws_inbound_stream(cx);
+        self.refresh_chats(cx);
+        self.sidebar.update(cx, |sb, sb_cx| {
+            sb.configure_for_cloud_workspace(&srv_url);
+            sb_cx.notify();
+        });
+        self.stage.update(cx, |st, st_cx| {
+            st.configure_for_cloud_workspace(&srv_url, Some(&auth.username));
+            st_cx.notify();
+        });
+        self.inspector.update(cx, |insp, insp_cx| {
+            insp.configure_for_cloud_workspace(&srv_url);
+            insp_cx.notify();
+        });
+
+        let stored = StoredSession {
+            server_url: srv_url,
+            user_id: auth.user_id,
+            username: auth.username,
+            token: auth.token,
+            session_id: auth.session_id,
+            created_at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        let _ = ClientConfig::save_session(&stored);
+        cx.notify();
+    }
+
+    pub fn submit_login(&mut self, cx: &mut Context<Self>) {
+        let username = self.username_input.trim().to_string();
+        let password = self.password_input.clone();
+        if username.is_empty() || password.is_empty() {
+            self.login_error = Some("Username and password cannot be empty".to_string());
+            cx.notify();
+            return;
+        }
+
+        self.is_authenticating = true;
+        self.login_error = None;
+        cx.notify();
+
+        let client = self.client.clone();
+        let req = LoginRequest {
+            username: username.clone(),
+            password,
+            device_name: "GPUI Desktop Client".to_string(),
+        };
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.login(&req).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                shell.is_authenticating = false;
+                match res {
+                    Ok(auth) => {
+                        shell.apply_authenticated_session(auth, cx);
+                    }
+                    Err(err) => {
+                        shell.login_error = Some(match err {
+                            HttpClientError::Unauthorized(_) => {
+                                "Invalid username or password (401)".to_string()
+                            }
+                            other => other.to_string(),
+                        });
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn submit_register(&mut self, cx: &mut Context<Self>) {
+        let username = self.username_input.trim().to_string();
+        let password = self.password_input.clone();
+        let first_name = if self.first_name_input.trim().is_empty() {
+            username.clone()
+        } else {
+            self.first_name_input.trim().to_string()
+        };
+
+        if username.is_empty() || password.is_empty() {
+            self.login_error = Some("Username and password cannot be empty".to_string());
+            cx.notify();
+            return;
+        }
+
+        self.is_authenticating = true;
+        self.login_error = None;
+        cx.notify();
+
+        let client = self.client.clone();
+        let req = RegisterRequest {
+            username: username.clone(),
+            password,
+            first_name,
+            device_name: "GPUI Desktop Client".to_string(),
+        };
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.register(&req).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                shell.is_authenticating = false;
+                match res {
+                    Ok(auth) => {
+                        shell.apply_authenticated_session(auth, cx);
+                    }
+                    Err(err) => {
+                        shell.login_error = Some(match err {
+                            HttpClientError::Conflict(_) => {
+                                format!("Username '{}' is already registered (409)", username)
+                            }
+                            other => other.to_string(),
+                        });
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn switch_auth_tab(&mut self, tab: AuthWizardTab, cx: &mut Context<Self>) {
+        if self.auth_wizard_tab == tab {
+            return;
+        }
+        self.auth_wizard_tab = tab;
+        self.login_error = None;
+        self.ime_preedit = None;
+
+        match tab {
+            AuthWizardTab::PasswordLogin => {
+                self.active_login_field = LoginInputField::Username;
+            }
+            AuthWizardTab::AlipayQr => {
+                self.start_alipay_flow(cx);
+            }
+            AuthWizardTab::EmailRegister => {
+                self.active_login_field = LoginInputField::Email;
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn start_alipay_flow(&mut self, cx: &mut Context<Self>) {
+        self.alipay_is_loading = true;
+        self.alipay_status_text = if self.is_chinese_locale {
+            "正在获取支付宝登录二维码...".to_string()
+        } else {
+            "Fetching Alipay login QR code...".to_string()
+        };
+        self.alipay_attempt_id = None;
+        self.alipay_auth_url = None;
+        self.alipay_qr_payload = None;
+        self.alipay_poll_generation += 1;
+        let poll_gen = self.alipay_poll_generation;
+
+        let client = self.client.clone();
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let start_res = client.http_client.alipay_start().await;
+
+            let mut launched_attempt_id: Option<String> = None;
+            let ok = weak_shell.update(app, |shell, cx| {
+                if shell.alipay_poll_generation != poll_gen || shell.auth_wizard_tab != AuthWizardTab::AlipayQr {
+                    return false;
+                }
+                shell.alipay_is_loading = false;
+                match start_res {
+                    Ok(resp) => {
+                        let att_id = resp.attempt_id.clone();
+                        launched_attempt_id = Some(att_id.clone());
+                        shell.alipay_attempt_id = Some(att_id);
+                        shell.alipay_auth_url = Some(resp.login_url.clone());
+                        shell.alipay_qr_payload = Some(resp.login_url.clone());
+                        shell.alipay_status_text = if shell.is_chinese_locale {
+                            "请使用手机支付宝 App 扫码登录".to_string()
+                        } else {
+                            "Please scan with Alipay mobile app".to_string()
+                        };
+                        cx.notify();
+                        true
+                    }
+                    Err(err) => {
+                        shell.alipay_status_text = format!("启动支付宝登录失败: {}", err);
+                        shell.login_error = Some(err.to_string());
+                        cx.notify();
+                        false
+                    }
+                }
+            }).unwrap_or(false);
+
+            if ok {
+                if let Some(att_id) = launched_attempt_id {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+                        let should_continue = weak_shell.update(app, |shell, _cx| {
+                            shell.alipay_poll_generation == poll_gen
+                                && shell.auth_wizard_tab == AuthWizardTab::AlipayQr
+                                && !shell.is_authenticated
+                                && shell.alipay_attempt_id.as_deref() == Some(&att_id)
+                        }).unwrap_or(false);
+                        if !should_continue {
+                            break;
+                        }
+
+                        let poll_res = client.http_client.alipay_poll(&att_id).await;
+                        let done = weak_shell.update(app, |shell, cx| {
+                            if shell.alipay_poll_generation != poll_gen || shell.auth_wizard_tab != AuthWizardTab::AlipayQr {
+                                return true;
+                            }
+                            match poll_res {
+                                Ok(poll) => {
+                                    if poll.is_completed() {
+                                        if let Some(session) = poll.session {
+                                            shell.apply_authenticated_session(session, cx);
+                                            return true;
+                                        } else if let Some(token) = poll.token {
+                                            let auth = AuthResponse {
+                                                user_id: poll.user_id.or_else(|| poll.user.as_ref().map(|u| u.user_id)).unwrap_or(100003),
+                                                username: poll.username.or_else(|| poll.user.as_ref().and_then(|u| u.username.clone())).unwrap_or_else(|| "alipay_user".to_string()),
+                                                session_id: format!("sess_alipay_{}", att_id),
+                                                token,
+                                                first_name: poll.user.as_ref().map(|u| u.first_name.clone()).or_else(|| Some("支付宝用户".to_string())),
+                                                created_at: None,
+                                                expires_at: None,
+                                            };
+                                            shell.apply_authenticated_session(auth, cx);
+                                            return true;
+                                        }
+                                    } else if poll.is_expired() {
+                                        shell.alipay_status_text = if shell.is_chinese_locale {
+                                            "二维码已失效，请点击刷新".to_string()
+                                        } else {
+                                            "QR Code expired, please refresh".to_string()
+                                        };
+                                        cx.notify();
+                                        return true;
+                                    }
+                                    false
+                                }
+                                Err(_) => false,
+                            }
+                        }).unwrap_or(true);
+
+                        if done {
+                            break;
+                        }
+                    }
+                }
+            }
+        }).detach();
+    }
+
+    pub fn simulate_alipay_scan(&mut self, cx: &mut Context<Self>) {
+        let attempt_id = match &self.alipay_attempt_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+        self.alipay_status_text = if self.is_chinese_locale {
+            "正在模拟扫码授权...".to_string()
+        } else {
+            "Simulating scan authorization...".to_string()
+        };
+        cx.notify();
+
+        let client = self.client.clone();
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let sim_res = client.http_client.alipay_simulate_scan(&attempt_id).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                match sim_res {
+                    Ok(_) => {
+                        shell.alipay_status_text = if shell.is_chinese_locale {
+                            "模拟授权成功，正在同步会话...".to_string()
+                        } else {
+                            "Authorization approved, completing login...".to_string()
+                        };
+                        cx.notify();
+                    }
+                    Err(err) => {
+                        shell.login_error = Some(format!("模拟授权失败: {}", err));
+                        cx.notify();
+                    }
+                }
+            });
+        }).detach();
+    }
+
+    pub fn send_email_code(&mut self, cx: &mut Context<Self>) {
+        let email = self.email_input.trim().to_string();
+        if email.is_empty() || !email.contains('@') || !email.contains('.') {
+            self.login_error = Some(if self.is_chinese_locale {
+                "请输入有效的邮箱地址".to_string()
+            } else {
+                "Please enter a valid email address".to_string()
+            });
+            cx.notify();
+            return;
+        }
+
+        if self.email_code_cooldown > 0 || self.is_sending_email_code {
+            return;
+        }
+
+        self.is_sending_email_code = true;
+        self.login_error = None;
+        self.email_cooldown_generation += 1;
+        let cd_gen = self.email_cooldown_generation;
+        cx.notify();
+
+        let client = self.client.clone();
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.email_send_code(&email).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                shell.is_sending_email_code = false;
+                match res {
+                    Ok(resp) => {
+                        shell.email_code_cooldown = if resp.cooldown_seconds > 0 { resp.cooldown_seconds } else { 60 };
+                        shell.active_login_field = LoginInputField::EmailCode;
+                        shell.login_error = None;
+                        cx.notify();
+
+                        let cooldown = shell.email_code_cooldown;
+                        // Start 1-second interval cooldown ticker
+                        cx.spawn(async move |weak_timer: WeakEntity<Self>, timer_app: &mut AsyncApp| {
+                            for _ in 0..cooldown {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                let should_continue = weak_timer.update(timer_app, |s, s_cx| {
+                                    if s.email_cooldown_generation != cd_gen {
+                                        return false;
+                                    }
+                                    if s.email_code_cooldown > 0 {
+                                        s.email_code_cooldown -= 1;
+                                        s_cx.notify();
+                                        s.email_code_cooldown > 0
+                                    } else {
+                                        false
+                                    }
+                                }).unwrap_or(false);
+                                if !should_continue {
+                                    break;
+                                }
+                            }
+                        }).detach();
+                    }
+                    Err(err) => {
+                        shell.login_error = Some(match err {
+                            HttpClientError::Api { message, .. } => message,
+                            other => other.to_string(),
+                        });
+                        cx.notify();
+                    }
+                }
+            });
+        }).detach();
+    }
+
+    pub fn submit_email_register(&mut self, cx: &mut Context<Self>) {
+        let email = self.email_input.trim().to_string();
+        let code = self.email_code_input.trim().to_string();
+        let username = self.username_input.trim().to_string();
+        let password = self.password_input.clone();
+        let first_name = if self.first_name_input.trim().is_empty() {
+            username.clone()
+        } else {
+            self.first_name_input.trim().to_string()
+        };
+
+        if email.is_empty() || !email.contains('@') {
+            self.login_error = Some(if self.is_chinese_locale {
+                "请输入有效的邮箱地址".to_string()
+            } else {
+                "Please enter a valid email address".to_string()
+            });
+            cx.notify();
+            return;
+        }
+
+        if code.len() < 4 {
+            self.login_error = Some(if self.is_chinese_locale {
+                "请输入收到的验证码".to_string()
+            } else {
+                "Please enter the verification code".to_string()
+            });
+            cx.notify();
+            return;
+        }
+
+        if username.is_empty() || password.is_empty() {
+            self.login_error = Some(if self.is_chinese_locale {
+                "用户名和密码不能为空".to_string()
+            } else {
+                "Username and password cannot be empty".to_string()
+            });
+            cx.notify();
+            return;
+        }
+
+        self.is_authenticating = true;
+        self.login_error = None;
+        cx.notify();
+
+        let client = self.client.clone();
+        let req = EmailRegisterRequest {
+            email,
+            code,
+            username,
+            password,
+            first_name,
+        };
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.email_register(&req).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                shell.is_authenticating = false;
+                match res {
+                    Ok(auth) => {
+                        shell.apply_authenticated_session(auth, cx);
+                    }
+                    Err(err) => {
+                        shell.login_error = Some(match err {
+                            HttpClientError::Api { message, .. } => message,
+                            other => other.to_string(),
+                        });
+                        cx.notify();
+                    }
+                }
+            });
+        }).detach();
+    }
+
+    pub fn logout(&mut self, cx: &mut Context<Self>) {
+        let token = self.session_token.take();
+        let session_id = self.session_id.take();
+        let client = self.client.clone();
+        self.user_id = None;
+        self.username = None;
+        self.is_authenticated = false;
+        self.ws_stream_started = false;
+        self.login_step = LoginWizardStep::Start;
+        self.verification_code.clear();
+        self.client.ws_transport.stop();
+        self.client.ws_transport.set_token(None);
+        self.nav_rail.update(cx, |r, _| r.is_connected = false);
+        ClientConfig::clear_session();
+
+        if let (Some(token), Some(session_id)) = (token, session_id) {
+            let http = client.http_client.clone();
+            client.runtime().spawn(async move {
+                let _ = http.revoke_session(&token, &session_id).await;
+            });
+        }
+        cx.notify();
     }
 
     pub fn nav_rail(&self) -> &Entity<NavRail> {
@@ -1419,144 +1092,57 @@ impl AppShell {
         &self.inspector
     }
 
-    fn alloc_msg_id(&mut self) -> u64 {
-        let id = self.next_message_id;
-        self.next_message_id += 1;
-        id
-    }
-
-    fn sync_theme_and_state(&mut self, cx: &mut Context<Self>) {
-        let mode = TdesktopThemeMode::from_name(&self.persistence.state.theme_name);
-        self.palette = TdesktopThemePalette::build(
-            mode,
-            self.persistence.state.accent_color,
-            self.persistence.state.font_size_px,
-            self.persistence.state.bubble_radius_px,
-        );
-        let pal = self.palette;
-        let snap = self.persistence.state.clone();
-        let has_pin = snap.local_passcode_pin.is_some();
-
-        self.sidebar.update(cx, |sb, sb_cx| {
-            sb.palette = pal;
-            sb.has_local_passcode = has_pin;
-            sb_cx.notify();
-        });
-        self.stage.update(cx, |st, st_cx| {
-            st.palette = pal;
-            st_cx.notify();
-        });
-        self.composer.update(cx, |comp, comp_cx| {
-            comp.palette = pal;
-            comp_cx.notify();
-        });
-        self.inspector.update(cx, |insp, insp_cx| {
-            insp.palette = pal;
-            insp_cx.notify();
-        });
-        self.main_menu.update(cx, |mm, mm_cx| {
-            mm.accounts = snap.accounts.clone();
-            mm.active_account_id = snap.active_account_id;
-            mm.is_night_mode = pal.mode.is_dark();
-            mm.language_id = snap.language_id.clone();
-            mm_cx.notify();
-        });
-        self.settings_view.update(cx, |sv, sv_cx| {
-            sv.sync_from_state(snap, pal);
-            sv_cx.notify();
-        });
-    }
-
-    pub fn open_modal(&mut self, kind: ModalDialogKind, cx: &mut Context<Self>) {
-        let targets: Vec<(u64, String, String, u32)> = self
-            .sidebar
-            .read(cx)
-            .dialogs
-            .iter()
-            .map(|d| {
-                (
-                    d.id,
-                    d.peer_name.clone(),
-                    d.avatar_initials.clone(),
-                    d.avatar_color,
-                )
-            })
-            .collect();
-        self.active_modal.update(cx, |md, md_cx| {
-            md.open(kind, targets);
-            md_cx.notify();
-        });
-    }
-
     pub fn show_talk_mode(&mut self, cx: &mut Context<Self>) {
         let peer = self.stage.read(cx).chat_title.clone();
         let overlay = cx.new(|_| CallOverlay::new(peer));
-        cx.observe(
-            &overlay,
-            |shell: &mut AppShell, ov: Entity<CallOverlay>, cx: &mut Context<AppShell>| {
-                if ov.read(cx).should_close {
-                    shell.hide_talk_mode();
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
+        cx.observe(&overlay, |shell: &mut AppShell, ov: Entity<CallOverlay>, cx: &mut Context<AppShell>| {
+            if ov.read(cx).should_close {
+                shell.hide_talk_mode(cx);
+                cx.notify();
+            }
+        }).detach();
         self.talk_mode_overlay = Some(overlay);
     }
 
-    pub fn hide_talk_mode(&mut self) {
+    pub fn hide_talk_mode(&mut self, cx: &mut Context<Self>) {
         self.talk_mode_overlay = None;
+        self.last_handled_nav_dest = Some(NavDestination::Chats);
+        self.nav_rail.update(cx, |r, _| {
+            if r.active_destination == NavDestination::TalkMode || r.active_destination == NavDestination::Calls {
+                r.set_active_destination(NavDestination::Chats);
+            }
+        });
     }
 
     pub fn show_remote_computer(&mut self, cx: &mut Context<Self>) {
         let overlay = cx.new(|_| ComputerWorkbench::new("Dev-Workstation-01".to_string()));
-        cx.observe(
-            &overlay,
-            |shell: &mut AppShell, ov: Entity<ComputerWorkbench>, cx: &mut Context<AppShell>| {
-                if ov.read(cx).should_close {
-                    shell.hide_remote_computer();
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
+        cx.observe(&overlay, |shell: &mut AppShell, ov: Entity<ComputerWorkbench>, cx: &mut Context<AppShell>| {
+            if ov.read(cx).should_close {
+                shell.hide_remote_computer(cx);
+                cx.notify();
+            }
+        }).detach();
         self.computer_overlay = Some(overlay);
     }
 
-    pub fn hide_remote_computer(&mut self) {
+    pub fn hide_remote_computer(&mut self, cx: &mut Context<Self>) {
         self.computer_overlay = None;
+        self.last_handled_nav_dest = Some(NavDestination::Chats);
+        self.nav_rail.update(cx, |r, _| {
+            if r.active_destination == NavDestination::RemoteComputer {
+                r.set_active_destination(NavDestination::Chats);
+            }
+        });
     }
 
-    pub fn show_media_viewer(
-        &mut self,
-        url: impl Into<String>,
-        is_video: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn show_media_viewer(&mut self, url: impl Into<String>, is_video: bool, cx: &mut Context<Self>) {
         let overlay = cx.new(|_| MediaViewer::new(url.into(), is_video));
-        cx.observe(
-            &overlay,
-            |shell: &mut AppShell, ov: Entity<MediaViewer>, cx: &mut Context<AppShell>| {
-                let (close_req, edit_req) = {
-                    let v = ov.read(cx);
-                    (v.should_close, v.open_editor_requested)
-                };
-                if close_req {
-                    shell.hide_media_viewer();
-                    if edit_req {
-                        shell.open_modal(
-                            ModalDialogKind::MediaEditor {
-                                initial_caption: "Edited from Lightbox".to_string(),
-                                is_video,
-                            },
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
+        cx.observe(&overlay, move |shell: &mut AppShell, ov: Entity<MediaViewer>, cx: &mut Context<AppShell>| {
+            if ov.read(cx).should_close {
+                shell.hide_media_viewer();
+                cx.notify();
+            }
+        }).detach();
         self.media_viewer_overlay = Some(overlay);
     }
 
@@ -1564,85 +1150,27 @@ impl AppShell {
         self.media_viewer_overlay = None;
     }
 
-    fn handle_composer_text_submission(
-        &mut self,
-        text: String,
-        silent: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let trimmed = text.trim();
-        if trimmed == "/poll" {
-            self.open_modal(ModalDialogKind::CreatePoll, cx);
-            return;
-        }
-        if trimmed == "/translate" {
-            self.stage.update(cx, |st, st_cx| {
-                st.is_chat_translated = !st.is_chat_translated;
-                st_cx.notify();
-            });
-            return;
-        }
-        if trimmed == "/export" {
-            let ctitle = self.stage.read(cx).chat_title.clone();
-            self.open_modal(
-                ModalDialogKind::ExportData {
-                    chat_title: ctitle,
-                },
-                cx,
-            );
-            return;
-        }
-        if trimmed == "/dice" {
-            let roll = (self.next_message_id % 6) + 1;
-            self.append_outgoing_text(format!("🎲 Rolled Dice: {} / 6!", roll), None, cx);
-            return;
-        }
-        if trimmed == "/task" {
-            self.active_panel = ActiveWorkspacePanel::TaskCenter;
-            return;
-        }
-
-        let reply_ref = self
-            .composer
-            .update(cx, |c, _| c.replying_to.take())
-            .map(|(mid, sname, snip)| ReplyReference {
-                message_id: mid,
-                sender_name: sname,
-                snippet: snip,
-            });
-        let _ = silent;
-        self.append_outgoing_text(text, reply_ref, cx);
-    }
-
-    fn append_outgoing_text(
-        &mut self,
-        text: String,
-        reply_to: Option<ReplyReference>,
-        cx: &mut Context<Self>,
-    ) {
-        let msg_id = self.alloc_msg_id();
-        let reply_id = self.alloc_msg_id();
+    fn append_outgoing_text(&mut self, text: String, cx: &mut Context<Self>) {
+        let msg_id = self.next_message_id;
+        self.next_message_id += 1;
 
         let active_chat_id = self.stage.read(cx).active_chat_id.unwrap_or(1);
         let peer_name = self.stage.read(cx).chat_title.clone();
         let peer_initials = self.stage.read(cx).chat_avatar_initials.clone();
         let peer_color = self.stage.read(cx).chat_avatar_color;
 
-        self.persistence
-            .record_outgoing_proto_message(active_chat_id, msg_id, &text);
-
-        let pts_counter = self.persistence.state.pts_counter;
+        // 1. Add user's outgoing message bubble
         self.stage.update(cx, |st, st_cx| {
             st.add_message(MessageItemModel {
                 id: msg_id,
-                sender_id: 1,
+                sender_id: self.user_id.unwrap_or(1),
                 sender_name: "You".to_string(),
                 avatar_initials: "ME".to_string(),
                 avatar_color: 0x3498DB,
                 direction: MessageDirection::Outgoing,
                 timestamp: "Just now".to_string(),
-                delivery_status: DeliveryStatus::Read,
-                reply_to,
+                delivery_status: DeliveryStatus::Sending,
+                reply_to: None,
                 reactions: vec![],
                 content: MessageContent::Text {
                     text: text.clone(),
@@ -1651,13 +1179,93 @@ impl AppShell {
                 bot_keyboard: None,
                 is_pinned: false,
             });
+            st_cx.notify();
+        });
 
-            if active_chat_id != 3 {
+        // 2. Update sidebar preview
+        self.sidebar.update(cx, |sb, sb_cx| {
+            if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == active_chat_id) {
+                d.last_message = format!("You: {}", text);
+                d.timestamp = "Just now".to_string();
+                d.delivery_status = DialogDeliveryStatus::Sending;
+            }
+            sb_cx.notify();
+        });
+
+        // 3. Dispatch real HTTP POST /api/v1/messages/send
+        if let Some(token) = self.session_token.clone() {
+            let client = self.client.clone();
+            let http_req = SendMessageHttpRequest {
+                chat_id: active_chat_id,
+                text: text.clone(),
+                reply_to: None,
+            };
+            let sent_msg_id = msg_id;
+
+            cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+                let res = client.http_client.send_message(&token, &http_req).await;
+                let _ = weak_shell.update(app, |shell, cx| {
+                    match res {
+                        Ok(resp) => {
+                            shell.client.sync_coordinator.set_pts(
+                                ChatId(active_chat_id as i64),
+                                resp.pts,
+                            );
+
+                            shell.stage.update(cx, |st, st_cx| {
+                                if let Some(m) = st.messages.iter_mut().find(|m| m.id == sent_msg_id) {
+                                    m.id = resp.message_id;
+                                    m.delivery_status = DeliveryStatus::Sent;
+                                }
+                                if let Some(hist) = st.chat_histories.get_mut(&active_chat_id) {
+                                    if let Some(m) = hist.iter_mut().find(|m| m.id == sent_msg_id) {
+                                        m.id = resp.message_id;
+                                        m.delivery_status = DeliveryStatus::Sent;
+                                    }
+                                }
+                                st_cx.notify();
+                            });
+                            shell.sidebar.update(cx, |sb, sb_cx| {
+                                if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == active_chat_id) {
+                                    d.delivery_status = DialogDeliveryStatus::Sent;
+                                }
+                                sb_cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            eprintln!("[AppShell] Message send HTTP failure: {}. Preserving local message", err);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+
+        // 4. Also dispatch WebSocket frame
+        let ws_req = gpui_telegram_proto::ws::SendMessageRequest::new(
+            ChatId(active_chat_id as i64),
+            msg_id,
+            gpui_telegram_proto::message::MessageContent::plain_text(text.clone()),
+        );
+        let _ = self.client.ws_channel.send(WsClientFrame::SendMessage(ws_req));
+
+        // 5. Check if target chat is an AI Bot (Chat 4 or contains "Autonomous Agent" / "Bot")
+        let is_ai_bot = active_chat_id == 4
+            || peer_name.contains("Autonomous Agent")
+            || peer_name.contains("Bot");
+
+        if is_ai_bot {
+            let reply_id = self.next_message_id;
+            self.next_message_id += 1;
+
+            // Insert placeholder thinking bubble
+            self.stage.update(cx, |st, st_cx| {
                 st.add_message(MessageItemModel {
                     id: reply_id,
                     sender_id: active_chat_id,
                     sender_name: peer_name.clone(),
-                    avatar_initials: peer_initials,
+                    avatar_initials: peer_initials.clone(),
                     avatar_color: peer_color,
                     direction: MessageDirection::Incoming,
                     timestamp: "Just now".to_string(),
@@ -1665,83 +1273,843 @@ impl AppShell {
                     reply_to: None,
                     reactions: vec![],
                     content: MessageContent::Text {
-                        text: format!(
-                            "Received: \"{}\" — PTS #{} synced via MTProto 2.0 + LocalStore.",
-                            text, pts_counter
-                        ),
+                        text: "Thinking... 💭".to_string(),
                         is_edited: false,
                     },
-                    bot_keyboard: if active_chat_id == 4 {
-                        Some(vec![vec![
-                            InlineKeyboardButton {
-                                text: "Launch Talk Mode".to_string(),
-                                button_type: InlineButtonType::Callback(
-                                    "action_talk_mode".to_string(),
-                                ),
-                            },
-                            InlineKeyboardButton {
-                                text: "Remote Computer".to_string(),
-                                button_type: InlineButtonType::Callback(
-                                    "action_remote_computer".to_string(),
-                                ),
-                            },
-                        ]])
-                    } else {
-                        None
-                    },
+                    bot_keyboard: None,
                     is_pinned: false,
                 });
+                st_cx.notify();
+            });
+
+            // Set typing indicator in ChatSidebar
+            self.sidebar.update(cx, |sb, sb_cx| {
+                sb.set_typing(
+                    active_chat_id,
+                    Some("Autonomous Agent Bot is thinking...".to_string()),
+                );
+                sb_cx.notify();
+            });
+
+            let client = self.client.clone();
+            let token = self.session_token.clone().unwrap_or_default();
+            let session_id = self
+                .session_id
+                .clone()
+                .unwrap_or_else(|| format!("sess_guest_{}", active_chat_id));
+            let prompt = text.clone();
+
+            cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+                let agent_req = AgentRunRequest {
+                    prompt,
+                    session_id,
+                    model_id: Some("grok-3".to_string()),
+                    thinking_budget_tokens: Some(1024),
+                };
+                let result = client.http_client.agent_runs(&token, &agent_req).await;
+
+                let _ = weak_shell.update(app, |shell, cx| {
+                    // Clear typing indicator in ChatSidebar
+                    shell.sidebar.update(cx, |sb, sb_cx| {
+                        sb.set_typing(active_chat_id, None);
+                        sb_cx.notify();
+                    });
+
+                    match result {
+                        Ok(run_resp) => {
+                            let response_text = run_resp.response;
+                            let snippet = response_text
+                                .lines()
+                                .next()
+                                .unwrap_or(&response_text)
+                                .to_string();
+
+                            let is_current =
+                                shell.stage.read(cx).active_chat_id == Some(active_chat_id);
+                            if is_current {
+                                shell.stage.update(cx, |st, st_cx| {
+                                    if let Some(msg) =
+                                        st.messages.iter_mut().find(|m| m.id == reply_id)
+                                    {
+                                        msg.content = MessageContent::Text {
+                                            text: response_text.clone(),
+                                            is_edited: false,
+                                        };
+                                        msg.bot_keyboard = Some(vec![vec![
+                                            InlineKeyboardButton {
+                                                text: "Launch Talk Mode".to_string(),
+                                                button_type: InlineButtonType::Callback(
+                                                    "action_talk_mode".to_string(),
+                                                ),
+                                            },
+                                            InlineKeyboardButton {
+                                                text: "Remote Computer".to_string(),
+                                                button_type: InlineButtonType::Callback(
+                                                    "action_remote_computer".to_string(),
+                                                ),
+                                            },
+                                        ]]);
+                                    }
+                                    st_cx.notify();
+                                });
+                            } else {
+                                shell.stage.update(cx, |st, _| {
+                                    if let Some(history) =
+                                        st.chat_histories.get_mut(&active_chat_id)
+                                    {
+                                        if let Some(msg) =
+                                            history.iter_mut().find(|m| m.id == reply_id)
+                                        {
+                                            msg.content = MessageContent::Text {
+                                                text: response_text.clone(),
+                                                is_edited: false,
+                                            };
+                                            msg.bot_keyboard = Some(vec![vec![
+                                                InlineKeyboardButton {
+                                                    text: "Launch Talk Mode".to_string(),
+                                                    button_type: InlineButtonType::Callback(
+                                                        "action_talk_mode".to_string(),
+                                                    ),
+                                                },
+                                                InlineKeyboardButton {
+                                                    text: "Remote Computer".to_string(),
+                                                    button_type: InlineButtonType::Callback(
+                                                        "action_remote_computer".to_string(),
+                                                    ),
+                                                },
+                                            ]]);
+                                        }
+                                    }
+                                });
+                            }
+
+                            shell.sidebar.update(cx, |sb, sb_cx| {
+                                if let Some(d) =
+                                    sb.dialogs.iter_mut().find(|d| d.id == active_chat_id)
+                                {
+                                    d.last_message = snippet;
+                                    d.timestamp = "Just now".to_string();
+                                }
+                                sb_cx.notify();
+                            });
+                        }
+                        Err(err) => {
+                            let err_msg = format!("⚠️ AI Agent Error: {}", err);
+                            shell.stage.update(cx, |st, st_cx| {
+                                if let Some(msg) =
+                                    st.messages.iter_mut().find(|m| m.id == reply_id)
+                                {
+                                    msg.content = MessageContent::Text {
+                                        text: err_msg,
+                                        is_edited: false,
+                                    };
+                                }
+                                st_cx.notify();
+                            });
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// Launches the long-lived GPUI background tasks for WebSocket frame streaming
+    /// and connection health monitoring upon successful authentication or session hydration.
+    pub fn start_ws_inbound_stream(&mut self, cx: &mut Context<Self>) {
+        if self.ws_stream_started {
+            return;
+        }
+        self.ws_stream_started = true;
+
+        // 1. Observe Connection Status changes for NavRail UI indicator
+        let mut status_rx = self.client.ws_transport.subscribe_status();
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            while status_rx.changed().await.is_ok() {
+                let status = status_rx.borrow().clone();
+                let is_connected = status.is_connected();
+                let update_res = weak_shell.update(app, |shell, cx| {
+                    let was_connected = shell.nav_rail.read(cx).is_connected;
+                    shell.nav_rail.update(cx, |r, _| {
+                        r.set_connected(is_connected);
+                    });
+                    if is_connected && !was_connected {
+                        // When WebSocket establishes or re-establishes connection,
+                        // trigger catch-up sync (refresh_chats and refresh historical messages
+                        // for the active chat if selected) so that any messages or PTS changes
+                        // that occurred while offline are seamlessly reconciled.
+                        shell.refresh_chats(cx);
+                        let active_chat = shell.stage.read(cx).active_chat_id;
+                        if let Some(active_chat_id) = active_chat {
+                            shell.load_historical_messages(active_chat_id, cx);
+                        }
+                    }
+                    if let ConnectionStatus::Offline { ref reason } = status {
+                        if reason.contains("401") || reason.contains("unauthorized") {
+                            shell.logout(cx);
+                            shell.login_error = Some(
+                                "Session expired or revoked from another device. Please sign in again.".to_string(),
+                            );
+                        }
+                    }
+                    cx.notify();
+                });
+                if update_res.is_err() {
+                    break;
+                }
             }
-            st_cx.notify();
+        })
+        .detach();
+
+        // 2. Consume real-time inbound WebSocket frames
+        let mut frame_rx = self.client.ws_channel.subscribe();
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            while let Ok(frame) = frame_rx.recv().await {
+                let update_res = weak_shell.update(app, |shell, cx| {
+                    shell.handle_ws_server_frame(frame, cx);
+                });
+                if update_res.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Master router for incoming WsServerFrame variants dispatched from the WebSocket thread.
+    pub fn handle_ws_server_frame(&mut self, frame: WsServerFrame, cx: &mut Context<Self>) {
+        match frame {
+            WsServerFrame::Ack { client_nonce, message_id, pts, .. } => {
+                self.handle_ws_ack(client_nonce, message_id, pts, cx);
+            }
+            WsServerFrame::PtsPush(pts_update) => {
+                self.handle_ws_pts_push(pts_update, cx);
+            }
+            WsServerFrame::SyncDiff(diff_response) => {
+                self.handle_ws_sync_diff(diff_response, cx);
+            }
+            WsServerFrame::Update(update_event) => {
+                let active_chat = self.stage.read(cx).active_chat_id.unwrap_or(1);
+                self.apply_update_event(ChatId(active_chat as i64), update_event, cx);
+            }
+            WsServerFrame::Pong { .. } => {
+                // Heartbeat roundtrip successful; connection alive
+            }
+            WsServerFrame::Error { code, .. } => {
+                if code == 401 {
+                    self.logout(cx);
+                    self.login_error = Some("Session expired (401). Please sign in again.".to_string());
+                }
+            }
+        }
+    }
+
+    fn handle_ws_ack(&mut self, client_nonce: u64, message_id: i64, pts: u64, cx: &mut Context<Self>) {
+        let active_chat = self.stage.read(cx).active_chat_id;
+        if let Some(cid) = active_chat {
+            if pts > 0 {
+                self.client.sync_coordinator.set_pts(ChatId(cid as i64), pts);
+            }
+        }
+
+        self.stage.update(cx, |st, st_cx| {
+            if let Some(msg) = st.messages.iter_mut().find(|m| m.id == client_nonce) {
+                if message_id > 0 {
+                    msg.id = message_id as u64;
+                }
+                msg.delivery_status = DeliveryStatus::Sent;
+                st_cx.notify();
+            }
+            if let Some(cid) = active_chat {
+                if let Some(history) = st.chat_histories.get_mut(&cid) {
+                    if let Some(msg) = history.iter_mut().find(|m| m.id == client_nonce) {
+                        if message_id > 0 {
+                            msg.id = message_id as u64;
+                        }
+                        msg.delivery_status = DeliveryStatus::Sent;
+                    }
+                }
+            }
         });
 
-        self.sidebar.update(cx, |sb, sb_cx| {
-            sb.set_draft(active_chat_id, String::new());
-            if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == active_chat_id) {
-                d.last_message = format!("You: {}", text);
-                d.timestamp = "Just now".to_string();
+        if let Some(cid) = active_chat {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == cid) {
+                    d.delivery_status = DialogDeliveryStatus::Sent;
+                }
+                sb_cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn handle_ws_pts_push(&mut self, pts_update: PtsUpdate, cx: &mut Context<Self>) {
+        let chat_id = pts_update.chat_id;
+        match self.client.sync_coordinator.evaluate_update(&pts_update) {
+            SyncOutcome::Contiguous => {
+                self.apply_update_event(chat_id, pts_update.event, cx);
+                let drained = self.client.sync_coordinator.drain_contiguous_buffer(chat_id);
+                for buffered in drained {
+                    self.apply_update_event(chat_id, buffered.event, cx);
+                }
             }
-            sb_cx.notify();
-        });
+            SyncOutcome::Duplicate => {}
+            SyncOutcome::GapDetected { last_seen, .. } => {
+                self.client.sync_coordinator.buffer_gap_update(pts_update);
+                let req = SyncGetDifferenceRequest::new(chat_id, last_seen, 100);
+                self.client.ws_channel.send(WsClientFrame::Sync(req));
+            }
+        }
+    }
+
+    fn apply_update_event(&mut self, chat_id: ChatId, event: UpdateEvent, cx: &mut Context<Self>) {
+        match event {
+            UpdateEvent::NewMessage(msg) => {
+                let current_user_id = self.user_id.unwrap_or(0);
+                let is_outgoing = msg.sender_id.0 == current_user_id;
+
+                if is_outgoing {
+                    if let Some(nonce) = msg.client_nonce {
+                        let found = self.stage.read(cx).messages.iter().any(|m| m.id == nonce);
+                        if found {
+                            self.handle_ws_ack(nonce, msg.id.0, 0, cx);
+                            return;
+                        }
+                    }
+                }
+
+                let preview_text = match &msg.content {
+                    gpui_telegram_proto::message::MessageContent::Text { text, .. } => text.clone(),
+                    _ => "[Media attachment]".to_string(),
+                };
+
+                let model = MessageItemModel {
+                    id: msg.id.0 as u64,
+                    sender_id: msg.sender_id.0,
+                    sender_name: if is_outgoing { "You".to_string() } else { "Peer".to_string() },
+                    avatar_initials: if is_outgoing { "ME".to_string() } else { "PR".to_string() },
+                    avatar_color: if is_outgoing { 0x3498DB } else { 0x9B59B6 },
+                    direction: if is_outgoing { MessageDirection::Outgoing } else { MessageDirection::Incoming },
+                    timestamp: msg.date.format("%H:%M").to_string(),
+                    delivery_status: DeliveryStatus::Read,
+                    reply_to: None,
+                    reactions: vec![],
+                    content: MessageContent::Text {
+                        text: preview_text.clone(),
+                        is_edited: false,
+                    },
+                    bot_keyboard: None,
+                    is_pinned: false,
+                };
+
+                let chat_u64 = chat_id.0 as u64;
+                let is_current_chat = self.stage.read(cx).active_chat_id == Some(chat_u64);
+
+                if is_current_chat {
+                    self.stage.update(cx, |st, st_cx| {
+                        st.add_message(model.clone());
+                        st_cx.notify();
+                    });
+                } else {
+                    self.stage.update(cx, |st, _| {
+                        st.chat_histories.entry(chat_u64).or_default().push(model);
+                    });
+                }
+
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    if let Some(dialog) = sb.dialogs.iter_mut().find(|d| d.id == chat_u64) {
+                        dialog.last_message = preview_text;
+                        dialog.timestamp = msg.date.format("%H:%M").to_string();
+                        if !is_current_chat && !is_outgoing {
+                            dialog.unread_count += 1;
+                        }
+                    }
+                    sb_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::EditMessage(msg) => {
+                let chat_u64 = chat_id.0 as u64;
+                let target_id = msg.id.0 as u64;
+                if let gpui_telegram_proto::message::MessageContent::Text { text, .. } = msg.content {
+                    self.stage.update(cx, |st, st_cx| {
+                        if let Some(m) = st.messages.iter_mut().find(|m| m.id == target_id) {
+                            m.content = MessageContent::Text {
+                                text: text.clone(),
+                                is_edited: true,
+                            };
+                            st.row_height_cache.mark_dirty();
+                        }
+                        if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                            if let Some(m) = history.iter_mut().find(|m| m.id == target_id) {
+                                m.content = MessageContent::Text {
+                                    text: text.clone(),
+                                    is_edited: true,
+                                };
+                            }
+                        }
+                        st_cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            UpdateEvent::DeleteMessages(tombstone) => {
+                let chat_u64 = chat_id.0 as u64;
+                let ids_to_delete: std::collections::HashSet<u64> =
+                    tombstone.message_ids.iter().map(|id| id.0 as u64).collect();
+
+                self.stage.update(cx, |st, st_cx| {
+                    st.messages.retain(|m| !ids_to_delete.contains(&m.id));
+                    if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                        history.retain(|m| !ids_to_delete.contains(&m.id));
+                    }
+                    st.row_height_cache.mark_dirty();
+                    st_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::UserTyping(typing_event) => {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.set_typing(
+                        typing_event.chat_id.0 as u64,
+                        Some(format!("User #{} is typing...", typing_event.user_id.0)),
+                    );
+                    sb_cx.notify();
+                });
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_ws_sync_diff(&mut self, diff: SyncGetDifferenceResponse, cx: &mut Context<Self>) {
+        let chat_id = diff.chat_id;
+
+        for msg in diff.new_messages {
+            self.apply_update_event(chat_id, UpdateEvent::NewMessage(msg), cx);
+        }
+
+        for update in diff.other_updates {
+            self.apply_update_event(chat_id, update, cx);
+        }
+
+        self.client.sync_coordinator.set_pts(chat_id, diff.pts);
+
+        if diff.has_more {
+            let req = SyncGetDifferenceRequest::new(chat_id, diff.pts, 100);
+            self.client.ws_channel.send(WsClientFrame::Sync(req));
+        } else {
+            let drained = self.client.sync_coordinator.drain_contiguous_buffer(chat_id);
+            for buffered in drained {
+                self.apply_update_event(chat_id, buffered.event, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Dispatches POST /api/v1/contacts/add for either Create AI Bot or Add Friend
+    pub fn dispatch_add_contact(&mut self, req: PendingAddContactRequest, cx: &mut Context<Self>) {
+        let token = match self.session_token.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let client = self.client.clone();
+        let http_req = AddContactHttpRequest {
+            first_name: req.first_name.clone(),
+            last_name: req.last_name.clone(),
+            username: req.username.clone(),
+            phone: req.phone.clone(),
+            is_bot: req.is_bot,
+            bot_system_prompt: req.system_prompt.clone(),
+        };
+        let local_dialog_id = req.local_dialog_id;
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.add_contact(&token, http_req).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                if let Ok(resp) = res {
+                    let server_chat_id = resp.chat_id;
+                    let mut selected_peer: Option<DialogItemModel> = None;
+                    shell.sidebar.update(cx, |sb, sb_cx| {
+                        if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == local_dialog_id) {
+                            d.id = server_chat_id;
+                            d.peer_name = resp.title.clone();
+                            d.avatar_color = resp.avatar_color.unwrap_or(0x2AABEE);
+                            selected_peer = Some(d.clone());
+                        }
+                        if sb.active_chat_id == Some(local_dialog_id) {
+                            sb.active_chat_id = Some(server_chat_id);
+                        }
+                        sb_cx.notify();
+                    });
+                    if let Some(d) = selected_peer {
+                        shell.stage.update(cx, |st, st_cx| {
+                            st.set_chat(server_chat_id, &d.peer_name, "online", &d.avatar_initials, d.avatar_color);
+                            st_cx.notify();
+                        });
+                    }
+                    shell.load_historical_messages(server_chat_id, cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Dispatches POST /api/v1/chats/create for Create Group
+    pub fn dispatch_create_group(&mut self, req: PendingCreateGroupRequest, cx: &mut Context<Self>) {
+        let token = match self.session_token.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let client = self.client.clone();
+        let title = req.title.clone();
+        let member_ids = req.member_ids.clone();
+        let member_usernames = req.member_usernames.clone();
+        let about = req.about.clone();
+        let local_dialog_id = req.local_dialog_id;
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client
+                .http_client
+                .create_group_with_token(
+                    &token,
+                    &title,
+                    member_ids,
+                    member_usernames,
+                    about,
+                )
+                .await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                if let Ok(resp) = res {
+                    let server_chat_id = resp.chat_id.max(0) as u64;
+                    let mut selected_peer: Option<DialogItemModel> = None;
+                    shell.sidebar.update(cx, |sb, sb_cx| {
+                        if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == local_dialog_id) {
+                            d.id = server_chat_id;
+                            selected_peer = Some(d.clone());
+                        }
+                        if sb.active_chat_id == Some(local_dialog_id) {
+                            sb.active_chat_id = Some(server_chat_id);
+                        }
+                        sb_cx.notify();
+                    });
+                    if let Some(d) = selected_peer {
+                        shell.stage.update(cx, |st, st_cx| {
+                            st.set_chat(server_chat_id, &d.peer_name, "group", &d.avatar_initials, d.avatar_color);
+                            st_cx.notify();
+                        });
+                    }
+                    shell.load_historical_messages(server_chat_id, cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Dispatches GET /api/v1/search/messages?q=...&category=... for Categorized Search
+    pub fn dispatch_categorized_search(
+        &mut self,
+        query: String,
+        category: String,
+        search_seq: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.last_dispatched_search_seq = search_seq;
+        let token = match self.session_token.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let client = self.client.clone();
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client
+                .http_client
+                .search_global(&token, &query, &category)
+                .await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                if shell.sidebar.read(cx).search_request_seq != search_seq {
+                    return;
+                }
+                if let Ok(hits) = res {
+                    let mapped: Vec<CategorizedSearchResult> = hits
+                        .into_iter()
+                        .map(|hit| {
+                            let title = if hit.title.is_empty() {
+                                format!("Chat #{}", hit.chat_id)
+                            } else {
+                                hit.title
+                            };
+                            let initials = title
+                                .chars()
+                                .take(2)
+                                .collect::<String>()
+                                .to_uppercase();
+                            let cat = if hit.category.is_empty() {
+                                category.clone()
+                            } else {
+                                hit.category
+                            };
+                            CategorizedSearchResult {
+                                chat_id: hit.chat_id,
+                                message_id: hit.message_id,
+                                category: cat,
+                                title,
+                                subtitle: hit.snippet,
+                                timestamp: "刚刚".to_string(),
+                                avatar_initials: if initials.is_empty() {
+                                    "TG".to_string()
+                                } else {
+                                    initials
+                                },
+                                avatar_color: hit.avatar_color.filter(|&c| c != 0).unwrap_or(0x2AABEE),
+                                is_bot: hit.is_bot,
+                            }
+                        })
+                        .collect();
+                    shell.sidebar.update(cx, |sb, sb_cx| {
+                        sb.remote_search_results = mapped;
+                        sb_cx.notify();
+                    });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Refreshes authentic chat list from GET /api/v1/chats
+    pub fn refresh_chats(&mut self, cx: &mut Context<Self>) {
+        let token = match self.session_token.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let client = self.client.clone();
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.get_chats(&token).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                match res {
+                    Ok(chats) if !chats.is_empty() => {
+                        let mut auto_selected_welcome: Option<DialogItemModel> = None;
+                        shell.sidebar.update(cx, |sb, sb_cx| {
+                            // Remove any fabricated local bootstrap dialogs (id <= 5) not present on the server
+                            sb.dialogs
+                                .retain(|d| d.id > 5 || chats.iter().any(|c| c.chat_id == d.id));
+
+                            for server_chat in chats {
+                                let is_welcome_bot = (server_chat.chat_id >= 700_000_000
+                                    && server_chat.chat_id < 750_000_000)
+                                    || server_chat.title.contains("Telegram Official Bot");
+                                let is_bot = is_welcome_bot || server_chat.is_bot.unwrap_or(false);
+                                if let Some(existing) = sb.dialogs.iter_mut().find(|d| d.id == server_chat.chat_id) {
+                                    existing.peer_name = server_chat.title;
+                                    if let Some(msg) = server_chat.last_message {
+                                        existing.last_message = msg;
+                                    }
+                                    existing.unread_count = server_chat.unread_count;
+                                    if is_welcome_bot && (sb.active_chat_id == Some(4) || sb.active_chat_id.is_none()) {
+                                        auto_selected_welcome = Some(existing.clone());
+                                    }
+                                } else {
+                                    let initials = if is_welcome_bot {
+                                        "TG".to_string()
+                                    } else if is_bot {
+                                        "🤖".to_string()
+                                    } else {
+                                        server_chat
+                                            .title
+                                            .chars()
+                                            .take(2)
+                                            .collect::<String>()
+                                            .to_uppercase()
+                                    };
+                                    let folder = if is_bot {
+                                        "Bots".to_string()
+                                    } else if server_chat.chat_type != 0 {
+                                        "Work".to_string()
+                                    } else {
+                                        "Personal".to_string()
+                                    };
+                                    let dialog_model = DialogItemModel {
+                                        id: server_chat.chat_id,
+                                        peer_name: server_chat.title,
+                                        avatar_initials: initials,
+                                        avatar_color: server_chat.avatar_color.unwrap_or(0x2AABEE),
+                                        last_message: server_chat
+                                            .last_message
+                                            .unwrap_or_else(|| "No messages yet".to_string()),
+                                        timestamp: "刚刚".to_string(),
+                                        unread_count: server_chat.unread_count,
+                                        is_muted: false,
+                                        is_pinned: is_welcome_bot,
+                                        is_online: is_bot || server_chat.chat_type == 0,
+                                        typing_indicator: None,
+                                        delivery_status: DialogDeliveryStatus::Read,
+                                        folder,
+                                    };
+                                    if is_welcome_bot {
+                                        sb.dialogs.insert(0, dialog_model.clone());
+                                        if sb.active_chat_id == Some(4) || sb.active_chat_id.is_none() {
+                                            sb.active_chat_id = Some(dialog_model.id);
+                                            auto_selected_welcome = Some(dialog_model);
+                                        }
+                                    } else {
+                                        sb.dialogs.push(dialog_model);
+                                    }
+                                }
+                            }
+
+                            // Ensure an active dialog is selected if the previous active_chat_id was a removed placeholder
+                            if auto_selected_welcome.is_none() {
+                                let current_valid = sb
+                                    .active_chat_id
+                                    .map(|id| sb.dialogs.iter().any(|d| d.id == id))
+                                    .unwrap_or(false);
+                                if !current_valid {
+                                    if let Some(first) = sb.dialogs.first().cloned() {
+                                        sb.active_chat_id = Some(first.id);
+                                        auto_selected_welcome = Some(first);
+                                    }
+                                }
+                            }
+
+                            sb.recompute_folder_badges();
+                            sb_cx.notify();
+                        });
+                        if let Some(welcome) = auto_selected_welcome {
+                            shell.stage.update(cx, |st, st_cx| {
+                                st.set_chat(
+                                    welcome.id,
+                                    &welcome.peer_name,
+                                    "official bot · online",
+                                    &welcome.avatar_initials,
+                                    welcome.avatar_color,
+                                );
+                                st_cx.notify();
+                            });
+                            shell.inspector.update(cx, |insp, insp_cx| {
+                                insp.set_peer(
+                                    &welcome.peer_name,
+                                    "official bot · online",
+                                    &welcome.avatar_initials,
+                                    welcome.avatar_color,
+                                );
+                                insp_cx.notify();
+                            });
+                            shell.load_historical_messages(welcome.id, cx);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("[AppShell] Failed to fetch /api/v1/chats: {}. Retaining existing dialogs", err);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Fetches historical messages from the backend for the selected chat
+    pub fn load_historical_messages(&mut self, chat_id: u64, cx: &mut Context<Self>) {
+        let token = match self.session_token.clone() {
+            Some(t) => t,
+            None => return,
+        };
+        let client = self.client.clone();
+        let my_user_id = self.user_id.unwrap_or(0);
+        let (peer_name, peer_initials, peer_color) = {
+            let sb = self.sidebar.read(cx);
+            sb.dialogs
+                .iter()
+                .find(|d| d.id == chat_id)
+                .map(|d| (d.peer_name.clone(), d.avatar_initials.clone(), d.avatar_color))
+                .unwrap_or_else(|| ("Telegram Official Bot".to_string(), "TG".to_string(), 0x2AABEE))
+        };
+
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            let res = client.http_client.get_chat_messages(&token, chat_id, Some(50)).await;
+            let _ = weak_shell.update(app, |shell, cx| {
+                match res {
+                    Ok(msgs) if !msgs.is_empty() => {
+                        let models: Vec<MessageItemModel> = msgs
+                            .into_iter()
+                            .map(|hm| {
+                                let is_outgoing = hm.is_outgoing.unwrap_or(hm.sender_id == my_user_id);
+                                let incoming_name = if hm.sender_id == 777_000 {
+                                    "Telegram Official Bot".to_string()
+                                } else {
+                                    peer_name.clone()
+                                };
+                                let incoming_initials = if hm.sender_id == 777_000 {
+                                    "TG".to_string()
+                                } else {
+                                    peer_initials.clone()
+                                };
+                                MessageItemModel {
+                                    id: hm.message_id,
+                                    sender_id: hm.sender_id,
+                                    sender_name: if is_outgoing { "You".to_string() } else { incoming_name },
+                                    avatar_initials: if is_outgoing { "ME".to_string() } else { incoming_initials },
+                                    avatar_color: if is_outgoing { 0x3498DB } else { peer_color },
+                                    direction: if is_outgoing { MessageDirection::Outgoing } else { MessageDirection::Incoming },
+                                    timestamp: hm.date.map(|d| {
+                                        chrono::DateTime::from_timestamp_millis(d)
+                                            .map(|dt| dt.format("%H:%M").to_string())
+                                            .unwrap_or_else(|| "Earlier".to_string())
+                                    }).unwrap_or_else(|| "Earlier".to_string()),
+                                    delivery_status: DeliveryStatus::Read,
+                                    reply_to: None,
+                                    reactions: vec![],
+                                    content: MessageContent::Text {
+                                        text: hm.text,
+                                        is_edited: false,
+                                    },
+                                    bot_keyboard: None,
+                                    is_pinned: false,
+                                }
+                            })
+                            .collect();
+
+                        shell.stage.update(cx, |st, st_cx| {
+                            if st.active_chat_id == Some(chat_id) {
+                                st.merge_historical_messages(models.clone());
+                                st.row_height_cache.rebuild_prefix_sums(&st.messages);
+                                st_cx.notify();
+                            }
+                            st.chat_histories.insert(chat_id, models);
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("[AppShell] Failed to fetch history for chat {}: {}. Retaining cached messages", chat_id, err);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn append_outgoing_attachment(&mut self, kind: &str, cx: &mut Context<Self>) {
-        let msg_id = self.alloc_msg_id();
+        let msg_id = self.next_message_id;
+        self.next_message_id += 1;
 
         let content = match kind {
             "voice" => MessageContent::Voice {
                 duration_secs: 8,
-                waveform_5bit: vec![
-                    5, 12, 24, 30, 28, 19, 14, 22, 31, 25, 16, 10, 18, 27, 21, 9,
-                ],
+                waveform_5bit: vec![5, 12, 24, 30, 28, 19, 14, 22, 31, 25, 16, 10, 18, 27, 21, 9],
                 playback_position_secs: 0.0,
                 is_playing: false,
                 playback_speed: 1.0,
             },
-            "round_video" => MessageContent::Media {
-                media_type: MediaType::Video,
-                url: "https://example.com/round_video_note.mp4".to_string(),
-                width: 360,
-                height: 360,
-                duration_secs: Some(12),
-                file_size_bytes: 1_850_000,
-                caption: Some("⭕ Round Video Note (240p 60fps Circle)".to_string()),
-                is_streaming: true,
-            },
-            "file" => MessageContent::Text {
-                text: "📄 [Document] architecture_bundle_v7.tar.zst (14.8 MB • SHA-256 Verified)"
-                    .to_string(),
-                is_edited: false,
-            },
             "photo" => MessageContent::Album {
-                items: vec![AlbumItem {
-                    id: 1,
-                    media_type: MediaType::Photo,
-                    url: "".to_string(),
-                    aspect_ratio: 1.33,
-                    preview_color: 0x2980B9,
-                    caption: None,
-                }],
+                items: vec![
+                    AlbumItem { id: 1, media_type: MediaType::Photo, url: "".to_string(), aspect_ratio: 1.33, preview_color: 0x2980B9, caption: None },
+                ],
                 caption: Some("📷 High-resolution screenshot sent from GPUI Desktop".to_string()),
             },
             "video" => MessageContent::Media {
@@ -1755,31 +2123,17 @@ impl AppShell {
                 is_streaming: true,
             },
             "location" => MessageContent::Location {
-                latitude: 44.0458,
-                longitude: -123.0726,
+                latitude: 31.2304,
+                longitude: 121.4737,
                 title: "Shared Live Location".to_string(),
-                address: "Eugene, OR • GPUI Desktop Client".to_string(),
+                address: "GPUI Telegram Desktop Client".to_string(),
             },
             _ => MessageContent::Poll {
-                question: "Ready to ship GPUI Telegram v7.4.2?".to_string(),
+                question: "Ready to ship GPUI Telegram v1.0?".to_string(),
                 poll_type: PollType::Regular,
                 options: vec![
-                    PollOption {
-                        id: 1,
-                        text: "Yes, ship it! 🚀".to_string(),
-                        votes: 1,
-                        percentage: 100.0,
-                        is_selected: true,
-                        is_correct: true,
-                    },
-                    PollOption {
-                        id: 2,
-                        text: "Run one more benchmark".to_string(),
-                        votes: 0,
-                        percentage: 0.0,
-                        is_selected: false,
-                        is_correct: false,
-                    },
+                    PollOption { id: 1, text: "Yes, ship it! 🚀".to_string(), votes: 1, percentage: 100.0, is_selected: true, is_correct: true },
+                    PollOption { id: 2, text: "Run one more benchmark".to_string(), votes: 0, percentage: 0.0, is_selected: false, is_correct: false },
                 ],
                 total_votes: 1,
                 is_closed: false,
@@ -1807,23 +2161,132 @@ impl AppShell {
         });
     }
 
-    fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let cmd_or_ctrl = event.keystroke.modifiers.platform || event.keystroke.modifiers.control;
+    pub fn active_text_and_preedit(&self, cx: &App) -> (String, Option<String>) {
+        if !self.is_authenticated {
+            match self.login_step {
+                LoginWizardStep::Start => {
+                    let committed = match self.active_login_field {
+                        LoginInputField::Username => self.username_input.clone(),
+                        LoginInputField::Password => self.password_input.clone(),
+                        LoginInputField::FirstName => self.first_name_input.clone(),
+                        LoginInputField::Email => self.email_input.clone(),
+                        LoginInputField::EmailCode => self.email_code_input.clone(),
+                    };
+                    (committed, self.ime_preedit.clone())
+                }
+                LoginWizardStep::Phone => (self.phone_number.clone(), None),
+                LoginWizardStep::Code => (self.verification_code.clone(), None),
+                LoginWizardStep::QrCode => (String::new(), None),
+            }
+        } else if self.sidebar.read(cx).active_creation_modal.is_some() {
+            let sb = self.sidebar.read(cx);
+            let committed = match sb.active_creation_field {
+                CreationInputField::PrimaryName => sb.creation_primary_input.clone(),
+                CreationInputField::SecondaryHandle => sb.creation_secondary_input.clone(),
+                CreationInputField::TertiaryPromptOrPhone => sb.creation_tertiary_input.clone(),
+            };
+            (committed, self.ime_preedit.clone())
+        } else if self.sidebar.read(cx).search_focused {
+            (
+                self.sidebar.read(cx).search_query.clone(),
+                self.ime_preedit.clone(),
+            )
+        } else {
+            let c = self.composer.read(cx);
+            (
+                c.text().to_string(),
+                c.ime_machine.preedit_text().map(|s| s.to_string()),
+            )
+        }
+    }
 
-        // 0. If Passcode Lock Screen is active
-        if self.is_passcode_locked {
-            if key == "backspace" {
-                self.unlock_pin_input.pop();
-                cx.notify();
-            } else if let Some(ref ch) = event.keystroke.key_char {
-                if ch.chars().all(|c| c.is_ascii_digit()) && self.unlock_pin_input.len() < 4 {
-                    self.unlock_pin_input.push_str(ch);
-                    if Some(&self.unlock_pin_input)
-                        == self.persistence.state.local_passcode_pin.as_ref()
-                    {
-                        self.is_passcode_locked = false;
-                        self.unlock_pin_input.clear();
+    pub fn has_active_ime_preedit(&self, cx: &App) -> bool {
+        let (_, preedit) = self.active_text_and_preedit(cx);
+        preedit.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    pub fn clear_active_field(&mut self, cx: &mut Context<Self>) {
+        self.ime_preedit = None;
+        if !self.is_authenticated {
+            match self.login_step {
+                LoginWizardStep::Start => match self.active_login_field {
+                    LoginInputField::Username => self.username_input.clear(),
+                    LoginInputField::Password => self.password_input.clear(),
+                    LoginInputField::FirstName => self.first_name_input.clear(),
+                    LoginInputField::Email => self.email_input.clear(),
+                    LoginInputField::EmailCode => self.email_code_input.clear(),
+                },
+                LoginWizardStep::Phone => self.phone_number.clear(),
+                LoginWizardStep::Code => self.verification_code.clear(),
+                LoginWizardStep::QrCode => {}
+            }
+        } else if self.sidebar.read(cx).active_creation_modal.is_some() {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                sb.clear_creation_text();
+                sb_cx.notify();
+            });
+        } else if self.sidebar.read(cx).search_focused {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                sb.set_search_query("");
+                sb_cx.notify();
+            });
+        } else {
+            self.composer.update(cx, |c, c_cx| {
+                c.clear();
+                c_cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn insert_committed_text(&mut self, raw_text: &str, cx: &mut Context<Self>) {
+        self.ime_preedit = None;
+        let clean: String = raw_text
+            .chars()
+            .filter(|&c| c != '\r' && c != '\n')
+            .collect();
+        if clean.is_empty() {
+            cx.notify();
+            return;
+        }
+
+        if !self.is_authenticated {
+            match self.login_step {
+                LoginWizardStep::Start => {
+                    match self.active_login_field {
+                        LoginInputField::Username => self.username_input.push_str(&clean),
+                        LoginInputField::Password => self.password_input.push_str(&clean),
+                        LoginInputField::FirstName => self.first_name_input.push_str(&clean),
+                        LoginInputField::Email => self.email_input.push_str(&clean),
+                        LoginInputField::EmailCode => {
+                            for ch in clean.chars().filter(|c| c.is_ascii_digit()) {
+                                if self.email_code_input.len() < 6 {
+                                    self.email_code_input.push(ch);
+                                }
+                            }
+                        }
+                    }
+                    cx.notify();
+                }
+                LoginWizardStep::Phone => {
+                    let digits: String = clean
+                        .chars()
+                        .filter(|c| c.is_ascii_digit() || *c == ' ' || *c == '-')
+                        .collect();
+                    if !digits.is_empty() {
+                        self.phone_number.push_str(&digits);
+                        cx.notify();
+                    }
+                }
+                LoginWizardStep::QrCode => {}
+                LoginWizardStep::Code => {
+                    for ch in clean.chars().filter(|c| c.is_ascii_digit()) {
+                        if self.verification_code.len() < 6 {
+                            self.verification_code.push(ch);
+                        }
+                    }
+                    if self.verification_code.len() >= 5 {
+                        self.submit_login(cx);
                     }
                     cx.notify();
                 }
@@ -1831,82 +2294,52 @@ impl AppShell {
             return;
         }
 
-        // 1. Route keyboard to ActiveModalDialog if open
-        if self.active_modal.read(cx).is_open() {
-            let ch_opt = if !cmd_or_ctrl {
-                event.keystroke.key_char.as_deref()
-            } else {
-                None
-            };
-            self.active_modal.update(cx, |md, md_cx| {
-                if md.handle_key_input(key, ch_opt) {
-                    md_cx.notify();
-                }
+        if self.sidebar.read(cx).active_creation_modal.is_some() {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                sb.push_creation_text(&clean);
+                sb_cx.notify();
             });
             cx.notify();
             return;
         }
 
-        // 2. Global Telegram Desktop Keyboard Shortcuts (`Cmd/Ctrl + K / F / L / , / N / /`)
-        if self.is_authenticated && cmd_or_ctrl {
-            match key {
-                "k" => {
-                    self.active_panel = ActiveWorkspacePanel::Chats;
-                    self.sidebar.update(cx, |sb, sb_cx| {
-                        sb.search_focused = true;
-                        sb_cx.notify();
-                    });
-                    cx.notify();
-                    return;
-                }
-                "f" => {
-                    self.active_panel = ActiveWorkspacePanel::Chats;
-                    self.stage.update(cx, |st, st_cx| {
-                        st.is_search_bar_open = true;
-                        st_cx.notify();
-                    });
-                    cx.notify();
-                    return;
-                }
-                "l" => {
-                    if self.persistence.state.local_passcode_pin.is_some() {
-                        self.is_passcode_locked = true;
-                        self.unlock_pin_input.clear();
-                    } else {
-                        self.open_modal(ModalDialogKind::PasscodeSetup, cx);
-                    }
-                    cx.notify();
-                    return;
-                }
-                "," => {
-                    self.active_panel = ActiveWorkspacePanel::Settings;
-                    cx.notify();
-                    return;
-                }
-                "n" => {
-                    self.open_modal(ModalDialogKind::NewGroup, cx);
-                    cx.notify();
-                    return;
-                }
-                "/" => {
-                    self.open_modal(ModalDialogKind::ShortcutsLegend, cx);
-                    cx.notify();
-                    return;
-                }
-                _ => {}
-            }
+        if self.sidebar.read(cx).search_focused {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                let mut q = sb.search_query.clone();
+                q.push_str(&clean);
+                sb.set_search_query(q);
+                sb_cx.notify();
+            });
+            cx.notify();
+            return;
         }
 
-        // 3. Escape dismisses overlays, menus, or reply/edit states
+        self.composer.update(cx, |c, c_cx| {
+            c.is_input_focused = true;
+            if c.ime_machine.is_composing() {
+                c.ime_machine.on_ime_commit(&clean);
+            } else {
+                c.ime_machine.insert_text(&clean);
+            }
+            c_cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn handle_non_char_key(&mut self, key: &str, is_shift: bool, cx: &mut Context<Self>) -> bool {
+        // Escape closes any active modal, overlay, or search focus
         if key == "escape" {
-            self.toast_banner = None;
-            if self.main_menu.read(cx).is_open {
-                self.main_menu.update(cx, |mm, mm_cx| {
-                    mm.is_open = false;
-                    mm_cx.notify();
+            if self.ime_preedit.take().is_some() {
+                cx.notify();
+                return true;
+            }
+            if self.composer.read(cx).ime_machine.is_composing() {
+                self.composer.update(cx, |c, c_cx| {
+                    c.ime_machine.on_ime_cancel();
+                    c_cx.notify();
                 });
                 cx.notify();
-                return;
+                return true;
             }
             if self.modal_container.read(cx).is_modal_active() {
                 self.modal_container.update(cx, |mc, mc_cx| {
@@ -1914,280 +2347,591 @@ impl AppShell {
                     mc_cx.notify();
                 });
                 cx.notify();
-                return;
+                return true;
             }
             if self.media_viewer_overlay.is_some() {
                 self.hide_media_viewer();
                 cx.notify();
-                return;
+                return true;
             }
             if self.talk_mode_overlay.is_some() {
-                self.hide_talk_mode();
+                self.hide_talk_mode(cx);
                 cx.notify();
-                return;
+                return true;
             }
             if self.computer_overlay.is_some() {
-                self.hide_remote_computer();
+                self.hide_remote_computer(cx);
                 cx.notify();
-                return;
+                return true;
             }
+            if self.is_authenticated
+                && (self.sidebar.read(cx).active_creation_modal.is_some()
+                    || self.sidebar.read(cx).is_plus_menu_open)
+            {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.close_creation_modal();
+                    sb_cx.notify();
+                });
+                self.composer.update(cx, |c, c_cx| {
+                    c.is_input_focused = true;
+                    c_cx.notify();
+                });
+                cx.notify();
+                return true;
+            }
+            if self.is_authenticated && self.sidebar.read(cx).search_focused {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.exit_search();
+                    sb_cx.notify();
+                });
+                self.composer.update(cx, |c, c_cx| {
+                    c.is_input_focused = true;
+                    c_cx.notify();
+                });
+                cx.notify();
+                return true;
+            }
+            if self.active_panel == ActiveWorkspacePanel::Settings {
+                self.navigate_settings_back(cx);
+                cx.notify();
+                return true;
+            }
+            return false;
+        }
+
+        if !self.is_authenticated {
+            match self.login_step {
+                LoginWizardStep::Start => match key {
+                    "enter" => {
+                        if let Some(p) = self.ime_preedit.take() {
+                            self.insert_committed_text(&p, cx);
+                        } else if self.auth_wizard_tab == AuthWizardTab::EmailRegister {
+                            self.submit_email_register(cx);
+                        } else if self.is_register_mode {
+                            self.submit_register(cx);
+                        } else {
+                            self.submit_login(cx);
+                        }
+                        return true;
+                    }
+                    "tab" => {
+                        self.ime_preedit = None;
+                        self.active_login_field = if self.auth_wizard_tab == AuthWizardTab::EmailRegister {
+                            match self.active_login_field {
+                                LoginInputField::Email => LoginInputField::EmailCode,
+                                LoginInputField::EmailCode => LoginInputField::Username,
+                                LoginInputField::Username => LoginInputField::Password,
+                                LoginInputField::Password => LoginInputField::FirstName,
+                                LoginInputField::FirstName => LoginInputField::Email,
+                            }
+                        } else {
+                            match self.active_login_field {
+                                LoginInputField::Username => LoginInputField::Password,
+                                LoginInputField::Password => {
+                                    if self.is_register_mode {
+                                        LoginInputField::FirstName
+                                    } else {
+                                        LoginInputField::Username
+                                    }
+                                }
+                                LoginInputField::FirstName => LoginInputField::Username,
+                                _ => LoginInputField::Username,
+                            }
+                        };
+                        cx.notify();
+                        return true;
+                    }
+                    "backspace" => {
+                        if self.ime_preedit.take().is_none() {
+                            match self.active_login_field {
+                                LoginInputField::Username => {
+                                    self.username_input.pop();
+                                }
+                                LoginInputField::Password => {
+                                    self.password_input.pop();
+                                }
+                                LoginInputField::FirstName => {
+                                    self.first_name_input.pop();
+                                }
+                                LoginInputField::Email => {
+                                    self.email_input.pop();
+                                }
+                                LoginInputField::EmailCode => {
+                                    self.email_code_input.pop();
+                                }
+                            }
+                        }
+                        cx.notify();
+                        return true;
+                    }
+                    _ => return false,
+                },
+                LoginWizardStep::Phone => match key {
+                    "enter" => {
+                        if !self.phone_number.trim().is_empty() {
+                            self.login_step = LoginWizardStep::Code;
+                            self.login_error = None;
+                        }
+                        cx.notify();
+                        return true;
+                    }
+                    "backspace" => {
+                        self.phone_number.pop();
+                        cx.notify();
+                        return true;
+                    }
+                    _ => return false,
+                },
+                LoginWizardStep::QrCode => {
+                    if key == "enter" {
+                        self.submit_login(cx);
+                        return true;
+                    }
+                    return false;
+                }
+                LoginWizardStep::Code => match key {
+                    "enter" => {
+                        self.submit_login(cx);
+                        return true;
+                    }
+                    "backspace" => {
+                        self.verification_code.pop();
+                        cx.notify();
+                        return true;
+                    }
+                    _ => return false,
+                },
+            }
+        }
+
+        if self.sidebar.read(cx).active_creation_modal.is_some() {
+            match key {
+                "tab" => {
+                    self.ime_preedit = None;
+                    self.sidebar.update(cx, |sb, sb_cx| {
+                        sb.cycle_creation_field();
+                        sb_cx.notify();
+                    });
+                    cx.notify();
+                    return true;
+                }
+                "backspace" => {
+                    if self.ime_preedit.take().is_none() {
+                        self.sidebar.update(cx, |sb, sb_cx| {
+                            sb.backspace_creation_text();
+                            sb_cx.notify();
+                        });
+                    }
+                    cx.notify();
+                    return true;
+                }
+                "enter" => {
+                    if let Some(p) = self.ime_preedit.take() {
+                        self.insert_committed_text(&p, cx);
+                    } else {
+                        self.sidebar.update(cx, |sb, sb_cx| {
+                            sb.submit_creation_modal();
+                            sb_cx.notify();
+                        });
+                        cx.notify();
+                    }
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
+        // Authenticated workspace non-char keys
+        if key == "tab" {
+            let currently_search = self.sidebar.read(cx).search_focused;
+            self.sidebar.update(cx, |sb, sb_cx| {
+                if currently_search {
+                    sb.exit_search();
+                } else {
+                    sb.focus_search();
+                }
+                sb_cx.notify();
+            });
             self.composer.update(cx, |c, c_cx| {
-                c.cancel_reply_or_edit();
-                c.is_emoji_picker_open = false;
-                c.attachments_drawer.is_open = false;
+                c.is_input_focused = currently_search;
                 c_cx.notify();
             });
+            cx.notify();
+            return true;
+        }
+
+        let is_search_focused = self.sidebar.read(cx).search_focused;
+        if is_search_focused {
+            match key {
+                "backspace" => {
+                    if self.ime_preedit.take().is_none() {
+                        self.sidebar.update(cx, |sb, sb_cx| {
+                            let mut q = sb.search_query.clone();
+                            q.pop();
+                            sb.set_search_query(q);
+                            sb_cx.notify();
+                        });
+                    }
+                    cx.notify();
+                    return true;
+                }
+                "enter" => {
+                    if let Some(p) = self.ime_preedit.take() {
+                        self.insert_committed_text(&p, cx);
+                    } else {
+                        self.sidebar.update(cx, |sb, sb_cx| {
+                            sb.search_focused = false;
+                            sb_cx.notify();
+                        });
+                        self.composer.update(cx, |c, c_cx| {
+                            c.is_input_focused = true;
+                            c_cx.notify();
+                        });
+                        cx.notify();
+                    }
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
+        match key {
+            "enter" => {
+                // Shell-level IME commit fence check
+                if self.just_committed_ime {
+                    self.just_committed_ime = false;
+                    self.composer.update(cx, |c, c_cx| {
+                        c.ime_machine.reset_commit_fence();
+                        c_cx.notify();
+                    });
+                    cx.notify();
+                    return true;
+                }
+
+                // Delegate Enter handling to CanonicalComposer
+                let action = self.composer.update(cx, |c, c_cx| {
+                    let act = c.handle_enter(is_shift);
+                    c_cx.notify();
+                    act
+                });
+
+                match action {
+                    KeyAction::SendMessage => {
+                        let text_to_send = {
+                            let c = self.composer.read(cx);
+                            c.text().trim().to_string()
+                        };
+                        if !text_to_send.is_empty() {
+                            self.composer.update(cx, |c, c_cx| {
+                                c.clear();
+                                c_cx.notify();
+                            });
+                            self.append_outgoing_text(text_to_send, cx);
+                        }
+                    }
+                    KeyAction::InsertNewline | KeyAction::ImeCandidateChosen | KeyAction::DefaultEdit | KeyAction::None => {
+                        // Suppressed: strictly NO message dispatch!
+                    }
+                }
+                cx.notify();
+                true
+            }
+            "backspace" => {
+                self.composer.update(cx, |c, c_cx| {
+                    if c.ime_machine.is_composing() {
+                        c.ime_machine.on_ime_cancel();
+                    } else {
+                        c.ime_machine.backspace();
+                    }
+                    c_cx.notify();
+                });
+                cx.notify();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_window_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+
+        // 1. Handle Cmd / Ctrl shortcuts (Paste, Clear, Search focus)
+        if event.keystroke.modifiers.platform || event.keystroke.modifiers.control {
+            match key {
+                "v" => {
+                    if let Some(clip_text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.insert_committed_text(&clip_text, cx);
+                    }
+                    cx.stop_propagation();
+                }
+                "backspace" | "a" | "u" => {
+                    self.clear_active_field(cx);
+                    cx.stop_propagation();
+                }
+                "k" if self.is_authenticated => {
+                    self.sidebar.update(cx, |sb, sb_cx| {
+                        sb.focus_search();
+                        sb_cx.notify();
+                    });
+                    self.composer.update(cx, |c, c_cx| {
+                        c.is_input_focused = false;
+                        c_cx.notify();
+                    });
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+                "," if self.is_authenticated => {
+                    self.navigate_settings_to(SettingsSectionType::Main, cx);
+                    cx.stop_propagation();
+                }
+                "[" if self.active_panel == ActiveWorkspacePanel::Settings => {
+                    self.navigate_settings_back(cx);
+                    cx.stop_propagation();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // 2. Handle non-character control keys (Enter, Backspace, Tab, Escape)
+        if self.handle_non_char_key(key, event.keystroke.modifiers.shift, cx) {
+            cx.stop_propagation();
+        }
+        // 3. Printable characters are NOT stopped here so GPUI's macOS NSTextInputClient
+        //    routes both English keys (`insertText:`) and Chinese Pinyin (`setMarkedText:`)
+        //    through `EntityInputHandler` without duplication.
+    }
+
+    pub fn handle_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+
+        if event.keystroke.modifiers.platform || event.keystroke.modifiers.control {
+            match key {
+                "v" => {
+                    if let Some(clip_text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.insert_committed_text(&clip_text, cx);
+                    }
+                }
+                "backspace" | "a" | "u" => {
+                    self.clear_active_field(cx);
+                }
+                "," if self.is_authenticated => {
+                    self.navigate_settings_to(SettingsSectionType::Main, cx);
+                }
+                "[" if self.active_panel == ActiveWorkspacePanel::Settings => {
+                    self.navigate_settings_back(cx);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if self.handle_non_char_key(key, event.keystroke.modifiers.shift, cx) {
+            return;
+        }
+
+        if key == "space" {
+            self.insert_committed_text(" ", cx);
+        } else if let Some(ref ch) = event.keystroke.key_char {
+            self.insert_committed_text(ch, cx);
+        }
+    }
+}
+
+impl EntityInputHandler for AppShell {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (committed, preedit) = self.active_text_and_preedit(cx);
+        let full = match preedit {
+            Some(p) => format!("{}{}", committed, p),
+            None => committed,
+        };
+        let start = utf16_offset_to_utf8(&full, range_utf16.start);
+        let end = utf16_offset_to_utf8(&full, range_utf16.end).max(start);
+        Some(full.get(start..end).unwrap_or("").to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let (committed, preedit) = self.active_text_and_preedit(cx);
+        let total_utf16 =
+            utf16_len(&committed) + preedit.as_deref().map_or(0, utf16_len);
+        Some(UTF16Selection {
+            range: total_utf16..total_utf16,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let (committed, preedit) = self.active_text_and_preedit(cx);
+        if let Some(p) = preedit {
+            if !p.is_empty() {
+                let start = utf16_len(&committed);
+                let end = start + utf16_len(&p);
+                return Some(start..end);
+            }
+        }
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.just_committed_ime = true;
+        if let Some(p) = self.ime_preedit.take() {
+            if !p.is_empty() {
+                self.insert_committed_text(&p, cx);
+                return;
+            }
+        }
+        let preedit_opt = self
+            .composer
+            .read(cx)
+            .ime_machine
+            .preedit_text()
+            .map(|s| s.to_string());
+        if let Some(p) = preedit_opt {
+            self.composer.update(cx, |c, c_cx| {
+                c.ime_machine.on_ime_commit(&p);
+                c_cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range_utf16: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_composing = self.has_active_ime_preedit(cx) || self.composer.read(cx).ime_machine.is_composing();
+        self.insert_committed_text(text, cx);
+        if was_composing {
+            self.just_committed_ime = true;
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        _new_selected_range_utf16: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sidebar_capturing = {
+            let sb = self.sidebar.read(cx);
+            sb.search_focused || sb.active_creation_modal.is_some()
+        };
+        if new_text.is_empty() {
+            self.ime_preedit = None;
+            if self.is_authenticated && !sidebar_capturing {
+                self.composer.update(cx, |c, c_cx| {
+                    c.ime_machine.on_ime_cancel();
+                    c_cx.notify();
+                });
+            }
             cx.notify();
             return;
         }
 
-        // 4. Login Wizard Keyboard Input
+        if !self.is_authenticated || sidebar_capturing {
+            self.ime_preedit = Some(new_text.to_string());
+        } else {
+            self.composer.update(cx, |c, c_cx| {
+                c.is_input_focused = true;
+                c.ime_machine.on_ime_update(new_text, new_text.len());
+                c_cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
         if !self.is_authenticated {
-            match self.login_step {
-                LoginWizardStep::Start | LoginWizardStep::QrCode => {
-                    if key == "enter" {
-                        self.is_authenticated = true;
-                        cx.notify();
-                    }
-                }
-                LoginWizardStep::Phone => {
-                    if key == "enter" && !self.phone_number.trim().is_empty() {
-                        self.login_step = LoginWizardStep::Code;
-                        cx.notify();
-                    } else if key == "backspace" {
-                        self.phone_number.pop();
-                        cx.notify();
-                    } else if let Some(ref ch) = event.keystroke.key_char {
-                        if ch.chars().all(|c| c.is_ascii_digit() || c == ' ' || c == '-') {
-                            self.phone_number.push_str(ch);
-                            cx.notify();
-                        }
-                    }
-                }
-                LoginWizardStep::Code => {
-                    if key == "enter" {
-                        if self.require_2fa_on_login {
-                            self.login_step = LoginWizardStep::TwoFactorPassword;
-                        } else {
-                            self.is_authenticated = true;
-                        }
-                        cx.notify();
-                    } else if key == "backspace" {
-                        self.verification_code.pop();
-                        cx.notify();
-                    } else if let Some(ref ch) = event.keystroke.key_char {
-                        if ch.chars().all(|c| c.is_ascii_digit())
-                            && self.verification_code.len() < 6
-                        {
-                            self.verification_code.push_str(ch);
-                            if self.verification_code.len() >= 5 {
-                                if self.require_2fa_on_login {
-                                    self.login_step = LoginWizardStep::TwoFactorPassword;
-                                } else {
-                                    self.is_authenticated = true;
-                                }
-                            }
-                            cx.notify();
-                        }
-                    }
-                }
-                LoginWizardStep::TwoFactorPassword => {
-                    if key == "enter" {
-                        self.is_authenticated = true;
-                        cx.notify();
-                    } else if key == "backspace" {
-                        self.two_factor_input.pop();
-                        cx.notify();
-                    } else if let Some(ref ch) = event.keystroke.key_char {
-                        if !ch.chars().any(|c| c.is_control()) {
-                            self.two_factor_input.push_str(ch);
-                            cx.notify();
-                        }
-                    }
-                }
-                LoginWizardStep::SignUp => {
-                    if key == "enter" && !self.signup_name_input.trim().is_empty() {
-                        self.is_authenticated = true;
-                        cx.notify();
-                    } else if key == "backspace" {
-                        self.signup_name_input.pop();
-                        cx.notify();
-                    } else if key == "space" {
-                        self.signup_name_input.push(' ');
-                        cx.notify();
-                    } else if let Some(ref ch) = event.keystroke.key_char {
-                        if !ch.chars().any(|c| c.is_control()) {
-                            self.signup_name_input.push_str(ch);
-                            cx.notify();
-                        }
-                    }
-                }
-            }
-            return;
+            let center_x = element_bounds.origin.x + element_bounds.size.width / 2.0;
+            let center_y = element_bounds.origin.y + element_bounds.size.height / 2.0;
+            let (committed, preedit) = self.active_text_and_preedit(cx);
+            let char_count = committed.chars().count() + preedit.as_deref().map_or(0, |p| p.chars().count());
+            let caret_x = center_x - px(120.0) + px((char_count as f32 * 8.0).min(240.0));
+            let caret_y = center_y + px(10.0);
+            return Some(Bounds::new(point(caret_x, caret_y), size(px(2.0), px(20.0))));
         }
 
-        // 5. Settings Workspace Input Routing
-        if self.active_panel == ActiveWorkspacePanel::Settings {
-            let ch_opt = if !cmd_or_ctrl {
-                event.keystroke.key_char.as_deref()
-            } else {
-                None
-            };
-            let handled = self
-                .settings_view
-                .update(cx, |sv, sv_cx| {
-                    let h = sv.handle_key_input(key, ch_opt);
-                    if h {
-                        sv_cx.notify();
-                    }
-                    h
-                });
-            if handled {
-                cx.notify();
-                return;
-            }
+        if self.sidebar.read(cx).active_creation_modal.is_some() {
+            let (committed, preedit) = self.active_text_and_preedit(cx);
+            let char_count = committed.chars().count() + preedit.as_deref().map_or(0, |p| p.chars().count());
+            let caret_x = element_bounds.origin.x + px(52.0 + 24.0) + px((char_count as f32 * 7.5).min(220.0));
+            let caret_y = element_bounds.origin.y + px(160.0);
+            return Some(Bounds::new(point(caret_x, caret_y), size(px(2.0), px(18.0))));
         }
 
-        // 6. Sidebar Universal Search Input Routing
         if self.sidebar.read(cx).search_focused {
-            if key == "backspace" {
-                self.sidebar.update(cx, |sb, sb_cx| {
-                    let mut q = sb.search_query.clone();
-                    q.pop();
-                    sb.set_search_query(q);
-                    sb_cx.notify();
-                });
-            } else if key == "enter" {
-                self.sidebar.update(cx, |sb, sb_cx| {
-                    sb.search_focused = false;
-                    sb_cx.notify();
-                });
-            } else if key == "space" {
-                self.sidebar.update(cx, |sb, sb_cx| {
-                    let mut q = sb.search_query.clone();
-                    q.push(' ');
-                    sb.set_search_query(q);
-                    sb_cx.notify();
-                });
-            } else if let Some(ref ch) = event.keystroke.key_char {
-                if !cmd_or_ctrl {
-                    self.sidebar.update(cx, |sb, sb_cx| {
-                        let mut q = sb.search_query.clone();
-                        q.push_str(ch);
-                        sb.set_search_query(q);
-                        sb_cx.notify();
-                    });
-                }
-            }
-            return;
+            let q = self.sidebar.read(cx).search_query.clone();
+            let char_count = q.chars().count();
+            let caret_x = element_bounds.origin.x + px(52.0 + 16.0 + 28.0) + px((char_count as f32 * 7.5).min(200.0));
+            let caret_y = element_bounds.origin.y + px(22.0);
+            return Some(Bounds::new(point(caret_x, caret_y), size(px(2.0), px(18.0))));
         }
 
-        // 7. In-Chat Search Input Routing
-        if self.stage.read(cx).is_search_bar_open {
-            if key == "backspace" {
-                self.stage.update(cx, |st, st_cx| {
-                    st.in_chat_search_query.pop();
-                    st_cx.notify();
-                });
-                return;
-            } else if key == "enter" {
-                self.stage.update(cx, |st, st_cx| {
-                    st.is_search_bar_open = false;
-                    st_cx.notify();
-                });
-                return;
-            } else if let Some(ref ch) = event.keystroke.key_char {
-                if !cmd_or_ctrl {
-                    self.stage.update(cx, |st, st_cx| {
-                        st.in_chat_search_query.push_str(ch);
-                        st_cx.notify();
-                    });
-                    return;
-                }
-            }
-        }
+        // CanonicalComposer caret positioning at bottom of chat stage
+        let (committed, preedit) = self.active_text_and_preedit(cx);
+        let full_text = match &preedit {
+            Some(p) => format!("{}{}", committed, p),
+            None => committed,
+        };
 
-        // 8. Up-Arrow in empty Composer edits last outgoing message (1:1 tdesktop UX!)
-        if key == "up" && self.composer.read(cx).text().is_empty() {
-            let last_out = {
-                let st = self.stage.read(cx);
-                st.messages
-                    .iter()
-                    .rev()
-                    .find_map(|m| {
-                        if m.is_outgoing() {
-                            if let MessageContent::Text { ref text, .. } = m.content {
-                                return Some((m.id, text.clone()));
-                            }
-                        }
-                        None
-                    })
-            };
-            if let Some((mid, mtxt)) = last_out {
-                self.composer.update(cx, |c, c_cx| {
-                    c.begin_edit(mid, mtxt);
-                    c_cx.notify();
-                });
-                cx.notify();
-                return;
-            }
-        }
-
-        // 9. Default: Route keyboard typing to CanonicalComposer
-        let enter_sends = self.persistence.state.send_with_enter;
-        let is_shift = event.keystroke.modifiers.shift;
-        if key == "enter" {
-            let should_send = if enter_sends { !is_shift } else { cmd_or_ctrl };
-            if should_send {
-                let (text_to_send, edit_opt) = self.composer.update(cx, |c, c_cx| {
-                    let t = c.text().trim().to_string();
-                    let ed = if !t.is_empty() {
-                        c.editing_message.take()
-                    } else {
-                        None
-                    };
-                    if !t.is_empty() {
-                        c.clear();
-                        c_cx.notify();
-                    }
-                    (t, ed)
-                });
-                if !text_to_send.is_empty() {
-                    if let Some((edit_id, _)) = edit_opt {
-                        self.stage.update(cx, |st, st_cx| {
-                            st.edit_message_text(edit_id, text_to_send);
-                            st_cx.notify();
-                        });
-                    } else {
-                        self.handle_composer_text_submission(text_to_send, false, cx);
-                    }
-                }
+        let mut caret_advance_px = 0.0f32;
+        for ch in full_text.chars() {
+            if ch == '\n' {
+                caret_advance_px = 0.0;
+            } else if ch.is_ascii() {
+                caret_advance_px += 8.2;
             } else {
-                self.composer.update(cx, |c, c_cx| {
-                    c.ime_machine.insert_text("\n");
-                    c_cx.notify();
-                });
-            }
-        } else if key == "backspace" {
-            self.composer.update(cx, |c, c_cx| {
-                let mut t = c.text().to_string();
-                t.pop();
-                c.set_text(t);
-                c_cx.notify();
-            });
-        } else if key == "space" {
-            self.composer.update(cx, |c, c_cx| {
-                c.ime_machine.insert_text(" ");
-                c_cx.notify();
-            });
-        } else if let Some(ref ch) = event.keystroke.key_char {
-            if !cmd_or_ctrl {
-                self.composer.update(cx, |c, c_cx| {
-                    c.ime_machine.insert_text(ch);
-                    c_cx.notify();
-                });
+                caret_advance_px += 14.0;
             }
         }
+
+        let max_text_width = f32::from(element_bounds.size.width) - 458.0 - 360.0;
+        let clamped_advance = caret_advance_px.clamp(0.0, max_text_width.max(100.0));
+        let caret_x = element_bounds.origin.x + px(458.0 + clamped_advance);
+        let caret_y = element_bounds.origin.y + element_bounds.size.height - px(36.0);
+
+        Some(Bounds::new(point(caret_x, caret_y), size(px(2.0), px(20.0))))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let (committed, preedit) = self.active_text_and_preedit(cx);
+        Some(utf16_len(&committed) + preedit.as_deref().map_or(0, utf16_len))
     }
 }
 
@@ -2196,64 +2940,53 @@ impl Render for AppShell {
         if !self.focus_handle.is_focused(window) {
             self.focus_handle.focus(window);
         }
-        let pal = self.palette;
+        let focus_handle = self.focus_handle.clone();
+        let view = cx.entity().clone();
+        let ime_canvas = canvas(
+            |bounds, _window, _cx| bounds,
+            move |bounds, _, window, cx| {
+                window.handle_input(
+                    &focus_handle,
+                    ElementInputHandler::new(bounds, view.clone()),
+                    cx,
+                );
+            },
+        )
+        .size_0();
 
-        // Passcode Lock Screen Overlay
-        if self.is_passcode_locked {
-            return div()
-                .id("app-shell-passcode-lock")
-                .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                    this.handle_key_down(event, cx);
-                }))
-                .size_full()
-                .bg(rgb(pal.window_bg))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(self.render_passcode_lock_screen(cx))
-                .into_any_element();
-        }
-
-        // Login / Onboarding Intro Wizard (with Proxy Modal support)
         if !self.is_authenticated {
             return div()
                 .id("app-shell-login-root")
                 .track_focus(&self.focus_handle)
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                    this.handle_key_down(event, cx);
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.handle_window_key_down(event, window, cx);
                 }))
-                .relative()
                 .size_full()
-                .bg(rgb(pal.window_bg))
+                .bg(rgb(0x0E1621))
                 .flex()
                 .items_center()
                 .justify_center()
+                .child(ime_canvas)
                 .child(self.render_login_wizard(cx))
-                .child(self.active_modal.clone())
                 .into_any_element();
         }
-
-        let toast_opt = self.toast_banner.clone();
 
         div()
             .id("app-shell-authenticated-root")
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                this.handle_key_down(event, cx);
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_window_key_down(event, window, cx);
             }))
             .relative()
             .size_full()
             .flex()
-            .bg(rgb(pal.window_bg))
+            .bg(rgb(0x0E1621))
+            .child(ime_canvas)
             // 1. Left Primary Nav Rail (52px)
             .child(self.nav_rail.clone())
-            // 2. Chat Sidebar (292px)
-            .child(match self.active_panel {
-                ActiveWorkspacePanel::Settings => div().w(px(0.0)).into_any_element(),
-                _ => self.sidebar.clone().into_any_element(),
-            })
-            // 3. Main Stage + Composer Column (or Settings / TaskCenter / McpTools)
+            // 2. Chat Sidebar (288px)
+            .child(self.sidebar.clone())
+            // 3. Main Stage + Composer Column (or Calls / TaskCenter / McpTools / Settings Panel)
             .child(match self.active_panel {
                 ActiveWorkspacePanel::Chats => div()
                     .flex()
@@ -2265,21 +2998,14 @@ impl Render for AppShell {
                     .child(self.stage.clone())
                     .child(self.composer.clone())
                     .into_any_element(),
-                ActiveWorkspacePanel::Settings => self.settings_view.clone().into_any_element(),
-                ActiveWorkspacePanel::TaskCenter => {
-                    self.render_task_center_panel(cx).into_any_element()
-                }
-                ActiveWorkspacePanel::McpTools => {
-                    self.render_mcp_tools_panel(cx).into_any_element()
-                }
+                ActiveWorkspacePanel::Calls => self.render_calls_panel(cx).into_any_element(),
+                ActiveWorkspacePanel::TaskCenter => self.render_task_center_panel(cx).into_any_element(),
+                ActiveWorkspacePanel::McpTools => self.render_mcp_tools_panel(cx).into_any_element(),
+                ActiveWorkspacePanel::Settings => self.render_settings_panel(cx).into_any_element(),
             })
-            // 4. Right Context Inspector (320px, shown in Chats mode)
-            .when(self.active_panel == ActiveWorkspacePanel::Chats, |el| {
-                el.child(self.inspector.clone())
-            })
-            // 5. Left Slide-Over Hamburger Main Menu (`WindowMainMenu`)
-            .child(self.main_menu.clone())
-            // 6. Fullscreen Overlays (Remote Computer, Calls, Media Viewer)
+            // 4. Right Context Inspector (320px)
+            .child(self.inspector.clone())
+            // 5. Capability Overlays (Floating / Fullscreen layers)
             .when_some(self.computer_overlay.clone(), |el, overlay| {
                 el.child(
                     div()
@@ -2317,143 +3043,260 @@ impl Render for AppShell {
                         .child(overlay),
                 )
             })
-            // 7. Interactive 16-Modal Dialog Suite + Legacy ModalContainer
-            .child(self.active_modal.clone())
-            .child(self.modal_container.clone())
-            // 8. Floating Toast Notification Pill (`TextCopiedToastControls`)
-            .when_some(toast_opt, |el, msg| {
+            // 5b. Centered Telegram-style Contacts Modal Overlay (`media_1794178846290_753d90ef.jpg`)
+            .when(self.sidebar.read(cx).is_contacts_modal_open, |el| {
+                let sb_ref = self.sidebar.read(cx);
+                let contact_q = sb_ref.contacts_search_query.clone();
+                let q_lower = contact_q.trim().to_lowercase();
+                let contact_dialogs: Vec<DialogItemModel> = sb_ref
+                    .dialogs
+                    .iter()
+                    .filter(|d| {
+                        (d.folder == "Personal" || d.folder == "Bots")
+                            && !d.peer_name.contains("Telegram Official Bot")
+                            && (q_lower.is_empty()
+                                || d.peer_name.to_lowercase().contains(&q_lower)
+                                || d.last_message.to_lowercase().contains(&q_lower))
+                    })
+                    .cloned()
+                    .collect();
+
                 el.child(
                     div()
-                        .cursor_pointer()
+                        .id("telegram-contacts-modal-backdrop")
                         .absolute()
-                        .bottom(px(72.0))
-                        .right(px(28.0))
-                        .px(px(16.0))
-                        .py(px(10.0))
-                        .rounded(px(10.0))
-                        .bg(rgba(0x101923EE))
-                        .border_1()
-                        .border_color(rgb(pal.accent))
-                        .shadow_lg()
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFFFFFF))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| {
-                                this.toast_banner = None;
-                                cx.notify();
-                            }),
-                        )
-                        .child(msg),
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .occlude()
+                        .bg(rgba(0x00000088))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("telegram-contacts-modal-box")
+                                .w(px(360.0))
+                                .h(px(480.0))
+                                .rounded(px(12.0))
+                                .bg(rgb(0x17212B))
+                                .border_1()
+                                .border_color(rgb(0x242F3D))
+                                .flex()
+                                .flex_col()
+                                .overflow_hidden()
+                                // Header: "联系人" + Sort button "⇅A"
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .px(px(20.0))
+                                        .py(px(14.0))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(16.0))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(0xFFFFFF))
+                                                .child("联系人"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.0))
+                                                .text_color(rgb(0x8A9AA8))
+                                                .child("⇅A"),
+                                        ),
+                                )
+                                // Search Bar: "🔍 搜索"
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .px(px(16.0))
+                                        .py(px(8.0))
+                                        .border_b_1()
+                                        .border_color(rgb(0x0E1621))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(14.0))
+                                                .text_color(rgb(0x6B808D))
+                                                .child("🔍"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(13.5))
+                                                .text_color(if contact_q.is_empty() {
+                                                    rgb(0x6B808D)
+                                                } else {
+                                                    rgb(0xFFFFFF)
+                                                })
+                                                .child(if contact_q.is_empty() {
+                                                    "搜索".to_string()
+                                                } else {
+                                                    contact_q
+                                                }),
+                                        ),
+                                )
+                                // Body: Contact rows or "未找到相关联系人" empty state
+                                .child(
+                                    div()
+                                        .id("contacts-modal-scroll")
+                                        .flex_1()
+                                        .w_full()
+                                        .overflow_y_scroll()
+                                        .flex()
+                                        .flex_col()
+                                        .when(contact_dialogs.is_empty(), |body| {
+                                            body.items_center().justify_center().child(
+                                                div()
+                                                    .text_size(px(13.5))
+                                                    .text_color(rgb(0x6B808D))
+                                                    .child("未找到相关联系人"),
+                                            )
+                                        })
+                                        .when(!contact_dialogs.is_empty(), |body| {
+                                            body.children(contact_dialogs.into_iter().map(|d| {
+                                                let cid = d.id;
+                                                div()
+                                                    .cursor_pointer()
+                                                    .w_full()
+                                                    .px(px(16.0))
+                                                    .py(px(10.0))
+                                                    .hover(|s| s.bg(rgb(0x202B36)))
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(12.0))
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                        this.sidebar.update(cx, |sb, sb_cx| {
+                                                            sb.close_contacts_modal();
+                                                            sb.select_dialog(cid);
+                                                            sb_cx.notify();
+                                                        });
+                                                        cx.notify();
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .w(px(40.0))
+                                                            .h(px(40.0))
+                                                            .rounded_full()
+                                                            .bg(rgb(d.avatar_color))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .text_size(px(14.0))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(rgb(0xFFFFFF))
+                                                            .child(d.avatar_initials),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(14.0))
+                                                                    .font_weight(FontWeight::BOLD)
+                                                                    .text_color(rgb(0xFFFFFF))
+                                                                    .child(d.peer_name),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(12.0))
+                                                                    .text_color(rgb(0x5288C1))
+                                                                    .child(if d.folder == "Bots" {
+                                                                        "AI Bot · 在线"
+                                                                    } else {
+                                                                        "在线"
+                                                                    }),
+                                                            ),
+                                                    )
+                                            }))
+                                        }),
+                                )
+                                // Bottom Bar: "添加联系人" (left) and "关闭" (right)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .px(px(16.0))
+                                        .py(px(12.0))
+                                        .border_t_1()
+                                        .border_color(rgb(0x0E1621))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .id("contacts-modal-add-btn")
+                                                .cursor_pointer()
+                                                .px(px(10.0))
+                                                .py(px(6.0))
+                                                .rounded(px(6.0))
+                                                .hover(|s| s.bg(rgb(0x202B36)))
+                                                .text_size(px(13.5))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(0x2AABEE))
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                    this.sidebar.update(cx, |sb, sb_cx| {
+                                                        sb.open_add_contact_modal(crate::views::chat_sidebar::AddContactKind::AiBot);
+                                                        sb_cx.notify();
+                                                    });
+                                                    cx.notify();
+                                                }))
+                                                .child("添加联系人"),
+                                        )
+                                        .child(
+                                            div()
+                                                .id("contacts-modal-close-btn")
+                                                .cursor_pointer()
+                                                .px(px(10.0))
+                                                .py(px(6.0))
+                                                .rounded(px(6.0))
+                                                .hover(|s| s.bg(rgb(0x202B36)))
+                                                .text_size(px(13.5))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(0x2AABEE))
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                    this.sidebar.update(cx, |sb, sb_cx| {
+                                                        sb.close_contacts_modal();
+                                                        sb_cx.notify();
+                                                    });
+                                                    cx.notify();
+                                                }))
+                                                .child("关闭"),
+                                        ),
+                                ),
+                        ),
                 )
             })
+            // 6. Modal Layer Stack Container
+            .child(self.modal_container.clone())
             .into_any_element()
     }
 }
 
 impl AppShell {
-    fn render_passcode_lock_screen(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entered = self.unlock_pin_input.len();
-        div()
-            .w(px(380.0))
-            .p(px(28.0))
-            .rounded(px(16.0))
-            .bg(rgb(0x17212B))
-            .border_1()
-            .border_color(rgb(0x2B5278))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(16.0))
-            .child(div().text_size(px(42.0)).child("🔒"))
-            .child(
-                div()
-                    .text_size(px(18.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xFFFFFF))
-                    .child("Telegram 已锁定 (Enter Local Passcode)"),
-            )
-            .child(
-                div()
-                    .text_size(px(22.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0x2AABEE))
-                    .child(format!(
-                        "{}{}",
-                        "● ".repeat(entered),
-                        "○ ".repeat(4usize.saturating_sub(entered))
-                    )),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .justify_center()
-                    .gap(px(8.0))
-                    .children(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"].into_iter().map(
-                        |d| {
-                            let ds = d.to_string();
-                            div()
-                                .cursor_pointer()
-                                .w(px(64.0))
-                                .h(px(38.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(0x242F3D))
-                                .hover(|s| s.bg(rgb(0x2AABEE)))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(15.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xFFFFFF))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _e, _w, cx| {
-                                        if this.unlock_pin_input.len() < 4 {
-                                            this.unlock_pin_input.push_str(&ds);
-                                            if Some(&this.unlock_pin_input)
-                                                == this
-                                                    .persistence
-                                                    .state
-                                                    .local_passcode_pin
-                                                    .as_ref()
-                                            {
-                                                this.is_passcode_locked = false;
-                                                this.unlock_pin_input.clear();
-                                            }
-                                        }
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(d)
-                        },
-                    )),
-            )
-    }
-
     fn render_login_wizard(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let zh = self.is_chinese_locale;
         let step = self.login_step;
         let country = self.country_code.clone();
         let phone = self.phone_number.clone();
         let code = self.verification_code.clone();
-        let req_2fa = self.require_2fa_on_login;
-        let two_fa = self.two_factor_input.clone();
-        let signup_nm = self.signup_name_input.clone();
 
         div()
-            .w(px(450.0))
+            .w(px(440.0))
             .rounded(px(16.0))
             .bg(rgb(0x17212B))
             .border_1()
             .border_color(rgb(0x242F3D))
-            .p(px(28.0))
+            .p(px(32.0))
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(16.0))
-            // Top Utility Row: Proxy Shield 🛡️ + Language Switcher 🌐
+            .gap(px(18.0))
+            // Top Language Switcher Row
             .child(
                 div()
                     .w_full()
@@ -2462,23 +3305,9 @@ impl AppShell {
                     .justify_between()
                     .child(
                         div()
-                            .cursor_pointer()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0x242F3D))
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _e, _w, cx| {
-                                    this.open_modal(ModalDialogKind::ConnectionProxy, cx);
-                                    cx.notify();
-                                }),
-                            )
-                            .child("🛡️ 代理设置 (Proxy)"),
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x6B808D))
+                            .child("GPUI Telegram Desktop • MTProto 2.0"),
                     )
                     .child(
                         div()
@@ -2488,200 +3317,1052 @@ impl AppShell {
                             .rounded(px(6.0))
                             .bg(rgb(0x242F3D))
                             .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .text_size(px(11.5))
+                            .text_size(px(12.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_chinese_locale = !this.is_chinese_locale;
-                                    let lid = if this.is_chinese_locale {
-                                        "zh-CN"
-                                    } else {
-                                        "en"
-                                    };
-                                    this.persistence.state.language_id = lid.to_string();
-                                    this.sync_theme_and_state(cx);
-                                    cx.notify();
-                                }),
-                            )
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.is_chinese_locale = !this.is_chinese_locale;
+                                cx.notify();
+                            }))
                             .child(if zh { "🌐 中文 / EN" } else { "🌐 EN / 中文" }),
                     ),
             )
-            // Telegram Plane Logo
+            // Telegram Plane Logo Circle
             .child(
                 div()
-                    .w(px(78.0))
-                    .h(px(78.0))
+                    .w(px(84.0))
+                    .h(px(84.0))
                     .rounded_full()
                     .bg(rgb(0x2AABEE))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(38.0))
+                    .text_size(px(40.0))
                     .text_color(rgb(0xFFFFFF))
                     .child("✈️"),
             )
+            // Step-specific Body
             .child(match step {
-                LoginWizardStep::Start => div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(21.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if zh {
-                                "Telegram Desktop (GPUI 1:1 全量版)"
-                            } else {
-                                "Telegram Desktop GPUI"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.5))
-                            .text_color(rgb(0x8A9AA8))
-                            .child(if zh {
-                                "纯 Rust + Metal/Vulkan 120fps • 完整复刻 tdesktop 28 大模块"
-                            } else {
-                                "Official 1:1 Telegram Desktop UX powered by Rust GPUI."
-                            }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w_full()
-                            .h(px(42.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x1E96D8)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.login_step = LoginWizardStep::Phone;
-                                    cx.notify();
+                LoginWizardStep::Start => {
+                    let server_url = self.client.config.server_url.clone();
+
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(12.0))
+                        // Cloud Server Status Badge
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .bg(rgb(0x101921))
+                                .border_1()
+                                .border_color(rgb(0x242F3D))
+                                .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(0x4CAF50)))
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(rgb(0x8A9AA8))
+                                        .child(format!("Cloud VM: {}", server_url)),
+                                ),
+                        )
+                        // Multi-Tab Switcher Bar (Milestone 2 F8)
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .bg(rgb(0x101921))
+                                .rounded(px(8.0))
+                                .p(px(3.0))
+                                .gap(px(4.0))
+                                .child({
+                                    let is_pw = self.auth_wizard_tab == AuthWizardTab::PasswordLogin;
+                                    div()
+                                        .cursor_pointer()
+                                        .flex_1()
+                                        .h(px(32.0))
+                                        .rounded(px(6.0))
+                                        .bg(if is_pw { rgb(0x2AABEE) } else { rgb(0x101921) })
+                                        .hover(|s| if !is_pw { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.switch_auth_tab(AuthWizardTab::PasswordLogin, cx);
+                                        }))
+                                        .child(if zh { "🔑 密码登录" } else { "🔑 Password" })
+                                })
+                                .child({
+                                    let is_alipay = self.auth_wizard_tab == AuthWizardTab::AlipayQr;
+                                    div()
+                                        .cursor_pointer()
+                                        .flex_1()
+                                        .h(px(32.0))
+                                        .rounded(px(6.0))
+                                        .bg(if is_alipay { rgb(0x1677FF) } else { rgb(0x101921) })
+                                        .hover(|s| if !is_alipay { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.switch_auth_tab(AuthWizardTab::AlipayQr, cx);
+                                        }))
+                                        .child(if zh { "💳 支付宝扫码" } else { "💳 Alipay QR" })
+                                })
+                                .child({
+                                    let is_email = self.auth_wizard_tab == AuthWizardTab::EmailRegister;
+                                    div()
+                                        .cursor_pointer()
+                                        .flex_1()
+                                        .h(px(32.0))
+                                        .rounded(px(6.0))
+                                        .bg(if is_email { rgb(0x2AABEE) } else { rgb(0x101921) })
+                                        .hover(|s| if !is_email { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(0xFFFFFF))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                            this.switch_auth_tab(AuthWizardTab::EmailRegister, cx);
+                                        }))
+                                        .child(if zh { "✉️ 邮箱注册" } else { "✉️ Email Register" })
                                 }),
+                        )
+                        // Error Banner if present
+                        .when_some(self.login_error.clone(), |el, err| {
+                            el.child(
+                                div()
+                                    .w_full()
+                                    .p(px(8.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgba(0xE5393522))
+                                    .border_1()
+                                    .border_color(rgb(0xE53935))
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(0xFF5252))
+                                    .child(format!("⚠️ {}", err)),
                             )
-                            .child(if zh {
-                                "📱 手机号登录 (START MESSAGING)"
-                            } else {
-                                "START MESSAGING"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w_full()
-                            .h(px(38.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x242F3D))
-                            .hover(|s| s.bg(rgb(0x2B5278)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x2AABEE))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.login_step = LoginWizardStep::QrCode;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if zh {
-                                "📷 扫码或通行密钥登录 (QR / Passkey)"
-                            } else {
-                                "Log in by QR Code / Passkey"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w_full()
-                            .h(px(38.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x1ABC9C))
-                            .hover(|s| s.bg(rgb(0x16A085)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_authenticated = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if zh {
-                                "⚡ 恢复本地已保存会话直接进入"
-                            } else {
-                                "⚡ Resume Local Saved Session"
-                            }),
-                    )
-                    .into_any_element(),
+                        })
+                        // Tab Content Body
+                        .child(match self.auth_wizard_tab {
+                            AuthWizardTab::PasswordLogin => {
+                                let is_reg = self.is_register_mode;
+                                let is_loading = self.is_authenticating;
+                                let u_active = self.active_login_field == LoginInputField::Username;
+                                let p_active = self.active_login_field == LoginInputField::Password;
+                                let fn_active = self.active_login_field == LoginInputField::FirstName;
+                                let user_val = self.username_input.clone();
+                                let pass_val = self.password_input.clone();
+                                let fn_val = self.first_name_input.clone();
+
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child(if zh {
+                                                if is_reg { "注册 Telegram 云端账号" } else { "登录 Telegram 云端服务" }
+                                            } else {
+                                                if is_reg { "Create Cloud Account" } else { "Sign In to Cloud Server" }
+                                            }),
+                                    )
+                                    // Register: First Name Input
+                                    .when(is_reg, |el| {
+                                        let fn_preedit = if fn_active { self.ime_preedit.clone() } else { None };
+                                        let fn_empty = fn_val.is_empty() && fn_preedit.is_none();
+                                        el.child(
+                                            div()
+                                                .cursor_pointer()
+                                                .w_full()
+                                                .h(px(40.0))
+                                                .rounded(px(8.0))
+                                                .bg(rgb(0x242F3D))
+                                                .border_1()
+                                                .border_color(if fn_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                                .px(px(12.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                    this.ime_preedit = None;
+                                                    this.active_login_field = LoginInputField::FirstName;
+                                                    this.focus_handle.focus(window);
+                                                    cx.notify();
+                                                }))
+                                                .child(
+                                                    if fn_empty {
+                                                        div()
+                                                            .text_size(px(13.0))
+                                                            .text_color(rgb(0x6B808D))
+                                                            .child(if fn_active {
+                                                                "| Your Display Name (输入昵称)".to_string()
+                                                            } else {
+                                                                "Your Display Name (显示昵称)".to_string()
+                                                            })
+                                                    } else {
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(2.0))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0xFFFFFF))
+                                                                    .child(fn_val.clone()),
+                                                            )
+                                                            .when_some(fn_preedit, |p_el, p| {
+                                                                p_el.child(
+                                                                    div()
+                                                                        .text_size(px(13.0))
+                                                                        .text_color(rgb(0x2AABEE))
+                                                                        .border_b_1()
+                                                                        .border_color(rgb(0x2AABEE))
+                                                                        .child(p),
+                                                                )
+                                                            })
+                                                            .when(fn_active, |c_el| {
+                                                                c_el.child(
+                                                                    div()
+                                                                        .text_size(px(13.0))
+                                                                        .text_color(rgb(0x2AABEE))
+                                                                        .child("|"),
+                                                                )
+                                                            })
+                                                    },
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(8.0))
+                                                        .when(!fn_val.is_empty(), |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .cursor_pointer()
+                                                                    .text_size(px(12.0))
+                                                                    .text_color(rgb(0x8A9AA8))
+                                                                    .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                                        this.first_name_input.clear();
+                                                                        this.ime_preedit = None;
+                                                                        this.active_login_field = LoginInputField::FirstName;
+                                                                        this.focus_handle.focus(window);
+                                                                        cx.stop_propagation();
+                                                                        cx.notify();
+                                                                    }))
+                                                                    .child("✕"),
+                                                            )
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(11.0))
+                                                                .text_color(rgb(0x6B808D))
+                                                                .child("🪪"),
+                                                        ),
+                                                ),
+                                        )
+                                    })
+                                    // Username Input Box
+                                    .child({
+                                        let u_preedit = if u_active { self.ime_preedit.clone() } else { None };
+                                        let u_empty = user_val.is_empty() && u_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if u_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::Username;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if u_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if u_active {
+                                                            "| Username (请输入用户名)".to_string()
+                                                        } else {
+                                                            "Username (用户名)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child(user_val.clone()),
+                                                        )
+                                                        .when_some(u_preedit, |p_el, p| {
+                                                            p_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .border_b_1()
+                                                                    .border_color(rgb(0x2AABEE))
+                                                                    .child(p),
+                                                                )
+                                                        })
+                                                        .when(u_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .when(!user_val.is_empty(), |c_el| {
+                                                        c_el.child(
+                                                            div()
+                                                                .cursor_pointer()
+                                                                .text_size(px(12.0))
+                                                                .text_color(rgb(0x8A9AA8))
+                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                                    this.username_input.clear();
+                                                                    this.ime_preedit = None;
+                                                                    this.active_login_field = LoginInputField::Username;
+                                                                    this.focus_handle.focus(window);
+                                                                    cx.stop_propagation();
+                                                                    cx.notify();
+                                                                }))
+                                                                .child("✕"),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.0))
+                                                            .text_color(rgb(0x6B808D))
+                                                            .child("👤"),
+                                                    ),
+                                            )
+                                    })
+                                    // Password Input Box
+                                    .child({
+                                        let p_preedit = if p_active { self.ime_preedit.clone() } else { None };
+                                        let p_empty = pass_val.is_empty() && p_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if p_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::Password;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if p_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if p_active {
+                                                            "| Password (请输入密码)".to_string()
+                                                        } else {
+                                                            "Password (密码)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child("•".repeat(pass_val.chars().count())),
+                                                        )
+                                                        .when_some(p_preedit, |p_el, p| {
+                                                            p_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .border_b_1()
+                                                                    .border_color(rgb(0x2AABEE))
+                                                                    .child(p),
+                                                                )
+                                                        })
+                                                        .when(p_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(8.0))
+                                                    .when(!pass_val.is_empty(), |c_el| {
+                                                        c_el.child(
+                                                            div()
+                                                                .cursor_pointer()
+                                                                .text_size(px(12.0))
+                                                                .text_color(rgb(0x8A9AA8))
+                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                                    this.password_input.clear();
+                                                                    this.ime_preedit = None;
+                                                                    this.active_login_field = LoginInputField::Password;
+                                                                    this.focus_handle.focus(window);
+                                                                    cx.stop_propagation();
+                                                                    cx.notify();
+                                                                }))
+                                                                .child("✕"),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(11.0))
+                                                            .text_color(rgb(0x6B808D))
+                                                            .child("🔒"),
+                                                    ),
+                                            )
+                                    })
+                                    // Submit Button
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(42.0))
+                                            .rounded(px(8.0))
+                                            .bg(if is_loading { rgb(0x1E96D8) } else { rgb(0x2AABEE) })
+                                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                if this.is_register_mode {
+                                                    this.submit_register(cx);
+                                                } else {
+                                                    this.submit_login(cx);
+                                                }
+                                            }))
+                                            .child(if is_loading {
+                                                "Authenticating with Cloud Server..."
+                                            } else if is_reg {
+                                                "Create Account & Sign In (注册并登录)"
+                                            } else {
+                                                "Sign In (登录到云服务器)"
+                                            }),
+                                    )
+                                    // Toggle Mode: Sign In vs Register
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(0x2AABEE))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.is_register_mode = !this.is_register_mode;
+                                                this.login_error = None;
+                                                cx.notify();
+                                            }))
+                                            .child(if is_reg {
+                                                "← Already have an account? Sign In (已有账号？直接登录)"
+                                            } else {
+                                                "Don't have an account? Register (没有账号？点击注册)"
+                                            }),
+                                    )
+                                    // Quick 1-Click Demo Login Button (Real API call to live backend)
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(38.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x1ABC9C))
+                                            .hover(|s| s.bg(rgb(0x16A085)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(12.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.username_input = "cloud_probe_user".to_string();
+                                                this.password_input = "probe_password_123".to_string();
+                                                this.submit_login(cx);
+                                            }))
+                                            .child("⚡ 1-Click Cloud Demo Login (cloud_probe_user)"),
+                                    )
+                                    .into_any_element()
+                            }
+
+                            AuthWizardTab::AlipayQr => {
+                                let status_text = if self.alipay_status_text.is_empty() {
+                                    if zh { "请使用手机支付宝 App 扫码登录".to_string() } else { "Please scan with Alipay mobile app".to_string() }
+                                } else {
+                                    self.alipay_status_text.clone()
+                                };
+                                let is_loading = self.alipay_is_loading;
+
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child(if zh { "使用支付宝扫码登录" } else { "Log in with Alipay QR" }),
+                                    )
+                                    // QR Code Matrix Card (180px) with Center "支" Badge
+                                    .child(
+                                        div()
+                                            .w(px(180.0))
+                                            .h(px(180.0))
+                                            .rounded(px(12.0))
+                                            .bg(rgb(0xFFFFFF))
+                                            .p(px(12.0))
+                                            .flex()
+                                            .flex_col()
+                                            .items_center()
+                                            .justify_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                div()
+                                                    .size(px(110.0))
+                                                    .bg(rgb(0x1677FF))
+                                                    .rounded(px(8.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_size(px(48.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(0xFFFFFF))
+                                                    .child("支"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(0x1677FF))
+                                                    .child("ALIPAY QR"),
+                                            ),
+                                    )
+                                    // Status indicator
+                                    .child(
+                                        div()
+                                            .text_size(px(12.0))
+                                            .text_color(if is_loading { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+                                            .child(status_text),
+                                    )
+                                    // Simulate Scan Button (for instant testing)
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x1677FF))
+                                            .hover(|s| s.bg(rgb(0x0E5CD6)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.simulate_alipay_scan(cx);
+                                            }))
+                                            .child(if zh { "📱 模拟扫码授权" } else { "📱 Simulate Scan Authorization" }),
+                                    )
+                                    // Refresh QR Code Button
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(36.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .hover(|s| s.bg(rgb(0x2B5278)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(12.0))
+                                            .text_color(rgb(0x8A9AA8))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.start_alipay_flow(cx);
+                                            }))
+                                            .child(if zh { "🔄 刷新二维码" } else { "🔄 Refresh QR Code" }),
+                                    )
+                                    .into_any_element()
+                            }
+
+                            AuthWizardTab::EmailRegister => {
+                                let is_loading = self.is_authenticating;
+                                let e_active = self.active_login_field == LoginInputField::Email;
+                                let ec_active = self.active_login_field == LoginInputField::EmailCode;
+                                let u_active = self.active_login_field == LoginInputField::Username;
+                                let p_active = self.active_login_field == LoginInputField::Password;
+                                let fn_active = self.active_login_field == LoginInputField::FirstName;
+                                let e_val = self.email_input.clone();
+                                let ec_val = self.email_code_input.clone();
+                                let u_val = self.username_input.clone();
+                                let p_val = self.password_input.clone();
+                                let fn_val = self.first_name_input.clone();
+                                let cooldown = self.email_code_cooldown;
+                                let is_sending = self.is_sending_email_code;
+
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(18.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child(if zh { "邮箱注册账号" } else { "Register with Email" }),
+                                    )
+                                    // Row: Email Input + Send Code Button
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child({
+                                                let e_preedit = if e_active { self.ime_preedit.clone() } else { None };
+                                                let e_empty = e_val.is_empty() && e_preedit.is_none();
+                                                div()
+                                                    .cursor_pointer()
+                                                    .flex_1()
+                                                    .h(px(40.0))
+                                                    .rounded(px(8.0))
+                                                    .bg(rgb(0x242F3D))
+                                                    .border_1()
+                                                    .border_color(if e_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                                    .px(px(12.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                        this.ime_preedit = None;
+                                                        this.active_login_field = LoginInputField::Email;
+                                                        this.focus_handle.focus(window);
+                                                        cx.notify();
+                                                    }))
+                                                    .child(
+                                                        if e_empty {
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0x6B808D))
+                                                                .child(if e_active {
+                                                                    "| Email (输入邮箱)".to_string()
+                                                                } else {
+                                                                    "Email (邮箱地址)".to_string()
+                                                                })
+                                                        } else {
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .gap(px(2.0))
+                                                                .child(
+                                                                    div()
+                                                                        .text_size(px(13.0))
+                                                                        .text_color(rgb(0xFFFFFF))
+                                                                        .child(e_val.clone()),
+                                                                )
+                                                                .when_some(e_preedit, |p_el, p| {
+                                                                    p_el.child(
+                                                                        div()
+                                                                            .text_size(px(13.0))
+                                                                            .text_color(rgb(0x2AABEE))
+                                                                            .border_b_1()
+                                                                            .border_color(rgb(0x2AABEE))
+                                                                            .child(p),
+                                                                    )
+                                                                })
+                                                                .when(e_active, |c_el| {
+                                                                    c_el.child(
+                                                                        div()
+                                                                            .text_size(px(13.0))
+                                                                            .text_color(rgb(0x2AABEE))
+                                                                            .child("|"),
+                                                                    )
+                                                                })
+                                                        },
+                                                    )
+                                            })
+                                            .child(
+                                                div()
+                                                    .cursor_pointer()
+                                                    .px(px(12.0))
+                                                    .h(px(40.0))
+                                                    .rounded(px(8.0))
+                                                    .bg(if cooldown > 0 || is_sending { rgb(0x242F3D) } else { rgb(0x2AABEE) })
+                                                    .hover(|s| if cooldown == 0 && !is_sending { s.bg(rgb(0x1E96D8)) } else { s })
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_size(px(12.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(if cooldown > 0 || is_sending { rgb(0x8A9AA8) } else { rgb(0xFFFFFF) })
+                                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                        this.send_email_code(cx);
+                                                    }))
+                                                    .child(if is_sending {
+                                                        "发送中...".to_string()
+                                                    } else if cooldown > 0 {
+                                                        format!("重新获取 ({}s)", cooldown)
+                                                    } else if zh {
+                                                        "获取验证码".to_string()
+                                                    } else {
+                                                        "Send Code".to_string()
+                                                    }),
+                                            ),
+                                    )
+                                    // Code Input Box
+                                    .child({
+                                        let ec_preedit = if ec_active { self.ime_preedit.clone() } else { None };
+                                        let ec_empty = ec_val.is_empty() && ec_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if ec_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::EmailCode;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if ec_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if ec_active {
+                                                            "| 6-digit Code (输入6位验证码)".to_string()
+                                                        } else {
+                                                            "Verification Code (验证码)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child(ec_val.clone()),
+                                                        )
+                                                        .when(ec_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                    })
+                                    // Username Input Box
+                                    .child({
+                                        let u_preedit = if u_active { self.ime_preedit.clone() } else { None };
+                                        let u_empty = u_val.is_empty() && u_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if u_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::Username;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if u_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if u_active {
+                                                            "| Username (输入用户名)".to_string()
+                                                        } else {
+                                                            "Username (用户名)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child(u_val.clone()),
+                                                        )
+                                                        .when(u_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                    })
+                                    // Password Input Box
+                                    .child({
+                                        let p_preedit = if p_active { self.ime_preedit.clone() } else { None };
+                                        let p_empty = p_val.is_empty() && p_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if p_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::Password;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if p_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if p_active {
+                                                            "| Password (输入密码)".to_string()
+                                                        } else {
+                                                            "Password (密码)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child("•".repeat(p_val.chars().count())),
+                                                        )
+                                                        .when(p_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                    })
+                                    // First Name Input Box
+                                    .child({
+                                        let fn_preedit = if fn_active { self.ime_preedit.clone() } else { None };
+                                        let fn_empty = fn_val.is_empty() && fn_preedit.is_none();
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(40.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(0x242F3D))
+                                            .border_1()
+                                            .border_color(if fn_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .px(px(12.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                                                this.ime_preedit = None;
+                                                this.active_login_field = LoginInputField::FirstName;
+                                                this.focus_handle.focus(window);
+                                                cx.notify();
+                                            }))
+                                            .child(
+                                                if fn_empty {
+                                                    div()
+                                                        .text_size(px(13.0))
+                                                        .text_color(rgb(0x6B808D))
+                                                        .child(if fn_active {
+                                                            "| Display Name (输入昵称，可选)".to_string()
+                                                        } else {
+                                                            "Display Name (显示昵称，可选)".to_string()
+                                                        })
+                                                } else {
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(2.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.0))
+                                                                .text_color(rgb(0xFFFFFF))
+                                                                .child(fn_val.clone()),
+                                                        )
+                                                        .when(fn_active, |c_el| {
+                                                            c_el.child(
+                                                                div()
+                                                                    .text_size(px(13.0))
+                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .child("|"),
+                                                            )
+                                                        })
+                                                },
+                                            )
+                                    })
+                                    // Submit Button
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .w_full()
+                                            .h(px(42.0))
+                                            .rounded(px(8.0))
+                                            .bg(if is_loading { rgb(0x1E96D8) } else { rgb(0x2AABEE) })
+                                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.submit_email_register(cx);
+                                            }))
+                                            .child(if is_loading {
+                                                "Authenticating..."
+                                            } else if zh {
+                                                "立即注册并登录"
+                                            } else {
+                                                "Register & Sign In"
+                                            }),
+                                    )
+                                    .into_any_element()
+                            }
+                        })
+                        .into_any_element()
+                }
 
                 LoginWizardStep::Phone => div()
                     .w_full()
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(17.0))
+                            .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .child(if zh { "您的手机号码" } else { "Your Phone Number" }),
+                            .child(if zh { "输入您的手机号码" } else { "Your Phone Number" }),
                     )
+                    // Country Code Selector Pills
                     .child(
                         div()
                             .flex()
-                            .flex_wrap()
+                            .items_center()
                             .gap(px(6.0))
-                            .children(["+86", "+1", "+44", "+81", "+49", "+7"].into_iter().map(
-                                |cc| {
-                                    let is_sel = country == cc;
-                                    let cc_str = cc.to_string();
-                                    div()
-                                        .cursor_pointer()
-                                        .px(px(9.0))
-                                        .py(px(4.0))
-                                        .rounded(px(6.0))
-                                        .bg(if is_sel {
-                                            rgb(0x2AABEE)
-                                        } else {
-                                            rgb(0x242F3D)
-                                        })
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |this, _event, _window, cx| {
-                                                this.country_code = cc_str.clone();
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(cc)
-                                },
-                            )),
+                            .children(["+86", "+1", "+44", "+81"].into_iter().map(|cc| {
+                                let is_sel = country == cc;
+                                let cc_str = cc.to_string();
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(5.0))
+                                    .rounded(px(6.0))
+                                    .bg(if is_sel { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                                        this.country_code = cc_str.clone();
+                                        cx.notify();
+                                    }))
+                                    .child(cc)
+                            })),
                     )
+                    // Phone Input Box
                     .child(
                         div()
                             .w_full()
-                            .h(px(40.0))
+                            .h(px(42.0))
                             .rounded(px(8.0))
                             .bg(rgb(0x242F3D))
                             .border_1()
@@ -2695,111 +4376,99 @@ impl AppShell {
                                     .text_size(px(15.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(rgb(0xFFFFFF))
-                                    .child(format!(
-                                        "{} {}",
-                                        country,
-                                        if phone.is_empty() {
-                                            "___ ____ ____"
-                                        } else {
-                                            &phone
-                                        }
-                                    )),
+                                    .child(format!("{} {}", country, if phone.is_empty() { "___ ____ ____" } else { &phone })),
                             )
                             .child(
                                 div()
                                     .cursor_pointer()
                                     .text_size(px(12.0))
                                     .text_color(rgb(0x8A9AA8))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.phone_number.clear();
-                                            cx.notify();
-                                        }),
-                                    )
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.phone_number.clear();
+                                        cx.notify();
+                                    }))
                                     .child("✕"),
                             ),
                     )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _e, _w, cx| {
-                                    this.require_2fa_on_login = !this.require_2fa_on_login;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if req_2fa {
-                                "☑ 验证两步验证云端密码 (2FA Cloud Password Step Enabled)"
-                            } else {
-                                "☐ 启用两步验证云端密码步骤 (Simulate 2FA Cloud Password)"
-                            }),
-                    )
+                    // On-screen clickable numeric keypad (so mouse-only users can also dial)
                     .child(
                         div()
                             .w_full()
                             .flex()
+                            .flex_wrap()
+                            .gap(px(6.0))
+                            .children(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "⌫"].into_iter().map(|digit| {
+                                let d_str = digit.to_string();
+                                div()
+                                    .cursor_pointer()
+                                    .w(px(58.0))
+                                    .h(px(32.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                                        if d_str == "⌫" {
+                                            this.phone_number.pop();
+                                        } else {
+                                            this.phone_number.push_str(&d_str);
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(digit)
+                            })),
+                    )
+                    // Next & Back buttons
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
                             .gap(px(8.0))
                             .child(
                                 div()
                                     .cursor_pointer()
                                     .px(px(14.0))
-                                    .h(px(40.0))
+                                    .h(px(42.0))
                                     .rounded(px(8.0))
                                     .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_size(px(13.0))
                                     .text_color(rgb(0xFFFFFF))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.login_step = LoginWizardStep::Start;
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child("←"),
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.login_step = LoginWizardStep::Start;
+                                        cx.notify();
+                                    }))
+                                    .child(if zh { "← 返回" } else { "← Back" }),
                             )
                             .child(
                                 div()
                                     .cursor_pointer()
                                     .flex_1()
-                                    .h(px(40.0))
+                                    .h(px(42.0))
                                     .rounded(px(8.0))
                                     .bg(rgb(0x2AABEE))
+                                    .hover(|s| s.bg(rgb(0x1E96D8)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(13.5))
+                                    .text_size(px(14.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(rgb(0xFFFFFF))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.login_step = LoginWizardStep::Code;
-                                            cx.notify();
-                                        }),
-                                    )
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.login_step = LoginWizardStep::Code;
+                                        cx.notify();
+                                    }))
                                     .child(if zh { "下一步 (获取验证码) →" } else { "NEXT →" }),
                             ),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0x2AABEE))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _e, _w, cx| {
-                                    this.login_step = LoginWizardStep::SignUp;
-                                    cx.notify();
-                                }),
-                            )
-                            .child("注册新 Telegram 账号 (Sign Up New Profile) →"),
                     )
                     .into_any_element(),
 
@@ -2811,16 +4480,17 @@ impl AppShell {
                     .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(17.0))
+                            .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .child("Scan QR with Telegram Mobile or Use Passkey"),
+                            .child(if zh { "使用 Telegram 扫码登录" } else { "Scan QR Code with Telegram" }),
                     )
+                    // Simulated QR Box (Clickable to simulate scan)
                     .child(
                         div()
                             .cursor_pointer()
-                            .w(px(150.0))
-                            .h(px(150.0))
+                            .w(px(160.0))
+                            .h(px(160.0))
                             .rounded(px(12.0))
                             .bg(rgb(0xFFFFFF))
                             .flex()
@@ -2828,57 +4498,47 @@ impl AppShell {
                             .items_center()
                             .justify_center()
                             .gap(px(6.0))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_authenticated = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(div().text_size(px(42.0)).child("🔳"))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.submit_login(cx);
+                            }))
+                            .child(div().text_size(px(44.0)).child("🔳"))
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(rgb(0x17212B))
-                                    .child("tg://login?token=GPUI742"),
+                                    .child(if zh { "点击二维码模拟扫码成功" } else { "Click QR to Simulate Scan" }),
                             ),
                     )
                     .child(
                         div()
                             .cursor_pointer()
                             .w_full()
-                            .h(px(40.0))
+                            .h(px(42.0))
                             .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
+                            .bg(rgb(0x1ABC9C))
+                            .hover(|s| s.bg(rgb(0x16A085)))
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_authenticated = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child("🔑 使用 WebAuthn / Passkey 硬件密钥登录"),
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.submit_login(cx);
+                            }))
+                            .child(if zh { "📱 模拟手机确认登录" } else { "📱 Simulate Phone Scan & Sign In" }),
                     )
                     .child(
                         div()
                             .cursor_pointer()
-                            .text_size(px(12.5))
+                            .text_size(px(13.0))
                             .text_color(rgb(0x2AABEE))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.login_step = LoginWizardStep::Phone;
-                                    cx.notify();
-                                }),
-                            )
-                            .child("← 返回手机号登录"),
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.login_step = LoginWizardStep::Phone;
+                                cx.notify();
+                            }))
+                            .child(if zh { "改用手机号登录" } else { "Log in by phone number" }),
                     )
                     .into_any_element(),
 
@@ -2889,15 +4549,20 @@ impl AppShell {
                     .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(17.0))
+                            .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .child(format!("验证码已发送至 {} {}", country, phone)),
+                            .child(if zh {
+                                format!("验证码已发送至 {} {}", country, phone)
+                            } else {
+                                format!("Code sent to {} {}", country, phone)
+                            }),
                     )
                     .child(
                         div()
+                            .cursor_pointer()
                             .w_full()
-                            .h(px(42.0))
+                            .h(px(44.0))
                             .rounded(px(8.0))
                             .bg(rgb(0x242F3D))
                             .border_1()
@@ -2905,166 +4570,118 @@ impl AppShell {
                             .px(px(14.0))
                             .flex()
                             .items_center()
+                            .justify_between()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                if this.verification_code.is_empty() {
+                                    this.verification_code = "12345".to_string();
+                                    cx.notify();
+                                } else {
+                                    this.submit_login(cx);
+                                }
+                            }))
+                            .child(
+                                div()
+                                    .text_size(px(20.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child(if code.is_empty() { "• • • • •".to_string() } else { code.clone() }),
+                            )
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(0x8A9AA8))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.verification_code.clear();
+                                        cx.notify();
+                                    }))
+                                    .child("✕"),
+                            ),
+                    )
+                    // On-screen clickable numeric keypad for verification code
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(6.0))
+                            .children(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "⌫"].into_iter().map(|digit| {
+                                let d_str = digit.to_string();
+                                div()
+                                    .cursor_pointer()
+                                    .w(px(58.0))
+                                    .h(px(32.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x242F3D))
+                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                                        if d_str == "⌫" {
+                                            this.verification_code.pop();
+                                        } else if this.verification_code.len() < 6 {
+                                            this.verification_code.push_str(&d_str);
+                                            if this.verification_code.len() >= 5 {
+                                                this.submit_login(cx);
+                                            }
+                                        }
+                                        cx.notify();
+                                    }))
+                                    .child(digit)
+                            })),
+                    )
+                    // Auto-Fill Code & Sign In button
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .w_full()
+                            .h(px(44.0))
+                            .rounded(px(8.0))
+                            .bg(rgb(0x2AABEE))
+                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                            .flex()
+                            .items_center()
                             .justify_center()
-                            .text_size(px(20.0))
+                            .text_size(px(14.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .child(if code.is_empty() {
-                                "• • • • •".to_string()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.verification_code = "12345".to_string();
+                                this.submit_login(cx);
+                            }))
+                            .child(if zh {
+                                "✅ 自动填入验证码 12345 并登录"
                             } else {
-                                code
+                                "✅ Auto-Fill Code 12345 & Sign In"
                             }),
                     )
                     .child(
                         div()
                             .cursor_pointer()
-                            .w_full()
-                            .h(px(42.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.verification_code = "12345".to_string();
-                                    if this.require_2fa_on_login {
-                                        this.login_step = LoginWizardStep::TwoFactorPassword;
-                                    } else {
-                                        this.is_authenticated = true;
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child("✅ 验证短信码 12345 并继续"),
-                    )
-                    .into_any_element(),
-
-                LoginWizardStep::TwoFactorPassword => div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(17.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child("🔐 两步验证云端密码 (Cloud Password 2FA)"),
-                    )
-                    .child(
-                        div()
                             .text_size(px(12.0))
                             .text_color(rgb(0x8A9AA8))
-                            .child("密码提示 Hint: GPUI Cloud Vault (SRP-6a SHA-256 PBKDF2)"),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(42.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x242F3D))
-                            .border_1()
-                            .border_color(rgb(0x2AABEE))
-                            .px(px(14.0))
-                            .flex()
-                            .items_center()
-                            .text_size(px(16.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if two_fa.is_empty() {
-                                "输入云端密码...".to_string()
-                            } else {
-                                "●".repeat(two_fa.len())
-                            }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w_full()
-                            .h(px(42.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _e, _w, cx| {
-                                    this.is_authenticated = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child("🔓 解锁云端密钥并进入"),
-                    )
-                    .into_any_element(),
-
-                LoginWizardStep::SignUp => div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .text_size(px(17.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child("👤 创建新个人资料 (Sign Up)"),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(40.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x242F3D))
-                            .px(px(12.0))
-                            .flex()
-                            .items_center()
-                            .text_size(px(14.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .child(format!("姓名: {}", signup_nm)),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w_full()
-                            .h(px(42.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _e, _w, cx| {
-                                    this.is_authenticated = true;
-                                    cx.notify();
-                                }),
-                            )
-                            .child("完成注册并进入 Telegram →"),
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.login_step = LoginWizardStep::Phone;
+                                cx.notify();
+                            }))
+                            .child(if zh { "← 修改手机号" } else { "← Change Phone Number" }),
                     )
                     .into_any_element(),
             })
     }
 
-    fn render_task_center_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let pal = self.palette;
-        let lang = self.persistence.state.language_id.clone();
+    fn render_calls_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let zh = self.is_chinese_locale;
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(pal.window_bg))
+            .bg(rgb(0x0E1621))
             .p(px(24.0))
             .flex()
             .flex_col()
@@ -3078,7 +4695,93 @@ impl AppShell {
                         div()
                             .text_size(px(20.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(pal.text_primary))
+                            .text_color(rgb(0xFFFFFF))
+                            .child(if zh { "📞 通话记录" } else { "📞 Recent Calls" }),
+                    )
+                    .child(
+                        div()
+                            .cursor_pointer()
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .rounded(px(6.0))
+                            .bg(rgb(0x2AABEE))
+                            .hover(|s| s.bg(rgb(0x2492CA)))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.active_panel = ActiveWorkspacePanel::Chats;
+                                this.last_handled_nav_dest = Some(NavDestination::Chats);
+                                this.nav_rail.update(cx, |r, _| {
+                                    r.set_active_destination(NavDestination::Chats);
+                                });
+                                cx.notify();
+                            }))
+                            .child(if zh { "← 返回对话" } else { "← Back to Chats" }),
+                    ),
+            )
+            // Authentic Centered Empty State matching Telegram Desktop calls_box_controller.cpp
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .w(px(72.0))
+                            .h(px(72.0))
+                            .rounded_full()
+                            .bg(rgb(0x2B5278))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(32.0))
+                            .child("📞"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .child(if zh { "暂无通话记录" } else { "No recent calls" }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(rgb(0x8A9AA8))
+                            .child(if zh {
+                                "您发起或接收的通话将显示在这里。"
+                            } else {
+                                "Calls you make or receive will appear here."
+                            }),
+                    ),
+            )
+    }
+
+    fn render_task_center_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .overflow_hidden()
+            .bg(rgb(0x0E1621))
+            .p(px(24.0))
+            .flex()
+            .flex_col()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(20.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
                             .child("⚡ Autonomous Agent Task Center (CAP-02)"),
                     )
                     .child(
@@ -3087,92 +4790,71 @@ impl AppShell {
                             .px(px(12.0))
                             .py(px(6.0))
                             .rounded(px(6.0))
-                            .bg(rgb(pal.accent))
+                            .bg(rgb(0x2AABEE))
+                            .hover(|s| s.bg(rgb(0x2492CA)))
                             .text_size(px(12.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.active_panel = ActiveWorkspacePanel::Chats;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(tr_str(&lang, "← 返回会话", "← Back to Chats")),
-                    ),
-            )
-            .children(
-                [
-                    (
-                        "Task #101 • 1:1 Telegram Desktop GPUI Full Feature Migration",
-                        "ACTIVE • 28 / 28 Subsystems Live",
-                        0x4CAF50u32,
-                        false,
-                    ),
-                    (
-                        "Task #102 • Local SQLite WAL + Tantivy Search + Session Persistence",
-                        "SYNCED • PTS Monotonic Pipeline",
-                        0x2AABEE,
-                        false,
-                    ),
-                    (
-                        "Task #103 • WebRTC 333-Emoji E2EE Voice/Video/Group Calls",
-                        "READY • 18ms P2P RTT",
-                        0x1ABC9C,
-                        true,
-                    ),
-                ]
-                .into_iter()
-                .map(|(title, status, color, is_talk_task)| {
-                    div()
-                        .cursor_pointer()
-                        .w_full()
-                        .p(px(16.0))
-                        .rounded(px(10.0))
-                        .bg(rgb(pal.card_bg))
-                        .border_1()
-                        .border_color(rgb(pal.border_fg))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                if is_talk_task {
-                                    this.show_talk_mode(cx);
-                                } else {
-                                    this.show_remote_computer(cx);
-                                }
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.active_panel = ActiveWorkspacePanel::Chats;
+                                this.last_handled_nav_dest = Some(NavDestination::Chats);
+                                this.nav_rail.update(cx, |r, _| {
+                                    r.set_active_destination(NavDestination::Chats);
+                                });
                                 cx.notify();
-                            }),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(pal.text_primary))
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(color))
-                                .child(status),
-                        )
-                }),
+                            }))
+                            .child("← Back to Chats"),
+                    ),
             )
+            .children([
+                ("Task #101 • 13-Module Upstream C++ Parity Audit", "COMPLETED • 3,441 / 3,441 files verified", 0x4CAF50, false),
+                ("Task #102 • Local SQLite WAL + FTS5 + Tantivy Indexer", "RUNNING • 0ms query latency", 0x2AABEE, false),
+                ("Task #103 • WebRTC Full-Duplex Talk Mode Audio Pipeline", "READY • 18ms P2P RTT", 0x1ABC9C, true),
+            ].into_iter().map(|(title, status, color, is_talk_task)| {
+                div()
+                    .cursor_pointer()
+                    .w_full()
+                    .p(px(16.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0x17212B))
+                    .border_1()
+                    .border_color(rgb(0x242F3D))
+                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
+                        if is_talk_task {
+                            this.show_talk_mode(cx);
+                        } else {
+                            this.show_remote_computer(cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(color))
+                            .child(status),
+                    )
+            }))
     }
 
     fn render_mcp_tools_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let pal = self.palette;
-        let lang = self.persistence.state.language_id.clone();
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(pal.window_bg))
+            .bg(rgb(0x0E1621))
             .p(px(24.0))
             .flex()
             .flex_col()
@@ -3186,7 +4868,7 @@ impl AppShell {
                         div()
                             .text_size(px(20.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(pal.text_primary))
+                            .text_color(rgb(0xFFFFFF))
                             .child("🔧 MCP Tools & Permission Dock (CAP-03)"),
                     )
                     .child(
@@ -3195,61 +4877,472 @@ impl AppShell {
                             .px(px(12.0))
                             .py(px(6.0))
                             .rounded(px(6.0))
-                            .bg(rgb(pal.accent))
+                            .bg(rgb(0x2AABEE))
+                            .hover(|s| s.bg(rgb(0x2492CA)))
                             .text_size(px(12.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.active_panel = ActiveWorkspacePanel::Chats;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(tr_str(&lang, "← 返回会话", "← Back to Chats")),
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                this.active_panel = ActiveWorkspacePanel::Chats;
+                                this.last_handled_nav_dest = Some(NavDestination::Chats);
+                                this.nav_rail.update(cx, |r, _| {
+                                    r.set_active_destination(NavDestination::Chats);
+                                });
+                                cx.notify();
+                            }))
+                            .child("← Back to Chats"),
                     ),
             )
-            .children(
-                [
-                    ("filesystem.read_workspace", "Allowed (Read-Only Sandbox)", 0x4CAF50u32),
-                    ("terminal.execute_command", "Requires Approval per Command", 0xE67E22),
-                    ("remote_computer.webrtc_stream", "Encrypted E2EE Tunnel Active", 0x2AABEE),
-                ]
-                .into_iter()
-                .map(|(tool, policy, color)| {
-                    div()
-                        .cursor_pointer()
-                        .w_full()
-                        .p(px(16.0))
-                        .rounded(px(10.0))
-                        .bg(rgb(pal.card_bg))
-                        .border_1()
-                        .border_color(rgb(pal.border_fg))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.show_remote_computer(cx);
-                                cx.notify();
-                            }),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(pal.text_primary))
-                                .child(tool),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(color))
-                                .child(policy),
-                        )
-                }),
+            .children([
+                ("filesystem.read_workspace", "Allowed (Read-Only Sandbox)", 0x4CAF50),
+                ("terminal.execute_command", "Requires Approval per Command", 0xE67E22),
+                ("remote_computer.webrtc_stream", "Encrypted E2EE Tunnel Active", 0x2AABEE),
+            ].into_iter().map(|(tool, policy, color)| {
+                div()
+                    .cursor_pointer()
+                    .w_full()
+                    .p(px(16.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0x17212B))
+                    .border_1()
+                    .border_color(rgb(0x242F3D))
+                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.show_remote_computer(cx);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .child(tool),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(color))
+                            .child(policy),
+                    )
+            }))
+    }
+
+    pub fn navigate_settings_to(&mut self, target: SettingsSectionType, cx: &mut Context<Self>) {
+        if self.settings_section == target {
+            return;
+        }
+        if self.settings_stack.last().copied() != Some(self.settings_section) {
+            self.settings_stack.push(self.settings_section);
+        }
+        self.settings_section = target;
+        self.active_panel = ActiveWorkspacePanel::Settings;
+        self.last_handled_nav_dest = Some(NavDestination::Settings);
+        self.nav_rail.update(cx, |r, _| {
+            r.set_active_destination(NavDestination::Settings);
+        });
+        cx.notify();
+    }
+
+    pub fn navigate_settings_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(prev) = self.settings_stack.pop() {
+            self.settings_section = prev;
+            cx.notify();
+        } else if !self.settings_section.is_root() {
+            let parent = self.settings_section.parent_section().unwrap_or(SettingsSectionType::Main);
+            self.settings_section = parent;
+            cx.notify();
+        } else {
+            self.close_settings(cx);
+        }
+    }
+
+    pub fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.active_panel = ActiveWorkspacePanel::Chats;
+        self.last_handled_nav_dest = Some(NavDestination::Chats);
+        self.nav_rail.update(cx, |r, _| {
+            r.set_active_destination(NavDestination::Chats);
+        });
+        self.settings_section = SettingsSectionType::Main;
+        self.settings_stack.clear();
+        cx.notify();
+    }
+
+    pub fn update_preferences<F>(&mut self, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(&mut AppPreferences),
+    {
+        f(&mut self.preferences);
+        let app_dir = ClientConfig::get_app_dir();
+        if let Err(e) = self.preferences.save_to_dir(&app_dir) {
+            eprintln!("[AppShell] Failed to persist preferences.json: {e}");
+        }
+        if let Err(e) = self.preferences.sync_to_localstorage(&mut self.local_storage) {
+            eprintln!("[AppShell] Failed to sync Localstorage TDF settings: {e}");
+        }
+        self.is_chinese_locale = self.preferences.localization.language_code.starts_with("zh");
+        cx.notify();
+    }
+
+    fn render_language_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_zh = self.is_chinese_locale;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.0))
+            .p(px(24.0))
+            .child(
+                div()
+                    .text_size(px(20.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xFFFFFF))
+                    .child(if is_zh { "🌐 界面语言设置" } else { "🌐 Interface Language Settings" }),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(0x8A9AA8))
+                    .child(if is_zh {
+                        "选择 Telegram Desktop 的默认显示语言。修改后将即时生效并持久化。"
+                    } else {
+                        "Choose the default display language for Telegram Desktop. Changes apply and persist immediately."
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        // Chinese Option
+                        div()
+                            .cursor_pointer()
+                            .p(px(16.0))
+                            .rounded(px(10.0))
+                            .bg(rgb(0x17212B))
+                            .border_1()
+                            .border_color(if is_zh { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                            .hover(|s| s.bg(rgb(0x202B36)))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                this.update_preferences(cx, |p| {
+                                    p.localization.language_code = "zh-CN".to_string();
+                                });
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(div().text_size(px(22.0)).child("🇨🇳"))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_size(px(15.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(0xFFFFFF))
+                                                    .child("简体中文 (Simplified Chinese)"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .text_color(rgb(0x8A9AA8))
+                                                    .child("zh-CN • 官方翻译完整支持"),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(if is_zh { rgb(0x2AABEE) } else { rgb(0x56626E) })
+                                    .child(if is_zh { "✓ 已启用" } else { "选择" }),
+                            ),
+                    )
+                    .child(
+                        // English Option
+                        div()
+                            .cursor_pointer()
+                            .p(px(16.0))
+                            .rounded(px(10.0))
+                            .bg(rgb(0x17212B))
+                            .border_1()
+                            .border_color(if !is_zh { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                            .hover(|s| s.bg(rgb(0x202B36)))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                this.update_preferences(cx, |p| {
+                                    p.localization.language_code = "en-US".to_string();
+                                });
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(div().text_size(px(22.0)).child("🇺🇸"))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .child(
+                                                div()
+                                                    .text_size(px(15.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(0xFFFFFF))
+                                                    .child("English (US)"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .text_color(rgb(0x8A9AA8))
+                                                    .child("en-US • Default Telegram Desktop English"),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(if !is_zh { rgb(0x2AABEE) } else { rgb(0x56626E) })
+                                    .child(if !is_zh { "✓ Active" } else { "Select" }),
+                            ),
+                    ),
             )
     }
+
+    fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_root = self.settings_section.is_root();
+        let zh = self.is_chinese_locale;
+        let title = self.settings_section.display_title_localized(zh);
+        let icon = self.settings_section.icon();
+
+        let back_label = if is_root {
+            if zh { "← 返回对话".to_string() } else { "← Back to Chats".to_string() }
+        } else if let Some(&prev) = self.settings_stack.last() {
+            if zh {
+                format!("← 返回 {}", prev.display_title_localized(true))
+            } else {
+                format!("← {}", prev.display_title_localized(false))
+            }
+        } else if zh {
+            "← 返回".to_string()
+        } else {
+            "← Back".to_string()
+        };
+
+        let crumbs = self.settings_section.breadcrumb_path();
+
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .overflow_hidden()
+            .bg(rgb(0x0E1621))
+            .flex()
+            .flex_col()
+            // 1. Settings Navigation Bar
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(20.0))
+                    .py(px(12.0))
+                    .bg(rgb(0x17212B))
+                    .border_b_1()
+                    .border_color(rgb(0x1F2A38))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(
+                                // Back Button
+                                div()
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(if is_root { rgb(0x2AABEE) } else { rgb(0x232E3C) })
+                                    .hover(|s| s.bg(if is_root { rgb(0x2492CA) } else { rgb(0x2B3846) }))
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.navigate_settings_back(cx);
+                                    }))
+                                    .child(back_label),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .when(crumbs.len() > 1, |el| {
+                                        el.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(4.0))
+                                                .children(crumbs.into_iter().enumerate().map(|(idx, sec)| {
+                                                    let is_current = sec == self.settings_section;
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(px(4.0))
+                                                        .when(idx > 0, |sep| {
+                                                            sep.child(
+                                                                div()
+                                                                    .text_size(px(11.0))
+                                                                    .text_color(rgb(0x6C7883))
+                                                                    .child("›"),
+                                                            )
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(11.0))
+                                                                .text_color(if is_current {
+                                                                    rgb(0x2AABEE)
+                                                                } else {
+                                                                    rgb(0x8A9AA8)
+                                                                })
+                                                                .cursor_pointer()
+                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                                    this.navigate_settings_to(sec, cx);
+                                                                }))
+                                                                .child(sec.display_title_localized(zh)),
+                                                        )
+                                                })),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.0))
+                                            .child(div().text_size(px(18.0)).child(icon))
+                                            .child(
+                                                div()
+                                                    .text_size(px(16.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(0xFFFFFF))
+                                                    .child(title),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        // Header Actions Cluster
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                // Search Button
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x232E3C))
+                                    .hover(|s| s.bg(rgb(0x2B3846)))
+                                    .text_size(px(13.0))
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.navigate_settings_to(SettingsSectionType::Search, cx);
+                                    }))
+                                    .child(if zh { "🔍 搜索" } else { "🔍 Search" }),
+                            )
+                            .child(
+                                // Language Toggle
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x232E3C))
+                                    .hover(|s| s.bg(rgb(0x2B3846)))
+                                    .text_size(px(13.0))
+                                    .text_color(rgb(0x2AABEE))
+                                    .font_weight(FontWeight::BOLD)
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.update_preferences(cx, |p| {
+                                            if p.localization.language_code.starts_with("zh") {
+                                                p.localization.language_code = "en-US".to_string();
+                                            } else {
+                                                p.localization.language_code = "zh-CN".to_string();
+                                            }
+                                        });
+                                    }))
+                                    .child(if zh { "🌐 中文" } else { "🌐 English" }),
+                            )
+                            .child(
+                                // Close Button
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x232E3C))
+                                    .hover(|s| s.bg(rgb(0xE53935)))
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.close_settings(cx);
+                                    }))
+                                    .child(if zh { "✕ 关闭" } else { "✕ Close" }),
+                            ),
+                    ),
+            )
+            // 2. Active Section Scroll View
+            .child(
+                div()
+                    .id("settings-scroll-view")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(match self.settings_section {
+                        SettingsSectionType::Main => self.settings_main.clone().into_any_element(),
+                        SettingsSectionType::Information => self.settings_information.clone().into_any_element(),
+                        SettingsSectionType::Notifications => self.settings_notifications.clone().into_any_element(),
+                        SettingsSectionType::NotificationsReactions => self.settings_notif_reactions.clone().into_any_element(),
+                        SettingsSectionType::NotificationsType => self.settings_notif_type.clone().into_any_element(),
+                        SettingsSectionType::PrivacySecurity => self.settings_privacy.clone().into_any_element(),
+                        SettingsSectionType::BlockedPeers => self.settings_blocked_peers.clone().into_any_element(),
+                        SettingsSectionType::ActiveSessions => self.settings_active_sessions.clone().into_any_element(),
+                        SettingsSectionType::LocalPasscode => self.settings_local_passcode.clone().into_any_element(),
+                        SettingsSectionType::Passkeys => self.settings_passkeys.clone().into_any_element(),
+                        SettingsSectionType::GlobalTtl => self.settings_global_ttl.clone().into_any_element(),
+                        SettingsSectionType::Websites => self.settings_websites.clone().into_any_element(),
+                        SettingsSectionType::Chat => self.settings_chat.clone().into_any_element(),
+                        SettingsSectionType::Folders => self.settings_folders.clone().into_any_element(),
+                        SettingsSectionType::Advanced => self.settings_advanced.clone().into_any_element(),
+                        SettingsSectionType::LocalStorage => self.settings_local_storage.clone().into_any_element(),
+                        SettingsSectionType::PowerSaving => self.settings_power_saving.clone().into_any_element(),
+                        SettingsSectionType::Calls => self.settings_calls.clone().into_any_element(),
+                        SettingsSectionType::Credits => self.settings_credits.clone().into_any_element(),
+                        SettingsSectionType::Premium => self.settings_premium.clone().into_any_element(),
+                        SettingsSectionType::Shortcuts => self.settings_shortcuts.clone().into_any_element(),
+                        SettingsSectionType::Business => self.settings_business.clone().into_any_element(),
+                        SettingsSectionType::Search => self.settings_search.clone().into_any_element(),
+                        SettingsSectionType::Language => self.render_language_settings(cx).into_any_element(),
+                    }),
+            )
+    }
+
 }

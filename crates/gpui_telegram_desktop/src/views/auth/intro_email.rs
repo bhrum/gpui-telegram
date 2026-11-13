@@ -11,6 +11,7 @@ pub struct IntroEmail {
     pub verification_code: String,
     pub is_code_sent: bool,
     pub is_submitting: bool,
+    pub cooldown_seconds: u32,
 }
 
 impl Default for IntroEmail {
@@ -27,6 +28,7 @@ impl IntroEmail {
             verification_code: String::new(),
             is_code_sent: false,
             is_submitting: false,
+            cooldown_seconds: 0,
         }
     }
 
@@ -38,13 +40,23 @@ impl IntroEmail {
         self.verification_code = code.into();
     }
 
+    pub fn tick_cooldown(&mut self) {
+        if self.cooldown_seconds > 0 {
+            self.cooldown_seconds -= 1;
+        }
+    }
+
     pub fn send_code(&mut self) -> Result<(), &'static str> {
         if self.email.is_empty() || !self.email.contains('@') {
             self.step.show_error("Please enter a valid email address");
             return Err("Invalid email");
         }
+        if self.cooldown_seconds > 0 {
+            return Err("Cooldown active");
+        }
         self.step.hide_error();
         self.is_code_sent = true;
+        self.cooldown_seconds = 60;
         Ok(())
     }
 

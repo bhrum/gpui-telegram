@@ -11,6 +11,9 @@ pub struct IntroQr {
     pub expires_in_sec: u32,
     pub qr_max_size_px: f32,
     pub is_expired: bool,
+    pub is_alipay: bool,
+    pub attempt_id: Option<String>,
+    pub auth_url: Option<String>,
 }
 
 impl Default for IntroQr {
@@ -30,7 +33,21 @@ impl IntroQr {
             expires_in_sec: Self::DEFAULT_EXPIRES_SEC,
             qr_max_size_px: Self::QR_MAX_SIZE,
             is_expired: false,
+            is_alipay: false,
+            attempt_id: None,
+            auth_url: None,
         }
+    }
+
+    pub fn set_alipay_attempt(&mut self, attempt_id: impl Into<String>, auth_url: impl Into<String>) {
+        let aid = attempt_id.into();
+        let url = auth_url.into();
+        self.step = IntroStep::new(IntroStepType::AlipayQr);
+        self.is_alipay = true;
+        self.token = url.clone();
+        self.auth_url = Some(url);
+        self.attempt_id = Some(aid);
+        self.is_expired = false;
     }
 
     pub fn set_token(&mut self, token: impl Into<String>, expires_sec: u32) {
