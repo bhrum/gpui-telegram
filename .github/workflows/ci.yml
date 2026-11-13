@@ -46,8 +46,8 @@ jobs:
             echo "Bootstrapping full GPUI-Telegram codebase into repository..."
             python3 -m pip install -q gdown
             mkdir -p /tmp/gpui_extract
-            python3 -m gdown --id 12nFUhZWJALT7nwPuTOHhhleoFvjjXLoI -O /tmp/base.zip
-            python3 -m gdown --id 1f7Rg57Hlc6LgFcwt9CU9Q9-HZOFMc-6v -O /tmp/overlay.tar.gz
+            python3 -m gdown 12nFUhZWJALT7nwPuTOHhhleoFvjjXLoI -O /tmp/base.zip
+            python3 -m gdown 1f7Rg57Hlc6LgFcwt9CU9Q9-HZOFMc-6v -O /tmp/overlay.tar.gz
             unzip -q /tmp/base.zip -d /tmp/gpui_extract
             cp -a /tmp/gpui_extract/gpui-telegram-68d422c645dc4232b2b03a73325c43b9596fed4b/. .
             tar -xzf /tmp/overlay.tar.gz --exclude='.github/workflows/ci.yml' -C .
