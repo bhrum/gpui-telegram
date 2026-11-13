@@ -58,11 +58,6 @@ fn seed_user(db: &ServerDatabase, user_id: u64, username: &str) -> UserRecord {
         account_generation: 1,
         created_at_ms: now,
         updated_at_ms: now,
-        email: None,
-        email_verified: false,
-        alipay_user_id: None,
-        alipay_nickname: None,
-        alipay_avatar: None,
     };
     db.create_user(&user).expect("seed user");
     user
