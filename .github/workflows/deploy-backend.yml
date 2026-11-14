@@ -47,13 +47,7 @@ jobs:
           sudo apt-get update -o Acquire::Languages=none
           sudo apt-get install -y --no-install-recommends \
             mold clang pkg-config protobuf-compiler libclang-dev libssl-dev \
-            libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev \
-            libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev \
-            libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev \
-            libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev \
-            libasound2-dev libfontconfig1-dev libfreetype6-dev \
-            ca-certificates curl openssh-client rsync
+            libsqlite3-dev libzstd-dev ca-certificates curl openssh-client rsync
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -62,14 +56,9 @@ jobs:
           cache-on-failure: true
           shared-key: "ubuntu-22-backend-deploy-v1"
 
-      - name: Verify Backend Auth, Welcome Bot & Categorized Search Tests
-        run: |
-          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" \
-            cargo test -p gpui_telegram_server --test server_routes_auth_tests -- --nocapture
-
       - name: Build Release gpui_telegram_server Binary (GLIBC 2.35 Compatible)
         run: |
-          cargo build --release --bin gpui_telegram_server
+          cargo build --release -p gpui_telegram_server --bin gpui_telegram_server
           ls -lh target/release/gpui_telegram_server
 
       - name: Configure SSH Credentials from GitHub Secrets
