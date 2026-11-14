@@ -44,10 +44,17 @@ jobs:
 
       - name: Install Build Dependencies & mold Linker
         run: |
+          sudo add-apt-repository -y ppa:pipewire-debian/pipewire-upstream
           sudo apt-get update -o Acquire::Languages=none
           sudo apt-get install -y --no-install-recommends \
             mold clang pkg-config protobuf-compiler libclang-dev libssl-dev \
-            libsqlite3-dev libzstd-dev ca-certificates curl openssh-client rsync
+            libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev \
+            libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev \
+            libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev \
+            libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev \
+            ca-certificates curl openssh-client rsync
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.11
