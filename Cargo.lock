@@ -2994,6 +2994,7 @@ dependencies = [
  "mahayana-host-runtime",
  "mahayana-node-agent-coordinator",
  "parking_lot",
+ "qrcode",
  "reqwest",
  "serde",
  "serde_json",

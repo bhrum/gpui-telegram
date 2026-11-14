@@ -1154,30 +1154,26 @@ async fn start_upstream_canonical_alipay_oauth(state: &AppState) -> Option<(Stri
     }
     let gateway_base = std::env::var("FABUSHI_CLOUD_GATEWAY_URL")
         .unwrap_or_else(|_| "https://api.ombhrum.com".to_string());
-    let start_url = format!("{}/api/auth/oauth/start", gateway_base.trim_end_matches('/'));
-    let payload = json!({
-        "provider": "alipay",
-        "platform": "macos",
-        "deviceId": "gpui-telegram-google-cloud"
-    });
-    let (status, body_str) = curl_http_request("POST", &start_url, Some(&payload), 5).await?;
-    if !(200..300).contains(&status) {
-        return None;
-    }
-    let val: Value = serde_json::from_str(&body_str).ok()?;
-    let upstream_attempt_id = val.get("attemptId")?.as_str()?.to_string();
-    let authorization_url = val.get("authorizationUrl")?.as_str()?.to_string();
-    let state_param = authorization_url
-        .split("state=")
-        .nth(1)
-        .and_then(|s| s.split('&').next())
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let direct_openauth_url = format!(
-        "https://openauth.alipay.com/oauth2/publicAppAuthorize.htm?app_id=2021005193647715&scope=auth_user&redirect_uri=https%3A%2F%2Fapi.ombhrum.com%2Fapi%2Fauth%2Falipay%2Fcallback&state={}",
-        state_param
+    let cli_login_url = format!(
+        "{}/api/auth/alipay/login-url?platform=cli",
+        gateway_base.trim_end_matches('/')
     );
-    Some((upstream_attempt_id, direct_openauth_url, state_param))
+    if let Some((status, body_str)) = curl_http_request("GET", &cli_login_url, None, 5).await {
+        if (200..300).contains(&status) {
+            if let Ok(val) = serde_json::from_str::<Value>(&body_str) {
+                let auth_url = val.get("authUrl").and_then(|v| v.as_str()).unwrap_or_default();
+                let state_param = val.get("state").and_then(|v| v.as_str()).unwrap_or_default();
+                if !auth_url.is_empty() && !state_param.is_empty() {
+                    return Some((
+                        state_param.to_string(),
+                        auth_url.to_string(),
+                        state_param.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    None
 }
 
 async fn poll_upstream_canonical_alipay_oauth(
@@ -1190,7 +1186,7 @@ async fn poll_upstream_canonical_alipay_oauth(
     let gateway_base = std::env::var("FABUSHI_CLOUD_GATEWAY_URL")
         .unwrap_or_else(|_| "https://api.ombhrum.com".to_string());
     let poll_url = format!(
-        "{}/api/auth/oauth/attempts/{}",
+        "{}/api/auth/alipay/cli-session?state={}",
         gateway_base.trim_end_matches('/'),
         upstream_attempt_id
     );
@@ -1217,6 +1213,7 @@ async fn poll_upstream_canonical_alipay_oauth(
                         .or_else(|| v.as_u64().map(|n| n.to_string()))
                 })
         })
+        .or_else(|| val.get("username").and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_else(|| format!("alipay_{}", &upstream_attempt_id[..upstream_attempt_id.len().min(12)]));
     let nickname = user_obj
         .and_then(|u| {
@@ -1225,6 +1222,7 @@ async fn poll_upstream_canonical_alipay_oauth(
                 .or_else(|| u.get("username"))
                 .and_then(|v| v.as_str())
         })
+        .or_else(|| val.get("username").and_then(|v| v.as_str()))
         .unwrap_or("支付宝用户")
         .to_string();
     Some((alipay_uid, nickname))

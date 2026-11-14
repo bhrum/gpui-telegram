@@ -105,6 +105,12 @@ jobs:
           AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_core             -p gpui_telegram_proto             -p gpui_telegram_media             -p gpui_telegram_webrtc             -p gpui_telegram_agent             -p gpui_telegram_server             -p gpui_telegram_client             --lib
           AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests             -p gpui_telegram_media --test waveform_5bit_codec_roundtrip             -p gpui_telegram_agent --test agent_runtime_tests --test mcp_cua_talk_tests             -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests             -p gpui_telegram_client --test auth_client_tests             -p gpui_telegram_desktop               --test tdesktop_full_parity_integration_tests               --test desktop_views_tests               --test auth_wizard_tabs_tests               --test dialogs_widget_subsystem_tests               --test window_themes_subsystem_tests               --test milestone_1_nav_calls_regression_tests               --test milestone_3_settings_regression_tests
           cargo check --workspace --lib --bins
+          cargo build --profile ci --bin gpui_telegram_desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-telegram-desktop-macos-arm64-fast
+          path: target/ci/gpui_telegram_desktop
+          retention-days: 7
       - name: Report sccache Hit Statistics & Clean Temp Garbage
         run: |
           sccache --show-stats || true

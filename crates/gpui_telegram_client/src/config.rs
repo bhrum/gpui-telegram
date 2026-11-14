@@ -176,6 +176,27 @@ impl ClientConfig {
         Self::get_app_dir().join("config.json")
     }
 
+    /// Persists user-configured server URL to ~/.config/gpui_telegram/config.json.
+    pub fn save_server_url(raw_url: &str) -> Result<String, std::io::Error> {
+        let normalized = Self::normalize_url(raw_url);
+        let dir = Self::get_app_dir();
+        fs::create_dir_all(&dir)?;
+        let config_path = Self::get_config_path();
+        let mut existing = if config_path.is_file() {
+            fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<UserConfigFile>(&s).ok())
+                .unwrap_or_default()
+        } else {
+            UserConfigFile::default()
+        };
+        existing.server_url = Some(normalized.clone());
+        let json = serde_json::to_string_pretty(&existing)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        fs::write(&config_path, json.as_bytes())?;
+        Ok(normalized)
+    }
+
     /// Returns path to session persistence file (~/.config/gpui_telegram/session.json).
     pub fn get_session_path() -> PathBuf {
         Self::get_app_dir().join("session.json")

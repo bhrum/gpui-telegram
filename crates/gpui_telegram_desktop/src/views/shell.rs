@@ -148,6 +148,9 @@ pub struct AppShell {
     // --- Milestone 2 (F8) Login Wizard Additions ---
     pub auth_wizard_tab: AuthWizardTab,
 
+    pub editing_server_url: bool,
+    pub server_url_draft: String,
+
     // Alipay QR Login State
     pub alipay_attempt_id: Option<String>,
     pub alipay_auth_url: Option<String>,
@@ -516,6 +519,8 @@ impl AppShell {
             ws_stream_started: false,
             last_dispatched_search_seq: 0,
             auth_wizard_tab: AuthWizardTab::PasswordLogin,
+            editing_server_url: false,
+            server_url_draft: client.config.server_url.clone(),
             alipay_attempt_id: None,
             alipay_auth_url: None,
             alipay_qr_payload: None,
@@ -759,6 +764,165 @@ impl AppShell {
             }
         }
         cx.notify();
+    }
+
+    pub fn apply_custom_server_url(&mut self, cx: &mut Context<Self>) {
+        let raw = self.server_url_draft.trim().to_string();
+        if raw.is_empty() {
+            self.editing_server_url = false;
+            cx.notify();
+            return;
+        }
+        let normalized = gpui_telegram_client::config::ClientConfig::save_server_url(&raw)
+            .unwrap_or_else(|_| gpui_telegram_client::config::ClientConfig::normalize_url(&raw));
+        let mut new_cfg = self.client.config.clone();
+        new_cfg.server_url = normalized.clone();
+        self.client = Arc::new(TelegramClient::new(new_cfg));
+        self.server_url_draft = normalized;
+        self.editing_server_url = false;
+        self.login_error = None;
+        if self.auth_wizard_tab == AuthWizardTab::AlipayQr {
+            self.start_alipay_flow(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn render_real_alipay_qr_matrix(
+        payload: Option<&str>,
+        is_loading: bool,
+        zh: bool,
+    ) -> AnyElement {
+        if let Some(url) = payload.filter(|s| !s.trim().is_empty()) {
+            if let Ok(code) = qrcode::QrCode::with_error_correction_level(
+                url.as_bytes(),
+                qrcode::EcLevel::Q,
+            ) {
+                let n = code.width();
+                let colors = code.into_colors();
+                let module_px: f32 = if n <= 45 {
+                    4.0
+                } else if n <= 65 {
+                    3.0
+                } else {
+                    2.5
+                };
+                let grid_px = (n as f32) * module_px;
+                let quiet_px = 12.0_f32;
+                let card_px = grid_px + quiet_px * 2.0;
+
+                let mut matrix_layer = div()
+                    .relative()
+                    .w(px(grid_px))
+                    .h(px(grid_px))
+                    .bg(rgb(0xFFFFFF));
+
+                for y in 0..n {
+                    let mut x = 0;
+                    while x < n {
+                        if matches!(colors[y * n + x], qrcode::Color::Dark) {
+                            let start_x = x;
+                            while x < n && matches!(colors[y * n + x], qrcode::Color::Dark) {
+                                x += 1;
+                            }
+                            let span_w = ((x - start_x) as f32) * module_px;
+                            matrix_layer = matrix_layer.child(
+                                div()
+                                    .absolute()
+                                    .left(px((start_x as f32) * module_px))
+                                    .top(px((y as f32) * module_px))
+                                    .w(px(span_w))
+                                    .h(px(module_px))
+                                    .bg(rgb(0x000000)),
+                            );
+                        } else {
+                            x += 1;
+                        }
+                    }
+                }
+
+                // Compact center Alipay badge (~2.5% area, safely covered by EcLevel::Q 25% ECC)
+                let badge_outer = 28.0_f32;
+                let badge_offset = (grid_px - badge_outer) * 0.5;
+                matrix_layer = matrix_layer.child(
+                    div()
+                        .absolute()
+                        .left(px(badge_offset))
+                        .top(px(badge_offset))
+                        .w(px(badge_outer))
+                        .h(px(badge_outer))
+                        .rounded(px(6.0))
+                        .bg(rgb(0xFFFFFF))
+                        .p(px(2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w_full()
+                                .h_full()
+                                .rounded(px(4.0))
+                                .bg(rgb(0x1677FF))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(14.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xFFFFFF))
+                                .child("支"),
+                        ),
+                );
+
+                return div()
+                    .w(px(card_px))
+                    .h(px(card_px))
+                    .rounded(px(12.0))
+                    .bg(rgb(0xFFFFFF))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(matrix_layer)
+                    .into_any_element();
+            }
+        }
+
+        div()
+            .w(px(200.0))
+            .h(px(200.0))
+            .rounded(px(12.0))
+            .bg(rgb(0xFFFFFF))
+            .p(px(16.0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(
+                div()
+                    .size(px(48.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(0x1677FF))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(24.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xFFFFFF))
+                    .child("支"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0x475569))
+                    .child(if is_loading {
+                        if zh { "正在生成支付宝二维码..." } else { "Generating Alipay QR..." }
+                    } else if zh {
+                        "请点击下方刷新获取二维码"
+                    } else {
+                        "Click Refresh below to load QR"
+                    }),
+            )
+            .into_any_element()
     }
 
     pub fn open_alipay_browser_url(url: &str) -> bool {
@@ -2190,6 +2354,9 @@ impl AppShell {
 
     pub fn active_text_and_preedit(&self, cx: &App) -> (String, Option<String>) {
         if !self.is_authenticated {
+            if self.editing_server_url {
+                return (self.server_url_draft.clone(), self.ime_preedit.clone());
+            }
             match self.login_step {
                 LoginWizardStep::Start => {
                     let committed = match self.active_login_field {
@@ -2235,6 +2402,11 @@ impl AppShell {
     pub fn clear_active_field(&mut self, cx: &mut Context<Self>) {
         self.ime_preedit = None;
         if !self.is_authenticated {
+            if self.editing_server_url {
+                self.server_url_draft.clear();
+                cx.notify();
+                return;
+            }
             match self.login_step {
                 LoginWizardStep::Start => match self.active_login_field {
                     LoginInputField::Username => self.username_input.clear(),
@@ -2278,6 +2450,11 @@ impl AppShell {
         }
 
         if !self.is_authenticated {
+            if self.editing_server_url {
+                self.server_url_draft.push_str(&clean);
+                cx.notify();
+                return;
+            }
             match self.login_step {
                 LoginWizardStep::Start => {
                     match self.active_login_field {
@@ -2356,6 +2533,13 @@ impl AppShell {
     fn handle_non_char_key(&mut self, key: &str, is_shift: bool, cx: &mut Context<Self>) -> bool {
         // Escape closes any active modal, overlay, or search focus
         if key == "escape" {
+            if !self.is_authenticated && self.editing_server_url {
+                self.ime_preedit = None;
+                self.editing_server_url = false;
+                self.server_url_draft = self.client.config.server_url.clone();
+                cx.notify();
+                return true;
+            }
             if self.ime_preedit.take().is_some() {
                 cx.notify();
                 return true;
@@ -2424,6 +2608,35 @@ impl AppShell {
                 return true;
             }
             return false;
+        }
+
+        if !self.is_authenticated && self.editing_server_url {
+            match key {
+                "enter" => {
+                    if let Some(p) = self.ime_preedit.take() {
+                        self.server_url_draft.push_str(&p);
+                        cx.notify();
+                    } else {
+                        self.apply_custom_server_url(cx);
+                    }
+                    return true;
+                }
+                "escape" => {
+                    self.ime_preedit = None;
+                    self.editing_server_url = false;
+                    self.server_url_draft = self.client.config.server_url.clone();
+                    cx.notify();
+                    return true;
+                }
+                "backspace" => {
+                    if self.ime_preedit.take().is_none() {
+                        self.server_url_draft.pop();
+                    }
+                    cx.notify();
+                    return true;
+                }
+                _ => {}
+            }
         }
 
         if !self.is_authenticated {
@@ -3381,26 +3594,116 @@ impl AppShell {
                         .flex_col()
                         .items_center()
                         .gap(px(12.0))
-                        // Cloud Server Status Badge
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .px(px(10.0))
-                                .py(px(4.0))
-                                .rounded(px(6.0))
-                                .bg(rgb(0x101921))
-                                .border_1()
-                                .border_color(rgb(0x242F3D))
-                                .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(rgb(0x4CAF50)))
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .child(format!("Cloud VM: {}", server_url)),
-                                ),
-                        )
+                        // Cloud Server Status & Editable Endpoint Bar
+                        .child({
+                            let has_net_err = self
+                                .login_error
+                                .as_deref()
+                                .is_some_and(|e| e.contains("Network connection error") || e.contains("timed out") || e.contains("Connection refused"));
+                            let dot_color = if has_net_err { rgb(0xEF5350) } else { rgb(0x4CAF50) };
+                            if self.editing_server_url {
+                                let draft_display = if self.server_url_draft.is_empty() {
+                                    "http://<Google-Cloud-IP>:8080".to_string()
+                                } else {
+                                    format!("{}|", self.server_url_draft)
+                                };
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .h(px(30.0))
+                                            .px(px(10.0))
+                                            .rounded(px(6.0))
+                                            .bg(rgb(0x101921))
+                                            .border_1()
+                                            .border_color(rgb(0x2AABEE))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(11.5))
+                                            .text_color(if self.server_url_draft.is_empty() {
+                                                rgb(0x5B6B79)
+                                            } else {
+                                                rgb(0xFFFFFF)
+                                            })
+                                            .child(draft_display),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .h(px(30.0))
+                                            .px(px(10.0))
+                                            .rounded(px(6.0))
+                                            .bg(rgb(0x2AABEE))
+                                            .hover(|s| s.bg(rgb(0x229ED9)))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.apply_custom_server_url(cx);
+                                            }))
+                                            .child(if zh { "保存" } else { "Save" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .h(px(30.0))
+                                            .px(px(8.0))
+                                            .rounded(px(6.0))
+                                            .bg(rgb(0x242F3D))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(0x8A9AA8))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                                this.editing_server_url = false;
+                                                this.server_url_draft = this.client.config.server_url.clone();
+                                                cx.notify();
+                                            }))
+                                            .child(if zh { "取消" } else { "Cancel" }),
+                                    )
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .px(px(10.0))
+                                    .py(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(0x101921))
+                                    .border_1()
+                                    .border_color(if has_net_err { rgb(0x7F1D1D) } else { rgb(0x242F3D) })
+                                    .hover(|s| s.border_color(rgb(0x2AABEE)))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        this.server_url_draft = this.client.config.server_url.clone();
+                                        this.editing_server_url = true;
+                                        cx.notify();
+                                    }))
+                                    .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot_color))
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(0x8A9AA8))
+                                            .child(format!("Cloud VM: {}", server_url)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .text_color(rgb(0x2AABEE))
+                                            .child(if zh { "修改" } else { "Edit" }),
+                                    )
+                                    .into_any_element()
+                            }
+                        })
                         // Multi-Tab Switcher Bar (Milestone 2 F8)
                         .child(
                             div()
@@ -3874,11 +4177,20 @@ impl AppShell {
 
                             AuthWizardTab::AlipayQr => {
                                 let status_text = if self.alipay_status_text.is_empty() {
-                                    if zh { "请使用手机支付宝 App 扫码登录".to_string() } else { "Please scan with Alipay mobile app".to_string() }
+                                    if zh {
+                                        "请使用手机支付宝 App 扫码登录".to_string()
+                                    } else {
+                                        "Please scan with Alipay mobile app".to_string()
+                                    }
                                 } else {
                                     self.alipay_status_text.clone()
                                 };
                                 let is_loading = self.alipay_is_loading;
+                                let qr_card = Self::render_real_alipay_qr_matrix(
+                                    self.alipay_qr_payload.as_deref(),
+                                    is_loading,
+                                    zh,
+                                );
 
                                 div()
                                     .w_full()
@@ -3893,48 +4205,14 @@ impl AppShell {
                                             .text_color(rgb(0xFFFFFF))
                                             .child(if zh { "使用支付宝扫码登录" } else { "Log in with Alipay QR" }),
                                     )
-                                    // QR Code Matrix Card (180px) with Center "支" Badge
-                                    .child(
-                                        div()
-                                            .w(px(180.0))
-                                            .h(px(180.0))
-                                            .rounded(px(12.0))
-                                            .bg(rgb(0xFFFFFF))
-                                            .p(px(12.0))
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .gap(px(6.0))
-                                            .child(
-                                                div()
-                                                    .size(px(110.0))
-                                                    .bg(rgb(0x1677FF))
-                                                    .rounded(px(8.0))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .text_size(px(48.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child("支"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0x1677FF))
-                                                    .child("ALIPAY QR"),
-                                            ),
-                                    )
-                                    // Status indicator
+                                    .child(qr_card)
                                     .child(
                                         div()
                                             .text_size(px(12.0))
                                             .text_color(if is_loading { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
                                             .child(status_text),
                                     )
-                                    // Simulate Scan Button (for instant testing)
+                                    // Open Real Alipay Web OAuth in Default Browser
                                     .child(
                                         div()
                                             .cursor_pointer()
@@ -3950,9 +4228,9 @@ impl AppShell {
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(rgb(0xFFFFFF))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                this.simulate_alipay_scan(cx);
+                                                this.open_alipay_web_auth(cx);
                                             }))
-                                            .child(if zh { "📱 模拟扫码授权" } else { "📱 Simulate Scan Authorization" }),
+                                            .child(if zh { "🌐 在浏览器打开支付宝授权" } else { "🌐 Open Alipay Authorization in Browser" }),
                                     )
                                     // Refresh QR Code Button
                                     .child(
@@ -4514,39 +4792,19 @@ impl AppShell {
                             .text_color(rgb(0xFFFFFF))
                             .child(if zh { "使用 Telegram 扫码登录" } else { "Scan QR Code with Telegram" }),
                     )
-                    // Simulated QR Box (Clickable to simulate scan)
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w(px(160.0))
-                            .h(px(160.0))
-                            .rounded(px(12.0))
-                            .bg(rgb(0xFFFFFF))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .justify_center()
-                            .gap(px(6.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.submit_login(cx);
-                            }))
-                            .child(div().text_size(px(44.0)).child("🔳"))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0x17212B))
-                                    .child(if zh { "点击二维码模拟扫码成功" } else { "Click QR to Simulate Scan" }),
-                            ),
-                    )
+                    .child(Self::render_real_alipay_qr_matrix(
+                        self.alipay_qr_payload.as_deref(),
+                        self.alipay_is_loading,
+                        zh,
+                    ))
                     .child(
                         div()
                             .cursor_pointer()
                             .w_full()
                             .h(px(42.0))
                             .rounded(px(8.0))
-                            .bg(rgb(0x1ABC9C))
-                            .hover(|s| s.bg(rgb(0x16A085)))
+                            .bg(rgb(0x1677FF))
+                            .hover(|s| s.bg(rgb(0x0E5CD6)))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -4554,9 +4812,10 @@ impl AppShell {
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.submit_login(cx);
+                                this.login_step = LoginWizardStep::Start;
+                                this.switch_auth_tab(AuthWizardTab::AlipayQr, cx);
                             }))
-                            .child(if zh { "📱 模拟手机确认登录" } else { "📱 Simulate Phone Scan & Sign In" }),
+                            .child(if zh { "💳 切换至支付宝真实扫码登录" } else { "💳 Switch to Alipay QR Login" }),
                     )
                     .child(
                         div()
