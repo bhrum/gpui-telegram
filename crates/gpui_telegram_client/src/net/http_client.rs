@@ -879,7 +879,7 @@ impl HttpClient {
                                         return Ok(AlipayStartResponse {
                                             attempt_id,
                                             login_url: auth_url.to_string(),
-                                            expires_at_ms: Some(expires_at_ms),
+                                            expires_at_ms,
                                         });
                                     }
                                 }
