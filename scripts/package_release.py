@@ -259,11 +259,6 @@ def build_macos_app_bundle(
     <false/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
-    <key>LSEnvironment</key>
-    <dict>
-        <key>GPUI_TELEGRAM_SERVER_URL</key>
-        <string>http://34.46.77.133:8080</string>
-    </dict>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Teamwork GPUI Telegram Contributors. Apache-2.0.</string>
 </dict>

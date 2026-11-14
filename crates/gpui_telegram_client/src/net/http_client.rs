@@ -768,7 +768,7 @@ impl HttpClient {
         .await
     }
 
-    fn resolve_fabushi_auth_base(base_url: &str) -> Option<String> {
+    fn resolve_explicit_cli_bridge_base() -> Option<String> {
         if std::env::var("GPUI_OFFLINE_TEST").is_ok() {
             return None;
         }
@@ -778,25 +778,36 @@ impl HttpClient {
                 return Some(trimmed.to_string());
             }
         }
+        None
+    }
+
+    fn resolve_canonical_oauth_gateway(base_url: &str) -> Option<String> {
+        if std::env::var("GPUI_OFFLINE_TEST").is_ok() {
+            return None;
+        }
         if base_url.contains("127.0.0.1") || base_url.contains("localhost") || base_url.contains("[::1]") {
             return None;
         }
-        Some("https://api.ombhrum.com".to_string())
+        let gw = std::env::var("FABUSHI_CLOUD_GATEWAY_URL")
+            .unwrap_or_else(|_| "https://api.ombhrum.com".to_string());
+        Some(gw.trim().trim_end_matches('/').to_string())
     }
 
-    /// Initiates Alipay QR OAuth login attempt via POST /api/v1/auth/alipay/start,
-    /// upgrading placeholder Alipay OAuth URLs to real Fabushi web authorization (`https://api.ombhrum.com/api/auth/alipay/login-url?platform=cli`)
-    /// and falling back directly to the live Fabushi Alipay OAuth gateway if the Telegram VM is temporarily unreachable.
+    /// Initiates Alipay QR OAuth login attempt via POST /api/v1/auth/alipay/start on Google Cloud,
+    /// preserving canonical `state=fbs_...` OAuth URLs (which complete cleanly on mahayana-platform
+    /// without ever redirecting to deprecated flutter.ombhrum.com).
     pub async fn alipay_start(&self) -> Result<AlipayStartResponse, HttpClientError> {
         let client = self.client.clone();
         let base_url = self.base_url.clone();
         let url = format!("{}/api/v1/auth/alipay/start", self.base_url);
         let fabushi_states = self.fabushi_alipay_states.clone();
         self.run_on_tokio(async move {
-            let fabushi_base_opt = Self::resolve_fabushi_auth_base(&base_url);
+            let explicit_cli_base = Self::resolve_explicit_cli_bridge_base();
+            let canonical_gw_opt = Self::resolve_canonical_oauth_gateway(&base_url);
+
             let primary_res = client
                 .post(&url)
-                .timeout(Duration::from_secs(4))
+                .timeout(Duration::from_secs(5))
                 .json(&serde_json::json!({}))
                 .send()
                 .await;
@@ -806,12 +817,11 @@ impl HttpClient {
                     let status = resp.status();
                     if status.is_success() {
                         let mut data = resp.json::<AlipayStartResponse>().await?;
-                        let needs_cli_upgrade = data.login_url.contains("openauth.alipay.com")
-                            && (data.login_url.contains("state=fbs_")
-                                || data.login_url.contains("state=placeholder")
-                                || !data.login_url.contains("redirect_uri=https%3A%2F%2Fapi.ombhrum.com"));
-                        if needs_cli_upgrade {
-                            if let Some(ref fabushi_base) = fabushi_base_opt {
+                        // Only run explicit CLI test bridge when FABUSHI_AUTH_BASE_URL is set (unit tests)
+                        if let Some(ref fabushi_base) = explicit_cli_base {
+                            if data.login_url.contains("openauth.alipay.com")
+                                && !data.login_url.contains("state=fbs_")
+                            {
                                 let fabushi_login_endpoint = format!(
                                     "{}/api/auth/alipay/login-url?platform=cli",
                                     fabushi_base
@@ -853,36 +863,49 @@ impl HttpClient {
                     }
                 }
                 Err(primary_err) => {
-                    if let Some(fabushi_base) = fabushi_base_opt {
-                        let fabushi_login_endpoint = format!(
-                            "{}/api/auth/alipay/login-url?platform=cli",
-                            fabushi_base
-                        );
-                        if let Ok(fb_resp) = client
-                            .get(&fabushi_login_endpoint)
+                    // Fallback to canonical Mahayana OAuth (`state=fbs_...`, zero flutter.ombhrum.com redirect)
+                    if let Some(gw_base) = canonical_gw_opt {
+                        let start_url = format!("{}/api/auth/oauth/start", gw_base);
+                        let payload = serde_json::json!({
+                            "provider": "alipay",
+                            "platform": "macos",
+                            "deviceId": "gpui-telegram-google-cloud"
+                        });
+                        if let Ok(gw_resp) = client
+                            .post(&start_url)
                             .timeout(Duration::from_secs(6))
+                            .json(&payload)
                             .send()
                             .await
                         {
-                            if fb_resp.status().is_success() {
-                                if let Ok(fb_json) = fb_resp.json::<serde_json::Value>().await {
-                                    let auth_url = fb_json
-                                        .get("authUrl")
+                            if gw_resp.status().is_success() {
+                                if let Ok(val) = gw_resp.json::<serde_json::Value>().await {
+                                    let upstream_id = val
+                                        .get("attemptId")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or_default();
-                                    let state = fb_json
-                                        .get("state")
+                                    let auth_raw = val
+                                        .get("authorizationUrl")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or_default();
-                                    if !auth_url.is_empty() && !state.is_empty() {
-                                        let attempt_id = format!("fb_direct_{}", state);
+                                    let state_param = auth_raw
+                                        .split("state=")
+                                        .nth(1)
+                                        .and_then(|s| s.split('&').next())
+                                        .unwrap_or_default();
+                                    if !upstream_id.is_empty() && state_param.starts_with("fbs_") {
+                                        let openauth_url = format!(
+                                            "https://openauth.alipay.com/oauth2/publicAppAuthorize.htm?app_id=2021005193647715&scope=auth_user&redirect_uri=https%3A%2F%2Fapi.ombhrum.com%2Fapi%2Fauth%2Falipay%2Fcallback&state={}",
+                                            state_param
+                                        );
+                                        let attempt_id = format!("fbs_direct_{}", upstream_id);
                                         fabushi_states
                                             .lock()
-                                            .insert(attempt_id.clone(), state.to_string());
+                                            .insert(attempt_id.clone(), format!("oauth:{}", upstream_id));
                                         let expires_at_ms = chrono::Utc::now().timestamp_millis() + 600_000;
                                         return Ok(AlipayStartResponse {
                                             attempt_id,
-                                            login_url: auth_url.to_string(),
+                                            login_url: openauth_url,
                                             expires_at_ms,
                                         });
                                     }
@@ -897,8 +920,7 @@ impl HttpClient {
         .await
     }
 
-    /// Polls Alipay QR OAuth login status via GET /api/v1/auth/alipay/poll/{attempt_id},
-    /// synchronizing real Fabushi Alipay web authorization completion when active.
+    /// Polls Alipay QR OAuth login status via GET /api/v1/auth/alipay/poll/{attempt_id}.
     pub async fn alipay_poll(&self, attempt_id: &str) -> Result<AlipayPollResponse, HttpClientError> {
         let client = self.client.clone();
         let base_url = self.base_url.clone();
@@ -908,92 +930,62 @@ impl HttpClient {
         let completed_identities = self.fabushi_completed_identities.clone();
         self.run_on_tokio(async move {
             let maybe_fb_state = fabushi_states.lock().get(&attempt_owned).cloned();
-            let mut fabushi_still_pending = false;
+            let mut direct_pending = false;
             if let Some(fb_state) = maybe_fb_state {
-                let fabushi_base = Self::resolve_fabushi_auth_base(&base_url)
-                    .unwrap_or_else(|| base_url.clone());
-                let cli_session_url = format!(
-                    "{}/api/auth/alipay/cli-session?state={}",
-                    fabushi_base.trim_end_matches('/'),
-                    fb_state
-                );
-                if let Ok(fb_resp) = client
-                    .get(&cli_session_url)
-                    .timeout(Duration::from_secs(5))
-                    .send()
-                    .await
-                {
-                    let fb_status = fb_resp.status();
-                    let fb_json = fb_resp
-                        .json::<serde_json::Value>()
+                if let Some(upstream_id) = fb_state.strip_prefix("oauth:") {
+                    let gw_base = Self::resolve_canonical_oauth_gateway(&base_url)
+                        .unwrap_or_else(|| "https://api.ombhrum.com".to_string());
+                    let poll_url = format!("{}/api/auth/oauth/attempts/{}", gw_base, upstream_id);
+                    if let Ok(gw_resp) = client
+                        .get(&poll_url)
+                        .timeout(Duration::from_secs(5))
+                        .send()
                         .await
-                        .unwrap_or_default();
-                    let state_status = fb_json
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default();
-                    if state_status == "complete"
-                        || state_status == "completed"
-                        || (fb_status.as_u16() == 409
-                            && state_status == "registration_required")
                     {
-                        fabushi_states.lock().remove(&attempt_owned);
-                        let user_obj = fb_json.get("user");
-                        let alipay_uid = user_obj
-                            .and_then(|u| u.get("alipayUserId").and_then(|v| v.as_str()))
-                            .map(str::to_string)
-                            .or_else(|| {
-                                user_obj.and_then(|u| {
-                                    u.get("id").and_then(|v| {
-                                        v.as_str()
-                                            .map(str::to_string)
-                                            .or_else(|| v.as_u64().map(|n| n.to_string()))
-                                            .or_else(|| v.as_i64().map(|n| n.to_string()))
-                                    })
+                        let gw_status = gw_resp.status();
+                        let val = gw_resp.json::<serde_json::Value>().await.unwrap_or_default();
+                        let st = val.get("status").and_then(|v| v.as_str()).unwrap_or_default();
+                        if st == "completed" || st == "complete" {
+                            fabushi_states.lock().remove(&attempt_owned);
+                            let user_obj = val
+                                .get("session")
+                                .and_then(|s| s.get("user"))
+                                .or_else(|| val.get("user"));
+                            let alipay_uid = user_obj
+                                .and_then(|u| {
+                                    u.get("alipayUserId")
+                                        .or_else(|| u.get("id"))
+                                        .and_then(|v| {
+                                            v.as_str()
+                                                .map(str::to_string)
+                                                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                                        })
                                 })
-                            })
-                            .or_else(|| {
-                                fb_json
-                                    .get("username")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string)
-                            })
-                            .unwrap_or_else(|| {
-                                let prefix = &fb_state[..fb_state.len().min(12)];
-                                format!("alipay_{}", prefix)
-                            });
-                        let nickname = user_obj
-                            .and_then(|u| {
-                                u.get("alipayNickname")
-                                    .or_else(|| u.get("nickname"))
-                                    .and_then(|v| v.as_str())
-                            })
-                            .or_else(|| fb_json.get("username").and_then(|v| v.as_str()))
-                            .unwrap_or("支付宝用户")
-                            .to_string();
-                        let access_token = fb_json
-                            .get("accessToken")
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string);
-                        let user_id = user_obj
-                            .and_then(|u| u.get("id"))
-                            .and_then(|v| v.as_u64());
-
-                        completed_identities.lock().insert(
-                            attempt_owned.clone(),
-                            FabushiCompletedIdentity {
-                                alipay_uid,
-                                nickname,
-                                access_token,
-                                user_id,
-                            },
-                        );
-                    } else if fb_status == StatusCode::NOT_FOUND
-                        || state_status == "expired"
-                        || state_status == "failed"
-                    {
-                        fabushi_states.lock().remove(&attempt_owned);
-                        if !completed_identities.lock().contains_key(&attempt_owned) {
+                                .unwrap_or_else(|| format!("alipay_{}", &upstream_id[..upstream_id.len().min(12)]));
+                            let nickname = user_obj
+                                .and_then(|u| {
+                                    u.get("alipayNickname")
+                                        .or_else(|| u.get("nickname"))
+                                        .or_else(|| u.get("username"))
+                                        .and_then(|v| v.as_str())
+                                })
+                                .unwrap_or("支付宝用户")
+                                .to_string();
+                            completed_identities.lock().insert(
+                                attempt_owned.clone(),
+                                FabushiCompletedIdentity {
+                                    alipay_uid,
+                                    nickname,
+                                    access_token: None,
+                                    user_id: None,
+                                },
+                            );
+                        } else if gw_status == StatusCode::NOT_FOUND
+                            || st == "expired"
+                            || st == "failed"
+                            || st == "cancelled"
+                        {
+                            fabushi_states.lock().remove(&attempt_owned);
                             return Ok(AlipayPollResponse {
                                 status: "expired".to_string(),
                                 token: None,
@@ -1002,17 +994,113 @@ impl HttpClient {
                                 user_id: None,
                                 username: None,
                             });
+                        } else {
+                            direct_pending = true;
                         }
                     } else {
-                        fabushi_still_pending = true;
+                        direct_pending = true;
                     }
                 } else {
-                    fabushi_still_pending = true;
+                    let fabushi_base = Self::resolve_explicit_cli_bridge_base()
+                        .unwrap_or_else(|| base_url.clone());
+                    let cli_session_url = format!(
+                        "{}/api/auth/alipay/cli-session?state={}",
+                        fabushi_base.trim_end_matches('/'),
+                        fb_state
+                    );
+                    if let Ok(fb_resp) = client
+                        .get(&cli_session_url)
+                        .timeout(Duration::from_secs(5))
+                        .send()
+                        .await
+                    {
+                        let fb_status = fb_resp.status();
+                        let fb_json = fb_resp
+                            .json::<serde_json::Value>()
+                            .await
+                            .unwrap_or_default();
+                        let state_status = fb_json
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        if state_status == "complete"
+                            || state_status == "completed"
+                            || (fb_status.as_u16() == 409
+                                && state_status == "registration_required")
+                        {
+                            fabushi_states.lock().remove(&attempt_owned);
+                            let user_obj = fb_json.get("user");
+                            let alipay_uid = user_obj
+                                .and_then(|u| u.get("alipayUserId").and_then(|v| v.as_str()))
+                                .map(str::to_string)
+                                .or_else(|| {
+                                    user_obj.and_then(|u| {
+                                        u.get("id").and_then(|v| {
+                                            v.as_str()
+                                                .map(str::to_string)
+                                                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                                                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                                        })
+                                    })
+                                })
+                                .or_else(|| {
+                                    fb_json
+                                        .get("username")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string)
+                                })
+                                .unwrap_or_else(|| {
+                                    let prefix = &fb_state[..fb_state.len().min(12)];
+                                    format!("alipay_{}", prefix)
+                                });
+                            let nickname = user_obj
+                                .and_then(|u| {
+                                    u.get("alipayNickname")
+                                        .or_else(|| u.get("nickname"))
+                                        .and_then(|v| v.as_str())
+                                })
+                                .or_else(|| fb_json.get("username").and_then(|v| v.as_str()))
+                                .unwrap_or("支付宝用户")
+                                .to_string();
+                            let access_token = fb_json
+                                .get("accessToken")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
+                            let user_id = user_obj
+                                .and_then(|u| u.get("id"))
+                                .and_then(|v| v.as_u64());
+
+                            completed_identities.lock().insert(
+                                attempt_owned.clone(),
+                                FabushiCompletedIdentity {
+                                    alipay_uid,
+                                    nickname,
+                                    access_token,
+                                    user_id,
+                                },
+                            );
+                        } else if fb_status == StatusCode::NOT_FOUND
+                            || state_status == "expired"
+                            || state_status == "failed"
+                        {
+                            fabushi_states.lock().remove(&attempt_owned);
+                            if !completed_identities.lock().contains_key(&attempt_owned) {
+                                return Ok(AlipayPollResponse {
+                                    status: "expired".to_string(),
+                                    token: None,
+                                    user: None,
+                                    session: None,
+                                    user_id: None,
+                                    username: None,
+                                });
+                            }
+                        }
+                    }
                 }
             }
 
             let cached_identity = completed_identities.lock().get(&attempt_owned).cloned();
-            if fabushi_still_pending && cached_identity.is_none() && attempt_owned.starts_with("fb_direct_") {
+            if direct_pending && cached_identity.is_none() && attempt_owned.starts_with("fbs_direct_") {
                 return Ok(AlipayPollResponse {
                     status: "pending".to_string(),
                     token: None,
@@ -1024,7 +1112,7 @@ impl HttpClient {
             }
 
             if let Some(ref identity) = cached_identity {
-                if !attempt_owned.starts_with("fb_direct_") {
+                if !attempt_owned.starts_with("fbs_direct_") {
                     let sync_url = format!("{}/api/v1/auth/alipay/simulate-scan", base_url);
                     let sync_payload = serde_json::json!({
                         "attempt_id": attempt_owned,
@@ -1069,10 +1157,10 @@ impl HttpClient {
                 data
             };
 
-            if !attempt_owned.starts_with("fb_direct_") {
+            if !attempt_owned.starts_with("fbs_direct_") {
                 let primary_resp = client
                     .get(&url)
-                    .timeout(Duration::from_secs(4))
+                    .timeout(Duration::from_secs(5))
                     .send()
                     .await;
                 if let Ok(resp) = primary_resp {
@@ -1094,24 +1182,11 @@ impl HttpClient {
                     }
                 } else if let Err(err) = primary_resp {
                     if cached_identity.is_none() {
-                        if fabushi_still_pending {
-                            return Ok(AlipayPollResponse {
-                                status: "pending".to_string(),
-                                token: None,
-                                user: None,
-                                session: None,
-                                user_id: None,
-                                username: None,
-                            });
-                        }
                         return Err(HttpClientError::from(err));
                     }
                 }
             }
 
-            // If we have a verified Fabushi Alipay completion (`cached_identity`) whose primary
-            // attempt_id failed or expired on gpui_telegram_server (or started in fb_direct_ mode),
-            // try minting a fresh attempt_id on gpui_telegram_server first, and fall back to synthesized session if unreachable.
             if let Some(identity) = cached_identity {
                 completed_identities.lock().remove(&attempt_owned);
                 let start_url = format!("{}/api/v1/auth/alipay/start", base_url);
