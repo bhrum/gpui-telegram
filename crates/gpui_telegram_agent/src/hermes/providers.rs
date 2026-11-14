@@ -882,6 +882,36 @@ impl ProviderRouter {
             }
         }
 
+        if let Ok(key) = std::env::var("HERMES_API_KEY").or_else(|_| std::env::var("DACHENG_AI_TOKEN"))
+        {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                let base = std::env::var("HERMES_BASE_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "https://ai.ombhrum.com/codex-deepseek/v1".to_string());
+                let model = std::env::var("HERMES_MODEL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "deepseek-chat".to_string());
+                let mut cfg = ProviderConfig::openai_compatible(
+                    "hermes_cloud",
+                    "Hermes Cloud",
+                    base.clone(),
+                    model.clone(),
+                    trimmed.to_string(),
+                );
+                if base.contains("/codex-") || base.contains("ai.ombhrum.com") {
+                    cfg.api_mode = ApiMode::CodexResponses;
+                }
+                router.register_provider(cfg);
+                if !active_set {
+                    let _ = router.set_active("hermes_cloud", Some(&model));
+                    active_set = true;
+                }
+            }
+        }
+
         if let Ok(mode_raw) = std::env::var("HERMES_API_MODE") {
             if let Some(mode) = ApiMode::parse(&mode_raw) {
                 let _ = router.set_api_mode_for_active(mode);
@@ -1684,6 +1714,91 @@ async fn check_http_error(resp: reqwest::Response) -> Result<reqwest::Response, 
     })
 }
 
+pub fn normalize_wire_model_for_provider(provider_id: &str, base_url: &str, model: &str) -> String {
+    let m = model.trim();
+    let is_deepseek = provider_id.contains("deepseek")
+        || base_url.contains("api.deepseek.com")
+        || base_url.contains("ai.ombhrum.com")
+        || base_url.contains("codex-deepseek");
+
+    if m.is_empty() || m == "hermes-local-v1" {
+        if is_deepseek {
+            return "deepseek-chat".to_string();
+        }
+        if provider_id == "openai" || base_url.contains("api.openai.com") {
+            return "gpt-4o".to_string();
+        }
+        if provider_id == "anthropic" || base_url.contains("anthropic.com") {
+            return "claude-sonnet-4-20250514".to_string();
+        }
+        return m.to_string();
+    }
+
+    if is_deepseek {
+        match m {
+            "deepseek-flash" | "deepseek-v3" | "deepseek" | "gpt-4o-mini" | "gpt-4o" => {
+                "deepseek-chat".to_string()
+            }
+            "deepseek-r1" | "o1" | "o3-mini" => "deepseek-reasoner".to_string(),
+            _ => m.to_string(),
+        }
+    } else {
+        m.to_string()
+    }
+}
+
+fn prepare_wire_request(
+    cfg: &ProviderConfig,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderRequest,
+) -> ProviderRequest {
+    let mut wire = request.clone();
+    wire.model = normalize_wire_model_for_provider(&cfg.id, base_url, &request.model);
+
+    // Compact requests for unauthenticated public Codex relay tier (1,000 estimated token cap).
+    if cfg.api_mode == ApiMode::CodexResponses
+        && base_url.contains("ai.ombhrum.com")
+        && api_key == "public"
+    {
+        wire.tools.clear();
+        wire.thinking_budget_tokens = None;
+
+        let combined_sys = request.combined_system_prompt();
+        let compact_sys: String = combined_sys.trim().chars().take(180).collect();
+        wire.system_tiers = if compact_sys.is_empty() {
+            Vec::new()
+        } else {
+            vec![SystemPromptTier::stable("identity", compact_sys)]
+        };
+
+        let mut kept: Vec<ProviderChatMessage> = wire
+            .messages
+            .into_iter()
+            .filter(|m| {
+                matches!(
+                    m.role,
+                    ProviderMessageRole::User | ProviderMessageRole::Assistant
+                )
+            })
+            .collect();
+        if kept.len() > 4 {
+            let start = kept.len() - 4;
+            kept.drain(0..start);
+        }
+        for msg in &mut kept {
+            msg.tool_calls.clear();
+            msg.cache_control = None;
+            if msg.content.chars().count() > 180 {
+                msg.content = msg.content.chars().take(180).collect();
+            }
+        }
+        wire.messages = kept;
+    }
+
+    wire
+}
+
 async fn execute_chat_completions(
     client: &reqwest::Client,
     cfg: &ProviderConfig,
@@ -1693,7 +1808,8 @@ async fn execute_chat_completions(
     stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
 ) -> Result<ProviderResponse, ProviderError> {
     let url = resolve_endpoint_url(base_url, "chat/completions");
-    let payload = build_chat_completions_payload(request);
+    let wire_req = prepare_wire_request(cfg, base_url, api_key, request);
+    let payload = build_chat_completions_payload(&wire_req);
 
     let mut builder = client
         .post(&url)
@@ -2002,7 +2118,8 @@ async fn execute_codex_responses(
     stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
 ) -> Result<ProviderResponse, ProviderError> {
     let url = resolve_endpoint_url(base_url, "responses");
-    let payload = build_codex_responses_payload(request);
+    let wire_req = prepare_wire_request(cfg, base_url, api_key, request);
+    let payload = build_codex_responses_payload(&wire_req);
 
     let mut builder = client
         .post(&url)
@@ -2221,7 +2338,8 @@ async fn execute_anthropic_messages(
     stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
 ) -> Result<ProviderResponse, ProviderError> {
     let url = resolve_endpoint_url(base_url, "messages");
-    let payload = build_anthropic_messages_payload(request);
+    let wire_req = prepare_wire_request(cfg, base_url, api_key, request);
+    let payload = build_anthropic_messages_payload(&wire_req);
 
     let mut builder = client
         .post(&url)
@@ -2749,6 +2867,33 @@ fn Uuid_short() -> String {
     u[..10].to_string()
 }
 
+fn contains_cjk(text: &str) -> bool {
+    text.chars()
+        .any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c))
+}
+
+fn clean_persona_summary(persona: &str) -> String {
+    let mut s = persona.trim().to_string();
+    for prefix in ["You are ", "Your name is "] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            if let Some(dot) = rest.find('.') {
+                s = rest[dot + 1..].trim().to_string();
+            } else {
+                s.clear();
+            }
+        }
+    }
+    s = s
+        .replace(
+            "Reply naturally and helpfully in the user's language, and never refer to yourself by numeric user ID.",
+            "",
+        )
+        .replace("Helpful, concise, tool-capable autonomous assistant", "")
+        .trim()
+        .to_string();
+    s
+}
+
 pub async fn execute_local_hermes(
     provider_id: &str,
     request: &ProviderRequest,
@@ -2835,6 +2980,16 @@ pub async fn execute_local_hermes(
     // Otherwise craft an authentic, context-aware pure-Rust response respecting SOUL.md, MEMORY.md, USER.md, SKILL.md, and conversation history
     let lower = last_user_msg.trim().to_ascii_lowercase();
     let trimmed = last_user_msg.trim();
+    let persona_summary = clean_persona_summary(soul_persona);
+    let msg_is_cjk = contains_cjk(trimmed);
+    let history_is_cjk = msg_is_cjk
+        || request
+            .messages
+            .iter()
+            .rev()
+            .take(6)
+            .any(|m| contains_cjk(&m.content))
+        || contains_cjk(&persona_summary);
 
     let mut reply = if let Some(role) = perspective {
         format!(
@@ -2847,24 +3002,64 @@ pub async fn execute_local_hermes(
         lower.as_str(),
         "hi" | "hello" | "hey" | "你好" | "您好" | "嗨" | "在吗"
     ) {
-        let is_cjk = trimmed.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c));
-        if is_cjk {
+        if msg_is_cjk {
+            let bio_line = if persona_summary.is_empty() {
+                String::new()
+            } else {
+                format!("\n{persona_summary}")
+            };
             format!(
-                "你好！我是 {bot_name}。{soul_persona}\n我可以帮你执行工作区工具（当前可用 {} 个工具）、管理记忆与技能、规划任务或使用 `/` 斜杠命令（发送 `/help` 查看全部命令）。有什么需要处理的吗？",
+                "你好！我是 **{bot_name}**。{bio_line}\n我可以帮你问答交流、处理工作区与文件工具（当前可用 {} 个工具）、管理记忆与技能，或执行 `/` 斜杠命令（发送 `/help` 查看全部命令）。请问有什么可以帮你？",
+                request.tools.len()
+            )
+        } else {
+            let bio_line = if persona_summary.is_empty() {
+                String::new()
+            } else {
+                format!(" {persona_summary}")
+            };
+            format!(
+                "Hello! I'm **{bot_name}**.{bio_line}\nI have {} active tools ready, persistent session memory, and full `/` slash command support (type `/help` to inspect commands). How can I help?",
+                request.tools.len()
+            )
+        }
+    } else if trimmed.contains("可以做什么")
+        || trimmed.contains("能做什么")
+        || trimmed.contains("有什么功能")
+        || lower.contains("what can you do")
+        || lower == "help"
+    {
+        if history_is_cjk {
+            format!(
+                "我是 **{bot_name}**，目前可以为你提供以下能力：\n- 智能对话问答、内容总结、翻译与写作\n- 工作区工具执行（当前可用 {} 个工具，支持文件读写、目录检索与命令执行）\n- 长期记忆与技能管理（支持 `/memory`、`/skills`、`/learn`）\n- 常用控制命令（发送 `/help` 查看全部 `/` 斜杠命令）\n\n请直接告诉我你想做的事。",
                 request.tools.len()
             )
         } else {
             format!(
-                "Hello! I'm {bot_name}. {soul_persona}\nI have {} active tools ready, persistent session memory, and full `/` slash command support (type `/help` to inspect commands). How can I help?",
+                "I'm **{bot_name}**. Here is what I can help you with:\n- Q&A, writing, summarization, and problem solving\n- Workspace and tool execution ({} active tools for files, search, and commands)\n- Persistent memory and skills (`/memory`, `/skills`, `/learn`)\n- Slash commands and automation (send `/help` for the full list)\n\nTell me what you'd like to do!",
                 request.tools.len()
             )
         }
-    } else if lower.contains("who are you") || trimmed.contains("你是谁") {
-        let mut s = format!("I am **{bot_name}**.\nPersona: {soul_persona}");
-        if !skills_index.is_empty() {
-            s.push_str(&format!("\nLoaded skills:\n{skills_index}"));
+    } else if lower.contains("who are you") || trimmed.contains("你是谁") || trimmed.contains("叫什么") {
+        if history_is_cjk {
+            let mut s = format!("我是 **{bot_name}**。");
+            if !persona_summary.is_empty() {
+                s.push_str(&format!("\n{persona_summary}"));
+            }
+            if !skills_index.is_empty() {
+                s.push_str(&format!("\n已加载技能：\n{skills_index}"));
+            }
+            s
+        } else {
+            let mut s = format!("I am **{bot_name}**.");
+            if !persona_summary.is_empty() {
+                s.push_str(&format!("\nPersona: {persona_summary}"));
+            }
+            if !skills_index.is_empty() {
+                s.push_str(&format!("\nLoaded skills:\n{skills_index}"));
+            }
+            s
         }
-        s
     } else if lower.contains("memory")
         || lower.contains("remember about me")
         || trimmed.contains("记忆")
@@ -2883,26 +3078,23 @@ pub async fn execute_local_hermes(
         format!("Current frozen memory snapshot:\n\n**MEMORY.md**\n{mem_view}\n\n**USER.md**\n{user_view}")
     } else if lower.contains("skill") || trimmed.contains("技能") {
         if skills_index.is_empty() {
-            "No skills are currently indexed in this workspace. Use `/skills` or `/learn` to create one.".to_string()
+            if history_is_cjk {
+                "当前工作区还没有已索引的技能。你可以使用 `/skills` 或 `/learn` 创建技能。".to_string()
+            } else {
+                "No skills are currently indexed in this workspace. Use `/skills` or `/learn` to create one.".to_string()
+            }
         } else {
             format!("Indexed Hermes skills:\n{skills_index}")
         }
-    } else {
-        let history_turns = request
-            .messages
-            .iter()
-            .filter(|m| m.role == ProviderMessageRole::User || m.role == ProviderMessageRole::Assistant)
-            .count();
-        let mem_hint = if !memory_snapshot.is_empty() {
-            let first_line = memory_snapshot.lines().next().unwrap_or("");
-            format!("\nMemory context: {first_line}")
-        } else {
-            String::new()
-        };
+    } else if history_is_cjk {
         format!(
-            "[{bot_name}] Received: \"{}\"\nSession turns: {history_turns} | Available tools: {} | Persona: {soul_persona}{mem_hint}\n\nTip: Configure an upstream API key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`) or run `/provider` / `/api-mode` for cloud LLM inference, or invoke local tools directly (e.g. `read file <path>`, `list files in .`, `@tool:<name>({{...}})`).",
-            trimmed,
-            request.tools.len(),
+            "收到你的消息“{}”。当前由 **{bot_name}** 为你服务，请告诉我更具体的需求或问题（例如提问、整理文本、查看工作区文件，或发送 `/help` 查看命令），我会继续协助你处理。",
+            trimmed
+        )
+    } else {
+        format!(
+            "Got it: \"{}\". I'm **{bot_name}** — let me know what you'd like me to do next (ask a question, work with workspace files, or send `/help` to list available commands).",
+            trimmed
         )
     };
 

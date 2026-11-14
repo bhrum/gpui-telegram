@@ -88,6 +88,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
           SERVICE_NAME: ${{ secrets.BACKEND_SERVICE_NAME }}
           BACKEND_ENV: ${{ secrets.BACKEND_ENV_FILE }}
+          AI_BACKEND_ENV: ${{ secrets.AI_BACKEND_ENV_FILE }}
           AI_BACKEND_SERVICE: ${{ secrets.AI_BACKEND_SERVICE_NAME }}
         run: |
           PORT_ARG="${SSH_PORT:-22}"
@@ -104,18 +105,82 @@ jobs:
             -e "ssh -i ~/.ssh/deploy_key -p ${PORT_ARG} -o StrictHostKeyChecking=no" \
             ./ "${SSH_USER}@${SSH_HOST}:/tmp/gpui-server-sync/"
 
-          # 2. Upload compiled release binary
+          # 2. Upload compiled release binary and runtime .env secrets (never echoed)
           scp -i ~/.ssh/deploy_key -P "${PORT_ARG}" -o StrictHostKeyChecking=no \
             target/release/gpui_telegram_server \
             "${SSH_USER}@${SSH_HOST}:/tmp/gpui_telegram_server.new"
 
-          # 3. Atomically install source + binary and restart systemd service
+          rm -f /tmp/gpui_backend.env /tmp/gpui_ai_backend.env
+          if [ -n "${BACKEND_ENV:-}" ]; then
+            umask 077
+            printf '%s\n' "$BACKEND_ENV" > /tmp/gpui_backend.env
+            scp -i ~/.ssh/deploy_key -P "${PORT_ARG}" -o StrictHostKeyChecking=no \
+              /tmp/gpui_backend.env "${SSH_USER}@${SSH_HOST}:/tmp/gpui_backend.env.upload"
+          fi
+          if [ -n "${AI_BACKEND_ENV:-}" ]; then
+            umask 077
+            printf '%s\n' "$AI_BACKEND_ENV" > /tmp/gpui_ai_backend.env
+            scp -i ~/.ssh/deploy_key -P "${PORT_ARG}" -o StrictHostKeyChecking=no \
+              /tmp/gpui_ai_backend.env "${SSH_USER}@${SSH_HOST}:/tmp/gpui_ai_backend.env.upload"
+          fi
+          rm -f /tmp/gpui_backend.env /tmp/gpui_ai_backend.env
+
+          # 3. Atomically install source + binary + merged .env and restart systemd service
           ssh -i ~/.ssh/deploy_key -p "${PORT_ARG}" -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" bash -s <<EOF
           set -euo pipefail
           sudo mkdir -p "${REMOTE_DIR}/target/release" /opt/fabushi/data /opt/fabushi/logs
           sudo rsync -a --exclude 'target/' --exclude '.env' /tmp/gpui-server-sync/ "${REMOTE_DIR}/"
           sudo mv /tmp/gpui_telegram_server.new "${REMOTE_DIR}/target/release/gpui_telegram_server"
           sudo chmod 755 "${REMOTE_DIR}/target/release/gpui_telegram_server"
+
+          sudo python3 - "${REMOTE_DIR}/.env" <<'PYEOF'
+          import os, sys
+
+          target = sys.argv[1]
+          merged = {}
+          order = []
+
+          def load_file(path, allowed_prefixes=None):
+              if not os.path.isfile(path):
+                  return
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  for raw in f:
+                      line = raw.strip()
+                      if not line or line.startswith("#") or "=" not in line:
+                          continue
+                      if line.startswith("export "):
+                          line = line[7:].strip()
+                      k, v = line.split("=", 1)
+                      k = k.strip()
+                      if not k:
+                          continue
+                      if allowed_prefixes and not any(k.startswith(p) for p in allowed_prefixes):
+                          continue
+                      if k not in merged:
+                          order.append(k)
+                      if v.strip() or k not in merged:
+                          merged[k] = v
+
+          llm_prefixes = (
+              "DEEPSEEK_", "OPENAI_", "ANTHROPIC_", "OPENROUTER_",
+              "NOUS_", "HERMES_", "DACHENG_", "CODEX_"
+          )
+          load_file(target)
+          for p in ("/opt/dacheng-ai/.env", "/opt/fabushi/.env", "/opt/fabushi/ai-backend/.env"):
+              load_file(p, allowed_prefixes=llm_prefixes)
+          load_file("/tmp/gpui_ai_backend.env.upload", allowed_prefixes=llm_prefixes)
+          load_file("/tmp/gpui_backend.env.upload")
+
+          if merged:
+              tmp = target + ".tmp"
+              with open(tmp, "w", encoding="utf-8") as out:
+                  for k in order:
+                      out.write(f"{k}={merged[k]}\n")
+              os.chmod(tmp, 0o600)
+              os.replace(tmp, target)
+          PYEOF
+          rm -f /tmp/gpui_backend.env.upload /tmp/gpui_ai_backend.env.upload
+
           sudo chown -R ubuntu:ubuntu "${REMOTE_DIR}" /opt/fabushi/data /opt/fabushi/logs || true
           rm -rf /tmp/gpui-server-sync
 

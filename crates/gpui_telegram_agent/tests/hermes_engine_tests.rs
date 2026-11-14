@@ -1175,3 +1175,55 @@ async fn test_api_modes_fallback_moa_commands_trajectory_and_acp_runner() {
         .any(|ev| matches!(ev, AgentTurnOutput::FinalResponse { text } if text.contains("ACP gateway intact"))));
     let _ = sse_srv.join();
 }
+
+#[tokio::test]
+async fn test_bot_display_name_override_and_deepseek_wire_model_normalization() {
+    use gpui_telegram_agent::hermes::providers::normalize_wire_model_for_provider;
+
+    assert_eq!(
+        normalize_wire_model_for_provider("deepseek", "https://api.deepseek.com/v1", "deepseek-flash"),
+        "deepseek-chat"
+    );
+    assert_eq!(
+        normalize_wire_model_for_provider(
+            "dacheng_cloud",
+            "https://ai.ombhrum.com/codex-deepseek/v1",
+            "hermes-local-v1"
+        ),
+        "deepseek-chat"
+    );
+    assert_eq!(
+        normalize_wire_model_for_provider("deepseek", "https://api.deepseek.com/v1", "deepseek-r1"),
+        "deepseek-reasoner"
+    );
+
+    let dir = TempDir::new().expect("temp dir");
+    let engine = HermesEngine::open(dir.path(), dir.path()).expect("open engine");
+    let req = HermesTurnRequest::new("你可以做什么")
+        .with_chat_bot(42, "595183")
+        .with_bot_name("1")
+        .with_system_prompt(
+            "Your name is 1 (@1_bot). Reply naturally and helpfully in the user's language.",
+        );
+    let outcome = engine.run_turn(req).await.expect("run turn");
+    assert!(
+        outcome.response_text.contains('1'),
+        "response should address bot by display name '1': {}",
+        outcome.response_text
+    );
+    assert!(
+        !outcome.response_text.contains("595183"),
+        "response must not leak numeric bot_id: {}",
+        outcome.response_text
+    );
+    assert!(
+        !outcome.response_text.contains("Received:"),
+        "response must not emit raw debug echo: {}",
+        outcome.response_text
+    );
+    assert!(
+        !outcome.response_text.contains("Configure an upstream API key"),
+        "response must not emit internal upstream API key setup banner: {}",
+        outcome.response_text
+    );
+}

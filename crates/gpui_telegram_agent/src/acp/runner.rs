@@ -838,6 +838,7 @@ impl AcpRunner {
             session_id: (!input.session_id.trim().is_empty()).then(|| input.session_id.clone()),
             chat_id: None,
             bot_id: None,
+            bot_name: None,
             user_id: None,
             source: "acp".to_string(),
             prompt: input.prompt.clone(),

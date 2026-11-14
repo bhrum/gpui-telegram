@@ -121,6 +121,29 @@ impl AppState {
             }),
         );
 
+        if !cfg!(test)
+            && !config.is_in_memory()
+            && std::env::var("GPUI_OFFLINE_TEST").is_err()
+            && std::env::var("HERMES_ENABLE_PUBLIC_CLOUD_FALLBACK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            && hermes.providers().active_info().0 == "local_hermes"
+        {
+            let mut cloud_cfg =
+                gpui_telegram_agent::hermes::providers::ProviderConfig::openai_compatible(
+                    "dacheng_cloud",
+                    "Dacheng Cloud DeepSeek",
+                    "https://ai.ombhrum.com/codex-deepseek/v1",
+                    "deepseek-chat",
+                    "public",
+                );
+            cloud_cfg.api_mode = gpui_telegram_agent::hermes::providers::ApiMode::CodexResponses;
+            hermes.providers().register_provider(cloud_cfg);
+            let _ = hermes
+                .providers()
+                .set_active("dacheng_cloud", Some("deepseek-chat"));
+        }
+
         let acp_runner = Arc::new(
             gpui_telegram_agent::acp::AcpRunner::new(&config.default_agent_model)
                 .with_hermes_engine(hermes.clone()),
@@ -2499,6 +2522,7 @@ pub(crate) async fn maybe_trigger_bot_reply(
     let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(state, bot_user_id);
     let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(text)
         .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
+    req.bot_name = crate::routes::hermes::resolve_bot_display_name(state, bot_user_id);
     req.user_id = Some(sender_id.0.to_string());
     req.source = "telegram_bot".to_string();
     req.model = bot_model;
@@ -3964,6 +3988,7 @@ async fn chats_agent_runs(
     let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(&state, bot_user_id);
     let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&prompt)
         .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
+    req.bot_name = crate::routes::hermes::resolve_bot_display_name(&state, bot_user_id);
     if let Some(sid) = payload
         .get("session_id")
         .and_then(|v| v.as_str())

@@ -75,6 +75,8 @@ pub struct ChatAppearancePreferences {
     pub suggest_stickers_by_emoji: bool,
     pub loop_animated_stickers: bool,
     pub blur_wallpaper: bool,
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 impl Default for ChatAppearancePreferences {
@@ -88,6 +90,7 @@ impl Default for ChatAppearancePreferences {
             suggest_stickers_by_emoji: true,
             loop_animated_stickers: true,
             blur_wallpaper: false,
+            sidebar_collapsed: false,
         }
     }
 }

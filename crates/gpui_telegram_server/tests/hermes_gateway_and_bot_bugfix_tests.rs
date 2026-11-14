@@ -852,3 +852,54 @@ async fn test_hermes_gateway_http_routes_openai_compat_and_acp_rpc() {
     assert_eq!(st, StatusCode::OK);
     assert!(acp_tools["result"]["tools"].as_array().unwrap().len() >= 40);
 }
+
+#[tokio::test]
+async fn test_numeric_named_bot_reply_uses_display_name_without_debug_banner() {
+    let dir = TempDirGuard::new("hermes_bot_name_clean");
+    let (_state, app) = open_durable(&dir);
+    let (_uid, tok) = reg(&app, "alice_clean_bot").await;
+
+    let (st, created_bot) = api(
+        &app,
+        Method::POST,
+        "/api/v1/contacts/add",
+        Some(&tok),
+        Some(json!({
+            "first_name": "1",
+            "username": "1_bot",
+            "is_bot": true
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let bot_uid = created_bot["user_id"].as_u64().unwrap();
+    let bot_chat_id = created_bot["chat_id"].as_i64().unwrap();
+    let bot_uid_str = bot_uid.to_string();
+
+    for (idx, prompt) in ["你好", "你可以做什么", "1"].iter().enumerate() {
+        let (st, _) = api(
+            &app,
+            Method::POST,
+            &format!("/api/v1/chats/{bot_chat_id}/messages"),
+            Some(&tok),
+            Some(json!({ "text": prompt, "client_nonce": 500 + idx })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+    }
+
+    let msgs = poll_chat_messages_until(&app, &tok, bot_chat_id, 7).await;
+    let bot_replies: Vec<&str> = msgs
+        .iter()
+        .filter(|m| m["is_bot_sender"] == true && m["sender_id"].as_u64() == Some(bot_uid))
+        .filter_map(|m| m["text"].as_str())
+        .skip(1) // skip initial welcome message
+        .collect();
+    assert_eq!(bot_replies.len(), 3, "expected 3 bot replies, got {bot_replies:?}");
+    for reply in bot_replies {
+        assert!(!reply.contains(&bot_uid_str), "reply leaked numeric user id: {reply}");
+        assert!(!reply.contains("You are 1 (@1_bot)"), "reply leaked English system prompt: {reply}");
+        assert!(!reply.contains("Received:"), "reply leaked debug echo: {reply}");
+        assert!(!reply.contains("Configure an upstream API key"), "reply leaked API key tip: {reply}");
+    }
+}

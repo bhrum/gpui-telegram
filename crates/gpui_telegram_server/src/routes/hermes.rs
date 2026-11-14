@@ -367,6 +367,19 @@ fn provider_to_dto(
     })
 }
 
+pub(crate) fn resolve_bot_display_name(state: &AppState, bot_user_id: UserId) -> Option<String> {
+    let user = state.db.get_user(bot_user_id).ok().flatten()?;
+    let first = user.first_name.trim();
+    if !first.is_empty() {
+        return Some(first.to_string());
+    }
+    user.username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
 pub(crate) fn load_bot_persona_config(
     state: &AppState,
     bot_user_id: UserId,
@@ -413,7 +426,16 @@ pub(crate) fn load_bot_persona_config(
 
     if system_prompt.is_none() {
         if let Some(u) = &user {
-            let mut identity = format!("You are {} (@{}).", u.first_name, u.username.as_deref().unwrap_or("bot"));
+            let display_name = if u.first_name.trim().is_empty() {
+                u.username.as_deref().unwrap_or("Assistant")
+            } else {
+                u.first_name.trim()
+            };
+            let mut identity = format!(
+                "Your name is {} (@{}). Reply naturally and helpfully in the user's language, and never refer to yourself by numeric user ID.",
+                display_name,
+                u.username.as_deref().unwrap_or("bot")
+            );
             if let Some(bio) = u.bio.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 identity.push(' ');
                 identity.push_str(bio);
@@ -780,8 +802,18 @@ pub async fn hermes_turns_create(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
 
+    let mut bot_name: Option<String> = payload
+        .get("bot_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
     if let Some(bid_num) = bot_id.as_deref().and_then(|b| b.parse::<u64>().ok()) {
         let (bot_sp, bot_model, _) = load_bot_persona_config(&state, UserId(bid_num));
+        if bot_name.is_none() {
+            bot_name = resolve_bot_display_name(&state, UserId(bid_num));
+        }
         if system_prompt.is_none() {
             system_prompt = bot_sp;
         }
@@ -804,6 +836,7 @@ pub async fn hermes_turns_create(
         session_id,
         chat_id,
         bot_id,
+        bot_name,
         user_id: Some(auth.user_id.0.to_string()),
         source: "api".to_string(),
         prompt,
@@ -2699,6 +2732,7 @@ pub async fn hermes_providers_put(
         }
     }
 
+    state.hermes.persist_providers_state();
     let snap_after = state.hermes.providers().snapshot();
     match snap_after.providers.get(&provider_id) {
         Some(updated) => (
@@ -3069,6 +3103,7 @@ pub async fn openai_chat_completions(
         session_id: Some(session_id),
         chat_id,
         bot_id: None,
+        bot_name: None,
         user_id: caller_uid.map(|u| u.0.to_string()),
         source: "openai_gateway".to_string(),
         prompt,

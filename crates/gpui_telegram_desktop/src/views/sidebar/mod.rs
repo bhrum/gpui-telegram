@@ -46,4 +46,5 @@ pub mod dialogs_top_bar_suggestion_test;
 pub use dialogs_top_bar_suggestion_test::DialogsTopBarSuggestionTest;
 pub mod dialogs_widget;
 pub use dialogs_widget::DialogsWidget;
+pub mod gemini_unified_sidebar;
 pub mod sidebar_search_view;

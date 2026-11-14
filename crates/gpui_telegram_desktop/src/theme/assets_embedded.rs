@@ -9,7 +9,7 @@ macro_rules! define_icons {
         }
 
         impl IconName {
-            /// All 62 icon variants in canonical registration order.
+            /// All 64 icon variants in canonical registration order.
             pub const ALL: &'static [IconName] = &[
                 $(IconName::$variant,)*
             ];
@@ -75,6 +75,8 @@ define_icons! {
     PhoneCall => "phone_call.svg",
     VideoCall => "video_call.svg",
     SidebarPanel => "sidebar_panel.svg",
+    SidebarLeftOpen => "sidebar_left_open.svg",
+    SidebarLeftClose => "sidebar_left_close.svg",
     MoreVertical => "more_vertical.svg",
     Play => "play.svg",
     Pause => "pause.svg",

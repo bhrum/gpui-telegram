@@ -134,9 +134,14 @@ fn build_blocks_from_explicit(text: &str, explicit: &[RichEntity]) -> Vec<RichBl
     let mut spoiler_id = 0usize;
     for (s, e, is_pre, lang, collapsed) in special {
         if s > cursor {
-            blocks.push(RichBlock::Paragraph(slice_inline_with_entities(
-                text, cursor, s, explicit, &mut spoiler_id,
-            )));
+            push_explicit_paragraph_lines(
+                text,
+                cursor,
+                s,
+                explicit,
+                &mut spoiler_id,
+                &mut blocks,
+            );
         }
         if is_pre {
             blocks.push(RichBlock::PreCode {
@@ -154,12 +159,59 @@ fn build_blocks_from_explicit(text: &str, explicit: &[RichEntity]) -> Vec<RichBl
         }
         cursor = e;
     }
-    if cursor < text.len() || blocks.is_empty() {
-        blocks.push(RichBlock::Paragraph(slice_inline_with_entities(
-            text, cursor, text.len(), explicit, &mut spoiler_id,
-        )));
+    if cursor < text.len() {
+        push_explicit_paragraph_lines(
+            text,
+            cursor,
+            text.len(),
+            explicit,
+            &mut spoiler_id,
+            &mut blocks,
+        );
+    }
+    if blocks.is_empty() {
+        blocks.push(RichBlock::Paragraph(Vec::new()));
     }
     blocks
+}
+
+fn push_explicit_paragraph_lines(
+    text: &str,
+    range_start: usize,
+    range_end: usize,
+    explicit: &[RichEntity],
+    spoiler_id: &mut usize,
+    blocks: &mut Vec<RichBlock>,
+) {
+    if range_start >= range_end {
+        return;
+    }
+    let slice = &text[range_start..range_end];
+    let mut rel = 0usize;
+    for raw_line in slice.split('\n') {
+        let line_byte_len = raw_line.len();
+        let trimmed_line = raw_line.trim_end_matches('\r');
+        let abs_start = range_start + rel;
+        let abs_end = abs_start + trimmed_line.len();
+        if trimmed_line.is_empty() {
+            if abs_start < range_end {
+                let prev_is_empty =
+                    matches!(blocks.last(), Some(RichBlock::Paragraph(s)) if s.is_empty());
+                if !blocks.is_empty() && !prev_is_empty {
+                    blocks.push(RichBlock::Paragraph(Vec::new()));
+                }
+            }
+        } else {
+            blocks.push(RichBlock::Paragraph(slice_inline_with_entities(
+                text,
+                abs_start,
+                abs_end,
+                explicit,
+                spoiler_id,
+            )));
+        }
+        rel += line_byte_len + 1;
+    }
 }
 
 fn slice_inline_with_entities(
@@ -243,25 +295,15 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
     let mut i = 0usize;
     let mut quote_id = 0usize;
     let mut spoiler_id = 0usize;
-    let mut para_buf: Vec<String> = Vec::new();
-
-    let flush_para = |buf: &mut Vec<String>, out: &mut Vec<RichBlock>, sp_id: &mut usize| {
-        if !buf.is_empty() {
-            let joined = buf.join("\n");
-            buf.clear();
-            out.push(RichBlock::Paragraph(parse_inline_markdown(&joined, sp_id)));
-        }
-    };
 
     while i < lines.len() {
-        let line = lines[i];
+        let line = lines[i].trim_end_matches('\r');
         if let Some(rest) = line.strip_prefix("```") {
-            flush_para(&mut para_buf, &mut blocks, &mut spoiler_id);
             let language = rest.trim().to_string();
             let mut code_lines = Vec::new();
             i += 1;
-            while i < lines.len() && !lines[i].starts_with("```") {
-                code_lines.push(lines[i]);
+            while i < lines.len() && !lines[i].trim_end_matches('\r').starts_with("```") {
+                code_lines.push(lines[i].trim_end_matches('\r'));
                 i += 1;
             }
             if i < lines.len() {
@@ -274,12 +316,15 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
             continue;
         }
         if line.starts_with("> ") || line == ">" {
-            flush_para(&mut para_buf, &mut blocks, &mut spoiler_id);
             let mut q_lines = Vec::new();
-            while i < lines.len() && (lines[i].starts_with("> ") || lines[i] == ">") {
-                let cleaned = lines[i].strip_prefix("> ").unwrap_or("").to_string();
-                q_lines.push(cleaned);
-                i += 1;
+            while i < lines.len() {
+                let q = lines[i].trim_end_matches('\r');
+                if q.starts_with("> ") || q == ">" {
+                    q_lines.push(q.strip_prefix("> ").unwrap_or("").to_string());
+                    i += 1;
+                } else {
+                    break;
+                }
             }
             let collapsed_default = q_lines.len() > 3;
             blocks.push(RichBlock::Blockquote {
@@ -290,10 +335,20 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
             quote_id += 1;
             continue;
         }
-        para_buf.push(line.to_string());
+        if line.trim().is_empty() {
+            let prev_is_empty =
+                matches!(blocks.last(), Some(RichBlock::Paragraph(s)) if s.is_empty());
+            if !blocks.is_empty() && !prev_is_empty {
+                blocks.push(RichBlock::Paragraph(Vec::new()));
+            }
+        } else {
+            blocks.push(RichBlock::Paragraph(parse_inline_markdown(
+                line,
+                &mut spoiler_id,
+            )));
+        }
         i += 1;
     }
-    flush_para(&mut para_buf, &mut blocks, &mut spoiler_id);
     if blocks.is_empty() {
         blocks.push(RichBlock::Paragraph(Vec::new()));
     }

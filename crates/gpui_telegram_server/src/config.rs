@@ -33,6 +33,55 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// Loads environment variables from standard `.env` files if not already present
+    /// in the process environment. Called from `main.rs` (kept separate from `from_env`
+    /// so unit tests stay isolated).
+    pub fn load_dotenv_files() {
+        let candidates = [
+            ".env",
+            "inherited/fabushi-backend/ai-backend/.env",
+            "/opt/fabushi/gpui-server/.env",
+            "/opt/fabushi/ai-backend/.env",
+            "/opt/fabushi/.env",
+            "/opt/dacheng-ai/.env",
+        ];
+        for path in candidates {
+            let Ok(raw) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for line in raw.lines() {
+                let mut trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("export ") {
+                    trimmed = rest.trim_start();
+                }
+                let Some((k, v)) = trimmed.split_once('=') else {
+                    continue;
+                };
+                let key = k.trim();
+                if key.is_empty() {
+                    continue;
+                }
+                let mut val = v.trim();
+                if (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
+                    || (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+                {
+                    val = &val[1..val.len() - 1];
+                }
+                let already_set = std::env::var(key)
+                    .map(|existing| !existing.trim().is_empty())
+                    .unwrap_or(false);
+                if !already_set {
+                    unsafe {
+                        std::env::set_var(key, val);
+                    }
+                }
+            }
+        }
+    }
+
     /// Read server configuration from environment variables with sensible defaults.
     /// When DATABASE_URL is unset, defaults to physical storage "sqlite://data/gpui_telegram.db"
     /// for production and standalone daemon execution.

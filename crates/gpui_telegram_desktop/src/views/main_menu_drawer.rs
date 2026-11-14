@@ -34,6 +34,7 @@ pub enum MainMenuCommand {
     ExportData,
     ShortcutsLegend,
     AboutTelegram,
+    Logout,
 }
 
 pub struct MainMenuDrawer {
@@ -251,6 +252,12 @@ impl Render for MainMenuDrawer {
                 zh: "键盘快捷键",
                 en: "Keyboard Shortcuts",
                 cmd: MainMenuCommand::ShortcutsLegend,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::BackArrow,
+                zh: "退出登录",
+                en: "Log Out",
+                cmd: MainMenuCommand::Logout,
             },
         ];
 

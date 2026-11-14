@@ -280,6 +280,7 @@ pub struct AppShell {
     pub active_talk_session_id: Option<String>,
     pub last_viewport_width: f32,
     pub last_sidebar_selection_revision: u64,
+    pub last_sidebar_collapse_revision: u64,
     pub pending_outgoing_nonces: HashMap<u64, u64>,
     pub resolved_outgoing_nonces: HashMap<u64, u64>,
 }
@@ -421,9 +422,15 @@ impl AppShell {
         let mut local_storage = Localstorage::new(&app_dir);
         let _ = local_storage.start();
         let preferences = AppPreferences::load(&app_dir, &local_storage);
+        let initial_sidebar_collapsed = preferences.appearance.sidebar_collapsed;
         let is_chinese_locale = preferences.localization.language_code.starts_with("zh");
         let (theme_mode, init_palette) = compute_shell_palette(&preferences, None, None, 12, None);
         let init_lang = if is_chinese_locale { "zh-CN" } else { "en" };
+
+        sidebar.update(cx, |sb, sb_cx| {
+            sb.attach_nav_rail(nav_rail.clone(), sb_cx);
+            sb.set_collapsed(initial_sidebar_collapsed);
+        });
 
         let main_menu_drawer = cx.new(|_| {
             let mut m = MainMenuDrawer::new(Vec::new(), 0);
@@ -482,6 +489,7 @@ impl AppShell {
             if theme_req {
                 let next = toggle_desktop_theme_mode(shell.theme_mode);
                 shell.apply_theme_selection(next, None, None, cx);
+                shell.sidebar.update(cx, |_, sb_cx| sb_cx.notify());
             }
             if let Some(folder_title) = folder_req {
                 shell.active_panel = ActiveWorkspacePanel::Chats;
@@ -525,6 +533,8 @@ impl AppShell {
                 search_seq,
                 open_menu,
                 context_action,
+                is_collapsed,
+                collapse_rev,
             ) = sb.update(cx, |s, _| {
                 (
                     s.selected_dialog().cloned(),
@@ -539,8 +549,14 @@ impl AppShell {
                     s.search_request_seq,
                     s.take_open_main_menu_requested(),
                     s.take_pending_context_action(),
+                    s.is_collapsed,
+                    s.collapse_state_revision,
                 )
             });
+            if collapse_rev != shell.last_sidebar_collapse_revision {
+                shell.last_sidebar_collapse_revision = collapse_rev;
+                shell.update_preferences(cx, |p| p.appearance.sidebar_collapsed = is_collapsed);
+            }
             if open_menu {
                 shell.main_menu_drawer.update(cx, |d, _| d.toggle());
             }
@@ -736,6 +752,7 @@ impl AppShell {
             active_talk_session_id: None,
             last_viewport_width: 1280.0,
             last_sidebar_selection_revision: 0,
+            last_sidebar_collapse_revision: 0,
             pending_outgoing_nonces: HashMap::new(),
             resolved_outgoing_nonces: HashMap::new(),
         };
@@ -3701,6 +3718,13 @@ impl AppShell {
                 self.set_inspector_open(next_open, cx);
                 true
             }
+            "b" | "\\" => {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.toggle_collapsed_from_user();
+                    sb_cx.notify();
+                });
+                true
+            }
             "e" => {
                 self.main_menu_drawer.update(cx, |d, d_cx| {
                     d.toggle();
@@ -4083,9 +4107,7 @@ impl Render for AppShell {
                     .w_full()
                     .min_h(px(0.0))
                     .flex()
-                    // 1. Left Primary Nav Rail (52px)
-                    .child(self.nav_rail.clone())
-                    // 2. Chat Sidebar (288px)
+                    // 1. Unified Gemini-style Collapsible Sidebar (64px collapsed / 288px expanded)
                     .child(self.sidebar.clone())
                     // 3. Main Stage + Composer Column (or Calls / TaskCenter / McpTools / Settings Panel)
                     .child(match self.active_panel {

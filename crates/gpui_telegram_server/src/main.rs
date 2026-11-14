@@ -6,6 +6,14 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
+    ServerConfig::load_dotenv_files();
+    if std::env::var("GPUI_OFFLINE_TEST").is_err()
+        && std::env::var("HERMES_ENABLE_PUBLIC_CLOUD_FALLBACK").is_err()
+    {
+        unsafe {
+            std::env::set_var("HERMES_ENABLE_PUBLIC_CLOUD_FALLBACK", "1");
+        }
+    }
 
     let config = ServerConfig::from_env();
     info!(

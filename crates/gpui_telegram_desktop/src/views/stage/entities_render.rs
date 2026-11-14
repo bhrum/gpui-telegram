@@ -33,7 +33,7 @@ pub fn render_rich_message_body<V: 'static>(
     on_action: impl Fn(&mut V, RichTextAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
     let blocks = parse_rich_blocks(text, explicit_entities);
-    let mut col = div().flex().flex_col().gap(px(6.0)).w_full();
+    let mut col = div().flex().flex_col().gap(px(2.0)).w_full();
 
     for (block_idx, block) in blocks.into_iter().enumerate() {
         match block {
@@ -62,6 +62,7 @@ pub fn render_rich_message_body<V: 'static>(
                         .flex()
                         .flex_col()
                         .w_full()
+                        .my(px(3.0))
                         .rounded(px(8.0))
                         .bg(rgb(palette.code_bg))
                         .border_1()
@@ -137,6 +138,7 @@ pub fn render_rich_message_body<V: 'static>(
                         .items_start()
                         .justify_between()
                         .w_full()
+                        .my(px(3.0))
                         .px(px(10.0))
                         .py(px(6.0))
                         .rounded(px(6.0))
@@ -171,6 +173,84 @@ pub fn render_rich_message_body<V: 'static>(
     col.into_any_element()
 }
 
+fn is_closing_punct(c: char) -> bool {
+    matches!(
+        c,
+        '。' | '，' | '、' | '；' | '：' | '？' | '！' | '）' | '》' | '】' | '」' | '』' | '”' | '’'
+            | '.' | ',' | ';' | ':' | '?' | '!' | ')' | ']' | '}' | '"' | '\''
+    )
+}
+
+fn is_cjk_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF
+    )
+}
+
+pub fn split_wrappable_inline_tokens(text: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c == '\r' || c == '\n' {
+            chars.next();
+            continue;
+        }
+        if is_cjk_char(c) {
+            chars.next();
+            if is_closing_punct(c) {
+                if let Some(prev) = tokens.last_mut() {
+                    prev.push(c);
+                    continue;
+                }
+            }
+            let mut tok = String::new();
+            tok.push(c);
+            while let Some(&next) = chars.peek() {
+                if is_closing_punct(next) {
+                    tok.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(tok);
+            continue;
+        }
+        if c == ' ' || c == '\t' {
+            chars.next();
+            if let Some(prev) = tokens.last_mut() {
+                prev.push(' ');
+            } else {
+                tokens.push(" ".to_string());
+            }
+            continue;
+        }
+        let mut run = String::new();
+        while let Some(&next) = chars.peek() {
+            if next == '\r' || next == '\n' || next == ' ' || next == '\t' || is_cjk_char(next) {
+                break;
+            }
+            run.push(next);
+            chars.next();
+        }
+        while matches!(chars.peek(), Some(&' ')) {
+            run.push(' ');
+            chars.next();
+        }
+        if run.chars().all(is_closing_punct) {
+            if let Some(prev) = tokens.last_mut() {
+                if !prev.ends_with(' ') {
+                    prev.push_str(&run);
+                    continue;
+                }
+            }
+        }
+        tokens.push(run);
+    }
+    tokens
+}
+
 fn render_inline_segments<V: 'static>(
     msg_id: u64,
     block_idx: usize,
@@ -181,6 +261,9 @@ fn render_inline_segments<V: 'static>(
     on_action: impl Fn(&mut V, RichTextAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
     let font_px = palette.font_size_px as f32;
+    if segs.is_empty() {
+        return div().w_full().h(px(8.0)).into_any_element();
+    }
     if segs.len() == 1 && !segs[0].flags.bold && !segs[0].flags.italic && !segs[0].flags.underline
         && !segs[0].flags.strike && !segs[0].flags.code && !segs[0].flags.spoiler
         && segs[0].flags.link_url.is_none() && segs[0].flags.mention.is_none()
@@ -195,7 +278,7 @@ fn render_inline_segments<V: 'static>(
             .into_any_element();
     }
 
-    let mut row = div().flex().flex_row().flex_wrap().items_baseline().w_full();
+    let mut row = div().flex().flex_row().flex_wrap().items_center().w_full();
     for (seg_idx, seg) in segs.into_iter().enumerate() {
         let f = &seg.flags;
         if f.spoiler {
@@ -284,8 +367,8 @@ fn render_inline_segments<V: 'static>(
             );
             continue;
         }
-        // Split long plain segments on spaces so flex_wrap wraps smoothly at word boundaries
-        for word in seg.text.split_inclusive(' ') {
+        // Split long plain segments cleanly so CJK and ASCII wrap without breaking baselines
+        for word in split_wrappable_inline_tokens(&seg.text) {
             row = row.child(
                 div()
                     .text_size(px(font_px))
@@ -295,7 +378,7 @@ fn render_inline_segments<V: 'static>(
                     .when(f.italic, |el| el.italic())
                     .when(f.underline, |el| el.underline())
                     .when(f.strike, |el| el.line_through())
-                    .child(word.to_string()),
+                    .child(word),
             );
         }
     }

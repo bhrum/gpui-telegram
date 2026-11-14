@@ -522,3 +522,67 @@ fn test_desktop_bot_call_inline_routing_and_zero_legacy_persona_contract() {
     assert!(calls_rtc_src.contains("pub fn current_peer_user_id"));
     assert!(calls_rtc_src.contains("hermes_call_invite") || stage_actions_src.contains("hermes_call_invite"));
 }
+
+#[test]
+fn test_rich_text_multiline_and_cjk_inline_wrapping_regression() {
+    use gpui_telegram_desktop::views::stage::{
+        parse_rich_blocks, split_wrappable_inline_tokens, EntityKind, RichBlock, RichEntity,
+    };
+
+    let sample = "你好！我是 1 (@1_bot).\n\n你可以做什么\n使用 `read file <path>` 查看文件";
+    let blocks = parse_rich_blocks(sample, &[]);
+
+    assert!(blocks.len() >= 4, "expected line-per-block paragraphs, got {blocks:?}");
+    for block in &blocks {
+        if let RichBlock::Paragraph(segs) = block {
+            for seg in segs {
+                assert!(
+                    !seg.text.contains('\n') && !seg.text.contains('\r'),
+                    "paragraph segment must not contain embedded newlines: {:?}",
+                    seg.text
+                );
+            }
+        }
+    }
+
+    let first_line = match &blocks[0] {
+        RichBlock::Paragraph(segs) => segs,
+        other => panic!("expected Paragraph first block, got {other:?}"),
+    };
+    assert!(
+        first_line.iter().any(|s| s.flags.mention.as_deref() == Some("@1_bot")),
+        "expected @1_bot mention in first paragraph line: {first_line:?}"
+    );
+    assert!(
+        first_line.last().map(|s| s.text.as_str()) == Some(")."),
+        "expected trailing ').' to stay on first paragraph line: {first_line:?}"
+    );
+
+    // Explicit UTF-16 entity parsing must also split lines without embedded newlines
+    let explicit_sample = "第一行 (@1_bot).\n\n第二行 你可以做什么";
+    let utf16_len = explicit_sample.encode_utf16().count();
+    let mention_utf16_offset = "第一行 (".encode_utf16().count();
+    let explicit_entities = vec![RichEntity {
+        offset_utf16: mention_utf16_offset,
+        length_utf16: "@1_bot".encode_utf16().count(),
+        kind: EntityKind::Mention,
+    }];
+    assert!(utf16_len > mention_utf16_offset);
+    let explicit_blocks = parse_rich_blocks(explicit_sample, &explicit_entities);
+    assert_eq!(explicit_blocks.len(), 3, "expected 2 content lines + 1 blank spacer, got {explicit_blocks:?}");
+    for block in &explicit_blocks {
+        if let RichBlock::Paragraph(segs) = block {
+            for seg in segs {
+                assert!(!seg.text.contains('\n') && !seg.text.contains('\r'));
+            }
+        }
+    }
+
+    // CJK wrapping keeps closing punctuation glued to preceding token and strips newlines
+    let tokens = split_wrappable_inline_tokens("我可以帮你执行。\n(Session turns: 3)");
+    assert!(tokens.iter().all(|t| !t.contains('\n') && !t.contains('\r')));
+    assert!(
+        tokens.iter().any(|t| t == "行。"),
+        "closing punctuation should attach to preceding CJK character: {tokens:?}"
+    );
+}

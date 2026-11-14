@@ -106,6 +106,7 @@ impl AppShell {
             }
             MainMenuCommand::ShortcutsLegend => self.open_modal_dialog(tr_str(lang, "键盘快捷键", "Keyboard Shortcuts"), ModalDialogKind::ShortcutsLegend, 460.0, 440.0, cx),
             MainMenuCommand::AboutTelegram => self.open_modal_dialog("Telegram Desktop", ModalDialogKind::AboutTelegram, 420.0, 320.0, cx),
+            MainMenuCommand::Logout => self.logout(cx),
         }
         cx.notify();
     }

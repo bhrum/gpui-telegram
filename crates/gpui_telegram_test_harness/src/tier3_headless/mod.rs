@@ -22,10 +22,10 @@ use gpui_telegram_desktop::views::AppShell;
 pub struct HeadlessTranscriptDriver;
 
 impl HeadlessTranscriptDriver {
-    /// Verifies all 62 embedded SVG icons and localization packs load through `AssetSource`.
+    /// Verifies all 64 embedded SVG icons and localization packs load through `AssetSource`.
     pub fn verify_all_embedded_assets() {
         let src = TelegramAssetSource::new();
-        assert_eq!(IconName::ALL.len(), 62, "Expected 62 canonical SVG icons");
+        assert_eq!(IconName::ALL.len(), 64, "Expected 64 canonical SVG icons");
         for &icon in IconName::ALL {
             let loaded = src
                 .load(icon.path())
@@ -124,6 +124,35 @@ impl HeadlessTranscriptDriver {
 
                     s.apply_theme_selection(TdesktopThemeMode::Night, None, None, cx);
                     assert_eq!(s.theme_mode, TdesktopThemeMode::Night);
+
+                    assert!(
+                        s.sidebar.read(cx).nav_rail.is_some(),
+                        "unified sidebar should be attached to NavRail in AppShell"
+                    );
+                    let was_collapsed = s.sidebar.read(cx).is_collapsed;
+                    s.sidebar.update(cx, |sb, sb_cx| {
+                        sb.toggle_collapsed_from_user();
+                        sb_cx.notify();
+                    });
+                    assert_ne!(s.sidebar.read(cx).is_collapsed, was_collapsed);
+                    assert!(
+                        s.sidebar.read(cx).is_collapsed,
+                        "toggling unified sidebar should collapse it"
+                    );
+                    assert!(
+                        (s.sidebar.read(cx).effective_width() - 64.0).abs() < f32::EPSILON
+                    );
+                    s.sidebar.update(cx, |sb, sb_cx| {
+                        sb.toggle_collapsed_from_user();
+                        sb_cx.notify();
+                    });
+                    assert!(
+                        !s.sidebar.read(cx).is_collapsed,
+                        "toggling unified sidebar again should expand it"
+                    );
+                    assert!(
+                        (s.sidebar.read(cx).effective_width() - 288.0).abs() < f32::EPSILON
+                    );
 
                     s.navigate_settings_to(SettingsSectionType::Chat, cx);
                     assert_eq!(s.active_panel, ActiveWorkspacePanel::Settings);

@@ -116,6 +116,8 @@ pub struct HermesTurnRequest {
     pub session_id: Option<String>,
     pub chat_id: Option<i64>,
     pub bot_id: Option<String>,
+    #[serde(default)]
+    pub bot_name: Option<String>,
     pub user_id: Option<String>,
     pub source: String,
     pub prompt: String,
@@ -143,6 +145,11 @@ impl HermesTurnRequest {
     pub fn with_chat_bot(mut self, chat_id: i64, bot_id: impl Into<String>) -> Self {
         self.chat_id = Some(chat_id);
         self.bot_id = Some(bot_id.into());
+        self
+    }
+
+    pub fn with_bot_name(mut self, bot_name: impl Into<String>) -> Self {
+        self.bot_name = Some(bot_name.into());
         self
     }
 
@@ -1169,6 +1176,7 @@ impl HermesStateBridge for ToolContextBridge {
                 session_id: Some(child_session_id.clone()),
                 chat_id: self.chat_id,
                 bot_id: None,
+                bot_name: None,
                 user_id: Some(self.default_user_id.clone()),
                 source: "subagent".to_string(),
                 prompt: req.prompt.clone(),
@@ -1522,6 +1530,7 @@ impl CommandHost for EngineCommandHost<'_> {
                 ..Default::default()
             },
         );
+        self.engine.persist_providers_state();
         Ok(format!("{prov}/{resolved_model}"))
     }
 
@@ -1557,6 +1566,7 @@ impl CommandHost for EngineCommandHost<'_> {
                 ..Default::default()
             },
         );
+        self.engine.persist_providers_state();
         Ok(format!("Switched active provider to `{prov}` (model `{model}`, mode `{}`).", mode.as_str()))
     }
 
@@ -1574,6 +1584,7 @@ impl CommandHost for EngineCommandHost<'_> {
                 ..Default::default()
             },
         );
+        self.engine.persist_providers_state();
         Ok(parsed.as_str().to_string())
     }
 
@@ -2741,6 +2752,24 @@ impl HermesEngine {
         let honcho = HonchoDialectics::with_store(store.clone());
 
         let providers = ProviderRouter::from_env();
+        if providers.active_info().0 == "local_hermes" {
+            if let Ok(Some(raw)) = store.kv_get("runtime", "providers_state") {
+                if let Ok(saved) =
+                    serde_json::from_str::<crate::hermes::providers::ProviderRouterState>(&raw)
+                {
+                    for (_id, cfg) in saved.providers {
+                        if cfg.id != "local_hermes" && cfg.enabled {
+                            providers.register_provider(cfg);
+                        }
+                    }
+                    if saved.active_provider_id != "local_hermes" {
+                        let model_opt = (!saved.active_model.trim().is_empty())
+                            .then_some(saved.active_model.as_str());
+                        let _ = providers.set_active(&saved.active_provider_id, model_opt);
+                    }
+                }
+            }
+        }
         if config.default_model.trim() != ""
             && config.default_model != "hermes-local-v1"
             && providers.active_info().1 == "hermes-local-v1"
@@ -2816,6 +2845,13 @@ impl HermesEngine {
 
     pub fn providers(&self) -> &ProviderRouter {
         &self.inner.providers
+    }
+
+    pub fn persist_providers_state(&self) {
+        let snap = self.inner.providers.snapshot();
+        if let Ok(raw) = serde_json::to_string(&snap) {
+            let _ = self.inner.store.kv_set("runtime", "providers_state", &raw);
+        }
     }
 
     pub fn security(&self) -> &Arc<RwLock<SecurityEngine>> {
@@ -4018,10 +4054,11 @@ impl HermesEngine {
             .system_prompt
             .as_deref()
             .or(active_settings.system_prompt_override.as_deref());
-        let assembled = self.assemble_prompt_for_session(
+        let assembled = self.assemble_prompt_for_session_with_name(
             session_id,
             req.chat_id.or(sess.chat_id),
             req.bot_id.as_deref().or(sess.bot_id.as_deref()),
+            req.bot_name.as_deref(),
             persona_override,
             &prefetch_hints,
         );
@@ -4089,6 +4126,7 @@ impl HermesEngine {
             session_id,
             persona_override,
             req.bot_id.as_deref().or(sess.bot_id.as_deref()),
+            req.bot_name.as_deref(),
         );
         let max_iters = req
             .max_iterations
@@ -4376,6 +4414,25 @@ impl HermesEngine {
         persona_override: Option<&str>,
         ephemeral_prefetch: &[String],
     ) -> AssembledPrompt {
+        self.assemble_prompt_for_session_with_name(
+            session_id,
+            chat_id,
+            bot_id,
+            None,
+            persona_override,
+            ephemeral_prefetch,
+        )
+    }
+
+    pub fn assemble_prompt_for_session_with_name(
+        &self,
+        session_id: &str,
+        chat_id: Option<i64>,
+        bot_id: Option<&str>,
+        bot_name_hint: Option<&str>,
+        persona_override: Option<&str>,
+        ephemeral_prefetch: &[String],
+    ) -> AssembledPrompt {
         let ws_ctx: Option<DiscoveredWorkspaceContext> =
             WorkspaceContextDiscovery::discover(&self.inner.config.workspace_root, None).ok();
         let mem_snap = self
@@ -4384,7 +4441,7 @@ impl HermesEngine {
             .get_or_capture_session_snapshot(session_id)
             .ok();
 
-        let soul = if let Some(override_txt) = persona_override.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut soul = if let Some(override_txt) = persona_override.map(str::trim).filter(|s| !s.is_empty()) {
             SoulProfile::parse(override_txt)
         } else {
             let stored = self.inner.memory.read_soul().ok();
@@ -4399,6 +4456,11 @@ impl HermesEngine {
                 (None, None) => SoulProfile::default(),
             }
         };
+        if let Some(hint) = bot_name_hint.map(str::trim).filter(|s| !s.is_empty()) {
+            if soul.name == "Hermes" || soul.name.trim().is_empty() {
+                soul.name = hint.to_string();
+            }
+        }
 
         let user_id = chat_id
             .map(|c| format!("chat_{c}"))
@@ -4454,22 +4516,39 @@ impl HermesEngine {
         session_id: &str,
         persona_override: Option<&str>,
         bot_id: Option<&str>,
+        bot_name_hint: Option<&str>,
     ) -> Value {
-        let soul = if let Some(ov) = persona_override.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut soul = if let Some(ov) = persona_override.map(str::trim).filter(|s| !s.is_empty()) {
             SoulProfile::parse(ov)
         } else {
             self.inner.memory.read_soul().unwrap_or_default()
         };
+        if let Some(hint) = bot_name_hint.map(str::trim).filter(|s| !s.is_empty()) {
+            if soul.name == "Hermes" || soul.name.trim().is_empty() {
+                soul.name = hint.to_string();
+            }
+        }
         let snap = self
             .inner
             .memory
             .get_or_capture_session_snapshot(session_id)
             .ok();
         let skills_idx = self.inner.skills.render_progressive_index();
-        let bot_name = bot_id
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(&soul.name)
-            .to_string();
+        let bot_name = bot_name_hint
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                let s = soul.name.trim();
+                (!s.is_empty() && s != "Hermes").then(|| s.to_string())
+            })
+            .or_else(|| {
+                bot_id
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit()))
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| "Hermes".to_string());
 
         json!({
             "bot_name": bot_name,

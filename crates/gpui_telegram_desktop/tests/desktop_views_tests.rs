@@ -1451,3 +1451,76 @@ fn test_adversarial_context_menu_extreme_coordinates_and_actions() {
     assert!(!clean_msg.is_pinned);
     assert!(clean_msg.reactions.is_empty());
 }
+
+#[test]
+fn test_preferences_sidebar_collapsed_persistence_and_legacy_default() {
+    use gpui_telegram_desktop::app::preferences::AppPreferences;
+
+    struct ScopedTempDir(std::path::PathBuf);
+    impl ScopedTempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "gpui_sidebar_pref_{}_{}_{}",
+                tag,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp test dir");
+            Self(dir)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for ScopedTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // 1. Default preferences expand the sidebar
+    let defaults = AppPreferences::default();
+    assert!(!defaults.appearance.sidebar_collapsed);
+
+    // 2. Legacy JSON without `sidebar_collapsed` deserializes to false via `#[serde(default)]`
+    let legacy_dir = ScopedTempDir::new("legacy");
+    let mut legacy_prefs = AppPreferences::default();
+    legacy_prefs.appearance.font_size = 16;
+    let mut legacy_val = serde_json::to_value(&legacy_prefs).expect("serialize legacy prefs");
+    if let Some(app_obj) = legacy_val
+        .get_mut("appearance")
+        .and_then(|v| v.as_object_mut())
+    {
+        app_obj.remove("sidebar_collapsed");
+    }
+    let legacy_json = serde_json::to_string_pretty(&legacy_val).expect("format legacy prefs JSON");
+    std::fs::write(legacy_dir.path().join("preferences.json"), legacy_json)
+        .expect("write legacy preferences.json");
+    let loaded_legacy = AppPreferences::load_from_dir(legacy_dir.path())
+        .expect("legacy preferences.json should load");
+    assert!(!loaded_legacy.appearance.sidebar_collapsed);
+    assert_eq!(loaded_legacy.appearance.font_size, 16);
+
+    // 3. Round-trip saving `sidebar_collapsed = true`
+    let roundtrip_dir = ScopedTempDir::new("roundtrip");
+    let mut prefs = AppPreferences::default();
+    prefs.appearance.sidebar_collapsed = true;
+    prefs
+        .save_to_dir(roundtrip_dir.path())
+        .expect("save preferences.json");
+    let reloaded = AppPreferences::load_from_dir(roundtrip_dir.path())
+        .expect("saved preferences.json should reload");
+    assert!(reloaded.appearance.sidebar_collapsed);
+}
+
+#[test]
+fn test_unified_sidebar_collapsed_constants() {
+    use gpui_telegram_desktop::views::{chat_sidebar, nav_rail};
+
+    assert!((nav_rail::NAV_RAIL_WIDTH - 52.0).abs() < f32::EPSILON);
+    assert!((chat_sidebar::DEFAULT_WIDTH - 288.0).abs() < f32::EPSILON);
+    assert!((chat_sidebar::COLLAPSED_WIDTH - 64.0).abs() < f32::EPSILON);
+}

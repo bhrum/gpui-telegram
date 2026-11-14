@@ -29,13 +29,18 @@ use serde::{Deserialize, Serialize};
 use crate::i18n::tr_str;
 use crate::theme::dialogs::DialogsStyleSheet;
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
+use crate::views::nav_rail::{NavDestination, NavRail};
 use crate::views::sidebar::dialogs_inner_widget::DialogsInnerWidget;
 use crate::views::sidebar::dialogs_overlays::{
     render_dialog_context_menu, render_folder_tabs_strip, render_forum_topics_subtree,
 };
 use crate::views::sidebar::dialogs_renderer::{
-    render_archived_header_row, render_plus_dropdown, render_sidebar_header,
-    render_stories_strip, render_suggestion_bar,
+    render_archived_header_row, render_plus_dropdown, render_stories_strip, render_suggestion_bar,
+};
+use crate::views::sidebar::gemini_unified_sidebar::{
+    render_collapsed_gemini_sidebar, render_expanded_gemini_footer,
+    render_expanded_gemini_nav_section, render_expanded_gemini_search_bar,
+    render_expanded_gemini_top_bar, UnifiedNavSnapshot, UnifiedSidebarAction,
 };
 use crate::views::sidebar::dialogs_row_view::{
     render_dialog_row_item, SidebarContextAction, SidebarDialogMeta,
@@ -133,6 +138,8 @@ pub struct DialogItemModel {
 
 pub const DEFAULT_WIDTH: f32 = 288.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = DEFAULT_WIDTH;
+pub const COLLAPSED_WIDTH: f32 = 64.0;
+pub const COLLAPSED_SIDEBAR_WIDTH: f32 = COLLAPSED_WIDTH;
 pub const MIN_WIDTH: f32 = 240.0;
 pub const MIN_SIDEBAR_WIDTH: f32 = MIN_WIDTH;
 pub const MAX_WIDTH: f32 = 360.0;
@@ -234,6 +241,12 @@ pub struct ChatSidebar {
     pub open_main_menu_requested: bool,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
+    pub is_collapsed: bool,
+    pub collapse_state_revision: u64,
+    pub is_nav_more_expanded: bool,
+    pub hovered_rail_item: Option<&'static str>,
+    pub nav_rail: Option<Entity<NavRail>>,
+    pub standalone_active_destination: NavDestination,
 }
 
 impl ChatSidebar {
@@ -293,6 +306,12 @@ impl ChatSidebar {
             open_main_menu_requested: false,
             palette: TdesktopThemePalette::default(),
             language_id: "zh-CN".to_string(),
+            is_collapsed: false,
+            collapse_state_revision: 0,
+            is_nav_more_expanded: false,
+            hovered_rail_item: None,
+            nav_rail: None,
+            standalone_active_destination: NavDestination::Chats,
         }
     }
 
@@ -470,6 +489,34 @@ impl ChatSidebar {
         self.width = DEFAULT_WIDTH;
     }
 
+    pub fn attach_nav_rail(&mut self, nav_rail: Entity<NavRail>, cx: &mut Context<Self>) {
+        self.nav_rail = Some(nav_rail.clone());
+        cx.observe(&nav_rail, |_, _, cx| cx.notify()).detach();
+    }
+
+    pub fn effective_width(&self) -> f32 {
+        if self.is_collapsed {
+            COLLAPSED_WIDTH
+        } else {
+            self.width
+        }
+    }
+
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        self.is_collapsed = collapsed;
+        self.hovered_rail_item = None;
+        if collapsed {
+            self.is_plus_menu_open = false;
+            self.context_menu = None;
+            self.is_resizing = false;
+        }
+    }
+
+    pub fn toggle_collapsed_from_user(&mut self) {
+        self.set_collapsed(!self.is_collapsed);
+        self.collapse_state_revision = self.collapse_state_revision.wrapping_add(1);
+    }
+
     pub fn configure_for_cloud_workspace(&mut self, _server_url: &str) {
         self.is_resizing = false;
         self.resize_drag_start_x = None;
@@ -555,6 +602,10 @@ impl ChatSidebar {
     }
 
     pub fn focus_search(&mut self) {
+        if self.is_collapsed {
+            self.set_collapsed(false);
+            self.collapse_state_revision = self.collapse_state_revision.wrapping_add(1);
+        }
         self.search_focused = true;
         self.is_plus_menu_open = false;
         self.search_request_seq = self.search_request_seq.wrapping_add(1);
@@ -586,6 +637,13 @@ impl ChatSidebar {
     }
 
     pub fn toggle_plus_menu(&mut self) {
+        if self.is_collapsed {
+            self.set_collapsed(false);
+            self.collapse_state_revision = self.collapse_state_revision.wrapping_add(1);
+            self.is_plus_menu_open = true;
+            self.search_focused = false;
+            return;
+        }
         self.is_plus_menu_open = !self.is_plus_menu_open;
         if self.is_plus_menu_open {
             self.search_focused = false;
@@ -1267,6 +1325,96 @@ impl ChatSidebar {
             topics,
         }
     }
+
+    /// Dispatches actions from the Gemini-style unified collapsed rail and expanded sidebar chrome.
+    pub fn handle_unified_action(
+        &mut self,
+        action: UnifiedSidebarAction,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            UnifiedSidebarAction::ToggleCollapsed => {
+                self.toggle_collapsed_from_user();
+                cx.notify();
+            }
+            UnifiedSidebarAction::SelectDestination(dest) => {
+                self.standalone_active_destination = dest;
+                self.context_menu = None;
+                if dest != NavDestination::Chats {
+                    self.is_plus_menu_open = false;
+                }
+                if let Some(rail) = self.nav_rail.clone() {
+                    rail.update(cx, |r, r_cx| {
+                        r.select(dest);
+                        r_cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            UnifiedSidebarAction::OpenMainMenu => {
+                self.open_main_menu_requested = true;
+                cx.notify();
+            }
+            UnifiedSidebarAction::ToggleTheme => {
+                if let Some(rail) = self.nav_rail.clone() {
+                    rail.update(cx, |r, r_cx| {
+                        r.theme_toggle_requested = true;
+                        r_cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            UnifiedSidebarAction::Logout => {
+                if let Some(rail) = self.nav_rail.clone() {
+                    rail.update(cx, |r, r_cx| {
+                        r.logout_requested = true;
+                        r_cx.notify();
+                    });
+                }
+                cx.notify();
+            }
+            UnifiedSidebarAction::FocusSearch => {
+                self.focus_search();
+                cx.notify();
+            }
+            UnifiedSidebarAction::ExitSearch => {
+                self.select_folder("All");
+                self.exit_search();
+                self.close_creation_modal();
+                cx.notify();
+            }
+            UnifiedSidebarAction::ClearSearch => {
+                if !self.search_query.is_empty() {
+                    self.set_search_query("");
+                } else {
+                    self.exit_search();
+                }
+                cx.notify();
+            }
+            UnifiedSidebarAction::TogglePlusMenu => {
+                self.toggle_plus_menu();
+                cx.notify();
+            }
+            UnifiedSidebarAction::ToggleNavMore => {
+                self.is_nav_more_expanded = !self.is_nav_more_expanded;
+                cx.notify();
+            }
+            UnifiedSidebarAction::OpenContacts => {
+                if self.is_collapsed {
+                    self.set_collapsed(false);
+                    self.collapse_state_revision = self.collapse_state_revision.wrapping_add(1);
+                }
+                self.open_contacts_modal();
+                cx.notify();
+            }
+            UnifiedSidebarAction::SetHover(item) => {
+                if self.hovered_rail_item != item {
+                    self.hovered_rail_item = item;
+                    cx.notify();
+                }
+            }
+        }
+    }
 }
 
 impl Default for ChatSidebar {
@@ -1294,46 +1442,70 @@ impl Render for ChatSidebar {
         let active_search_tag = self.active_search_tag.clone();
         let is_narrow = self.width < 252.0;
 
+        let total_dialog_unread: u32 = self.dialogs.iter().map(|d| d.unread_count).sum();
+        let nav_snapshot = UnifiedNavSnapshot::from_rail_and_unread(
+            self.nav_rail.as_ref().map(|r| r.read(cx)),
+            self.standalone_active_destination,
+            total_dialog_unread,
+        );
+        if self.is_collapsed {
+            return render_collapsed_gemini_sidebar(
+                &nav_snapshot,
+                self.hovered_rail_item,
+                &palette,
+                &lang_id,
+                cx,
+                |this, action, cx| this.handle_unified_action(action, cx),
+            );
+        }
+
         let categorized_results = if is_search_focused {
             self.categorized_search_results()
         } else {
             Vec::new()
         };
 
-        let header = render_sidebar_header(
-            &query,
-            is_search_focused,
-            is_plus_open,
-            creation_modal.is_some(),
+        let is_search_active = is_search_focused || !query.is_empty();
+        let top_bar = render_expanded_gemini_top_bar(
+            is_search_active,
+            self.hovered_rail_item,
             &palette,
             &lang_id,
             cx,
-            |this, cx| {
-                if this.search_focused {
-                    this.select_folder("All");
-                    this.exit_search();
-                    this.close_creation_modal();
-                } else {
-                    this.open_main_menu_requested = true;
-                }
-                cx.notify();
-            },
-            |this, cx| {
-                this.focus_search();
-                cx.notify();
-            },
-            |this, cx| {
-                if !this.search_query.is_empty() {
-                    this.set_search_query("");
-                } else {
-                    this.exit_search();
-                }
-                cx.notify();
-            },
-            |this, cx| {
-                this.toggle_plus_menu();
-                cx.notify();
-            },
+            |this, action, cx| this.handle_unified_action(action, cx),
+        );
+        let search_bar = if is_search_active {
+            Some(render_expanded_gemini_search_bar(
+                &query,
+                is_search_focused,
+                &palette,
+                &lang_id,
+                cx,
+                |this, action, cx| this.handle_unified_action(action, cx),
+            ))
+        } else {
+            None
+        };
+        let nav_section = if !is_search_active {
+            Some(render_expanded_gemini_nav_section(
+                &nav_snapshot,
+                is_plus_open,
+                creation_modal.is_some(),
+                self.is_nav_more_expanded,
+                &palette,
+                &lang_id,
+                cx,
+                |this, action, cx| this.handle_unified_action(action, cx),
+            ))
+        } else {
+            None
+        };
+        let footer = render_expanded_gemini_footer(
+            &nav_snapshot,
+            &palette,
+            &lang_id,
+            cx,
+            |this, action, cx| this.handle_unified_action(action, cx),
         );
 
         let plus_dropdown = if is_plus_open {
@@ -1676,7 +1848,22 @@ impl Render for ChatSidebar {
                         cx.notify();
                     })),
             )
-            .child(header)
+            .child(top_bar)
+            .when_some(search_bar, |el, bar| el.child(bar))
+            .when_some(nav_section, |el, nav| {
+                let sep = if palette.mode.is_dark() {
+                    rgba(0xFFFFFF12)
+                } else {
+                    rgba(0x0000000D)
+                };
+                el.child(nav).child(
+                    div()
+                        .w_full()
+                        .px(px(14.0))
+                        .my(px(3.0))
+                        .child(div().w_full().h(px(1.0)).bg(sep)),
+                )
+            })
             .when_some(plus_dropdown, |el, panel| el.child(panel))
             .when_some(creation_modal, |el, modal_kind| {
                 el.child(self.render_creation_modal_panel(
@@ -1706,7 +1893,9 @@ impl Render for ChatSidebar {
                     .flex_col()
                     .children(scroll_children),
             )
+            .child(footer)
             .when_some(ctx_menu_overlay, |el, overlay| el.child(overlay))
+            .into_any_element()
     }
 }
 
@@ -1967,5 +2156,43 @@ mod tests {
         assert_eq!(sb.selection_revision, 1);
         sb.select_dialog_from_user(42);
         assert_eq!(sb.selection_revision, 2);
+    }
+
+    #[std::prelude::v1::test]
+    fn unified_sidebar_collapse_and_expand_geometry_and_revisions() {
+        let mut sb = ChatSidebar::new();
+        assert!(!sb.is_collapsed);
+        assert_eq!(sb.collapse_state_revision, 0);
+        assert!((sb.effective_width() - DEFAULT_WIDTH).abs() < f32::EPSILON);
+
+        // Programmatic collapse does not bump user collapse revision
+        sb.set_collapsed(true);
+        assert!(sb.is_collapsed);
+        assert_eq!(sb.collapse_state_revision, 0);
+        assert!((sb.effective_width() - COLLAPSED_WIDTH).abs() < f32::EPSILON);
+
+        // User toggle expands and bumps revision
+        sb.toggle_collapsed_from_user();
+        assert!(!sb.is_collapsed);
+        assert_eq!(sb.collapse_state_revision, 1);
+        assert!((sb.effective_width() - DEFAULT_WIDTH).abs() < f32::EPSILON);
+
+        // Focusing search from collapsed state auto-expands and bumps revision
+        sb.toggle_collapsed_from_user();
+        assert!(sb.is_collapsed);
+        assert_eq!(sb.collapse_state_revision, 2);
+        sb.focus_search();
+        assert!(!sb.is_collapsed);
+        assert!(sb.search_focused);
+        assert_eq!(sb.collapse_state_revision, 3);
+
+        // Opening compose menu from collapsed state auto-expands and bumps revision
+        sb.toggle_collapsed_from_user();
+        assert!(sb.is_collapsed);
+        assert_eq!(sb.collapse_state_revision, 4);
+        sb.toggle_plus_menu();
+        assert!(!sb.is_collapsed);
+        assert!(sb.is_plus_menu_open);
+        assert_eq!(sb.collapse_state_revision, 5);
     }
 }
