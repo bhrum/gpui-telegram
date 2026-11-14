@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/multi_select.cpp:L25-L80
 //! Reference: Telegram/SourceFiles/ui/widgets/multi_select.h:L25-L77
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Wide scaling multiplier for multi-select tag layout.
 /// Reference: `multi_select.cpp:L25`

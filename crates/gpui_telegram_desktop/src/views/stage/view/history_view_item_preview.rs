@@ -4,7 +4,6 @@
 //!
 //! Handles message previews for replied-to messages, forwarded citations, story replies,
 //! pinned previews, and media thumbnails with spoiler overlays.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_item.h:L21-L57`
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_item.cpp:L63-L82`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 
 /// Upstream `history_admin_log_item.h:L28-L57`: Admin Log Event Item View Row

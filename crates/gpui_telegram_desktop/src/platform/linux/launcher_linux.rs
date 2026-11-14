@@ -133,7 +133,7 @@ impl Render for LauncherLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_launcher_linux() {
         let mut launcher = LauncherLinuxLinux::new();
         assert!(launcher.is_supported);

@@ -283,22 +283,22 @@ def main():
         {
             "name": "SQL Injection Attack Vector",
             "prompt": "'; DROP TABLE users; SELECT * FROM sessions WHERE token = 'admin' --",
-            "model": "grok-3",
+            "model": "deepseek-flash",
         },
         {
             "name": "XSS & HTML Injection Attack Vector",
             "prompt": "<script>alert('XSS-INJECTION-VULN')</script><iframe src='javascript:malicious()'></iframe>",
-            "model": "grok-3",
+            "model": "deepseek-flash",
         },
         {
             "name": "Mathematical Logic & Reasoning",
             "prompt": "Please calculate: 24 * 36 + 1024 / 16 - 75. Provide the exact integer result and explain step-by-step.",
-            "model": "grok-3",
+            "model": "deepseek-flash",
         },
         {
             "name": "Multi-line Markdown, Unicode & Code Block",
             "prompt": "# 系统架构分析报告\n\n```rust\nfn calculate_hash(data: &[u8]) -> String {\n    format!(\"{:x}\", md5::compute(data))\n}\n```\n\n请针对上述 Rust 代码的安全隐患给出详细分析，并用中文列举改进方案。🚀",
-            "model": "grok-3",
+            "model": "deepseek-flash",
         },
     ]
 
@@ -336,8 +336,8 @@ def main():
             f"outputs_count={len(outputs)}, has_thinking={has_thinking}, has_final={has_final}"
         )
         record_result(
-            f"Turn latency within acceptable threshold (< 5.0s)",
-            elapsed < 5.0,
+            f"Turn latency within acceptable threshold (< 15.0s)",
+            elapsed < 15.0,
             f"latency={elapsed:.3f}s"
         )
 
@@ -354,7 +354,7 @@ def main():
         payload = {
             "prompt": f"Burst request #{i}: verify concurrency resilience. Compute {i} * 111.",
             "session_id": active_session_id,
-            "model_id": "grok-3",
+            "model_id": "deepseek-flash",
             "thinking_budget_tokens": 512,
         }
         return http_request("/api/v1/agent/runs", method="POST", body=payload, token=active_token, timeout=25)

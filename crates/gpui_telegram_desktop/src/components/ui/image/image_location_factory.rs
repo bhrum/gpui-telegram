@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/image/image_location_factory.cpp:L1-L386` & `image_location_factory.h:L1-L45`
 //! Authentic GPUI implementation of image location factory builders.
-#![allow(dead_code)]
 
 use super::image_location::ImageLocationImage;
 

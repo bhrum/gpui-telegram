@@ -3,15 +3,11 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_web_page.h:L25-L229`
 //! - `Telegram/SourceFiles/history/view/media/history_view_web_page.cpp:L56-L200`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::web_page::{
-    WebPageType, RichWebPageCard, FactcheckInfo,
-    article_thumb_width, article_thumb_height, page_to_phrase,
-    K_MAX_ORIGINAL_ENTRY_LINES, K_FACTCHECK_COLLAPSED_LINES,
-    K_STICKER_SET_LINES, K_FACTCHECK_ABOUT_DURATION_MS,
+    WebPageType,
+    RichWebPageCard,
+    FactcheckInfo,
 };
 
 #[derive(Debug, Clone)]

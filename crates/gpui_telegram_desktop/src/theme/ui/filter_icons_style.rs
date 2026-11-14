@@ -1,8 +1,7 @@
 //! Upstream C++ style sheet mapping: `ui/filter_icons.style:L1-L160`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{px, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/filter_icons.style:L1-L160`.
 #[derive(Debug, Clone, Copy)]

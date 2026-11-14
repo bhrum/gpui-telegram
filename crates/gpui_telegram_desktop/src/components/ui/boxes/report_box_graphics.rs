@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/report_box_graphics.cpp:L30-L224
 //! Reference: Telegram/SourceFiles/ui/boxes/report_box_graphics.h:L20-L64
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

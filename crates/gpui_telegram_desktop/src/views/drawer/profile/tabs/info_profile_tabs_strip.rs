@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/profile/tabs/info_profile_tabs_strip.h:L1-L110`
 //! Subsystem: info | Feature ID: TCG-N22 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_profile_tab_content::ProfileTabKind;

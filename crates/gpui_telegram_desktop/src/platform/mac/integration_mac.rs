@@ -95,7 +95,7 @@ impl Render for IntegrationMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_integration_mac() {
         let mut integ = IntegrationMacMac::new();
         assert!(integ.is_supported);

@@ -65,7 +65,7 @@ async fn test_live_cloud_backend_connectivity_and_flow() {
     let agent_req = AgentRunRequest {
         prompt: "Hello Autonomous Agent, compute 7 * 6.".to_string(),
         session_id: login_auth.session_id.clone(),
-        model_id: Some("grok-3".to_string()),
+        model_id: Some("deepseek-flash".to_string()),
         thinking_budget_tokens: Some(1024),
     };
     let agent_res = client.agent_runs(&login_auth.token, &agent_req).await;
@@ -132,13 +132,22 @@ async fn test_live_cloud_http_send_message_and_chats_and_history() {
         .expect("Login to live backend failed");
     assert!(!auth.token.is_empty());
 
-    // 1. Query GET /api/v1/chats
+    // 1. Query GET /api/v1/chats and provision/select real chat
     let chats_res = client.get_chats(&auth.token).await;
     assert!(chats_res.is_ok(), "get_chats failed: {:?}", chats_res);
+    let target_chat_id = if let Some(first) = chats_res.unwrap().first() {
+        first.chat_id as u64
+    } else {
+        client
+            .provision_welcome_chat(&auth.token)
+            .await
+            .expect("provision_welcome_chat failed")
+            .chat_id as u64
+    };
 
     // 2. Query POST /api/v1/messages/send
     let send_req = SendMessageHttpRequest {
-        chat_id: 4,
+        chat_id: target_chat_id,
         text: "M3 verification message from worker_m3 test suite".to_string(),
         reply_to: None,
     };
@@ -148,8 +157,8 @@ async fn test_live_cloud_http_send_message_and_chats_and_history() {
     assert!(send_ack.message_id > 0);
     assert!(send_ack.pts > 0);
 
-    // 3. Query GET /api/v1/messages/history?chat_id=4
-    let hist_res = client.get_chat_messages(&auth.token, 4, Some(20)).await;
+    // 3. Query GET /api/v1/messages/history?chat_id=<target_chat_id>
+    let hist_res = client.get_chat_messages(&auth.token, target_chat_id, Some(20)).await;
     assert!(hist_res.is_ok(), "get_chat_messages failed: {:?}", hist_res);
 }
 

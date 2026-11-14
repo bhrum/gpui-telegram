@@ -39,7 +39,7 @@ import zlib
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-REPO_ROOT = "/Users/bhrum/teamwork_projects/gpui_telegram"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 ARTIFACTS_DIR = os.path.join(REPO_ROOT, "artifacts", "multimedia_e2e")
 RECORDINGS_DIR = os.path.join(ARTIFACTS_DIR, "recordings")
 SCREENSHOTS_GPUI_DIR = os.path.join(ARTIFACTS_DIR, "screenshots", "gpui")

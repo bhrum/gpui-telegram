@@ -137,7 +137,7 @@ impl Render for NotificationsManagerWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_toast_manager_win_operations() {
         let mut mgr = NotificationsManagerWinWin::new();
         assert!(mgr.from_wchar_array().is_ok());

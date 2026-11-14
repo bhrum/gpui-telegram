@@ -730,7 +730,6 @@
         "create",
         "resize",
         "HiddenSenderInfo",
-        "bool",
         "set",
         "updateFields",
         "updateData",
@@ -1311,7 +1310,6 @@
         "AnimationManager",
         "start",
         "cancel",
-        "bool",
         "checkNextHighlight",
         "repaintHighlightedItem",
         "updateMessage"
@@ -1603,8 +1601,7 @@
       ],
       "source_methods_and_signals": [
         "Api::SendProgressType",
-        "Api::SendAction",
-        "bool"
+        "Api::SendAction"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
@@ -2956,7 +2953,6 @@
       ],
       "source_methods_and_signals": [
         "DrawWebPageDataPreview",
-        "bool",
         "WebpageResolver",
         "request",
         "cancel",
@@ -3988,7 +3984,6 @@
         "playEffectOnRead",
         "playEffect",
         "paint",
-        "bool",
         "checkDelayed",
         "addPendingEffect",
         "checkPendingEffects",
@@ -4222,9 +4217,7 @@
         "Icon",
         "ToPreviewOptions"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
@@ -7377,7 +7370,6 @@
         "CursorState"
       ],
       "source_methods_and_signals": [
-        "bool",
         "updateNeedBubbleState",
         "refreshParentId",
         "drawHighlight",
@@ -9444,7 +9436,6 @@
         "IconFactory"
       ],
       "source_methods_and_signals": [
-        "bool",
         "applyList",
         "paint",
         "paintOne",

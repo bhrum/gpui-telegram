@@ -3,10 +3,12 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_compose_controls.h`
 
 use crate::views::composer::controls::{
-    ComposeControlsMode, ComposeControlsModel, SendButtonType, WriteRestriction, WriteRestrictionType,
+    ComposeControlsMode,
+    ComposeControlsModel,
+    SendButtonType,
+    WriteRestriction,
 };
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub struct HistoryViewComposeControlsViewControls {
     pub model: ComposeControlsModel,

@@ -9,7 +9,6 @@
 //! - Automatic system diagnostic payload (App version, OS version, locale, phone number)
 //! - Action buttons for OK and Help
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

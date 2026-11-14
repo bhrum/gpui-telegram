@@ -3,13 +3,10 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_location.h:L25-L135`
 //! - `Telegram/SourceFiles/history/view/media/history_view_location.cpp:L48-L79`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::location::{
-    RichLocationCard, remaining_time_text, remaining_time_progress,
-    K_UNTIL_OFF_PERIOD, K_LIVE_ELAPSED_PART_OPACITY,
+    RichLocationCard,
+    K_UNTIL_OFF_PERIOD,
 };
 
 #[derive(Debug, Clone)]

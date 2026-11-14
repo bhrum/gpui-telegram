@@ -4,7 +4,7 @@
 //! - `history_view_transcribe_button.h:L20-L60`
 
 use gpui::*;
-use crate::views::stage::reactions::transcribe::{TranscribeButton, TranscribeState, TRANSCRIBE_SIZE_AUDIO};
+use crate::views::stage::reactions::transcribe::{TranscribeButton, TranscribeState};
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewTranscribeButtonView {

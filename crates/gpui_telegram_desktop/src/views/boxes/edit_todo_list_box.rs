@@ -10,7 +10,6 @@
 //! - Existing tasks locking for collaborative checklists
 //! - Validation rules (non-empty title, minimum 1 task item)
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

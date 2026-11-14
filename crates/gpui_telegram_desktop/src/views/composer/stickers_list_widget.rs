@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_list_widget.h:L70-L146`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_list_widget.cpp:L75-L160`
-#![allow(dead_code)]
 
 use gpui::*;
 
@@ -166,6 +165,8 @@ impl StickersListWidget {
     }
 
     pub fn touch(&mut self) {
+        self.is_active =
+            !self.sets.is_empty() || !self.recent_stickers.is_empty() || !self.search_query.is_empty();
         self.updated_at = chrono::Utc::now().timestamp();
     }
 }

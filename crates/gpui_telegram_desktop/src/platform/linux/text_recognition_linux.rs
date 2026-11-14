@@ -123,7 +123,7 @@ impl Render for TextRecognitionLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_text_recognition_linux() {
         let mut ocr = TextRecognitionLinuxLinux::new();
         assert!(ocr.is_available());

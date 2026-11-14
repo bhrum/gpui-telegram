@@ -2733,7 +2733,6 @@
         "SearchEntry"
       ],
       "source_methods_and_signals": [
-        "bool",
         "add",
         "SectionBuilder",
         "addSubsectionTitle",

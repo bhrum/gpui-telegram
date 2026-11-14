@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/translate_url_provider.h`, `translate_url_provider.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use crate::i18n::translate_provider::{
     TranslateProvider, TranslateProviderError, TranslateProviderRequest, TranslateProviderResult,
@@ -115,7 +114,7 @@ impl TranslateProvider for TranslateUrlProvider {
             };
         }
 
-        let formatted_url = self.format_request_url(&request.text.text, "auto", to_lang);
+        let _formatted_url = self.format_request_url(&request.text.text, "auto", to_lang);
         let mock_translated = format!("[URL->{to_lang}] {}", request.text.text);
 
         TranslateProviderResult {

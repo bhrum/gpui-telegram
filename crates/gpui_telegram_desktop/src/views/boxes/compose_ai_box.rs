@@ -11,7 +11,6 @@
 //! - `CardState { Waiting, Loading, Ready, Failed }`
 //! - Diff tracking (`DiffEntity`, `BuildDiffDisplay`, highlight vs strike-out)
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

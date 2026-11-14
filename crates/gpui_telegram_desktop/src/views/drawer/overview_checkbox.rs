@@ -58,7 +58,7 @@ impl OverviewCheckbox {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overview_checkbox_toggle() {
         let mut check = OverviewCheckbox::new();
         assert!(!check.is_checked);

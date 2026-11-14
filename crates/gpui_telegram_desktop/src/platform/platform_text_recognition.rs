@@ -130,7 +130,7 @@ impl Render for PlatformTextRecognition {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_text_recognition_flow() {
         let mut ocr = PlatformTextRecognition::new();
         assert!(ocr.is_available());

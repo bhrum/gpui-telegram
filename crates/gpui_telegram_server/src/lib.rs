@@ -4,6 +4,7 @@ pub mod config;
 pub mod domain;
 pub mod media;
 pub mod messaging;
+pub mod routes;
 pub mod search;
 pub mod server;
 pub mod sync;

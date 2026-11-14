@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Message Delete Confirmation Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/delete_messages_box.h:L26-L89` and `delete_messages_box.cpp:L43-L240`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

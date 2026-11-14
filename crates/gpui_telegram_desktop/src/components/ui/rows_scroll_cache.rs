@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/rows_scroll_cache.cpp:L1-L42` & `rows_scroll_cache.h:L1-L48`
 //! Authentic GPUI implementation of virtualized row scroll cache and scrolling debounce.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::time::Duration;

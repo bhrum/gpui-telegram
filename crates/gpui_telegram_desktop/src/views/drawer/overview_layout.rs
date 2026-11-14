@@ -75,7 +75,7 @@ impl OverviewLayout {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overview_grid_layout() {
         let mut layout = OverviewLayout::new();
         layout.set_container_width(320.0);

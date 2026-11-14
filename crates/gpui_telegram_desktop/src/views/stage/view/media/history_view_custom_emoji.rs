@@ -3,8 +3,6 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_custom_emoji.h:L25-L104`
 //! - `Telegram/SourceFiles/history/view/media/history_view_custom_emoji.cpp:L38-L56`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::poll::custom_emoji_dimension_scale;

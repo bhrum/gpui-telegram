@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_slider_reorder.cpp:L18-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_slider_reorder.h:L24-L60
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Proportional edge auto-scrolling speed factor when dragging near viewport boundary.
 /// Reference: `chat_filters_tabs_slider_reorder.cpp:L20`

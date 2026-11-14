@@ -394,17 +394,22 @@ async fn test_real_backend_live_cloud_vm_full_contract() {
     let _ = fs::remove_file(&session_file);
     assert!(!session_file.exists());
 
-    // 7. Dialogs list retrieval (GET /api/v1/chats)
+    // 7. Dialogs list retrieval (GET /api/v1/chats) + Welcome chat provisioning
     let chats_res = client.get_chats(&login_auth.token).await;
     assert!(
         chats_res.is_ok(),
         "Cloud VM get_chats failed: {:?}",
         chats_res
     );
+    let welcome_chat = client
+        .provision_welcome_chat(&login_auth.token)
+        .await
+        .expect("Cloud VM provision_welcome_chat failed");
+    let target_chat_id = welcome_chat.chat_id as u64;
 
     // 8. Message sending (POST /api/v1/messages/send) & history retrieval
     let send_req = SendMessageHttpRequest {
-        chat_id: 4,
+        chat_id: target_chat_id,
         text: format!("M4 Live contract test message at {}", timestamp),
         reply_to: None,
     };
@@ -419,7 +424,7 @@ async fn test_real_backend_live_cloud_vm_full_contract() {
     assert!(send_ack.pts > 0);
 
     let hist_res = client
-        .get_chat_messages(&login_auth.token, 4, Some(50))
+        .get_chat_messages(&login_auth.token, target_chat_id, Some(50))
         .await;
     assert!(
         hist_res.is_ok(),
@@ -427,13 +432,11 @@ async fn test_real_backend_live_cloud_vm_full_contract() {
         hist_res
     );
     let messages = hist_res.unwrap();
-    // Server contract returns history array (unseeded accounts return empty or slice)
     assert!(
-        messages.is_empty()
-            || messages
-                .iter()
-                .any(|m| m.message_id == send_ack.message_id || m.text.contains("M4 Live contract test")),
-        "Cloud VM historical messages response must match schema"
+        messages
+            .iter()
+            .any(|m| m.message_id == send_ack.message_id || m.text.contains("M4 Live contract test")),
+        "Cloud VM historical messages response must contain persisted message"
     );
 
     // 9. WebSocket connectivity, bidirectional ping/pong, and message dispatch
@@ -485,7 +488,7 @@ async fn test_real_backend_live_cloud_vm_full_contract() {
     // Send SendMessage frame over WebSocket
     let ws_msg_nonce = (timestamp as u64) + 1;
     let send_frame = WsClientFrame::SendMessage(SendMessageRequest::new(
-        ChatId(4),
+        ChatId(target_chat_id as i64),
         ws_msg_nonce,
         MessageContent::plain_text(format!("WS contract message {}", ws_msg_nonce)),
     ));
@@ -502,7 +505,7 @@ async fn test_real_backend_live_cloud_vm_full_contract() {
                     break;
                 }
                 WsServerFrame::PtsPush(update) => {
-                    if update.chat_id == ChatId(4) {
+                    if update.chat_id == ChatId(target_chat_id as i64) {
                         received_ws_ack = true;
                         break;
                     }
@@ -660,9 +663,23 @@ async fn test_local_backend_in_memory_full_stack_contract() {
         .expect("get_me must succeed with email register token");
     assert_eq!(email_me.user_id, email_reg_res.user_id);
 
-    // 5. Local Messaging and Dialogs Contract
+    // 5. Local Messaging and Dialogs Contract (authentic empty initial state -> welcome chat opt-in)
+    let initial_chats = client
+        .get_chats(&email_reg_res.token)
+        .await
+        .expect("get_chats must succeed on local server");
+    assert!(
+        initial_chats.is_empty(),
+        "Newly registered account must start with empty chats"
+    );
+    let welcome = client
+        .provision_welcome_chat(&email_reg_res.token)
+        .await
+        .expect("provision_welcome_chat must succeed on local server");
+    let target_chat_id = welcome.chat_id as u64;
+
     let local_send_req = SendMessageHttpRequest {
-        chat_id: 1,
+        chat_id: target_chat_id,
         text: "Local in-memory message verification".to_string(),
         reply_to: None,
     };
@@ -674,7 +691,7 @@ async fn test_local_backend_in_memory_full_stack_contract() {
     assert!(local_send.pts > 0);
 
     let local_hist = client
-        .get_chat_messages(&email_reg_res.token, 1, Some(10))
+        .get_chat_messages(&email_reg_res.token, target_chat_id, Some(10))
         .await
         .expect("get_chat_messages must succeed on local server");
     assert!(

@@ -10,7 +10,6 @@
 //! - `kMegabyte`, `kDefaultDownloadLimit`, `kDefaultAutoPlayLimit` constants
 //! - Exceptions list (`always` and `never` override buckets per peer)
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::HashSet;

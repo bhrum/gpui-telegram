@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/bot/starref/info_bot_starref_setup_widget.h, info_bot_starref_setup_widget.cpp
 //! Exact constants (`kDurationForeverValue = 999`, `kCommissionDefault = 200`, `kDurationDefault = 12`), and commission editor.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -107,7 +106,7 @@ impl Render for InfoBotStarrefSetupWidgetBotStarref {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_setup_widget_defaults() {
         let new_prog = InfoBotStarrefSetupWidgetBotStarref::new(4004, false);
         assert_eq!(new_prog.value_for_commission(), K_COMMISSION_DEFAULT);

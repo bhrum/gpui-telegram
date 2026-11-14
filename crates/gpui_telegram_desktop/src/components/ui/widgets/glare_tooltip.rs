@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/glare_tooltip.cpp:L18-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/glare_tooltip.h:L24-L82
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Glare animation duration step per unit width: 320ms.
 /// Reference: `glare_tooltip.cpp:L19`

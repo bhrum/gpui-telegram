@@ -28,6 +28,8 @@ pub enum LayerKind {
     ThemeEditor,
     PasscodeLock,
     SetupEmail,
+    TermsLock,
+    MediaPreview,
 }
 
 #[derive(Debug, Clone)]
@@ -207,35 +209,38 @@ impl Default for WindowController {
 impl Render for WindowController {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let is_modal_active = !self.active_layers.is_empty();
-        let top_layer = self.active_layers.last().cloned();
+        let top_label = match self.active_layers.last() {
+            Some(LayerKind::PasscodeLock) => Some("Passcode Locked"),
+            Some(LayerKind::SetupEmail) => Some("Confirm Setup Email"),
+            Some(LayerKind::TermsLock) => Some("Terms of Service"),
+            Some(LayerKind::Settings) => Some("Settings"),
+            Some(LayerKind::ThemeEditor) => Some("Theme Editor"),
+            Some(LayerKind::MediaPreview) => Some("Media Viewer"),
+            Some(LayerKind::BoxModal(title)) => Some(title.as_str()),
+            None => None,
+        };
 
         div()
             .relative()
             .size_full()
-            .bg(rgb(0x0E1621))
-            .child(
-                div()
-                    .size_full()
-                    .child(format!("WindowController [ID: {:?}]", self.id))
-            )
             .children(is_modal_active.then(|| {
                 div()
                     .absolute()
                     .inset_0()
-                    .bg(rgba(0x000000C0))
+                    .bg(rgba(0x000000A8))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
+                    .children(top_label.map(|label| {
                         div()
                             .bg(rgb(0x18222D))
-                            .p(px(24.0))
-                            .rounded(px(8.0))
+                            .p(px(20.0))
+                            .rounded(px(10.0))
                             .border_1()
                             .border_color(rgb(0x2B5278))
                             .text_color(rgb(0xFFFFFF))
-                            .child(format!("Active Modal Layer: {:?}", top_layer))
-                    )
+                            .child(label.to_string())
+                    }))
             }))
             .children(self.current_toast.as_ref().map(|t| {
                 div()
@@ -248,6 +253,7 @@ impl Render for WindowController {
                     .py(px(8.0))
                     .rounded(px(16.0))
                     .shadow_lg()
+                    .text_xs()
                     .child(t.text.clone())
             }))
     }

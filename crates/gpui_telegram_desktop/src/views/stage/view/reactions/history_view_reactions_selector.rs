@@ -3,7 +3,7 @@
 //! - `history_view_reactions_selector.cpp:L45-L160`
 
 use gpui::*;
-use crate::views::stage::reactions::selector::{ReactionsSelector, SelectorState, ReactionCategory};
+use crate::views::stage::reactions::selector::ReactionsSelector;
 use crate::views::stage::reactions::button::ReactionKey;
 
 #[derive(Debug, Clone)]

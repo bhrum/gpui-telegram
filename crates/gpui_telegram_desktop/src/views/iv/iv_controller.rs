@@ -1,6 +1,5 @@
 //! Target Symbol: IvController
 //! Module 13: Instant View & TON Site Window Controller
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

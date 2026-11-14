@@ -95,7 +95,7 @@ impl SqlitePool {
         .map_err(|e| TelegramError::Database(format!("Failed to apply pragmas: {}", e)))?;
 
         let integrity: String = conn
-            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(|e| TelegramError::Database(format!("SQLite integrity check failed: {}", e)))?;
         if !integrity.eq_ignore_ascii_case("ok") {
             return Err(TelegramError::Database(format!(

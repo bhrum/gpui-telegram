@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/about_cocoon_box.cpp:L31-L318
 //! Reference: Telegram/SourceFiles/ui/boxes/about_cocoon_box.h:L1-L17
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

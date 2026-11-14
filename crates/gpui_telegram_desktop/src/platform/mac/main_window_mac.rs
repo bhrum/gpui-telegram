@@ -148,7 +148,7 @@ impl Render for MainWindowMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_main_window_mac() {
         let mut win = MainWindowMacMac::new();
         assert_eq!(win.get_custom_title_height(), 28.0);

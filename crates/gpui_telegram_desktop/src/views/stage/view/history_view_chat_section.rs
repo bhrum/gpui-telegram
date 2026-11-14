@@ -4,11 +4,13 @@
 //! Reconstructs upstream: `Telegram/SourceFiles/history/view/history_view_chat_section.cpp` (L1-L6344)
 
 use crate::views::stage::chat_section::{
-    calculate_keyboard_reserve, is_special_show_at_msg_id, resolve_highlight_id,
-    ChatMemento, FullMsgId, HistoryViewChatSectionState, SendPermission,
-    K_PSA_ABOUT_PREFIX, K_SCROLL_TO_VOICE_AFTER_SCROLLED_MS,
-    K_SHOW_MEMBERS_DROPDOWN_TIMEOUT_MS, SHOW_AND_START_BOT_MSG_ID,
-    SHOW_AT_THE_END_MSG_ID, SHOW_FOR_CHOOSE_MESSAGES_MSG_ID,
+    is_special_show_at_msg_id,
+    resolve_highlight_id,
+    ChatMemento,
+    FullMsgId,
+    HistoryViewChatSectionState,
+    SendPermission,
+    K_PSA_ABOUT_PREFIX,
 };
 
 /// GPUI view component for conversation chat section

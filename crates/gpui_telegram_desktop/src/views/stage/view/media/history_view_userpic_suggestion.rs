@@ -3,11 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_userpic_suggestion.h:L20-L58`
 //! - `Telegram/SourceFiles/history/view/media/history_view_userpic_suggestion.cpp:L39-L60`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::location::K_TOAST_DURATION_MS;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewUserpicSuggestionViewMedia {

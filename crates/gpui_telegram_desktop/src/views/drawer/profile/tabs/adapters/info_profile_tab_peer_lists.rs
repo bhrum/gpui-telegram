@@ -221,7 +221,7 @@ impl Render for InfoProfileTabPeerListsProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_peer_lists_adapter_management() {
         let mut adapter = InfoProfileTabPeerListsProfileTabsAdapters::new(5005, "Star Gifts");
         assert_eq!(adapter.peer_id, 5005);

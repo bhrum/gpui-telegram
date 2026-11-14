@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/bot_command.h:L15-L30`
 //! - `Telegram/SourceFiles/chat_helpers/bot_command.cpp:L19-L47`
-#![allow(dead_code)]
 
 use gpui::*;
 

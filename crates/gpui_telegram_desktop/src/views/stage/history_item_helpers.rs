@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/history_item_helpers.h:L48-L100` (PreparedServiceText, MediaCheckResult)
 //! - `Telegram/SourceFiles/history/history_item_helpers.cpp:L949-L991` (FlagsFromMTP bitmask mapping)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::item::{flags_from_mtp, MessageFlags};
 

@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_section.h:L36-L100`
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_section.cpp:L1-L678`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use crate::views::stage::admin_log::history_admin_log_filter::HistoryAdminLogFilterAdminLog;
 use crate::views::stage::admin_log::history_admin_log_inner::HistoryAdminLogInnerAdminLog;

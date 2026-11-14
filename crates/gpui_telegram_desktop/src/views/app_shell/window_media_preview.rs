@@ -53,12 +53,25 @@ impl Default for WindowMediaPreview {
 
 impl Render for WindowMediaPreview {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_visible {
+            return div().into_any_element();
+        }
+        let kind_label = match self.media_type {
+            PreviewMediaType::Photo => "Photo Preview",
+            PreviewMediaType::Sticker => "Sticker Preview",
+            PreviewMediaType::Gif => "GIF Preview",
+            PreviewMediaType::Video => "Video Preview",
+        };
         div()
             .flex()
             .items_center()
             .justify_center()
-            .p(px(8.0))
-            .bg(rgba(0x00000080))
-            .child(format!("MediaPreview: {:?} (ID: {})", self.media_type, self.source_id))
+            .p(px(12.0))
+            .rounded(px(8.0))
+            .bg(rgba(0x000000A8))
+            .text_xs()
+            .text_color(rgb(0xFFFFFF))
+            .child(kind_label)
+            .into_any_element()
     }
 }

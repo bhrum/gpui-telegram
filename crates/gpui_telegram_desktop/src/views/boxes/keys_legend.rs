@@ -9,7 +9,6 @@
 //! - Platform-aware shortcut sequence split and formatting
 //! - Categories: Navigation, Chat/Messages, Media, Global Hotkeys
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

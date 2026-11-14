@@ -2,7 +2,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_common.h:L1-L24`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::HashMap;

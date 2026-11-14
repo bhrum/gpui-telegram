@@ -38,6 +38,11 @@ async fn get_authenticated_session(client: &HttpClient) -> String {
 async fn test_live_cloud_http_send_message_diverse_payloads() {
     let client = get_live_client();
     let token = get_authenticated_session(&client).await;
+    let welcome = client
+        .provision_welcome_chat(&token)
+        .await
+        .expect("Failed to provision welcome chat");
+    let target_chat_id = welcome.chat_id as u64;
 
     // Test matrix of diverse payloads:
     // 1. Standard text
@@ -68,7 +73,7 @@ async fn test_live_cloud_http_send_message_diverse_payloads() {
 
     for (desc, text) in payloads {
         let req = SendMessageHttpRequest {
-            chat_id: 4,
+            chat_id: target_chat_id,
             text: text.to_string(),
             reply_to: None,
         };
@@ -95,11 +100,16 @@ async fn test_live_cloud_http_send_message_diverse_payloads() {
 async fn test_live_cloud_dual_endpoint_message_history_fallback() {
     let client = get_live_client();
     let token = get_authenticated_session(&client).await;
+    let welcome = client
+        .provision_welcome_chat(&token)
+        .await
+        .expect("Failed to provision welcome chat");
+    let target_chat_id = welcome.chat_id as u64;
 
-    // 1. Empirically verify that the primary endpoint /api/v1/chats/:id/messages
-    // returns 404 on the live server, proving that dual fallback is strictly necessary.
+    // 1. Verify GET /api/v1/chats/{chat_id}/messages succeeds with 200 OK on upgraded server,
+    // and non-existent subroute still yields 404.
     let direct_client = reqwest::Client::new();
-    let primary_url = format!("{}/api/v1/chats/4/messages", client.base_url);
+    let primary_url = format!("{}/api/v1/chats/{}/messages", client.base_url, target_chat_id);
     let resp = direct_client
         .get(&primary_url)
         .bearer_auth(&token)
@@ -109,17 +119,17 @@ async fn test_live_cloud_dual_endpoint_message_history_fallback() {
 
     assert_eq!(
         resp.status(),
-        reqwest::StatusCode::NOT_FOUND,
-        "Expected primary endpoint /api/v1/chats/4/messages to return 404 on current server, got {}",
+        reqwest::StatusCode::OK,
+        "Expected /api/v1/chats/{}/messages to return 200 OK, got {}",
+        target_chat_id,
         resp.status()
     );
 
-    // 2. Empirically verify that HttpClient::get_chat_messages catches this 404
-    // and seamlessly falls back to /api/v1/messages/history?chat_id=4!
+    // 2. Verify HttpClient::get_chat_messages retrieves message history cleanly.
     let history = client
-        .get_chat_messages(&token, 4, Some(20))
+        .get_chat_messages(&token, target_chat_id, Some(20))
         .await
-        .expect("Dual endpoint fallback failed to retrieve message history");
+        .expect("Failed to retrieve message history");
 
     // The live server currently returns {"messages": [], "has_more": false, "current_pts": ...}
     // Verify that the client parses this successfully into an empty or populated Vec.

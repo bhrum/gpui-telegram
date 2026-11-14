@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/unread_counter_format.cpp:L1-L37` & `unread_counter_format.h:L1-L15`
 //! Authentic GPUI implementation of unread counter formatting and metric abbreviator.
-#![allow(dead_code)]
 
 /// Formatter for dialog, tab, and folder unread badge counts.
 /// C++ companion: `FormatUnreadCounter` (`unread_counter_format.cpp:L8-L37`).

@@ -15,6 +15,8 @@ Enforces:
 - AGENTS.md build hygiene via scripts/clean_build_garbage.py
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import shutil
@@ -141,6 +143,9 @@ def run_clean_hygiene(repo_root: Path):
 def generate_icns(repo_root: Path, output_icns: Path) -> bool:
     """Generates macOS AppIcon.icns from source icon PNG using sips and iconutil."""
     src_candidates = [
+        repo_root / "crates" / "gpui_telegram_desktop" / "assets" / "AppIcon-512.png",
+        repo_root / "crates" / "gpui_telegram_desktop" / "assets" / "icons" / "AppIcon-512.png",
+        repo_root / "crates" / "gpui_telegram_desktop" / "assets" / "app_icon.png",
         repo_root / "inherited" / "fabushi-backend" / "fabushi" / "web" / "icons" / "Icon-512.png",
         repo_root / "inherited" / "fabushi-backend" / "fabushi" / "web" / "favicon.png",
     ]
@@ -293,6 +298,18 @@ def build_macos_app_bundle(
     icns_path = resources_dir / "AppIcon.icns"
     generate_icns(repo_root, icns_path)
 
+    # 4b. Bundle desktop assets/themes/icons/wallpapers into Contents/Resources/assets
+    src_assets = repo_root / "crates" / "gpui_telegram_desktop" / "assets"
+    if src_assets.is_dir():
+        dest_assets = resources_dir / "assets"
+        shutil.copytree(
+            src_assets,
+            dest_assets,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".DS_Store", "._*"),
+        )
+        log(f"Bundled desktop assets into {dest_assets}")
+
     # 5. Ad-hoc codesign if on macOS
     if platform.system() == "Darwin" and shutil.which("codesign"):
         try:
@@ -370,6 +387,13 @@ The client supports 4-tier configuration precedence:
     return notes_path
 
 
+def _tar_clean_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    base = os.path.basename(tarinfo.name)
+    if base == ".DS_Store" or base.startswith("._"):
+        return None
+    return tarinfo
+
+
 def create_release_tarballs(
     dist_dir: Path,
     app_dir: Path,
@@ -384,11 +408,11 @@ def create_release_tarballs(
     log(f"Creating release archive: {tarball_path}...")
     with tarfile.open(tarball_path, "w:gz", compresslevel=9) as tar:
         # Add GPUI Telegram.app
-        tar.add(str(app_dir), arcname=app_dir.name)
+        tar.add(str(app_dir), arcname=app_dir.name, filter=_tar_clean_filter)
         # Add bin/
-        tar.add(str(bin_dir), arcname=bin_dir.name)
+        tar.add(str(bin_dir), arcname=bin_dir.name, filter=_tar_clean_filter)
         # Add RELEASE_NOTES.md
-        tar.add(str(notes_file), arcname=notes_file.name)
+        tar.add(str(notes_file), arcname=notes_file.name, filter=_tar_clean_filter)
 
     os.chmod(tarball_path, 0o644)
     log(f"Created archive: {tarball_path} ({tarball_path.stat().st_size} bytes)")

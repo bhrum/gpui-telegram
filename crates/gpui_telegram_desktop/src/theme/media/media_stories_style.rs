@@ -1,7 +1,6 @@
 //! Upstream C++ style sheet mapping: `Telegram/SourceFiles/media/stories/media_stories.style:L1-L81`
 //! Target Symbol: `MediaStoriesStoriesStyleSheet`
 //! Subsystem: `media` | Feature: `TCG-N38`
-#![allow(dead_code)]
 
 use gpui::{px, rgb, Pixels, Rgba};
 

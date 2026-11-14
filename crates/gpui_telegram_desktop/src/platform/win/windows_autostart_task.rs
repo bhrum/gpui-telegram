@@ -95,7 +95,7 @@ impl Render for WindowsAutostartTaskWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_autostart_task_win_methods() {
         let mut task = WindowsAutostartTaskWin::new();
         assert!(task.launch_uri_async().is_ok());

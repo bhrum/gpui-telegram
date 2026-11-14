@@ -8,7 +8,6 @@
 //! Subsystem: chat_helpers, Feature: TCG-N11
 
 use super::input_field::{FormattingTag, InputField};
-use gpui::{px, Pixels};
 use std::ops::Range;
 use std::time::Duration;
 

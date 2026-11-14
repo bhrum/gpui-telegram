@@ -1,6 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/widgets/passcode_strength_meter.style:L1-L44`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

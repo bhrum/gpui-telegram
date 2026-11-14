@@ -11,7 +11,6 @@
 //! - `RefreshSpinPhase { Idle, Spinning, Waiting }` for the retry animation
 //! - Tone sample display with edit/delete callbacks
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

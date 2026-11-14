@@ -100,7 +100,7 @@ impl Render for CurrentGeoLocationWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_winrt_geolocation_logic() {
         let mut geo = CurrentGeoLocationWinWin::new();
         assert!(!geo.has_location());

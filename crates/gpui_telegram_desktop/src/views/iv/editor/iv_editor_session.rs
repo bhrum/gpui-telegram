@@ -1,5 +1,4 @@
 //! Instant View Editor Session Orchestrator (`iv_editor_session.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -3,8 +3,6 @@
 //! Citations:
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_filter_value.h:L10-L54`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::admin_log::{AdminLogFilterFlags, AdminLogFilterValue};
 

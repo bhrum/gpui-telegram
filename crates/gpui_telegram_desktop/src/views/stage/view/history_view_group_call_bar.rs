@@ -5,7 +5,6 @@
 //!
 //! Manages active group call banner shown atop chat history, userpic avatar stacking with
 //! speaker priority sorting, and call join/leave state transitions.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -139,7 +139,7 @@ impl Render for MacTouchbarAudioMacTouchbar {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_touchbar_audio_player() {
         let mut audio = MacTouchbarAudioMacTouchbar::new();
         audio.start_playback("Song 1", "Artist", 200_000).unwrap();

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/webview_helpers.cpp:L1-L92` & `webview_helpers.h:L1-L32`
 //! Authentic GPUI implementation of webview integration helpers and URL security checks.
-#![allow(dead_code)]
 
 /// Security validators and helpers for embedded Telegram Mini Apps and WebViews.
 /// C++ companion: `Ui::WebviewHelpers` (`webview_helpers.cpp:L15-L92`).

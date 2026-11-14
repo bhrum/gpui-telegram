@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_lottie.h:L54-L75`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_lottie.cpp:L30-L50`
-#![allow(dead_code)]
 
 use gpui::*;
 use std::collections::HashMap;

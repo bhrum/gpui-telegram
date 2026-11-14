@@ -1,7 +1,6 @@
 //! Target Symbol: IvEditorStructureMenuEditor
 //! Upstream: Telegram/SourceFiles/iv/editor/iv_editor_structure_menu.h, Telegram/SourceFiles/iv/editor/iv_editor_structure_menu.cpp
 //! Module 13: Instant View Editor Structure Menu Subsystem
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

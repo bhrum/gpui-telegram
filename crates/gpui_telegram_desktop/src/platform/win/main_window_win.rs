@@ -152,7 +152,7 @@ impl Render for MainWindowWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_win32_window_hittest_and_hooks() {
         let mut win = MainWindowWinWin::new();
         assert!(win.reset().is_ok());

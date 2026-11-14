@@ -2,7 +2,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_tag.h:L1-L31`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

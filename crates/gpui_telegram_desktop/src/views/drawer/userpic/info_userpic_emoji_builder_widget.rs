@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder_widget.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_userpic_bubble_wrap::InfoUserpicBubbleWrapUserpic;
@@ -205,7 +204,7 @@ impl Render for InfoUserpicEmojiBuilderWidgetUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_palette_presets_swapping() {
         let presets = InfoUserpicEmojiBuilderWidgetUserpic::build_palette_gradients();
         assert_eq!(presets.len(), K_PRESET_COLORS_COUNT);
@@ -219,14 +218,14 @@ mod tests {
         assert_eq!(presets[0][3], 0x0ee1f1ff);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_align_children_step() {
         let step = InfoUserpicEmojiBuilderWidgetUserpic::compute_child_step(356.0, 30.0, 8);
         // (356 - (30 * 8)) / (8 - 1) = (356 - 240) / 7 = 116 / 7 ≈ 16.57
         assert!((step - (116.0 / 7.0)).abs() < 1e-4);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_builder_widget_selection_and_result() {
         let mut widget = InfoUserpicEmojiBuilderWidgetUserpic::default();
         widget.select_preset(2);

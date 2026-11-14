@@ -3216,7 +3216,6 @@
       ],
       "source_methods_and_signals": [
         "collectionId",
-        "bool",
         "invalidateCache",
         "GiftButton",
         "setDescriptor",

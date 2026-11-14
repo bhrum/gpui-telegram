@@ -75,6 +75,13 @@ impl Default for WindowSetupEmail {
 
 impl Render for WindowSetupEmail {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let subtitle = match self.step {
+            EmailSetupStep::InputEmail => "Enter a recovery email for two-step verification.".to_string(),
+            EmailSetupStep::ConfirmCode { code_length } => {
+                format!("Enter the {}-digit code sent to {}", code_length, self.email)
+            }
+            EmailSetupStep::Completed => "Recovery email confirmed.".to_string(),
+        };
         div()
             .flex()
             .flex_col()
@@ -83,6 +90,9 @@ impl Render for WindowSetupEmail {
             .bg(rgb(0x17212B))
             .rounded(px(8.0))
             .child(div().font_weight(FontWeight::BOLD).text_color(rgb(0xFFFFFF)).child("Recovery Email Setup"))
-            .child(format!("Step: {:?}", self.step))
+            .child(div().text_xs().text_color(rgb(0x8E9BA8)).child(subtitle))
+            .children(self.error_text.as_ref().map(|err| {
+                div().text_xs().text_color(rgb(0xE53935)).child(err.clone())
+            }))
     }
 }

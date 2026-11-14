@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's UnconfirmedAuthDeniedBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/unconfirmed_auth_denied_box.h:L14-L21`
 //! and `Telegram/SourceFiles/boxes/unconfirmed_auth_denied_box.cpp:L30-L80`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

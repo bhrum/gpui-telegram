@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/participants_check_view.cpp:L33-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/participants_check_view.h:L20-L64
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Default height and toggle size constants.
 /// Reference: `participants_check_view.cpp:L47-L51`

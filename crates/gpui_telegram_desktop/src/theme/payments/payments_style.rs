@@ -2,8 +2,6 @@
 //! Upstream Source: `Telegram/SourceFiles/payments/ui/payments.style`
 //! Subsystem: payments | Feature: CAP-06
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::{px, rgb, Pixels, Rgba, Size};
 
 /// Complete theme metrics extracted from `payments.style`

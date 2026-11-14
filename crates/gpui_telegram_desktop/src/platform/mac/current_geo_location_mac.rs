@@ -116,7 +116,7 @@ impl Render for CurrentGeoLocationMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_current_geo_location_mac() {
         let mut geo = CurrentGeoLocationMacMac::new();
         assert!(geo.is_supported);
@@ -130,7 +130,7 @@ mod tests {
 
         geo.update_coordinates(37.3318, -122.0312, 5.0);
         assert!(geo.current_coords.is_some());
-        let coords = geo.current_coords.unwrap();
+        let coords = geo.current_coords.as_ref().unwrap();
         assert!((coords.latitude - 37.3318).abs() < 1e-4);
 
         geo.stop_updating_location();

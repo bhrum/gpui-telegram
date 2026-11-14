@@ -1,7 +1,6 @@
 //! Telegram Desktop 1:1 Parity: `EditorStyleSheet`
 //! Subsystem: `editor` | Feature ID: `TCG-N06`
 //! Upstream Source: `Telegram/SourceFiles/editor/editor.style:L1-L400`
-#![allow(dead_code)]
 
 use gpui::{px, rgb, Pixels, Rgba};
 

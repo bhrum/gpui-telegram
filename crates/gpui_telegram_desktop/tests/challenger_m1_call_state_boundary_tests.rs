@@ -237,9 +237,9 @@ fn simulate_message_left_click(stage: &mut ConversationStage, msg_id: u64) {
 
 #[test]
 fn test_fuzz_every_message_type_bubble_click_never_triggers_call() {
-    let mut stage = ConversationStage::new();
+    let mut stage = ConversationStage::new_demo();
 
-    // 1. First test default history (contains all 11 canonical demo cards, including Call #107)
+    // 1. First test demo history (contains all canonical demo cards)
     let default_ids: Vec<u64> = stage.messages.iter().map(|m| m.id).collect();
     assert!(!default_ids.is_empty(), "Stage must have demo messages");
 

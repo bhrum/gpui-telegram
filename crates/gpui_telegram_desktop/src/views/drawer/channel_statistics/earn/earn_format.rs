@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/channel_statistics/earn/earn_format.h:L1-L27`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -150,7 +149,7 @@ impl Render for EarnFormatChannelStatisticsEarn {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_nanoton_formatting() {
         assert_eq!(major_part(0), "0");
         assert_eq!(minor_part(0), ".00");
@@ -165,7 +164,7 @@ mod tests {
         assert_eq!(minor_part(1_000_000_000), ".00");
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_to_usd() {
         let usd = to_usd(10_000_000_000, 5.0, Some(2));
         assert_eq!(usd, "≈$50.00");

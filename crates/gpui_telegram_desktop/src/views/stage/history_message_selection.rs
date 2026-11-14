@@ -3,12 +3,11 @@
 //! Citations:
 //! - `Telegram/SourceFiles/history/history_message_selection.h:L15-L198`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use std::collections::BTreeSet;
 use gpui::*;
 use gpui_telegram_client::history::selection::{
-    MessageSelection, MessageSelectionFlatEndpoint, MessageSelectionKind, TextSelection,
+    MessageSelection,
+    MessageSelectionFlatEndpoint,
 };
 
 /// Upstream `history_message_selection.h:L93-L198`: Stage Message Selection State & Range Tracker

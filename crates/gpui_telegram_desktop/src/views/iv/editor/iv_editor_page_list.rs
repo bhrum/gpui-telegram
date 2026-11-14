@@ -1,5 +1,4 @@
 //! Instant View List Block Engine & Item Numbering (`iv_editor_page_list.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/time_picker_box.cpp:L25-L132
 //! Reference: Telegram/SourceFiles/ui/boxes/time_picker_box.h:L15-L22
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

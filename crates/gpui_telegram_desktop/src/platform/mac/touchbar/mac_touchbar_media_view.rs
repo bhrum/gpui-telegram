@@ -100,7 +100,7 @@ impl Render for MacTouchbarMediaViewMacTouchbar {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_media_view_touchbar_controls() {
         let mut mv = MacTouchbarMediaViewMacTouchbar::new();
         assert!(!mv.is_playing);

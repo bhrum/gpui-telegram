@@ -29,16 +29,22 @@ fn sample_server_chats() -> Vec<ChatSummary> {
         ChatSummary {
             chat_id: 101,
             title: "Product Sync".to_string(),
+            chat_type: 1,
             last_message: None,
             unread_count: 2,
+            is_group: Some(true),
+            is_bot: Some(false),
             avatar_color: Some(0x2AABEE),
             updated_at: None,
         },
         ChatSummary {
             chat_id: 202,
             title: "Alice Chen".to_string(),
+            chat_type: 0,
             last_message: Some("Ready for review".to_string()),
             unread_count: 0,
+            is_group: Some(false),
+            is_bot: Some(false),
             avatar_color: Some(0x8E44AD),
             updated_at: Some(1_700_000_000_000),
         },
@@ -54,8 +60,8 @@ fn fus_d004_initial_and_reset_workspace_state_contains_no_fabricated_peers_or_hi
     assert!(sidebar.dialogs.is_empty());
     assert_eq!(sidebar.active_chat_id, None);
     assert_eq!(sidebar.inner_widget.selected_index, None);
-    assert!(sidebar.stories.elements().is_empty());
-    assert!(sidebar.top_peers.entries().is_empty());
+    assert!(sidebar.stories.elements.is_empty());
+    assert!(sidebar.top_peers.entries.is_empty());
     assert!(!sidebar.suggestions.is_visible);
 
     assert_eq!(stage.active_chat_id, None);
@@ -96,10 +102,10 @@ fn fus_d004_authoritative_chat_list_replaces_stale_or_fabricated_rows_without_me
     let mut stage = ConversationStage::new_demo();
     let mut inspector = ContextInspector::new_demo();
 
-    // Precondition: demo constructors have seeded rows 1..=6 and active_chat_id = Some(3).
-    assert_eq!(sidebar.dialogs.len(), 6);
-    assert_eq!(sidebar.active_chat_id, Some(3));
-    assert_eq!(stage.active_chat_id, Some(3));
+    // Precondition: demo constructors have 5 seeded rows (1..=5) and active_chat_id = Some(1).
+    assert_eq!(sidebar.dialogs.len(), 5);
+    assert_eq!(sidebar.active_chat_id, Some(1));
+    assert_eq!(stage.active_chat_id, Some(1));
     assert!(!stage.chat_histories.is_empty());
 
     let server_chats = sample_server_chats();
@@ -207,16 +213,22 @@ fn fus_d004_refresh_preserves_existing_selection_only_when_still_present_in_serv
         ChatSummary {
             chat_id: 202,
             title: "Alice Chen (Core)".to_string(),
+            chat_type: 0,
             last_message: Some("Updated message".to_string()),
             unread_count: 1,
+            is_group: Some(false),
+            is_bot: Some(false),
             avatar_color: Some(0x8E44AD),
             updated_at: None,
         },
         ChatSummary {
             chat_id: 303,
             title: "Infra Ops".to_string(),
+            chat_type: 1,
             last_message: None,
             unread_count: 0,
+            is_group: Some(true),
+            is_bot: Some(false),
             avatar_color: Some(0x16A085),
             updated_at: None,
         },
@@ -239,8 +251,11 @@ fn fus_d004_refresh_preserves_existing_selection_only_when_still_present_in_serv
     let without_202 = vec![ChatSummary {
         chat_id: 303,
         title: "Infra Ops".to_string(),
+        chat_type: 1,
         last_message: None,
         unread_count: 0,
+        is_group: Some(true),
+        is_bot: Some(false),
         avatar_color: Some(0x16A085),
         updated_at: None,
     }];
@@ -332,11 +347,13 @@ fn fus_d004_account_switch_and_logout_reset_clears_previous_account_state() {
         101,
         vec![HistoricalMessage {
             message_id: 5001,
-            chat_id: 101,
             sender_id: 10,
             text: "Account A confidential message".to_string(),
+            content: None,
             date: None,
+            reply_to: None,
             is_outgoing: Some(true),
+            ..Default::default()
         }],
     ));
     inspector.is_open = true;
@@ -445,11 +462,13 @@ fn fus_d004_stale_async_chat_list_and_history_responses_are_fenced() {
     ));
     let stale_history_msg = vec![HistoricalMessage {
         message_id: 9001,
-        chat_id: 101,
         sender_id: 10,
         text: "Should be blocked when fence is stale".to_string(),
+        content: None,
         date: None,
+        reply_to: None,
         is_outgoing: Some(true),
+        ..Default::default()
     }];
     assert!(!apply_fenced_history_response(
         &stale_fence,
@@ -568,7 +587,8 @@ fn fus_d004_send_guard_rejects_unselected_or_unauthenticated_sends_and_preserves
     .is_none());
     assert_eq!(composer.text(), "Draft before selecting any chat");
 
-    // 5. Authenticated + coherently selected authoritative chat 101 consumes draft and returns verified target.
+    // 5. Authenticated + coherently selected authoritative chat 101 submits and consumes draft cleanly.
+    composer.submit_primary();
     let (target, consumed_text) = try_consume_composer_for_send(
         true,
         Some("token_a"),

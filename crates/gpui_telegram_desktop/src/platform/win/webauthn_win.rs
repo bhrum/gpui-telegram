@@ -100,7 +100,7 @@ impl Render for WebauthnWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_webauthn_win_methods() {
         let mut auth = WebauthnWinWin::new();
         assert!(auth.load_method().is_ok());

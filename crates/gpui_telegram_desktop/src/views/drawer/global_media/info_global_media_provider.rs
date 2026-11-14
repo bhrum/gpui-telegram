@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/global_media/info_global_media_provider.cpp
 //! Subsystem: info | Feature ID: TCG-N23 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_global_media_inner_widget::SharedMediaType;
@@ -190,7 +189,7 @@ impl Render for InfoGlobalMediaProviderGlobalMedia {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_global_media_slice_distance_and_nearest() {
         let items = vec![100, 90, 80, 70, 60, 50];
         let slice = GlobalMediaSlice::new(
@@ -212,7 +211,7 @@ mod tests {
         assert_eq!(slice.nearest(40), Some(50));
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_section_floating_header_and_preload_math() {
         let photo_provider = InfoGlobalMediaProviderGlobalMedia::new(SharedMediaType::Photo);
         assert!(!photo_provider.section_has_floating_header());

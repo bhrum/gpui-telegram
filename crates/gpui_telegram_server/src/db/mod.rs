@@ -1,6 +1,15 @@
+pub mod acp_store;
+pub mod analytics_store;
+pub mod auth_store;
+pub mod chat_extras;
 pub mod migrations;
+pub mod poll_store;
 pub mod pool;
+pub mod rich_store;
 pub mod schema;
+pub mod schema_parity;
+pub mod schema_parity_extra;
+pub mod social_store;
 
 pub use migrations::run_migrations;
 pub use pool::SqlitePool;
@@ -25,7 +34,7 @@ impl<T> SqliteResultExt<T> for std::result::Result<T, rusqlite::Error> {
 /// ServerDatabase provides the persistence abstraction for GPUI Telegram Server.
 #[derive(Debug, Clone)]
 pub struct ServerDatabase {
-    pool: SqlitePool,
+    pub(crate) pool: SqlitePool,
 }
 
 impl ServerDatabase {
@@ -599,43 +608,111 @@ impl ServerDatabase {
 
     // --- Chat Operations ---
 
+    fn insert_chat_conn(conn: &rusqlite::Connection, chat: &ChatRecord) -> Result<()> {
+        conn.execute(
+            r#"
+            INSERT INTO chats (
+                chat_id, chat_type, peer_type, title, username, about,
+                creator_id, is_forum, flags, photo_file_id, slowmode_seconds,
+                linked_chat_id, pinned_message_id, pts, last_message_id,
+                last_message_date_ms, unread_count, account_generation,
+                created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+            "#,
+            params![
+                chat.chat_id.0,
+                chat.chat_type as i64,
+                chat.peer_type as i64,
+                chat.title,
+                chat.username,
+                chat.about,
+                chat.creator_id.0 as i64,
+                chat.is_forum as i64,
+                chat.flags as i64,
+                chat.photo_file_id,
+                chat.slowmode_seconds as i64,
+                chat.linked_chat_id.map(|c| c.0),
+                chat.pinned_message_id.map(|m| m.0),
+                chat.pts as i64,
+                chat.last_message_id.0,
+                chat.last_message_date_ms,
+                chat.unread_count as i64,
+                chat.account_generation as i64,
+                chat.created_at_ms,
+                chat.updated_at_ms,
+            ],
+        )
+        .map_db()?;
+        Ok(())
+    }
+
     pub fn create_chat(&self, chat: &ChatRecord) -> Result<()> {
-        self.pool.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO chats (
-                    chat_id, chat_type, peer_type, title, username, about,
-                    creator_id, is_forum, flags, photo_file_id, slowmode_seconds,
-                    linked_chat_id, pinned_message_id, pts, last_message_id,
-                    last_message_date_ms, unread_count, account_generation,
-                    created_at_ms, updated_at_ms
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-                "#,
-                params![
-                    chat.chat_id.0,
-                    chat.chat_type as i64,
-                    chat.peer_type as i64,
-                    chat.title,
-                    chat.username,
-                    chat.about,
-                    chat.creator_id.0 as i64,
-                    chat.is_forum as i64,
-                    chat.flags as i64,
-                    chat.photo_file_id,
-                    chat.slowmode_seconds as i64,
-                    chat.linked_chat_id.map(|c| c.0),
-                    chat.pinned_message_id.map(|m| m.0),
-                    chat.pts as i64,
-                    chat.last_message_id.0,
-                    chat.last_message_date_ms,
-                    chat.unread_count as i64,
-                    chat.account_generation as i64,
-                    chat.created_at_ms,
-                    chat.updated_at_ms,
-                ],
+        self.pool.with_conn(|conn| Self::insert_chat_conn(conn, chat))
+    }
+
+    /// Atomically creates a chat and its initial member rows in one SQLite transaction.
+    pub fn create_chat_with_members(&self, chat: &ChatRecord, members: &[ChatMemberRecord]) -> Result<()> {
+        self.pool.with_transaction(|tx| {
+            Self::insert_chat_conn(tx, chat)?;
+            for member in members {
+                Self::upsert_chat_member_conn(tx, member)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Increments per-member `read_states.unread_count` for active peers other than the sender.
+    pub(crate) fn increment_peer_unread_in_tx(
+        tx: &rusqlite::Transaction<'_>,
+        chat_id: ChatId,
+        sender_id: UserId,
+        topic_id: Option<TopicId>,
+        now_ms: i64,
+    ) -> Result<()> {
+        let mut st_mem = tx
+            .prepare("SELECT user_id FROM chat_members WHERE chat_id = ?1 AND user_id != ?2 AND role NOT IN ('kicked', 'banned', 'left')")
+            .map_db()?;
+        let peers: Vec<i64> = st_mem
+            .query_map(params![chat_id.0, sender_id.0 as i64], |r| r.get(0))
+            .map_db()?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_db()?;
+        let topic_key = topic_id.map(|t| t.0).unwrap_or(0);
+        for peer_uid in peers {
+            tx.execute(
+                r#"INSERT INTO read_states (chat_id, user_id, topic_id, inbox_max_id, outbox_max_id, unread_count, updated_at_ms)
+                   VALUES (?1, ?2, ?3, 0, 0, 1, ?4)
+                   ON CONFLICT(chat_id, user_id, topic_id) DO UPDATE SET
+                       unread_count = read_states.unread_count + 1, updated_at_ms = excluded.updated_at_ms"#,
+                params![chat_id.0, peer_uid, topic_key, now_ms],
             )
             .map_db()?;
-            Ok(())
+        }
+        Ok(())
+    }
+
+    fn row_to_chat_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRecord> {
+        Ok(ChatRecord {
+            chat_id: ChatId(row.get(0)?),
+            chat_type: row.get::<_, i64>(1)? as u8,
+            peer_type: row.get::<_, i64>(2)? as u8,
+            title: row.get(3)?,
+            username: row.get(4)?,
+            about: row.get(5)?,
+            creator_id: UserId(row.get::<_, i64>(6)? as u64),
+            is_forum: row.get::<_, i64>(7)? != 0,
+            flags: row.get::<_, i64>(8)? as u32,
+            photo_file_id: row.get(9)?,
+            slowmode_seconds: row.get::<_, i64>(10)? as u32,
+            linked_chat_id: row.get::<_, Option<i64>>(11)?.map(ChatId),
+            pinned_message_id: row.get::<_, Option<i64>>(12)?.map(MsgId),
+            pts: row.get::<_, i64>(13)? as u64,
+            last_message_id: MsgId(row.get(14)?),
+            last_message_date_ms: row.get(15)?,
+            unread_count: row.get::<_, i64>(16)? as u32,
+            account_generation: row.get::<_, i64>(17)? as u64,
+            created_at_ms: row.get(18)?,
+            updated_at_ms: row.get(19)?,
         })
     }
 
@@ -655,73 +732,82 @@ impl ServerDatabase {
                 .map_db()?;
 
             let mut rows = stmt.query(params![chat_id.0]).map_db()?;
-
             if let Some(row) = rows.next().map_db()? {
-                Ok(Some(ChatRecord {
-                    chat_id: ChatId(row.get(0).map_db()?),
-                    chat_type: row.get::<_, i64>(1).map_db()? as u8,
-                    peer_type: row.get::<_, i64>(2).map_db()? as u8,
-                    title: row.get(3).map_db()?,
-                    username: row.get(4).map_db()?,
-                    about: row.get(5).map_db()?,
-                    creator_id: UserId(row.get::<_, i64>(6).map_db()? as u64),
-                    is_forum: row.get::<_, i64>(7).map_db()? != 0,
-                    flags: row.get::<_, i64>(8).map_db()? as u32,
-                    photo_file_id: row.get(9).map_db()?,
-                    slowmode_seconds: row.get::<_, i64>(10).map_db()? as u32,
-                    linked_chat_id: row.get::<_, Option<i64>>(11).map_db()?.map(ChatId),
-                    pinned_message_id: row.get::<_, Option<i64>>(12).map_db()?.map(MsgId),
-                    pts: row.get::<_, i64>(13).map_db()? as u64,
-                    last_message_id: MsgId(row.get(14).map_db()?),
-                    last_message_date_ms: row.get(15).map_db()?,
-                    unread_count: row.get::<_, i64>(16).map_db()? as u32,
-                    account_generation: row.get::<_, i64>(17).map_db()? as u64,
-                    created_at_ms: row.get(18).map_db()?,
-                    updated_at_ms: row.get(19).map_db()?,
-                }))
+                Ok(Some(Self::row_to_chat_record(row).map_db()?))
             } else {
                 Ok(None)
             }
         })
     }
 
+    pub fn get_chat_by_username(&self, username: &str) -> Result<Option<ChatRecord>> {
+        self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT chat_id, chat_type, peer_type, title, username, about,
+                           creator_id, is_forum, flags, photo_file_id, slowmode_seconds,
+                           linked_chat_id, pinned_message_id, pts, last_message_id,
+                           last_message_date_ms, unread_count, account_generation,
+                           created_at_ms, updated_at_ms
+                    FROM chats WHERE username = ?1 COLLATE NOCASE
+                    "#,
+                )
+                .map_db()?;
+            let mut rows = stmt.query(params![username]).map_db()?;
+            if let Some(row) = rows.next().map_db()? {
+                Ok(Some(Self::row_to_chat_record(row).map_db()?))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    pub fn is_user_in_chat(&self, chat_id: ChatId, user_id: UserId) -> Result<bool> {
+        let Some(chat) = self.get_chat(chat_id)? else { return Ok(false); };
+        if chat.creator_id == user_id { return Ok(true); }
+        Ok(self.get_chat_member(chat_id, user_id)?.map(|m| !matches!(m.role.as_str(), "kicked" | "banned" | "left")).unwrap_or(false))
+    }
+
     // --- Chat Member Operations ---
 
+    fn upsert_chat_member_conn(conn: &rusqlite::Connection, member: &ChatMemberRecord) -> Result<()> {
+        conn.execute(
+            r#"
+            INSERT INTO chat_members (
+                chat_id, user_id, role, permissions_bitmask, admin_title,
+                admin_rights, banned_rights, until_date_ms, joined_at_ms,
+                invited_by, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                role = excluded.role,
+                permissions_bitmask = excluded.permissions_bitmask,
+                admin_title = excluded.admin_title,
+                admin_rights = excluded.admin_rights,
+                banned_rights = excluded.banned_rights,
+                until_date_ms = excluded.until_date_ms,
+                updated_at_ms = excluded.updated_at_ms
+            "#,
+            params![
+                member.chat_id.0,
+                member.user_id.0 as i64,
+                member.role,
+                member.permissions_bitmask as i64,
+                member.admin_title,
+                member.admin_rights as i64,
+                member.banned_rights as i64,
+                member.until_date_ms,
+                member.joined_at_ms,
+                member.invited_by.map(|u| u.0 as i64),
+                member.updated_at_ms,
+            ],
+        )
+        .map_db()?;
+        Ok(())
+    }
+
     pub fn add_chat_member(&self, member: &ChatMemberRecord) -> Result<()> {
-        self.pool.with_conn(|conn| {
-            conn.execute(
-                r#"
-                INSERT INTO chat_members (
-                    chat_id, user_id, role, permissions_bitmask, admin_title,
-                    admin_rights, banned_rights, until_date_ms, joined_at_ms,
-                    invited_by, updated_at_ms
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                ON CONFLICT(chat_id, user_id) DO UPDATE SET
-                    role = excluded.role,
-                    permissions_bitmask = excluded.permissions_bitmask,
-                    admin_title = excluded.admin_title,
-                    admin_rights = excluded.admin_rights,
-                    banned_rights = excluded.banned_rights,
-                    until_date_ms = excluded.until_date_ms,
-                    updated_at_ms = excluded.updated_at_ms
-                "#,
-                params![
-                    member.chat_id.0,
-                    member.user_id.0 as i64,
-                    member.role,
-                    member.permissions_bitmask as i64,
-                    member.admin_title,
-                    member.admin_rights as i64,
-                    member.banned_rights as i64,
-                    member.until_date_ms,
-                    member.joined_at_ms,
-                    member.invited_by.map(|u| u.0 as i64),
-                    member.updated_at_ms,
-                ],
-            )
-            .map_db()?;
-            Ok(())
-        })
+        self.pool.with_conn(|conn| Self::upsert_chat_member_conn(conn, member))
     }
 
     pub fn get_chat_member(&self, chat_id: ChatId, user_id: UserId) -> Result<Option<ChatMemberRecord>> {
@@ -1171,7 +1257,7 @@ impl ServerDatabase {
         self.pool.with_conn(|conn| {
             let max_id: i64 = conn
                 .query_row(
-                    "SELECT COALESCE(MAX(chat_id), 1000) FROM chats WHERE chat_id < 500000000",
+                    "SELECT COALESCE(MAX(chat_id), 0) FROM chats WHERE chat_id < 500000000",
                     rusqlite::params![],
                     |row| row.get(0),
                 )
@@ -1206,7 +1292,7 @@ impl ServerDatabase {
             pinned_message_id: None,
             pts: 0,
             last_message_id: MsgId(0),
-            last_message_date_ms: now_ms,
+            last_message_date_ms: 0,
             unread_count: 0,
             account_generation: 1,
             created_at_ms: now_ms,
@@ -1261,7 +1347,7 @@ impl ServerDatabase {
                 params![
                     chat.chat_id.0,
                     chat.creator_id.0 as i64,
-                    "creator",
+                    "owner",
                     0xFFFFi64,
                     Some("Owner"),
                     0xFFFFFFFFi64,
@@ -1373,7 +1459,11 @@ impl ServerDatabase {
                         SELECT chat_id FROM chats WHERE creator_id = ?1
                     ) member_chats ON member_chats.chat_id = c.chat_id
                     LEFT JOIN read_states rs ON rs.chat_id = c.chat_id AND rs.user_id = ?1 AND rs.topic_id = 0
-                    ORDER BY c.updated_at_ms DESC, c.chat_id DESC
+                    LEFT JOIN user_chat_settings ucs ON ucs.chat_id = c.chat_id AND ucs.user_id = ?1
+                    ORDER BY COALESCE(ucs.is_pinned, 0) DESC,
+                             COALESCE(ucs.pin_order, 0) ASC,
+                             CASE WHEN c.last_message_id > 0 THEN c.last_message_date_ms ELSE 0 END DESC,
+                             c.chat_id ASC
                     "#,
                 )
                 .map_db()?;

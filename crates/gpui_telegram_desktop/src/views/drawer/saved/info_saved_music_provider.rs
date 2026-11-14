@@ -2,7 +2,6 @@
 //! Source: `Telegram/SourceFiles/info/saved/info_saved_music_provider.cpp:L1-L422`, `info_saved_music_provider.h:L1-L131`
 //! Subsystem: info | Feature ID: TCG-N38 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

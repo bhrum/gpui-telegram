@@ -169,7 +169,7 @@ impl Render for PlatformSpecific {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_platform_specific_lifecycle_and_permissions() {
         let mut specific = PlatformSpecific::new();
         assert!(!specific.is_started);

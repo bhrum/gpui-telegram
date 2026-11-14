@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/show_or_premium_box.cpp:L25-L218
 //! Reference: Telegram/SourceFiles/ui/boxes/show_or_premium_box.h:L15-L32
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

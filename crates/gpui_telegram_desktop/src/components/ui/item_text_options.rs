@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/item_text_options.cpp:L1-L70` & `item_text_options.h:L1-L28`
 //! Authentic GPUI implementation of rich message text layout options and flags.
-#![allow(dead_code)]
 
 /// Flags controlling text layout, link highlighting, and spoiler rendering.
 /// C++ companion: `Ui::ItemTextOptions` (`item_text_options.cpp:L17-L70`).

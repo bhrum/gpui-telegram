@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/empty_userpic.cpp:L1-L728` & `empty_userpic.h:L1-L158`
 //! Authentic GPUI implementation of fallback userpic gradients and initials rendering.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

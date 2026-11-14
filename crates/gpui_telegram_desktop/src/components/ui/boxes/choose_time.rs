@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_time.cpp:L20-L156
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_time.h:L15-L26
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

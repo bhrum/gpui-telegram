@@ -145,7 +145,7 @@ impl Render for MacFormatterItemMacTouchbarItems {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_format_commands() {
         let mut item = MacFormatterItemMacTouchbarItems::new();
         assert!(!item.is_popover_open);

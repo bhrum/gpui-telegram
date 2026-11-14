@@ -1,5 +1,4 @@
 //! Instant View Block & Leaf Navigation Hierarchy Paths (`iv_editor_page_path.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

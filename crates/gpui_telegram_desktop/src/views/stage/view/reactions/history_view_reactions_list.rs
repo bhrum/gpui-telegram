@@ -4,7 +4,7 @@
 
 use gpui::*;
 use crate::views::stage::reactions::button::ReactionKey;
-use crate::views::stage::reactions::list::{ReactorItem, WhoReactedList, K_PER_PAGE, K_PER_PAGE_FIRST};
+use crate::views::stage::reactions::list::{ReactorItem, WhoReactedList, K_PER_PAGE_FIRST};
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewReactionsListViewReactions {

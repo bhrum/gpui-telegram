@@ -4,7 +4,6 @@
 //! Upstream: Telegram/SourceFiles/ui/rows_scroll_cache.cpp:L11-L42
 //! Implements smooth scrolling container with scrollbar thumb geometry and boundary clamping.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

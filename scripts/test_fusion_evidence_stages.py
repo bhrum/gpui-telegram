@@ -23,6 +23,13 @@ COVERAGE_PATH = REPO_ROOT / "docs/verification/fusion-20261108/capability-covera
 ROADMAP_PATH = REPO_ROOT / "docs/specs/MODULE_BY_MODULE_ROADMAP.md"
 INDEX_PATH = REPO_ROOT / "docs/specs/ledger/index.json"
 SHARDS_DIR = REPO_ROOT / "docs/specs/ledger/shards"
+PACKAGED_APP_BIN = REPO_ROOT / "dist/GPUI Telegram.app/Contents/MacOS/gpui_telegram_desktop"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+MIN_PNG_BYTES = 10_240
+INCOMPLETE_FILE_MAPPED_CAP_IDS = frozenset({
+    "TCG-N01", "TCG-N16", "TCG-N22", "TCG-N30",
+    "CAP-01", "CAP-02", "CAP-03", "CAP-04", "CAP-05", "CAP-06",
+})
 
 REQUIRED_STAGES = (
     "file_mapped",
@@ -146,17 +153,41 @@ def validate_capability_entry(entry: dict, index_shard_map: dict[str, dict], che
     if bt.get("status") in ("partial", "verified") and not bt.get("verified_runs"):
         errors.append(f"{cid}: behavior_tested.status == '{bt.get('status')}' requires non-empty verified_runs")
 
-    if ui.get("status") == "verified" and not ui.get("artifacts"):
-        errors.append(f"{cid}: ui_evidence_captured.status == 'verified' requires non-empty artifacts")
+    if ui.get("status") == "verified":
+        ui_artifacts = ui.get("artifacts", [])
+        if not ui_artifacts:
+            errors.append(f"{cid}: ui_evidence_captured.status == 'verified' requires non-empty artifacts")
+        elif check_disk:
+            pngs = [a for a in ui_artifacts if isinstance(a, str) and a.lower().endswith(".png")]
+            if not pngs:
+                errors.append(f"{cid}: ui_evidence_captured.status == 'verified' requires >=1 .png artifact")
+            for art in ui_artifacts:
+                full = REPO_ROOT / art
+                if not full.exists():
+                    errors.append(f"{cid}: ui_evidence_captured artifact missing on disk: '{art}'")
+                elif art.lower().endswith(".png"):
+                    data = full.read_bytes()
+                    if len(data) <= MIN_PNG_BYTES or not data.startswith(PNG_MAGIC):
+                        errors.append(f"{cid}: invalid or undersized PNG artifact '{art}' ({len(data)} bytes)")
 
     if pa.get("status") == "verified":
-        if not pa.get("artifacts"):
+        pa_artifacts = pa.get("artifacts", [])
+        if not pa_artifacts:
             errors.append(f"{cid}: packaged_accepted.status == 'verified' requires non-empty artifacts")
         for upstream_stage in ("file_mapped", "entrypoint_reachable", "behavior_tested", "ui_evidence_captured"):
             if stages[upstream_stage].get("status") != "verified":
                 errors.append(
                     f"{cid}: packaged_accepted cannot be 'verified' while {upstream_stage} is '{stages[upstream_stage].get('status')}'"
                 )
+        if check_disk:
+            for art in pa_artifacts:
+                full = REPO_ROOT / art
+                if not full.exists():
+                    errors.append(f"{cid}: packaged_accepted artifact missing on disk: '{art}'")
+                elif art.lower().endswith(".png"):
+                    data = full.read_bytes()
+                    if len(data) <= MIN_PNG_BYTES or not data.startswith(PNG_MAGIC):
+                        errors.append(f"{cid}: invalid or undersized PNG artifact '{art}' ({len(data)} bytes)")
 
     if entry.get("state") in ("accepted", "complete", "verified"):
         for st in REQUIRED_STAGES:
@@ -229,20 +260,66 @@ class TestFusionEvidenceStages(unittest.TestCase):
             ["iv.json", "passport.json", "payments.json", "statistics.json", "wallet.json"],
         )
 
-    def test_no_capability_claims_ui_evidence_or_packaged_acceptance(self) -> None:
+    def test_ui_evidence_and_packaged_acceptance_artifacts_are_verified_on_disk(self) -> None:
         self.assertEqual(self.coverage.get("status"), "incomplete")
+        self.assertTrue(
+            PACKAGED_APP_BIN.is_file() and PACKAGED_APP_BIN.stat().st_size > 0,
+            f"Packaged desktop binary missing or empty on disk: {PACKAGED_APP_BIN}",
+        )
         summary = self.coverage.get("stage_summary", {})
-        self.assertEqual(summary.get("ui_evidence_captured", {}).get("verified"), 0)
-        self.assertEqual(summary.get("packaged_accepted", {}).get("verified"), 0)
-        computed = {st: {"verified": 0} for st in REQUIRED_STAGES}
+        self.assertEqual(summary.get("ui_evidence_captured"), {"verified": 58, "unverified": 0})
+        self.assertEqual(summary.get("packaged_accepted"), {"verified": 48, "unverified": 10})
+
+        computed = {st: {} for st in REQUIRED_STAGES}
         for cap in self.coverage["capabilities"]:
-            self.assertEqual(cap["state"], "requires_behavior_audit")
-            self.assertEqual(cap["evidence_stages"]["ui_evidence_captured"]["status"], "unverified")
-            self.assertEqual(cap["evidence_stages"]["packaged_accepted"]["status"], "unverified")
+            cid = cap["capability_id"]
+            es = cap["evidence_stages"]
+            fm_status = es["file_mapped"]["status"]
+            ue = es["ui_evidence_captured"]
+            pa = es["packaged_accepted"]
+
+            self.assertEqual(ue["status"], "verified", f"{cid}: ui_evidence_captured must be verified")
+            pngs = [a for a in ue.get("artifacts", []) if isinstance(a, str) and a.lower().endswith(".png")]
+            self.assertTrue(pngs, f"{cid}: ui_evidence_captured must include >=1 .png artifact")
+            for art in ue["artifacts"]:
+                full = REPO_ROOT / art
+                self.assertTrue(full.exists(), f"{cid}: missing ui_evidence artifact {full}")
+                if art.lower().endswith(".png"):
+                    raw = full.read_bytes()
+                    self.assertTrue(raw.startswith(PNG_MAGIC), f"{cid}: invalid PNG header on {art}")
+                    self.assertGreater(len(raw), MIN_PNG_BYTES, f"{cid}: PNG <= 10KB on {art}")
+
+            if fm_status != "verified":
+                self.assertIn(cid, INCOMPLETE_FILE_MAPPED_CAP_IDS)
+                self.assertNotEqual(pa["status"], "verified", f"{cid}: cannot claim packaged_accepted=verified")
+                self.assertEqual(pa["status"], "unverified")
+                self.assertNotEqual(cap["state"], "accepted", f"{cid}: cannot claim state=accepted")
+                self.assertEqual(cap["state"], "requires_behavior_audit")
+            else:
+                self.assertNotIn(cid, INCOMPLETE_FILE_MAPPED_CAP_IDS)
+                self.assertEqual(cap["state"], "accepted", f"{cid}: expected state=accepted")
+                self.assertEqual(pa["status"], "verified", f"{cid}: expected packaged_accepted=verified")
+                self.assertIn(
+                    "dist/GPUI Telegram.app/Contents/MacOS/gpui_telegram_desktop",
+                    pa.get("artifacts", []),
+                    f"{cid}: packaged_accepted must reference packaged binary",
+                )
+                for art in pa["artifacts"]:
+                    full = REPO_ROOT / art
+                    self.assertTrue(full.exists(), f"{cid}: missing packaged_accepted artifact {full}")
+                    if art.lower().endswith(".png"):
+                        raw = full.read_bytes()
+                        self.assertTrue(raw.startswith(PNG_MAGIC), f"{cid}: invalid PNG header on {art}")
+                        self.assertGreater(len(raw), MIN_PNG_BYTES, f"{cid}: PNG <= 10KB on {art}")
+
             for st in REQUIRED_STAGES:
-                val = cap["evidence_stages"][st]["status"]
+                val = es[st]["status"]
                 computed[st][val] = computed[st].get(val, 0) + 1
-        self.assertEqual(summary, computed)
+
+        for st in REQUIRED_STAGES:
+            recorded_nz = {k: v for k, v in summary.get(st, {}).items() if v > 0}
+            self.assertEqual(recorded_nz, computed[st], f"stage_summary[{st}] mismatch")
+            self.assertEqual(sum(summary.get(st, {}).values()), 58, f"stage_summary[{st}] sum != 58")
 
     def test_negative_stage_promotion_guards_reject_false_acceptance(self) -> None:
         sample = copy.deepcopy(self.coverage["capabilities"][0])

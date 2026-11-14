@@ -3,8 +3,6 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_todo_list.h:L24-L150`
 //! - `Telegram/SourceFiles/history/view/media/history_view_todo_list.cpp:L50-L150`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::todo::{RichTodoListCard, TodoTaskItem};

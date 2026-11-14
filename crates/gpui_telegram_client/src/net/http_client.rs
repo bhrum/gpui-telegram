@@ -228,7 +228,7 @@ pub struct SendMessageHttpResponse {
     pub chat_id: Option<serde_json::Value>,
     #[serde(default)]
     pub status: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flexible_date")]
     pub date: Option<i64>,
 }
 
@@ -248,7 +248,7 @@ pub struct ChatSummary {
     pub is_bot: Option<bool>,
     #[serde(default)]
     pub avatar_color: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_flexible_date")]
     pub updated_at: Option<i64>,
 }
 
@@ -307,7 +307,7 @@ pub struct SearchResultItemDto {
     pub snippet: String,
     #[serde(default)]
     pub category: String,
-    #[serde(default, alias = "timestamp", alias = "date_ms")]
+    #[serde(default, alias = "timestamp", alias = "date_ms", deserialize_with = "deserialize_flexible_date")]
     pub date: Option<i64>,
     #[serde(default)]
     pub avatar_color: Option<u32>,
@@ -386,7 +386,62 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Default + Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalReplyToInfo {
+    #[serde(default)]
+    pub reply_to_msg_id: Option<u64>,
+    #[serde(default)]
+    pub message_id: Option<u64>,
+    #[serde(default)]
+    pub reply_to_peer_id: Option<serde_json::Value>,
+    #[serde(default)]
+    pub quote_text: Option<String>,
+    #[serde(default)]
+    pub snippet: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub sender_id: Option<u64>,
+    #[serde(default)]
+    pub sender_name: Option<String>,
+}
+
+impl HistoricalReplyToInfo {
+    pub fn resolved_message_id(&self) -> Option<u64> {
+        self.reply_to_msg_id.or(self.message_id)
+    }
+
+    pub fn resolved_snippet(&self) -> Option<&str> {
+        self.quote_text
+            .as_deref()
+            .or(self.snippet.as_deref())
+            .or(self.text.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalReaction {
+    pub emoji: String,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default, alias = "is_chosen_by_me", alias = "user_reacted")]
+    pub chosen: bool,
+    #[serde(default)]
+    pub user_ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HistoricalMessage {
     pub message_id: u64,
     #[serde(default)]
@@ -401,6 +456,10 @@ pub struct HistoricalMessage {
     pub reply_to: Option<u64>,
     #[serde(default)]
     pub is_outgoing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_info: Option<HistoricalReplyToInfo>,
+    #[serde(default, deserialize_with = "deserialize_null_default")]
+    pub reactions: Vec<HistoricalReaction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -647,7 +706,7 @@ pub struct SyncDifferenceResponse {
 #[derive(Clone)]
 pub struct HttpClient {
     pub base_url: String,
-    client: Client,
+    pub(crate) client: Client,
     runtime_handle: Handle,
     fabushi_alipay_states:
         std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>>,
@@ -690,7 +749,7 @@ impl HttpClient {
         }
     }
 
-    async fn run_on_tokio<F, T>(&self, fut: F) -> Result<T, HttpClientError>
+    pub(crate) async fn run_on_tokio<F, T>(&self, fut: F) -> Result<T, HttpClientError>
     where
         F: Future<Output = Result<T, HttpClientError>> + Send + 'static,
         T: Send + 'static,
@@ -1426,7 +1485,9 @@ impl HttpClient {
         let req = AgentRunRequest {
             prompt: prompt.to_string(),
             session_id: session_id.to_string(),
-            model_id: model_id.map(String::from).or_else(|| Some("grok-3".to_string())),
+            model_id: model_id
+                .map(String::from)
+                .or_else(|| Some("deepseek-flash".to_string())),
             thinking_budget_tokens: Some(1024),
         };
         self.agent_runs(token, &req)
@@ -1541,12 +1602,16 @@ impl HttpClient {
         let token_owned = token.to_string();
 
         self.run_on_tokio(async move {
+            let build_get = |url: &str| {
+                let mut req = client.get(url).bearer_auth(&token_owned);
+                if let Some(l) = limit {
+                    req = req.query(&[("limit", l.to_string())]);
+                }
+                req
+            };
+
             // 1. Try primary REST path
-            let resp = client
-                .get(&primary_url)
-                .bearer_auth(&token_owned)
-                .send()
-                .await;
+            let resp = build_get(&primary_url).send().await;
 
             match resp {
                 Ok(r) if r.status() == StatusCode::OK => {
@@ -1560,11 +1625,7 @@ impl HttpClient {
             }
 
             // 2. Fallback to /api/v1/messages/history query
-            let mut req = client.get(&fallback_url).bearer_auth(&token_owned);
-            if let Some(l) = limit {
-                req = req.query(&[("limit", l.to_string())]);
-            }
-            let resp2 = req.send().await?;
+            let resp2 = build_get(&fallback_url).send().await?;
             let status2 = resp2.status();
             if status2 == StatusCode::OK {
                 let data = resp2.json::<MessagesHistoryResponse>().await?;
@@ -1952,7 +2013,7 @@ impl HttpClient {
                 let chunk = data_vec[offset..end].to_vec();
                 let part_url = format!("{}/api/v1/media/upload/{}/part/{}", base, upload_id, part_index);
                 let part_resp = client
-                    .post(&part_url)
+                    .put(&part_url)
                     .bearer_auth(&token_owned)
                     .body(chunk)
                     .send()
@@ -2413,5 +2474,77 @@ impl HttpClient {
             }
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod http_client_dto_tests {
+    use super::*;
+
+    #[test]
+    fn test_historical_message_deserializes_reply_to_info_and_reactions() {
+        let json_payload = serde_json::json!({
+            "messages": [
+                {
+                    "message_id": 102,
+                    "sender_id": 2002,
+                    "text": "Replying with reaction",
+                    "content": {"type": "Text", "data": {"text": "Replying with reaction", "entities": []}},
+                    "date": "2026-11-14T12:00:00Z",
+                    "reply_to": 101,
+                    "is_outgoing": false,
+                    "reply_to_info": {
+                        "reply_to_msg_id": 101,
+                        "reply_to_peer_id": {"User": 1001},
+                        "quote_text": "Original prompt snippet"
+                    },
+                    "reactions": [
+                        {"emoji": "👍", "count": 2, "chosen": true, "user_ids": [1001, 2002]},
+                        {"emoji": "🔥", "count": 1, "is_chosen_by_me": false}
+                    ]
+                },
+                {
+                    "message_id": 103,
+                    "sender_id": 1001,
+                    "text": "Null reactions and minimal reply",
+                    "reactions": null,
+                    "reply_to_info": {
+                        "message_id": 102,
+                        "sender_name": "Bob",
+                        "snippet": "Replying with reaction"
+                    }
+                },
+                {
+                    "message_id": 104,
+                    "sender_id": 1001,
+                    "text": "Defaults only"
+                }
+            ]
+        });
+
+        let parsed: MessagesHistoryResponse =
+            serde_json::from_value(json_payload).expect("deserialize history response");
+        let msgs = parsed.into_messages();
+        assert_eq!(msgs.len(), 3);
+
+        let info0 = msgs[0].reply_to_info.as_ref().expect("reply_to_info");
+        assert_eq!(info0.resolved_message_id(), Some(101));
+        assert_eq!(info0.resolved_snippet(), Some("Original prompt snippet"));
+        assert_eq!(msgs[0].reactions.len(), 2);
+        assert_eq!(msgs[0].reactions[0].emoji, "👍");
+        assert_eq!(msgs[0].reactions[0].count, 2);
+        assert!(msgs[0].reactions[0].chosen);
+        assert_eq!(msgs[0].reactions[0].user_ids, vec![1001, 2002]);
+        assert_eq!(msgs[0].reactions[1].emoji, "🔥");
+        assert!(!msgs[0].reactions[1].chosen);
+
+        let info1 = msgs[1].reply_to_info.as_ref().expect("enriched reply_to_info");
+        assert_eq!(info1.resolved_message_id(), Some(102));
+        assert_eq!(info1.sender_name.as_deref(), Some("Bob"));
+        assert_eq!(info1.resolved_snippet(), Some("Replying with reaction"));
+        assert!(msgs[1].reactions.is_empty());
+
+        assert!(msgs[2].reply_to_info.is_none());
+        assert!(msgs[2].reactions.is_empty());
     }
 }

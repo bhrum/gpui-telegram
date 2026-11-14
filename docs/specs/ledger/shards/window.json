@@ -1602,7 +1602,6 @@
         "pushTabbedSelectorToThirdSection",
         "returnTabbedSelector",
         "processChosenSticker",
-        "bool",
         "SectionWidget",
         "activeChat",
         "setGeometryWithTopMoved",
@@ -3580,7 +3579,6 @@
         "SeparateSharedMedia"
       ],
       "source_methods_and_signals": [
-        "bool",
         "valid"
       ],
       "style_tokens_and_metrics": [],

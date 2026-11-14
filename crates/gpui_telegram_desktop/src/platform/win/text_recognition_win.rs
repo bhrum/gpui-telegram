@@ -80,7 +80,7 @@ impl Render for TextRecognitionWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_text_recognition_win_flow() {
         let mut ocr = TextRecognitionWinWin::new();
         assert!(ocr.is_available().is_ok());

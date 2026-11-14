@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Reactions Settings Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/reactions_settings_box.h:L23-L43`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/reactions_settings_box.cpp:L44-L60`, `L200-L350`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

@@ -1,9 +1,12 @@
-// Source: Telegram/SourceFiles/settings/sections/settings_notifications.cpp, Telegram/SourceFiles/settings/sections/settings_notifications.h
-// Subsystem: settings | Feature ID: TCG-N31
-// Upstream: tr::lng_notification_private_chats, tr::lng_notification_exceptions_view, NotificationsCount::NotificationsCount
+// Source: Telegram/SourceFiles/settings/sections/settings_notifications.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_section_header,
+    settings_subsection_title, settings_toggle_row,
+};
 use gpui::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +25,8 @@ pub struct SettingsNotificationsSections {
     pub flash_taskbar_icon: bool,
     pub sound_enabled: bool,
     pub exceptions_count: usize,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsNotificationsSections {
@@ -35,132 +40,58 @@ impl SettingsNotificationsSections {
             flash_taskbar_icon: true,
             sound_enabled: true,
             exceptions_count: 5,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn toggle_private_chats(&mut self) {
-        self.private_chats_enabled = !self.private_chats_enabled;
+    pub fn new_live() -> Self {
+        let mut s = Self::new();
+        s.exceptions_count = 0;
+        s
     }
 
-    pub fn toggle_groups(&mut self) {
-        self.groups_enabled = !self.groups_enabled;
-    }
-
-    pub fn toggle_channels(&mut self) {
-        self.channels_enabled = !self.channels_enabled;
-    }
-
-    pub fn toggle_badge_include_muted(&mut self) {
-        self.include_muted_in_badge = !self.include_muted_in_badge;
-    }
-
-    pub fn set_badge_count_type(&mut self, count_type: BadgeCountType) {
-        self.badge_count_type = count_type;
-    }
-
-    pub fn toggle_flash_taskbar(&mut self) {
-        self.flash_taskbar_icon = !self.flash_taskbar_icon;
-    }
-
-    pub fn toggle_sound(&mut self) {
-        self.sound_enabled = !self.sound_enabled;
-    }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+    pub fn toggle_private_chats(&mut self) { self.private_chats_enabled = !self.private_chats_enabled; }
+    pub fn toggle_groups(&mut self) { self.groups_enabled = !self.groups_enabled; }
+    pub fn toggle_channels(&mut self) { self.channels_enabled = !self.channels_enabled; }
+    pub fn toggle_badge_include_muted(&mut self) { self.include_muted_in_badge = !self.include_muted_in_badge; }
+    pub fn set_badge_count_type(&mut self, count_type: BadgeCountType) { self.badge_count_type = count_type; }
+    pub fn toggle_flash_taskbar(&mut self) { self.flash_taskbar_icon = !self.flash_taskbar_icon; }
+    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; }
 }
 
 impl Default for SettingsNotificationsSections {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsNotificationsSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette;
+        let lang = &self.language_id;
         let badge_label = match self.badge_count_type {
-            BadgeCountType::CountMessages => "Unread Messages",
-            BadgeCountType::CountChats => "Unread Chats",
+            BadgeCountType::CountMessages => tr_str(lang, "未读消息数", "Unread Messages"),
+            BadgeCountType::CountChats => tr_str(lang, "未读对话数", "Unread Chats"),
         };
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(20.0))
-            .gap(px(16.0))
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_xl()
-                    .child("Notifications and Sounds")
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .bg(rgb(0xf4f4f5))
-                    .rounded(px(8.0))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Private Chats"))
-                            .child(div().text_color(if self.private_chats_enabled { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.private_chats_enabled { "On" } else { "Off" }))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Groups"))
-                            .child(div().text_color(if self.groups_enabled { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.groups_enabled { "On" } else { "Off" }))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Channels"))
-                            .child(div().text_color(if self.channels_enabled { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.channels_enabled { "On" } else { "Off" }))
-                    )
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .bg(rgb(0xf4f4f5))
-                    .rounded(px(8.0))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Badge Counter Mode"))
-                            .child(div().text_color(rgb(0x2481cc)).child(badge_label))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Include Muted Chats in Badge"))
-                            .child(div().text_color(if self.include_muted_in_badge { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.include_muted_in_badge { "On" } else { "Off" }))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Flash Taskbar Icon"))
-                            .child(div().text_color(if self.flash_taskbar_icon { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.flash_taskbar_icon { "On" } else { "Off" }))
-                    )
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .p(px(12.0))
-                    .bg(rgb(0xf4f4f5))
-                    .rounded(px(8.0))
-                    .child(div().child("Custom Exceptions"))
-                    .child(div().text_color(rgb(0x707579)).child(format!("{} chats", self.exceptions_count)))
-            )
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::Speaker, tr_str(lang, "通知与声音", "Notifications and Sounds"), None, pal))
+                .child(settings_toggle_row(IconName::ContactsUsers, tr_str(lang, "私聊通知", "Private Chats"), None, self.private_chats_enabled, pal, Self::toggle_private_chats, cx))
+                .child(settings_toggle_row(IconName::GroupUsers, tr_str(lang, "群组通知", "Groups"), None, self.groups_enabled, pal, Self::toggle_groups, cx))
+                .child(settings_toggle_row(IconName::ChannelMegaphone, tr_str(lang, "频道通知", "Channels"), None, self.channels_enabled, pal, Self::toggle_channels, cx))
+                .child(settings_toggle_row(IconName::Speaker, tr_str(lang, "提示音", "Play Sound"), None, self.sound_enabled, pal, Self::toggle_sound, cx)))
+            .child(settings_card(pal)
+                .child(settings_subsection_title(tr_str(lang, "角标与闪烁", "Badge Counter"), pal))
+                .child(settings_toggle_row(IconName::Mute, tr_str(lang, "包含已静音对话", "Include Muted Chats"), None, self.include_muted_in_badge, pal, Self::toggle_badge_include_muted, cx))
+                .child(settings_action_row(IconName::ArchivedChats, tr_str(lang, "角标计数方式", "Count Unread"), badge_label, pal, false, |this| {
+                    this.badge_count_type = match this.badge_count_type {
+                        BadgeCountType::CountMessages => BadgeCountType::CountChats,
+                        BadgeCountType::CountChats => BadgeCountType::CountMessages,
+                    };
+                }, cx))
+                .child(settings_toggle_row(IconName::SettingsGear, tr_str(lang, "任务栏闪烁提醒", "Flash Taskbar Icon"), None, self.flash_taskbar_icon, pal, Self::toggle_flash_taskbar, cx)))
+            .into_any_element()
     }
 }

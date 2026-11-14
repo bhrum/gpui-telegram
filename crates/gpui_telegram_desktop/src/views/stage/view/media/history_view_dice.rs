@@ -3,8 +3,6 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_dice.h:L20-L69`
 //! - `Telegram/SourceFiles/history/view/media/history_view_dice.cpp:L23-L106`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 

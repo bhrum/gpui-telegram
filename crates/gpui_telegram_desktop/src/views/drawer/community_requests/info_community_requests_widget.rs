@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/community_requests/info_community_requests_widget.h`
 //! Subsystem: info | Feature ID: TCG-N23 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

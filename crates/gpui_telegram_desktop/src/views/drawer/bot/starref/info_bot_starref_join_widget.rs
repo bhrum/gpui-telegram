@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/bot/starref/info_bot_starref_join_widget.h, info_bot_starref_join_widget.cpp
 //! Exact affiliate program browser, pagination (`kPerPage = 50`), and sorting state machine.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -126,7 +125,7 @@ impl Render for InfoBotStarrefJoinWidgetBotStarref {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_join_widget_sorting_and_pagination() {
         let mut widget = InfoBotStarrefJoinWidgetBotStarref::new(3003, StarRefJoinType::Suggested);
         widget.add_item(StarRefProgramItem {

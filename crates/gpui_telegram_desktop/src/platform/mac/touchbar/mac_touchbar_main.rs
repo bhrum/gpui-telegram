@@ -131,7 +131,7 @@ impl Render for MacTouchbarMainMacTouchbar {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_touchbar_main_items_and_modes() {
         let mut main = MacTouchbarMainMacTouchbar::new();
         assert_eq!(main.active_item_identifiers(), vec!["pinnedPanel", "popoverInput"]);

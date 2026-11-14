@@ -1,9 +1,13 @@
-//! Authentic GPUI Settings Websites Section Component
-//! Source: Telegram/SourceFiles/settings/sections/settings_websites.cpp, Telegram/SourceFiles/settings/sections/settings_websites.h
-//! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
+//! Upstream Source: Telegram/SourceFiles/settings/sections/settings_websites.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_empty_state,
+    settings_section_header,
+};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub const K_SHORT_POLL_TIMEOUT_MS: u64 = 60_000;
@@ -24,46 +28,36 @@ pub struct SettingsWebsitesSections {
     pub poll_timeout_ms: u64,
     pub has_divider: bool,
     pub is_visible: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsWebsitesSections {
     pub fn new() -> Self {
         Self {
             websites: vec![
-                ConnectedWebsite {
-                    id: 501,
-                    domain: "fragment.com".into(),
-                    bot_name: "Fragment Auth Bot".into(),
-                    browser: "Safari / macOS".into(),
-                    ip: "192.168.1.50".into(),
-                    location: "United States".into(),
-                },
-                ConnectedWebsite {
-                    id: 502,
-                    domain: "telegram.org".into(),
-                    bot_name: "Telegram Login".into(),
-                    browser: "Chrome / Windows".into(),
-                    ip: "10.0.0.5".into(),
-                    location: "United Kingdom".into(),
-                },
+                ConnectedWebsite { id: 501, domain: "fragment.com".into(), bot_name: "Fragment Auth Bot".into(), browser: "Safari / macOS".into(), ip: "192.168.1.50".into(), location: "United States".into() },
+                ConnectedWebsite { id: 502, domain: "telegram.org".into(), bot_name: "Telegram Login".into(), browser: "Chrome / Windows".into(), ip: "10.0.0.5".into(), location: "United Kingdom".into() },
             ],
             poll_timeout_ms: K_SHORT_POLL_TIMEOUT_MS,
             has_divider: true,
             is_visible: true,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn websites_id(&self) -> &'static str {
-        "settings_websites"
+    pub fn new_live() -> Self {
+        let mut s = Self::new();
+        s.websites.clear();
+        s
     }
 
-    pub fn toggle_visibility(&mut self) {
-        self.is_visible = !self.is_visible;
-    }
-
-    pub fn margins(&self) -> (f32, f32, f32, f32) {
-        (22.0, 10.0, 20.0, 5.0)
-    }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+    pub fn websites_id(&self) -> &'static str { "settings_websites" }
+    pub fn toggle_visibility(&mut self) { self.is_visible = !self.is_visible; }
+    pub fn margins(&self) -> (f32, f32, f32, f32) { (22.0, 10.0, 20.0, 5.0) }
 
     pub fn disconnect_all(&mut self) -> usize {
         let count = self.websites.len();
@@ -77,112 +71,49 @@ impl SettingsWebsitesSections {
         self.websites.len() < initial_len
     }
 
-    pub fn remove(&mut self, id: u64) {
-        self.disconnect(id);
-    }
+    pub fn remove(&mut self, id: u64) { self.disconnect(id); }
 
     pub fn update(&mut self, site: ConnectedWebsite) {
         if let Some(existing) = self.websites.iter_mut().find(|w| w.id == site.id) {
             *existing = site;
-        } else {
-            self.websites.push(site);
-        }
+        } else { self.websites.push(site); }
     }
 
-    pub fn add_divider(&mut self) {
-        self.has_divider = true;
-    }
-
-    pub fn lng_sessions_ip(&self, ip: &str) -> String {
-        format!("IP: {}", ip)
-    }
-
-    pub fn lng_settings_disconnect(&mut self, id: u64) {
-        self.disconnect(id);
-    }
+    pub fn add_divider(&mut self) { self.has_divider = true; }
+    pub fn lng_sessions_ip(&self, ip: &str) -> String { format!("IP: {}", ip) }
+    pub fn lng_settings_disconnect(&mut self, id: u64) { self.disconnect(id); }
 }
 
 impl Default for SettingsWebsitesSections {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsWebsitesSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let sites = self.websites.clone();
-        let is_empty = sites.is_empty();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_visible { return div().into_any_element(); }
+        let pal = self.palette;
+        let lang = &self.language_id;
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(16.0))
-            .gap(px(12.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(div().font_weight(FontWeight::BOLD).text_lg().child("Connected Websites"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x8a909d))
-                                    .child("Websites you logged into with Telegram."),
-                            ),
-                    ),
-            )
-            .child(
-                if is_empty {
-                    div()
-                        .p(px(16.0))
-                        .rounded_md()
-                        .bg(rgb(0x282c34))
-                        .text_center()
-                        .text_xs()
-                        .text_color(rgb(0x8a909d))
-                        .child("No connected websites")
-                } else {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.0))
-                        .children(sites.into_iter().map(|s| {
-                            div()
-                                .flex()
-                                .flex_row()
-                                .justify_between()
-                                .items_center()
-                                .p(px(10.0))
-                                .rounded_md()
-                                .bg(rgb(0x282c34))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .child(div().font_weight(FontWeight::SEMIBOLD).child(s.domain))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(rgb(0x8a909d))
-                                                .child(format!("{} | {}", s.browser, s.ip)),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(rgb(0xeb5757))
-                                        .child("Disconnect"),
-                                )
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::BotRobot, tr_str(lang, "已授权网站", "Connected Websites"), None, pal))
+                .when(!self.websites.is_empty(), |el| {
+                    el.child(settings_action_row(IconName::DeleteTrash, tr_str(lang, "全部断开授权", "Disconnect All"), "", pal, true, |this| {
+                        this.disconnect_all();
+                    }, cx))
+                })
+                .map(|el| {
+                    if self.websites.is_empty() {
+                        el.child(settings_empty_state(IconName::BotRobot, tr_str(lang, "暂无已登录网站", "No connected websites"), pal))
+                    } else {
+                        el.children(self.websites.clone().into_iter().map(|w| {
+                            let wid = w.id;
+                            settings_action_row(IconName::BotRobot, &format!("{} ({})", w.domain, w.browser), tr_str(lang, "断开", "Disconnect"), pal, true, move |this| {
+                                this.disconnect(wid);
+                            }, cx)
                         }))
-                },
-            )
+                    }
+                }))
+            .into_any_element()
     }
 }

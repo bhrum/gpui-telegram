@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/history_item_edition.h:L26-L56` (HistoryMessageEdition)
 //! - `Telegram/SourceFiles/history/history_item_edition.cpp:L14-L51`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::item::HistoryMessageEdition as ClientHistoryMessageEdition;
 

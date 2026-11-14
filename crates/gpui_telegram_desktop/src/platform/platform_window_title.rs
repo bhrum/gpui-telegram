@@ -110,7 +110,7 @@ impl Render for PlatformWindowTitle {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_platform_window_title_defaults_and_methods() {
         let mut title = PlatformWindowTitle::new();
         assert_eq!(title.title, "Telegram");

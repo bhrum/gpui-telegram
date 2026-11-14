@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/emoji_stake_box.cpp:L35-L654
 //! Reference: Telegram/SourceFiles/ui/boxes/emoji_stake_box.h:L25-L69
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

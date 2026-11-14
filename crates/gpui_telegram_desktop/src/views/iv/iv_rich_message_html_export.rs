@@ -1,6 +1,5 @@
 //! Target Symbol: IvRichMessageHtmlExport
 //! Module 13: Instant View Offline HTML Export Pipeline
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

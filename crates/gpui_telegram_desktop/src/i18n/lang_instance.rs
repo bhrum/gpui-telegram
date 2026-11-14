@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_instance.h`, `lang_instance.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use std::collections::HashMap;
 use crate::i18n::lang_file_parser::LangFileParser;
@@ -64,6 +63,50 @@ impl Default for LangInstance {
 impl LangInstance {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates a `LangInstance` configured for a built-in language (`"en"` or `"zh-CN"`).
+    pub fn for_language(lang_code: &str) -> Self {
+        let mut instance = Self::new();
+        if super::lang_pack::is_zh_lang(lang_code) {
+            instance.switch_to_id(Language {
+                id: "zh-CN".to_string(),
+                plural_id: "zh".to_string(),
+                base_id: "en".to_string(),
+                name: "Chinese (Simplified)".to_string(),
+                native_name: "简体中文".to_string(),
+            });
+        } else {
+            instance.switch_to_id(Language {
+                id: "en".to_string(),
+                plural_id: "en".to_string(),
+                base_id: String::new(),
+                name: "English".to_string(),
+                native_name: "English".to_string(),
+            });
+        }
+        for (k, v) in super::lang_pack::builtin_pack(lang_code) {
+            instance.values.insert((*k).to_string(), (*v).to_string());
+        }
+        instance
+    }
+
+    /// Resolves a localization key using loaded overrides first, then the built-in pack.
+    pub fn tr(&self, key: &str) -> &str {
+        if let Some(val) = self.get_value(key) {
+            val
+        } else {
+            super::lang_pack::tr_key(&self.id, key)
+        }
+    }
+
+    /// Resolves a localization key with loaded overrides, built-in pack, or explicit fallback.
+    pub fn tr_or<'a>(&'a self, key: &str, fallback: &'a str) -> &'a str {
+        if let Some(val) = self.get_value(key) {
+            val
+        } else {
+            super::lang_pack::tr_key_or(&self.id, key, fallback)
+        }
     }
 
     pub fn id(&self) -> &str {

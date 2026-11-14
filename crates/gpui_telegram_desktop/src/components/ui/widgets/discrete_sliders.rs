@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/discrete_sliders.cpp:L15-L260
 //! Reference: Telegram/SourceFiles/ui/widgets/discrete_sliders.h:L28-L173
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Default transition animation duration for discrete active pill sliding.
 pub const K_DISCRETE_ANIM_DURATION_MS: u64 = 150;

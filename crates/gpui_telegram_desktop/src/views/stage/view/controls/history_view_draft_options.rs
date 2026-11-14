@@ -3,10 +3,10 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_draft_options.h`
 
 use crate::views::composer::controls::{
-    DraftOptionsFsm, DraftOptionsView, DraftSection, ForwardOptions, ReplyDraftOptions, WebPageDraftOptions,
+    DraftOptionsView,
+    DraftSection,
 };
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub struct HistoryViewDraftOptionsViewControls {
     pub view: DraftOptionsView,

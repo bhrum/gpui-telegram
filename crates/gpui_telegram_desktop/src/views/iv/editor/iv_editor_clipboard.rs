@@ -1,5 +1,4 @@
 //! Instant View Editor Clipboard MIME Protocol (`iv_editor_clipboard.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

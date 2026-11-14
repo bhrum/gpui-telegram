@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/similar_peers/info_similar_peers_widget.h:L1-L77`
 //! Subsystem: info | Feature ID: TCG-N11 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownDocumentMarkdown
 //! Module 13: Instant View Document AST Model & Structural Node Taxonomy
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

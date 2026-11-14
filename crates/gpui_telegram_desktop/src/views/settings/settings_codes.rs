@@ -2,7 +2,6 @@
 //! Source: Telegram/SourceFiles/settings/settings_codes.cpp, Telegram/SourceFiles/settings/settings_codes.h
 //! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's PremiumLimitsBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/premium_limits_box.h:L44-L85`
 //! and `Telegram/SourceFiles/boxes/premium_limits_box.cpp:L544-L1080`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

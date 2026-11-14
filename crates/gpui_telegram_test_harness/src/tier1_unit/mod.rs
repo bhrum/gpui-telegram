@@ -15,13 +15,11 @@ mod tests {
 
     #[test]
     fn test_waveform_roundtrip() {
-        let input: Vec<f32> = (0..100).map(|i| (i as f32) / 100.0).collect();
+        let input: Vec<u8> = (0..100).map(|i| (i % 32) as u8).collect();
         let packed = encode_waveform_5bit(&input);
-        assert!(packed.len() <= 65);
-        let unpacked = decode_waveform_5bit(&packed, 100);
-        assert_eq!(unpacked.len(), 100);
-        for (a, b) in input.iter().zip(unpacked.iter()) {
-            assert!((a - b).abs() <= 0.05);
-        }
+        assert!(packed.len() <= 64);
+        let unpacked = decode_waveform_5bit(&packed);
+        assert!(unpacked.len() >= 100);
+        assert_eq!(&unpacked[..100], input.as_slice());
     }
 }

@@ -16,8 +16,32 @@
 //!    - InvoiceMessageView
 //!    - InlineBotKeyboardView
 
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use gpui::*;
 use gpui::prelude::FluentBuilder;
+
+use crate::i18n::tr_key_or;
+use crate::theme::TdesktopThemePalette;
+use crate::views::stage::history_drag_area::{DragTargetZone, HistoryDragArea};
+use crate::views::stage::history_view_highlight_manager::{
+    HistoryViewHighlightManager, SelectedQuote,
+};
+use crate::views::stage::pinned_bar::PinnedTracker;
+use crate::views::stage::rich_meta::MessageRichMeta;
+use crate::views::stage::stage_bars::{
+    render_pinned_banner_46px, render_scroll_to_bottom_fab, render_stage_top_bar, TopBarUiAction,
+};
+use crate::views::stage::stage_bubble::{render_message_row_1to1, BubbleGroupLayout, BubbleUiAction};
+use crate::views::stage::stage_context_menu::{render_message_context_menu, ContextMenuAction};
+use crate::views::stage::wallpaper::{
+    render_empty_history_placeholder, render_empty_no_chat_pill, render_themed_wallpaper,
+};
+use crate::views::stage::cards_interactive::InteractiveCardAction;
+use crate::views::stage::cards_media::MediaCardAction;
+use crate::views::stage::entities_render::RichTextAction;
 pub use crate::views::stage::cards::*;
 
 pub use crate::views::stage::cards::text_card::{
@@ -227,12 +251,30 @@ pub struct ConversationStage {
     pub chat_subtitle: String,
     pub chat_avatar_initials: String,
     pub chat_avatar_color: u32,
+    pub chat_avatar_url: Option<String>,
     pub pinned_message: Option<String>,
     pub messages: Vec<MessageItemModel>,
     pub is_inspector_open: bool,
     pub pending_call_request: bool,
+    pub pending_video_call: bool,
     pub pending_media_url: Option<(String, bool)>,
+    pub pending_media_viewer: Option<(Vec<(String, bool, Option<String>)>, usize)>,
+    pub pending_iv_url: Option<(String, String)>,
     pub pending_bot_action: Option<String>,
+    pub pending_edit_message: Option<(u64, String)>,
+    pub pending_forward_message_ids: Option<Vec<u64>>,
+    pub pending_delete_message_ids: Option<Vec<u64>>,
+    pub pending_pin_toggle: Option<(u64, bool)>,
+    pub pending_translate_message_id: Option<u64>,
+    pub pending_poll_vote: Option<(u64, u32)>,
+    pub pending_reaction_toggle: Option<(u64, String)>,
+    pub pending_voice_playback: Option<(u64, bool, f32, f32)>,
+    pub pending_download_url: Option<(String, String)>,
+    pub pending_dropped_paths: Option<Vec<PathBuf>>,
+    pub pending_open_profile_peer_id: Option<u64>,
+    pub pending_clear_history: bool,
+    pub pending_export_chat: bool,
+    pub pending_toggle_mute: bool,
     pub chat_histories: std::collections::HashMap<u64, Vec<MessageItemModel>>,
     pub chat_pinned_messages: std::collections::HashMap<u64, Option<String>>,
     pub scroll_handle: ScrollHandle,
@@ -240,26 +282,103 @@ pub struct ConversationStage {
     pub is_anchored_to_bottom: bool,
     pub chat_scroll_positions: std::collections::HashMap<u64, (Point<Pixels>, bool)>,
     pub unread_incoming_count: usize,
+    pub unread_anchor_msg_id: Option<u64>,
     pub active_context_menu: Option<MessageContextMenuState>,
     pub pending_reply: Option<ReplyReference>,
     pub simulated_max_offset: Option<Size<Pixels>>,
     pub selected_message_ids: Vec<u64>,
+    pub palette: TdesktopThemePalette,
+    pub lang_id: String,
+    pub message_meta: HashMap<u64, MessageRichMeta>,
+    pub pinned_tracker: PinnedTracker,
+    pub highlight_manager: HistoryViewHighlightManager,
+    pub drag_area: HistoryDragArea,
+    pub focus_handle: Option<FocusHandle>,
+    pub search_open: bool,
+    pub search_query: String,
+    pub search_match_ids: Vec<u64>,
+    pub search_match_cursor: usize,
+    pub hovered_message_id: Option<u64>,
+    pub revealed_spoilers: HashSet<(u64, usize)>,
+    pub expanded_quotes: HashSet<(u64, usize)>,
+    pub copied_code_msg: Option<u64>,
+    pub more_menu_open: bool,
+    pub toast_banner: Option<String>,
+}
+
+fn delivery_status_rank(status: DeliveryStatus) -> u8 {
+    match status {
+        DeliveryStatus::Sending => 0,
+        DeliveryStatus::Sent => 1,
+        DeliveryStatus::Read => 2,
+    }
+}
+
+fn max_delivery_status(a: DeliveryStatus, b: DeliveryStatus) -> DeliveryStatus {
+    if delivery_status_rank(a) >= delivery_status_rank(b) {
+        a
+    } else {
+        b
+    }
+}
+
+fn merge_message_in_place(existing: &mut MessageItemModel, incoming: &MessageItemModel) {
+    existing.delivery_status = max_delivery_status(existing.delivery_status, incoming.delivery_status);
+    if !incoming.sender_name.is_empty() {
+        existing.sender_name = incoming.sender_name.clone();
+    }
+    if !incoming.avatar_initials.is_empty() {
+        existing.avatar_initials = incoming.avatar_initials.clone();
+    }
+    if !incoming.timestamp.is_empty() {
+        existing.timestamp = incoming.timestamp.clone();
+    }
+    if incoming.reply_to.is_some() {
+        existing.reply_to = incoming.reply_to.clone();
+    }
+    if !incoming.reactions.is_empty() {
+        existing.reactions = incoming.reactions.clone();
+    }
+    existing.content = incoming.content.clone();
+    if incoming.bot_keyboard.is_some() {
+        existing.bot_keyboard = incoming.bot_keyboard.clone();
+    }
+    existing.is_pinned = existing.is_pinned || incoming.is_pinned;
 }
 
 impl ConversationStage {
     pub fn new() -> Self {
+        let palette = TdesktopThemePalette::default();
         let mut stage = Self {
             active_chat_id: None,
             chat_title: "Select a chat".to_string(),
             chat_subtitle: String::new(),
             chat_avatar_initials: String::new(),
-            chat_avatar_color: 0x242F3D,
+            chat_avatar_color: palette.input_bg,
+            chat_avatar_url: None,
             pinned_message: None,
             messages: Vec::new(),
             is_inspector_open: false,
             pending_call_request: false,
+            pending_video_call: false,
             pending_media_url: None,
+            pending_media_viewer: None,
+            pending_iv_url: None,
             pending_bot_action: None,
+            pending_edit_message: None,
+            pending_forward_message_ids: None,
+            pending_delete_message_ids: None,
+            pending_pin_toggle: None,
+            pending_translate_message_id: None,
+            pending_poll_vote: None,
+            pending_reaction_toggle: None,
+            pending_voice_playback: None,
+            pending_download_url: None,
+            pending_dropped_paths: None,
+            pending_open_profile_peer_id: None,
+            pending_clear_history: false,
+            pending_export_chat: false,
+            pending_toggle_mute: false,
             chat_histories: std::collections::HashMap::new(),
             chat_pinned_messages: std::collections::HashMap::new(),
             scroll_handle: ScrollHandle::new(),
@@ -267,10 +386,28 @@ impl ConversationStage {
             is_anchored_to_bottom: true,
             chat_scroll_positions: std::collections::HashMap::new(),
             unread_incoming_count: 0,
+            unread_anchor_msg_id: None,
             active_context_menu: None,
             pending_reply: None,
             simulated_max_offset: None,
             selected_message_ids: Vec::new(),
+            palette,
+            lang_id: "en".to_string(),
+            message_meta: HashMap::new(),
+            pinned_tracker: PinnedTracker::new(false),
+            highlight_manager: HistoryViewHighlightManager::new(),
+            drag_area: HistoryDragArea::new(),
+            focus_handle: None,
+            search_open: false,
+            search_query: String::new(),
+            search_match_ids: Vec::new(),
+            search_match_cursor: 0,
+            hovered_message_id: None,
+            revealed_spoilers: HashSet::new(),
+            expanded_quotes: HashSet::new(),
+            copied_code_msg: None,
+            more_menu_open: false,
+            toast_banner: None,
         };
         stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
         stage
@@ -278,35 +415,20 @@ impl ConversationStage {
 
     /// Explicit fixture constructor for legacy card/layout tests. Never called by production code.
     pub fn new_demo() -> Self {
-        let mut stage = Self {
-            active_chat_id: Some(1),
-            chat_title: "Alice Smith".to_string(),
-            chat_subtitle: "online".to_string(),
-            chat_avatar_initials: "AS".to_string(),
-            chat_avatar_color: 0x2AABEE,
-            pinned_message: Some("Design review meeting notes and sprint roadmap".to_string()),
-            messages: Vec::new(),
-            is_inspector_open: true,
-            pending_call_request: false,
-            pending_media_url: None,
-            pending_bot_action: None,
-            chat_histories: std::collections::HashMap::new(),
-            chat_pinned_messages: std::collections::HashMap::new(),
-            scroll_handle: ScrollHandle::new(),
-            row_height_cache: RowHeightCache::new(),
-            is_anchored_to_bottom: true,
-            chat_scroll_positions: std::collections::HashMap::new(),
-            unread_incoming_count: 0,
-            active_context_menu: None,
-            pending_reply: None,
-            simulated_max_offset: None,
-            selected_message_ids: Vec::new(),
-        };
+        let mut stage = Self::new();
+        stage.active_chat_id = Some(1);
+        stage.chat_title = "Alice Smith".to_string();
+        stage.chat_subtitle = "online".to_string();
+        stage.chat_avatar_initials = "AS".to_string();
+        stage.chat_avatar_color = 0x2AABEE;
+        stage.pinned_message = Some("Design review meeting notes and sprint roadmap".to_string());
+        stage.is_inspector_open = true;
 
         stage.populate_demo_messages();
         stage.chat_histories.insert(1, stage.messages.clone());
         stage.chat_pinned_messages.insert(1, stage.pinned_message.clone());
         stage.populate_secondary_chat_histories();
+        stage.sync_pinned_tracker();
         stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
         stage
     }
@@ -316,17 +438,45 @@ impl ConversationStage {
         self.chat_title = "Select a chat".to_string();
         self.chat_subtitle.clear();
         self.chat_avatar_initials.clear();
-        self.chat_avatar_color = 0x242F3D;
+        self.chat_avatar_color = self.palette.input_bg;
+        self.chat_avatar_url = None;
         self.pinned_message = None;
         self.messages.clear();
         self.is_inspector_open = false;
         self.pending_call_request = false;
+        self.pending_video_call = false;
         self.pending_media_url = None;
+        self.pending_media_viewer = None;
+        self.pending_iv_url = None;
         self.pending_bot_action = None;
+        self.pending_edit_message = None;
+        self.pending_forward_message_ids = None;
+        self.pending_delete_message_ids = None;
+        self.pending_pin_toggle = None;
+        self.pending_translate_message_id = None;
+        self.pending_poll_vote = None;
+        self.pending_reaction_toggle = None;
+        self.pending_voice_playback = None;
+        self.pending_download_url = None;
+        self.pending_dropped_paths = None;
+        self.pending_open_profile_peer_id = None;
+        self.pending_clear_history = false;
+        self.pending_export_chat = false;
+        self.pending_toggle_mute = false;
         self.unread_incoming_count = 0;
+        self.unread_anchor_msg_id = None;
         self.active_context_menu = None;
         self.pending_reply = None;
         self.simulated_max_offset = None;
+        self.selected_message_ids.clear();
+        self.pinned_tracker.set_pinned_ids(Vec::new());
+        self.search_open = false;
+        self.search_query.clear();
+        self.search_match_ids.clear();
+        self.search_match_cursor = 0;
+        self.hovered_message_id = None;
+        self.more_menu_open = false;
+        self.toast_banner = None;
         self.scroll_handle.set_offset(Point::default());
         self.is_anchored_to_bottom = true;
         self.row_height_cache.measured_heights.clear();
@@ -338,6 +488,9 @@ impl ConversationStage {
         self.chat_histories.clear();
         self.chat_pinned_messages.clear();
         self.chat_scroll_positions.clear();
+        self.message_meta.clear();
+        self.revealed_spoilers.clear();
+        self.expanded_quotes.clear();
     }
 
     pub fn configure_for_cloud_workspace(&mut self, _server_url: &str, _username: Option<&str>) {
@@ -359,15 +512,30 @@ impl ConversationStage {
         self.chat_subtitle = subtitle.to_string();
         self.chat_avatar_initials = initials.to_string();
         self.chat_avatar_color = color;
+        self.active_context_menu = None;
+        self.selected_message_ids.clear();
+        self.more_menu_open = false;
+        self.search_open = false;
+        self.search_query.clear();
+        self.search_match_ids.clear();
+        self.search_match_cursor = 0;
 
         // 1. Cleanly load history without cross-chat bleeding
         self.messages = self.chat_histories.get(&chat_id).cloned().unwrap_or_default();
         self.row_height_cache.mark_dirty();
 
-        // 2. Cleanly load pinned banner without cross-chat bleeding
+        // 2. Cleanly load pinned banner without cross-chat bleeding + sync multi-pin tracker
+        let pinned_ids: Vec<i64> = self
+            .messages
+            .iter()
+            .filter(|m| m.is_pinned)
+            .map(|m| m.id as i64)
+            .collect();
+        self.pinned_tracker.set_pinned_ids(pinned_ids);
         self.pinned_message = self.chat_pinned_messages.get(&chat_id).cloned().unwrap_or_else(|| {
-            self.messages.iter().find(|m| m.is_pinned).and_then(|m| match &m.content {
+            self.messages.iter().rev().find(|m| m.is_pinned).and_then(|m| match &m.content {
                 MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => caption.clone(),
                 _ => None,
             })
         });
@@ -391,6 +559,16 @@ impl ConversationStage {
 
     pub fn add_message(&mut self, message: MessageItemModel) {
         if message.is_pinned {
+            let mut ids: Vec<i64> = self
+                .messages
+                .iter()
+                .filter(|m| m.is_pinned)
+                .map(|m| m.id as i64)
+                .collect();
+            if !ids.contains(&(message.id as i64)) {
+                ids.push(message.id as i64);
+            }
+            self.pinned_tracker.set_pinned_ids(ids);
             if let MessageContent::Text { ref text, .. } = message.content {
                 let snippet = text.lines().next().unwrap_or(text).to_string();
                 self.pinned_message = Some(snippet);
@@ -399,8 +577,25 @@ impl ConversationStage {
                 }
             }
         }
+        if let Some(pos) = self.messages.iter().position(|m| m.id == message.id) {
+            merge_message_in_place(&mut self.messages[pos], &message);
+            if let Some(cid) = self.active_chat_id {
+                let hist = self.chat_histories.entry(cid).or_default();
+                if let Some(hpos) = hist.iter().position(|m| m.id == message.id) {
+                    merge_message_in_place(&mut hist[hpos], &message);
+                } else {
+                    hist.push(self.messages[pos].clone());
+                }
+            }
+            self.row_height_cache.mark_dirty();
+            return;
+        }
+
         let is_outgoing = message.direction == MessageDirection::Outgoing;
         let was_at_bottom = self.is_at_bottom();
+        if !is_outgoing && !was_at_bottom && self.unread_anchor_msg_id.is_none() {
+            self.unread_anchor_msg_id = Some(message.id);
+        }
 
         self.messages.push(message.clone());
         if let Some(cid) = self.active_chat_id {
@@ -409,6 +604,7 @@ impl ConversationStage {
         self.row_height_cache.mark_dirty();
 
         if is_outgoing || was_at_bottom {
+            self.unread_anchor_msg_id = None;
             self.scroll_to_bottom();
         } else {
             self.unread_incoming_count += 1;
@@ -1110,17 +1306,19 @@ impl Default for ConversationStage {
 
 impl Render for ConversationStage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_active_chat = self.active_chat_id.is_some();
-        let title = self.chat_title.clone();
-        let subtitle = self.chat_subtitle.clone();
-        let initials = self.chat_avatar_initials.clone();
-        let avatar_color = self.chat_avatar_color;
-        let pinned = self.pinned_message.clone();
-        let is_inspector_open = self.is_inspector_open;
+        if self.focus_handle.is_none() {
+            self.focus_handle = Some(cx.focus_handle());
+        }
+        let focus = self.focus_handle.clone().unwrap();
 
+        let has_active_chat = self.active_chat_id.is_some();
         let total_msgs = self.messages.len();
         if self.row_height_cache.is_dirty() || self.row_height_cache.len() != total_msgs {
             self.row_height_cache.rebuild_prefix_sums(&self.messages);
+        }
+        if self.is_at_bottom() {
+            self.unread_incoming_count = 0;
+            self.unread_anchor_msg_id = None;
         }
 
         let viewport_h = f32::from(self.scroll_handle.bounds().size.height).max(600.0);
@@ -1128,251 +1326,198 @@ impl Render for ConversationStage {
         let overscan_px = 300.0;
 
         let (start_idx, end_idx) = self.row_height_cache.visible_range(scroll_top, viewport_h, overscan_px, total_msgs);
-
         let top_spacer_height = if start_idx > 0 && !self.row_height_cache.prefix_sums.is_empty() {
             self.row_height_cache.prefix_sums[(start_idx - 1).min(self.row_height_cache.prefix_sums.len() - 1)]
         } else {
             0.0
         };
-
         let bottom_spacer_height = if end_idx < total_msgs.saturating_sub(1) && !self.row_height_cache.prefix_sums.is_empty() {
             (self.row_height_cache.total_height - self.row_height_cache.prefix_sums[end_idx.min(self.row_height_cache.prefix_sums.len() - 1)]).max(0.0)
         } else {
             0.0
         };
 
+        let highlight_paint = self.highlight_manager.paint_state(stage_now_ms());
+        let is_group_chat = self.chat_subtitle.contains("member")
+            || self.chat_subtitle.contains("subscriber")
+            || self.chat_subtitle == "group"
+            || self.messages.iter().filter(|m| m.direction == MessageDirection::Incoming).map(|m| m.sender_id).collect::<HashSet<_>>().len() > 1;
+        let selected_set: HashSet<u64> = self.selected_message_ids.iter().copied().collect();
+        let has_any_selection = !selected_set.is_empty();
+
         let mut message_rows = Vec::with_capacity(if total_msgs == 0 { 0 } else { end_idx - start_idx + 1 });
         if total_msgs > 0 {
             for idx in start_idx..=end_idx.min(total_msgs.saturating_sub(1)) {
+                let msg = &self.messages[idx];
                 let (attached_prev, attached_next) = compute_attachment(&self.messages, idx);
-                message_rows.push(Self::render_interactive_message_row(
-                    &self.messages[idx],
-                    attached_prev,
-                    attached_next,
+                let is_outgoing = msg.direction == MessageDirection::Outgoing;
+                let group = BubbleGroupLayout {
+                    attached_to_prev: attached_prev,
+                    attached_to_next: attached_next,
+                    show_sender_name: !is_outgoing && !attached_prev && is_group_chat,
+                    show_bottom_avatar: !is_outgoing && !attached_next,
+                    show_tail: !attached_next,
+                    reserve_avatar_column: !is_outgoing && is_group_chat,
+                };
+                let meta = self.message_meta.get(&msg.id);
+                let prev_date = if idx > 0 {
+                    self.message_meta.get(&self.messages[idx - 1].id).and_then(|m| m.date_group_label.as_deref())
+                } else {
+                    None
+                };
+                let cur_date = meta.and_then(|m| m.date_group_label.as_deref());
+                let date_divider = match (prev_date, cur_date) {
+                    (Some(p), Some(c)) if p != c => Some(c),
+                    (None, Some(c)) if idx == 0 => Some(c),
+                    _ => None,
+                };
+                let hl_alpha = highlight_paint
+                    .as_ref()
+                    .and_then(|(hid, p)| if *hid == msg.id { Some(p.opacity) } else { None })
+                    .unwrap_or(0.0);
+
+                message_rows.push(render_message_row_1to1(
+                    msg,
+                    meta,
+                    group,
+                    selected_set.contains(&msg.id),
+                    has_any_selection,
+                    self.hovered_message_id == Some(msg.id),
+                    hl_alpha,
+                    self.unread_anchor_msg_id == Some(msg.id),
+                    date_divider,
+                    &self.revealed_spoilers,
+                    &self.expanded_quotes,
+                    self.copied_code_msg,
+                    &self.palette,
+                    &self.lang_id,
                     cx,
+                    |this, action, cx| this.handle_bubble_action(action, cx),
                 ));
             }
         }
 
-        div()
+        let sticky_date: Option<String> = if total_msgs > 0 && has_active_chat {
+            self.messages.get(start_idx).and_then(|m| {
+                self.message_meta
+                    .get(&m.id)
+                    .and_then(|rm| rm.date_group_label.clone())
+                    .or_else(|| if m.timestamp.contains(' ') { m.timestamp.split(' ').next().map(str::to_string) } else { None })
+            })
+        } else {
+            None
+        };
+
+        let pinned_info: Option<(String, String, Option<String>, usize, usize)> = if has_active_chat {
+            self.pinned_message.as_ref().map(|snippet| {
+                let target_id = self.pinned_tracker.current_msg_id().map(|id| id as u64);
+                let target_msg = target_id
+                    .and_then(|id| self.messages.iter().find(|m| m.id == id))
+                    .or_else(|| self.messages.iter().rev().find(|m| m.is_pinned));
+                let sender = target_msg.map(|m| m.sender_name.clone()).unwrap_or_default();
+                let thumb = target_msg.and_then(|m| match &m.content {
+                    MessageContent::Media { url, .. } => Some(url.clone()),
+                    MessageContent::Album { items, .. } => items.first().map(|i| i.url.clone()),
+                    _ => None,
+                });
+                let count = self.pinned_tracker.count().max(1);
+                let active_idx = self.pinned_tracker.current_index;
+                (snippet.clone(), sender, thumb, count, active_idx)
+            })
+        } else {
+            None
+        };
+
+        let show_scroll_fab = has_active_chat && total_msgs > 0 && (!self.is_at_bottom() || self.unread_incoming_count > 0);
+        let accent_hex = self.palette.accent;
+
+        let mut root = div()
+            .id("conversation-stage-root")
+            .track_focus(&focus)
+            .key_context("ConversationStage")
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                this.handle_stage_key_down(event, cx);
+            }))
+            .drag_over::<gpui::ExternalPaths>(move |style, _paths: &gpui::ExternalPaths, _, _| {
+                style.border_2().border_color(rgb(accent_hex))
+            })
+            .on_drop::<gpui::ExternalPaths>(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                let dropped: Vec<PathBuf> = paths.paths().to_vec();
+                if !dropped.is_empty() {
+                    let strings: Vec<String> = dropped.iter().map(|p| p.display().to_string()).collect();
+                    let (_zone, _) = this.drag_area.drop_files(strings, false);
+                    this.pending_dropped_paths = Some(dropped);
+                    this.toast_banner = Some("Dropped files ready to attach".to_string());
+                    cx.notify();
+                }
+            }))
+            .relative()
             .flex_1()
             .min_h(px(0.0))
             .w_full()
             .overflow_hidden()
-            .bg(rgb(0x0E1621)) // Upstream history background color
+            .bg(rgb(self.palette.history_bg))
             .flex()
-            .flex_col()
-            // 1. Stage Top App Bar (Header: height 52px)
-            .child(
-                div()
-                    .h(px(52.0))
-                    .flex_shrink_0()
-                    .w_full()
-                    .bg(rgb(0x17212B))
-                    .border_b_1()
-                    .border_color(rgb(0x0E1621))
-                    .px(px(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    // Peer Info (Avatar + Title + Subtitle)
-                    .child(
-                        div()
-                            .when(has_active_chat, |el| {
-                                el.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_inspector();
-                                    cx.notify();
-                                }))
-                            })
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .when(has_active_chat || !initials.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .w(px(36.0))
-                                        .h(px(36.0))
-                                        .rounded_full()
-                                        .bg(rgb(avatar_color))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_color(rgb(0xFFFFFF))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_size(px(13.0))
-                                        .child(initials),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(if has_active_chat { rgb(0xFFFFFF) } else { rgb(0x8A9AA8) })
-                                            .child(title),
-                                    )
-                                    .when(!subtitle.is_empty(), |el| {
-                                        el.child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(rgb(0x8A9AA8))
-                                                .child(subtitle),
-                                        )
-                                    }),
-                            ),
-                    )
-                    // Action Icons (Audio Call, Video Call, Remote Computer, Drawer Toggle)
-                    .when(has_active_chat, |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(14.0))
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .px(px(6.0))
-                                        .py(px(4.0))
-                                        .rounded(px(6.0))
-                                        .hover(|s| s.bg(rgb(0x242F3D)))
-                                        .text_size(px(16.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            this.pending_call_request = true;
-                                            cx.notify();
-                                        }))
-                                        .child("📞"),
-                                )
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .px(px(6.0))
-                                        .py(px(4.0))
-                                        .rounded(px(6.0))
-                                        .hover(|s| s.bg(rgb(0x242F3D)))
-                                        .text_size(px(16.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            this.pending_bot_action = Some("Remote Computer".to_string());
-                                            cx.notify();
-                                        }))
-                                        .child("🖥️"),
-                                )
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .px(px(6.0))
-                                        .py(px(4.0))
-                                        .rounded(px(6.0))
-                                        .hover(|s| s.bg(rgb(0x242F3D)))
-                                        .text_size(px(16.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            this.pending_media_url = Some(("https://example.com/demo.mp4".to_string(), true));
-                                            cx.notify();
-                                        }))
-                                        .child("🎬"),
-                                )
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .px(px(6.0))
-                                        .py(px(4.0))
-                                        .rounded(px(6.0))
-                                        .hover(|s| s.bg(rgb(0x242F3D)))
-                                        .text_size(px(16.0))
-                                        .text_color(if is_inspector_open { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            this.toggle_inspector();
-                                            cx.notify();
-                                        }))
-                                        .child("ℹ️"),
-                                ),
-                        )
-                    }),
-            )
-            // 2. Pinned Message Bar (if any)
-            .when_some(pinned, |el, pin_text| {
-                el.child(
-                    div()
-                        .h(px(36.0))
-                        .flex_shrink_0()
-                        .w_full()
-                        .bg(rgb(0x131E2A))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .px(px(16.0))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(rgb(0x2AABEE))
-                                        .child("📌 Pinned Message:"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child(pin_text),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .cursor_pointer()
-                                .text_size(px(12.0))
-                                .text_color(rgb(0x8A9AA8))
-                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                    this.pinned_message = None;
-                                    cx.notify();
-                                }))
-                                .child("✕"),
-                        ),
-                )
-            })
-            // 3. Virtualized Message Transcript Area (Scrollable with mouse wheel)
+            .flex_col();
+
+        if has_active_chat || total_msgs > 0 {
+            root = root.child(render_stage_top_bar(
+                self.active_chat_id,
+                &self.chat_title,
+                &self.chat_subtitle,
+                &self.chat_avatar_initials,
+                self.chat_avatar_url.as_deref(),
+                self.selected_message_ids.len(),
+                self.search_open,
+                &self.search_query,
+                self.search_match_cursor,
+                self.search_match_ids.len(),
+                self.is_inspector_open,
+                self.more_menu_open,
+                &self.palette,
+                &self.lang_id,
+                cx,
+                |this, action, cx| this.handle_topbar_action(action, cx),
+            ));
+        }
+
+        if let Some((snippet, sender, thumb, count, active_idx)) = pinned_info {
+            root = root.child(render_pinned_banner_46px(
+                &snippet,
+                &sender,
+                thumb.as_deref(),
+                count,
+                active_idx,
+                &self.palette,
+                &self.lang_id,
+                cx,
+                |this, action, cx| this.handle_topbar_action(action, cx),
+            ));
+        }
+
+        let transcript = div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .overflow_hidden()
+            .child(render_themed_wallpaper(&self.palette))
             .child(
                 div()
                     .id("stage-messages-scroll")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .w_full()
-                    .px(px(24.0))
-                    .py(px(16.0))
+                    .relative()
+                    .size_full()
+                    .px(px(12.0))
+                    .py(px(14.0))
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll_handle)
                     .flex()
                     .flex_col()
-                    .gap(px(0.0))
                     .when(!has_active_chat && total_msgs == 0, |el| {
-                        el.child(
-                            div()
-                                .flex_1()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .px(px(14.0))
-                                        .py(px(6.0))
-                                        .rounded_full()
-                                        .bg(rgb(0x182533))
-                                        .text_size(px(13.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .child("Select a chat"),
-                                ),
-                        )
+                        el.child(render_empty_no_chat_pill(&self.palette, &self.lang_id))
+                    })
+                    .when(has_active_chat && total_msgs == 0, |el| {
+                        el.child(render_empty_history_placeholder(&self.palette, &self.lang_id))
                     })
                     .when(top_spacer_height > 0.0, |el| {
                         el.child(div().id("stage-top-spacer").w_full().h(px(top_spacer_height)).flex_shrink_0())
@@ -1382,453 +1527,670 @@ impl Render for ConversationStage {
                         el.child(div().id("stage-bottom-spacer").w_full().h(px(bottom_spacer_height)).flex_shrink_0())
                     }),
             )
-            .when_some(self.active_context_menu.clone(), |el, menu| {
-                let msg_id = menu.message_id;
-                let is_pinned = menu.is_pinned;
-                let text = menu.text_snippet.clone();
-
+            .when_some(sticky_date, |el, date_lbl| {
                 el.child(
                     div()
                         .absolute()
-                        .inset_0()
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                            this.active_context_menu = None;
-                            cx.notify();
-                        }))
+                        .top(px(8.0))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
                         .child(
                             div()
-                                .absolute()
-                                .left(menu.position.x)
-                                .top(menu.position.y)
-                                .w(px(160.0))
-                                .bg(rgb(0x212D3B))
-                                .border_1()
-                                .border_color(rgb(0x2B5278))
-                                .rounded(px(8.0))
-                                .shadow_lg()
-                                .py(px(4.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(1.0))
-                                .when(text.is_some(), |m| {
-                                    let t = text.unwrap();
-                                    m.child(Self::render_menu_item("📋", "Copy Text", false, cx.listener(move |this, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(t.clone()));
-                                        this.active_context_menu = None;
-                                        cx.notify();
-                                    })))
-                                })
-                                .child(Self::render_menu_item("↩️", "Reply", false, cx.listener(move |this, _, _, cx| {
-                                    let sender_name = this.messages.iter().find(|m| m.id == msg_id).map(|m| m.sender_name.clone()).unwrap_or_else(|| "User".to_string());
-                                    let snippet = this.messages.iter().find(|m| m.id == msg_id).map(|m| match &m.content {
-                                        MessageContent::Text { text, .. } => text.lines().next().unwrap_or(text).to_string(),
-                                        _ => "Message".to_string(),
-                                    }).unwrap_or_default();
-                                    this.pending_reply = Some(ReplyReference {
-                                        message_id: msg_id,
-                                        sender_name,
-                                        snippet,
-                                    });
-                                    this.active_context_menu = None;
-                                    cx.notify();
-                                })))
-                                .child(Self::render_menu_item("↪️", "Forward", false, cx.listener(move |this, _, _, cx| {
-                                    this.active_context_menu = None;
-                                    cx.notify();
-                                })))
-                                .child(Self::render_menu_item(
-                                    "📌",
-                                    if is_pinned { "Unpin" } else { "Pin" },
-                                    false,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.toggle_pin_message(msg_id);
-                                        this.active_context_menu = None;
-                                        cx.notify();
-                                    })
-                                ))
-                                .child(Self::render_menu_item("🗑️", "Delete", true, cx.listener(move |this, _, _, cx| {
-                                    this.delete_message(msg_id);
-                                    this.active_context_menu = None;
-                                    cx.notify();
-                                })))
-                        )
+                                .px(px(12.0))
+                                .py(px(3.0))
+                                .rounded_full()
+                                .bg(self.palette.service_pill_rgba())
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(self.palette.service_pill_fg))
+                                .child(date_lbl),
+                        ),
                 )
             })
+            .when_some(self.toast_banner.clone(), |el, toast| {
+                el.child(
+                    div()
+                        .id("stage-toast-pill")
+                        .absolute()
+                        .bottom(px(16.0))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(px(14.0))
+                                .py(px(6.0))
+                                .rounded_full()
+                                .bg(rgb(self.palette.tooltip_bg))
+                                .text_size(px(12.0))
+                                .text_color(rgb(self.palette.tooltip_fg))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                    this.toast_banner = None;
+                                    cx.notify();
+                                }))
+                                .child(toast),
+                        ),
+                )
+            })
+            .when(show_scroll_fab, |el| {
+                let unread = self.unread_incoming_count as u32;
+                el.child(render_scroll_to_bottom_fab(unread, &self.palette, cx, |this, cx| {
+                    this.handle_topbar_action(TopBarUiAction::ScrollToBottom, cx);
+                }))
+            })
+            .when(self.drag_area.is_active(), |el| {
+                let target_files = matches!(self.drag_area.hovered_zone(), Some(DragTargetZone::Document));
+                el.child(
+                    div()
+                        .absolute()
+                        .inset(px(16.0))
+                        .rounded(px(16.0))
+                        .bg(TdesktopThemePalette::rgba_with_alpha(self.palette.card_bg, 0.90))
+                        .border_2()
+                        .border_color(rgb(self.palette.accent))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(8.0))
+                        .child(div().text_size(px(15.0)).font_weight(FontWeight::BOLD).text_color(rgb(self.palette.text_primary)).child(
+                            if target_files {
+                                tr_key_or(&self.lang_id, "lng_drag_files_here", "Drop files to send uncompressed")
+                            } else {
+                                tr_key_or(&self.lang_id, "lng_drag_photos_here", "Drop photos or videos to send")
+                            }
+                        )),
+                )
+            });
+
+        root = root.child(transcript);
+
+        if let Some(menu) = self.active_context_menu.clone() {
+            let can_edit = menu.is_outgoing
+                && self
+                    .messages
+                    .iter()
+                    .find(|m| m.id == menu.message_id)
+                    .map(|m| matches!(m.content, MessageContent::Text { .. }))
+                    .unwrap_or(false);
+            let is_translated = self
+                .message_meta
+                .get(&menu.message_id)
+                .map(|m| m.show_translation)
+                .unwrap_or(false);
+            root = root.child(render_message_context_menu(
+                menu.message_id,
+                menu.position,
+                menu.is_outgoing,
+                menu.is_pinned,
+                can_edit,
+                is_translated,
+                &self.palette,
+                &self.lang_id,
+                cx,
+                |this, action, cx| this.handle_context_action(action, cx),
+            ));
+        }
+
+        root
     }
 }
 
+fn stage_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl ConversationStage {
-    fn render_menu_item(
-        icon: &'static str,
-        label: &'static str,
-        is_danger: bool,
-        handler: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-    ) -> impl IntoElement {
-        div()
-            .cursor_pointer()
-            .px(px(12.0))
-            .py(px(6.0))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .hover(|s| s.bg(rgb(0x2B5278)))
-            .on_mouse_down(MouseButton::Left, handler)
-            .child(div().text_size(px(13.0)).child(icon))
-            .child(
-                div()
-                    .text_size(px(13.0))
-                    .text_color(if is_danger { rgb(0xE05D5D) } else { rgb(0xFFFFFF) })
-                    .child(label),
-            )
+    pub fn apply_theme(&mut self, palette: TdesktopThemePalette, lang_id: impl Into<String>) {
+        self.palette = palette;
+        self.lang_id = lang_id.into();
     }
 
-    fn render_interactive_message_row(
-        msg: &MessageItemModel,
-        attached_prev: bool,
-        attached_next: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let msg_id = msg.id;
-        let is_outgoing = msg.is_outgoing();
+    pub fn set_chat_avatar_url(&mut self, url: Option<String>) {
+        self.chat_avatar_url = url;
+    }
 
-        // Service messages are centered
-        if let MessageContent::Service { ref text, service_type } = msg.content {
-            return div()
-                .w_full()
-                .flex_shrink_0()
-                .flex()
-                .justify_center()
-                .child(ServiceMessageView::render(text, service_type))
-                .into_any_element();
-        }
+    pub fn set_message_meta(&mut self, msg_id: u64, meta: MessageRichMeta) {
+        self.message_meta.insert(msg_id, meta);
+        self.row_height_cache.mark_dirty();
+    }
 
-        let media_click_info = match &msg.content {
-            MessageContent::Media { url, media_type, .. } => {
-                Some((url.clone(), *media_type == MediaType::Video))
-            }
-            MessageContent::Album { .. } => {
-                Some(("https://example.com/album_photo.jpg".to_string(), false))
-            }
-            MessageContent::Story { .. } => {
-                Some(("https://example.com/story_stream.mp4".to_string(), true))
-            }
-            MessageContent::Location { latitude, longitude, .. } => {
-                Some((format!("https://maps.google.com/?q={},{}", latitude, longitude), false))
-            }
-            _ => None,
-        };
+    pub fn sync_pinned_tracker(&mut self) {
+        let pinned_ids: Vec<i64> = self.messages.iter().filter(|m| m.is_pinned).map(|m| m.id as i64).collect();
+        self.pinned_tracker.set_pinned_ids(pinned_ids);
+    }
 
-        let is_voice_msg = matches!(msg.content, MessageContent::Voice { .. });
-        let is_invoice_msg = matches!(msg.content, MessageContent::Invoice { .. });
-        let rounding = BubbleRounding::compute(is_outgoing, attached_prev, attached_next);
-        let bubble = Self::render_message_bubble(msg, rounding, cx);
-
-        // Pre-build Poll vote buttons if message is an open Poll
-        let poll_vote_bar: Option<AnyElement> = if let MessageContent::Poll { ref options, is_closed: false, .. } = msg.content {
-            let mut vote_btns = Vec::with_capacity(options.len());
-            for opt in options.clone() {
-                let opt_id = opt.id;
-                let is_sel = opt.is_selected;
-                vote_btns.push(
-                    div()
-                        .cursor_pointer()
-                        .px(px(10.0))
-                        .py(px(4.0))
-                        .rounded(px(6.0))
-                        .bg(if is_sel { rgb(0x2AABEE) } else { rgb(0x242F3D) })
-                        .hover(|s| s.bg(rgb(0x2AABEE)))
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFFFFFF))
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                            this.vote_poll(msg_id, opt_id);
-                            cx.notify();
-                        }))
-                        .child(format!("🗳️ Vote Option #{} ({:.0}%)", opt_id, opt.percentage))
-                        .into_any_element(),
-                );
+    pub fn jump_to_message(&mut self, msg_id: u64) {
+        if let Some(idx) = self.messages.iter().position(|m| m.id == msg_id) {
+            if self.row_height_cache.is_dirty() || self.row_height_cache.len() != self.messages.len() {
+                self.row_height_cache.rebuild_prefix_sums(&self.messages);
             }
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .children(vote_btns)
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
-
-        // Pre-build Inline Bot Keyboard buttons if present
-        let bot_kb_element: Option<AnyElement> = msg.bot_keyboard.as_ref().map(|rows| {
-            let mut row_els = Vec::with_capacity(rows.len());
-            for row in rows.clone() {
-                let mut btn_els = Vec::with_capacity(row.len());
-                for btn in row {
-                    let action_label = btn.text.clone();
-                    btn_els.push(
-                        div()
-                            .cursor_pointer()
-                            .flex_1()
-                            .h(px(34.0))
-                            .rounded(px(6.0))
-                            .bg(rgba(0x243447CC))
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .border_1()
-                            .border_color(rgb(0x2B5278))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                this.pending_bot_action = Some(action_label.clone());
-                                cx.notify();
-                            }))
-                            .child(btn.text)
-                            .into_any_element(),
-                    );
-                }
-                row_els.push(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .children(btn_els)
-                        .into_any_element(),
-                );
-            }
-            div()
-                .w(px(340.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .children(row_els)
-                .into_any_element()
-        });
-
-        // Pre-build Quick-Reaction pills ("👍", "🔥", "❤️")
-        let mut reaction_pills = Vec::with_capacity(3);
-        for emoji in ["👍", "🔥", "❤️"] {
-            let existing = msg.reactions.iter().find(|r| r.emoji == emoji);
-            let count = existing.map(|r| r.count).unwrap_or(0);
-            let reacted = existing.map(|r| r.user_reacted).unwrap_or(false);
-            let emoji_str = emoji.to_string();
-            reaction_pills.push(
-                div()
-                    .cursor_pointer()
-                    .px(px(6.0))
-                    .py(px(2.0))
-                    .rounded_full()
-                    .bg(if reacted { rgb(0x2B5278) } else { rgb(0x182533) })
-                    .hover(|s| s.bg(rgb(0x2B5278)))
-                    .text_size(px(11.0))
-                    .text_color(if reacted { rgb(0xFFFFFF) } else { rgb(0x8A9AA8) })
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                        this.toggle_reaction(msg_id, &emoji_str);
-                        cx.notify();
-                    }))
-                    .child(if count > 0 {
-                        format!("{} {}", emoji, count)
-                    } else {
-                        emoji.to_string()
-                    })
-                    .into_any_element(),
+            let y_top = if idx > 0 {
+                self.row_height_cache.prefix_sums.get(idx - 1).copied().unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            self.scroll_handle.set_offset(point(px(0.0), px(-y_top)));
+            self.is_anchored_to_bottom = false;
+            self.highlight_manager.highlight(
+                SelectedQuote {
+                    message_id: msg_id,
+                    text_range: None,
+                    todo_list_id: None,
+                    poll_option: None,
+                    rich_page: None,
+                },
+                stage_now_ms(),
             );
         }
+    }
 
-        let row_align = if is_outgoing {
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .flex()
-                .justify_end()
-                .mt(px(if attached_prev { 0.0 } else { 6.0 }))
-                .mb(px(2.0))
-        } else {
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .flex()
-                .justify_start()
-                .mt(px(if attached_prev { 0.0 } else { 6.0 }))
-                .mb(px(2.0))
-        };
-
-        row_align
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    // Main Message Bubble (clickable for Media/Voice/Call/Story/Invoice/Location/Text)
-                    .child(
-                        div()
-                            .when(
-                                media_click_info.is_some()
-                                    || is_voice_msg
-                                    || is_invoice_msg,
-                                |el| el.cursor_pointer(),
-                            )
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                if let Some((ref url, is_video)) = media_click_info {
-                                    this.pending_media_url = Some((url.clone(), is_video));
-                                    cx.notify();
-                                } else if is_voice_msg {
-                                    if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
-                                        if let MessageContent::Voice {
-                                             ref mut is_playing,
-                                             ref mut playback_position_secs,
-                                             ref mut playback_speed,
-                                             duration_secs,
-                                             ..
-                                         } = m.content
-                                         {
-                                             *is_playing = !*is_playing;
-                                             if *is_playing {
-                                                 *playback_position_secs = (*playback_position_secs + 6.0) % (duration_secs as f32).max(1.0);
-                                             } else {
-                                                 *playback_speed = if (*playback_speed - 1.0).abs() < 0.1 {
-                                                     1.5
-                                                 } else if (*playback_speed - 1.5).abs() < 0.1 {
-                                                     2.0
-                                                 } else {
-                                                     1.0
-                                                 };
-                                             }
-                                         }
-                                     }
-                                     cx.notify();
-                                 } else if is_invoice_msg {
-                                     if let Some(m) = this.messages.iter_mut().find(|m| m.id == msg_id) {
-                                         if let MessageContent::Invoice { ref mut status, .. } = m.content {
-                                             *status = match *status {
-                                                 InvoiceStatus::Pending => InvoiceStatus::Paid,
-                                                 InvoiceStatus::Paid => InvoiceStatus::Refunded,
-                                                 InvoiceStatus::Refunded => InvoiceStatus::Paid,
-                                             };
-                                         }
-                                     }
-                                     cx.notify();
-                                 }
-                             }))
-                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                                let is_pinned = this.messages.iter().find(|m| m.id == msg_id).map(|m| m.is_pinned).unwrap_or(false);
-                                let text_snippet = this.messages.iter().find(|m| m.id == msg_id).and_then(|m| match &m.content {
-                                    MessageContent::Text { text, .. } => Some(text.clone()),
-                                    MessageContent::Media { caption, .. } => caption.clone(),
-                                    _ => None,
-                                });
-                                this.active_context_menu = Some(MessageContextMenuState {
-                                    message_id: msg_id,
-                                    position: event.position,
-                                    is_outgoing,
-                                    is_pinned,
-                                    text_snippet,
-                                });
-                                cx.notify();
-                            }))
-                            .child(bubble),
-                     )
-                     .when_some(poll_vote_bar, |el, bar| el.child(bar))
-                     .when_some(bot_kb_element, |el, kb| el.child(kb))
-                     .child(
-                         div()
-                             .flex()
-                             .items_center()
-                             .gap(px(4.0))
-                             .children(reaction_pills),
-                     ),
-             )
-             .into_any_element()
-     }
-
-    fn render_message_bubble(
-        msg: &MessageItemModel,
-        rounding: BubbleRounding,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match &msg.content {
-            MessageContent::Text { text, is_edited } => {
-                TextMessageView::render(msg, text, *is_edited, rounding).into_any_element()
-            }
-            MessageContent::Media {
-                media_type,
-                url,
-                width,
-                height,
-                duration_secs,
-                file_size_bytes,
-                caption,
-                is_streaming,
-            } => MediaMessageView::render(
-                msg,
-                *media_type,
-                url,
-                *width,
-                *height,
-                *duration_secs,
-                *file_size_bytes,
-                caption.as_deref(),
-                *is_streaming,
-                rounding,
-            ).into_any_element(),
-            MessageContent::Voice {
-                duration_secs,
-                waveform_5bit,
-                playback_position_secs,
-                is_playing,
-                playback_speed,
-            } => VoiceMessageView::render(
-                msg,
-                *duration_secs,
-                waveform_5bit,
-                *playback_position_secs,
-                *is_playing,
-                *playback_speed,
-                rounding,
-            ).into_any_element(),
-            MessageContent::Album { items, caption } => {
-                AlbumMessageView::render(msg, items, caption.as_deref(), rounding).into_any_element()
-            }
-            MessageContent::Location { latitude, longitude, title, address } => {
-                LocationMessageView::render(msg, *latitude, *longitude, title, address).into_any_element()
-            }
-            MessageContent::Poll {
-                question,
-                poll_type,
-                options,
-                total_votes,
-                is_closed,
-                selected_option_id,
-            } => PollMessageView::render_interactive(
-                msg,
-                question,
-                *poll_type,
-                options,
-                *total_votes,
-                *is_closed,
-                *selected_option_id,
-                cx,
-            ).into_any_element(),
-            MessageContent::Service { text, service_type } => {
-                ServiceMessageView::render(text, *service_type).into_any_element()
-            }
-            MessageContent::Call { call_type, direction, duration_secs, status_text } => {
-                CallMessageView::render(msg, *call_type, *direction, *duration_secs, status_text).into_any_element()
-            }
-            MessageContent::Story { user_name, avatar_initials, caption, preview_color, expires_in } => {
-                StoryMessageView::render(msg, user_name, avatar_initials, caption, *preview_color, expires_in).into_any_element()
-            }
-            MessageContent::Invoice { title, description, amount_stars, currency, status, receipt_id } => {
-                InvoiceMessageView::render(msg, title, description, *amount_stars, currency, *status, receipt_id.as_deref()).into_any_element()
-            }
-            MessageContent::BotKeyboard { rows } => {
-                InlineBotKeyboardView::render(rows).into_any_element()
+    fn recompute_search_matches(&mut self) {
+        let q = self.search_query.trim().to_lowercase();
+        self.search_match_ids.clear();
+        self.search_match_cursor = 0;
+        if q.is_empty() {
+            return;
+        }
+        for msg in self.messages.iter().rev() {
+            let hay = match &msg.content {
+                MessageContent::Text { text, .. } => text.clone(),
+                MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => {
+                    caption.clone().unwrap_or_default()
+                }
+                MessageContent::Poll { question, .. } => question.clone(),
+                MessageContent::Location { title, address, .. } => format!("{} {}", title, address),
+                _ => msg.sender_name.clone(),
+            };
+            if hay.to_lowercase().contains(&q) || msg.sender_name.to_lowercase().contains(&q) {
+                self.search_match_ids.push(msg.id);
             }
         }
+        if let Some(&first_id) = self.search_match_ids.first() {
+            self.jump_to_message(first_id);
+        }
+    }
+
+    fn handle_stage_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let ks = &event.keystroke;
+        if ks.modifiers.platform && ks.key == "f" && self.active_chat_id.is_some() {
+            self.search_open = true;
+            cx.notify();
+            return;
+        }
+        if ks.key == "escape" {
+            if self.active_context_menu.is_some() {
+                self.active_context_menu = None;
+            } else if self.more_menu_open {
+                self.more_menu_open = false;
+            } else if self.search_open {
+                self.search_open = false;
+                self.search_query.clear();
+                self.search_match_ids.clear();
+            } else if !self.selected_message_ids.is_empty() {
+                self.selected_message_ids.clear();
+            }
+            cx.notify();
+            return;
+        }
+        if self.search_open {
+            if ks.key == "enter" {
+                let delta = if ks.modifiers.shift { -1 } else { 1 };
+                self.handle_topbar_action(TopBarUiAction::SearchStep(delta), cx);
+            } else if ks.key == "backspace" {
+                self.search_query.pop();
+                self.recompute_search_matches();
+                cx.notify();
+            } else if !ks.modifiers.platform && !ks.modifiers.control {
+                if let Some(ref ch) = ks.key_char {
+                    self.search_query.push_str(ch);
+                    self.recompute_search_matches();
+                    cx.notify();
+                } else if ks.key.len() == 1 {
+                    self.search_query.push_str(&ks.key);
+                    self.recompute_search_matches();
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn handle_topbar_action(&mut self, action: TopBarUiAction, cx: &mut Context<Self>) {
+        match action {
+            TopBarUiAction::ToggleInspector => self.toggle_inspector(),
+            TopBarUiAction::ToggleSearch => {
+                self.more_menu_open = false;
+                self.search_open = !self.search_open;
+                if !self.search_open {
+                    self.search_query.clear();
+                    self.search_match_ids.clear();
+                }
+            }
+            TopBarUiAction::SearchStep(delta) => {
+                let len = self.search_match_ids.len();
+                if len > 0 {
+                    if delta < 0 {
+                        self.search_match_cursor = if self.search_match_cursor == 0 { len - 1 } else { self.search_match_cursor - 1 };
+                    } else {
+                        self.search_match_cursor = (self.search_match_cursor + 1) % len;
+                    }
+                    if let Some(&id) = self.search_match_ids.get(self.search_match_cursor) {
+                        self.jump_to_message(id);
+                    }
+                }
+            }
+            TopBarUiAction::SearchClear => {
+                self.search_open = false;
+                self.search_query.clear();
+                self.search_match_ids.clear();
+                self.search_match_cursor = 0;
+            }
+            TopBarUiAction::StartCall { video } => {
+                if video {
+                    self.pending_video_call = true;
+                } else {
+                    self.pending_call_request = true;
+                }
+            }
+            TopBarUiAction::ToggleTopMoreMenu => self.more_menu_open = !self.more_menu_open,
+            TopBarUiAction::JumpPinned => {
+                self.sync_pinned_tracker();
+                if let Some(target_id) = self.pinned_tracker.next_pinned_id().or_else(|| self.pinned_tracker.current_msg_id()) {
+                    self.jump_to_message(target_id as u64);
+                } else if let Some(last_pin) = self.messages.iter().rev().find(|m| m.is_pinned) {
+                    self.jump_to_message(last_pin.id);
+                }
+            }
+            TopBarUiAction::UnpinCurrent => {
+                let target_id = self
+                    .pinned_tracker
+                    .current_msg_id()
+                    .map(|id| id as u64)
+                    .or_else(|| self.messages.iter().rev().find(|m| m.is_pinned).map(|m| m.id));
+                if let Some(id) = target_id {
+                    self.toggle_pin_message(id);
+                    self.sync_pinned_tracker();
+                    self.pending_pin_toggle = Some((id, false));
+                } else {
+                    self.pinned_message = None;
+                }
+            }
+            TopBarUiAction::ClearSelection => self.selected_message_ids.clear(),
+            TopBarUiAction::ForwardSelected => {
+                if !self.selected_message_ids.is_empty() {
+                    self.pending_forward_message_ids = Some(self.selected_message_ids.clone());
+                    self.selected_message_ids.clear();
+                }
+            }
+            TopBarUiAction::CopySelected => {
+                let mut parts = Vec::new();
+                for &id in &self.selected_message_ids {
+                    if let Some(t) = self.copy_message_text(id) {
+                        parts.push(t);
+                    }
+                }
+                if !parts.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(parts.join("\n")));
+                    self.toast_banner = Some(tr_key_or(&self.lang_id, "lng_copied_to_clipboard", "Copied to clipboard").to_string());
+                }
+                self.selected_message_ids.clear();
+            }
+            TopBarUiAction::DeleteSelected => {
+                if !self.selected_message_ids.is_empty() {
+                    let ids = self.selected_message_ids.clone();
+                    self.delete_messages_by_ids(&ids);
+                    self.sync_pinned_tracker();
+                    self.pending_delete_message_ids = Some(ids);
+                }
+            }
+            TopBarUiAction::ScrollToBottom => {
+                self.scroll_to_bottom();
+                self.unread_incoming_count = 0;
+                self.unread_anchor_msg_id = None;
+            }
+            TopBarUiAction::ClearHistory => {
+                self.more_menu_open = false;
+                self.pending_clear_history = true;
+            }
+            TopBarUiAction::ExportChat => {
+                self.more_menu_open = false;
+                self.pending_export_chat = true;
+            }
+            TopBarUiAction::ToggleMuteChat => {
+                self.more_menu_open = false;
+                self.pending_toggle_mute = true;
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_bubble_action(&mut self, action: BubbleUiAction, cx: &mut Context<Self>) {
+        match action {
+            BubbleUiAction::ClickReplyQuote(target_id) => self.jump_to_message(target_id),
+            BubbleUiAction::ToggleReaction(msg_id, emoji) => {
+                self.toggle_reaction(msg_id, &emoji);
+                self.pending_reaction_toggle = Some((msg_id, emoji));
+            }
+            BubbleUiAction::ToggleSelect(msg_id) => self.toggle_select_message(msg_id),
+            BubbleUiAction::OpenContextMenu(msg_id, pos) => {
+                let (is_outgoing, is_pinned, text_snippet) = self
+                    .messages
+                    .iter()
+                    .find(|m| m.id == msg_id)
+                    .map(|m| {
+                        let snippet = match &m.content {
+                            MessageContent::Text { text, .. } => Some(text.clone()),
+                            MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => caption.clone(),
+                            _ => None,
+                        };
+                        (m.is_outgoing(), m.is_pinned, snippet)
+                    })
+                    .unwrap_or((false, false, None));
+                self.active_context_menu = Some(MessageContextMenuState {
+                    message_id: msg_id,
+                    position: pos,
+                    is_outgoing,
+                    is_pinned,
+                    text_snippet,
+                });
+            }
+            BubbleUiAction::SetHover(hovered) => {
+                if self.hovered_message_id != hovered {
+                    self.hovered_message_id = hovered;
+                } else {
+                    return;
+                }
+            }
+            BubbleUiAction::Media(ma) => match ma {
+                MediaCardAction::OpenViewer { msg_id, url, is_video, album_index } => {
+                    let mut gallery = Vec::new();
+                    let mut start_idx = 0usize;
+                    for m in &self.messages {
+                        match &m.content {
+                            MessageContent::Media { media_type, url: murl, caption, .. }
+                                if matches!(media_type, MediaType::Photo | MediaType::Video) =>
+                            {
+                                if m.id == msg_id && murl == &url {
+                                    start_idx = gallery.len();
+                                }
+                                gallery.push((murl.clone(), *media_type == MediaType::Video, caption.clone()));
+                            }
+                            MessageContent::Album { items, caption } => {
+                                for (idx, item) in items.iter().enumerate() {
+                                    if m.id == msg_id && album_index == Some(idx) {
+                                        start_idx = gallery.len();
+                                    }
+                                    gallery.push((item.url.clone(), item.media_type == MediaType::Video, caption.clone()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if gallery.is_empty() {
+                        gallery.push((url.clone(), is_video, None));
+                    }
+                    self.pending_media_url = Some((url, is_video));
+                    self.pending_media_viewer = Some((gallery, start_idx));
+                }
+                MediaCardAction::ToggleSpoilerMedia(msg_id) => {
+                    if let Some(meta) = self.message_meta.get_mut(&msg_id) {
+                        meta.is_spoiler_media = !meta.is_spoiler_media;
+                    }
+                }
+                MediaCardAction::ToggleVoicePlay(msg_id) => {
+                    if let Some(m) = self.messages.iter_mut().find(|m| m.id == msg_id) {
+                        if let MessageContent::Voice { ref mut is_playing, playback_position_secs, playback_speed, .. } = m.content {
+                            *is_playing = !*is_playing;
+                            self.pending_voice_playback = Some((msg_id, *is_playing, playback_position_secs, playback_speed));
+                        }
+                    }
+                }
+                MediaCardAction::CycleVoiceSpeed(msg_id) => {
+                    if let Some(m) = self.messages.iter_mut().find(|m| m.id == msg_id) {
+                        if let MessageContent::Voice { ref mut playback_speed, is_playing, playback_position_secs, .. } = m.content {
+                            *playback_speed = if (*playback_speed - 1.0).abs() < 0.1 {
+                                1.5
+                            } else if (*playback_speed - 1.5).abs() < 0.1 {
+                                2.0
+                            } else {
+                                1.0
+                            };
+                            self.pending_voice_playback = Some((msg_id, is_playing, playback_position_secs, *playback_speed));
+                        }
+                    }
+                }
+                MediaCardAction::SeekVoice(msg_id, frac) => {
+                    if let Some(m) = self.messages.iter_mut().find(|m| m.id == msg_id) {
+                        if let MessageContent::Voice { duration_secs, ref mut playback_position_secs, is_playing, playback_speed, .. } = m.content {
+                            *playback_position_secs = (duration_secs as f32) * frac.clamp(0.0, 1.0);
+                            self.pending_voice_playback = Some((msg_id, is_playing, *playback_position_secs, playback_speed));
+                        }
+                    }
+                }
+                MediaCardAction::RichText(rt) => self.handle_rich_text_action(rt, cx),
+            },
+            BubbleUiAction::Interactive(ia) => match ia {
+                InteractiveCardAction::VotePoll(msg_id, option_id) => {
+                    self.vote_poll(msg_id, option_id);
+                    self.pending_poll_vote = Some((msg_id, option_id));
+                }
+                InteractiveCardAction::CallBack(_msg_id, video) => {
+                    if video { self.pending_video_call = true; } else { self.pending_call_request = true; }
+                }
+                InteractiveCardAction::OpenStory(_msg_id, user_name) => {
+                    self.pending_bot_action = Some(format!("Story: {}", user_name));
+                }
+                InteractiveCardAction::PayInvoice(msg_id, _title, _stars) => {
+                    if let Some(m) = self.messages.iter_mut().find(|m| m.id == msg_id) {
+                        if let MessageContent::Invoice { ref mut status, .. } = m.content {
+                            *status = match *status {
+                                InvoiceStatus::Pending => InvoiceStatus::Paid,
+                                InvoiceStatus::Paid => InvoiceStatus::Paid,
+                                InvoiceStatus::Refunded => InvoiceStatus::Paid,
+                            };
+                        }
+                    }
+                }
+                InteractiveCardAction::BotButton(_msg_id, btn) => {
+                    let label = match btn {
+                        InlineButtonType::Callback(d) | InlineButtonType::Url(d) | InlineButtonType::WebApp(d) | InlineButtonType::SwitchInline(d) => d,
+                    };
+                    self.pending_bot_action = Some(label);
+                }
+            },
+            BubbleUiAction::Context(ca) => {
+                self.handle_context_action(ca, cx);
+                return;
+            }
+            BubbleUiAction::RichText(rt) => self.handle_rich_text_action(rt, cx),
+            BubbleUiAction::DownloadDoc(_msg_id, url, file_name) => {
+                self.pending_download_url = Some((url, file_name));
+            }
+            BubbleUiAction::OpenContact(uid) => self.pending_open_profile_peer_id = Some(uid),
+            BubbleUiAction::OpenWebUrl(url) => self.pending_media_url = Some((url, false)),
+            BubbleUiAction::OpenInstantView(url, title) => self.pending_iv_url = Some((url, title)),
+        }
+        cx.notify();
+    }
+
+    fn handle_rich_text_action(&mut self, action: RichTextAction, cx: &mut Context<Self>) {
+        match action {
+            RichTextAction::ToggleSpoiler(msg_id, idx) => {
+                if !self.revealed_spoilers.insert((msg_id, idx)) {
+                    self.revealed_spoilers.remove(&(msg_id, idx));
+                }
+            }
+            RichTextAction::ToggleBlockquote(msg_id, idx) => {
+                if !self.expanded_quotes.insert((msg_id, idx)) {
+                    self.expanded_quotes.remove(&(msg_id, idx));
+                }
+            }
+            RichTextAction::CopyCode(code) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(code));
+                self.toast_banner = Some(tr_key_or(&self.lang_id, "lng_copied_to_clipboard", "Code copied").to_string());
+            }
+            RichTextAction::OpenUrl(url) => self.pending_media_url = Some((url, false)),
+            RichTextAction::ClickMention(m) | RichTextAction::ClickHashtag(m) | RichTextAction::ClickBotCommand(m) => {
+                self.pending_bot_action = Some(m);
+            }
+        }
+    }
+
+    fn handle_context_action(&mut self, action: ContextMenuAction, cx: &mut Context<Self>) {
+        match action {
+            ContextMenuAction::React(msg_id, emoji) => {
+                self.toggle_reaction(msg_id, &emoji);
+                self.pending_reaction_toggle = Some((msg_id, emoji));
+            }
+            ContextMenuAction::Reply(msg_id) => {
+                if let Some(m) = self.messages.iter().find(|m| m.id == msg_id) {
+                    let snippet = match &m.content {
+                        MessageContent::Text { text, .. } => text.lines().next().unwrap_or(text).to_string(),
+                        MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => {
+                            caption.clone().unwrap_or_else(|| "Media".to_string())
+                        }
+                        _ => "Message".to_string(),
+                    };
+                    self.pending_reply = Some(ReplyReference {
+                        message_id: msg_id,
+                        sender_name: m.sender_name.clone(),
+                        snippet,
+                    });
+                }
+            }
+            ContextMenuAction::Edit(msg_id) => {
+                if let Some(text) = self.copy_message_text(msg_id) {
+                    self.pending_edit_message = Some((msg_id, text));
+                }
+            }
+            ContextMenuAction::TogglePin(msg_id) => {
+                let will_pin = self.messages.iter().find(|m| m.id == msg_id).map(|m| !m.is_pinned).unwrap_or(true);
+                self.toggle_pin_message(msg_id);
+                self.sync_pinned_tracker();
+                self.pending_pin_toggle = Some((msg_id, will_pin));
+            }
+            ContextMenuAction::CopyText(msg_id) => {
+                if let Some(t) = self.copy_message_text(msg_id) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(t));
+                    self.toast_banner = Some(tr_key_or(&self.lang_id, "lng_copied_to_clipboard", "Copied to clipboard").to_string());
+                }
+            }
+            ContextMenuAction::Forward(msg_id) => {
+                self.pending_forward_message_ids = Some(vec![msg_id]);
+            }
+            ContextMenuAction::Translate(msg_id) => {
+                if let Some(meta) = self.message_meta.get_mut(&msg_id) {
+                    meta.show_translation = !meta.show_translation;
+                }
+                self.pending_translate_message_id = Some(msg_id);
+            }
+            ContextMenuAction::Select(msg_id) => self.toggle_select_message(msg_id),
+            ContextMenuAction::Delete(msg_id) => {
+                self.delete_message(msg_id);
+                self.sync_pinned_tracker();
+                self.pending_delete_message_ids = Some(vec![msg_id]);
+            }
+            ContextMenuAction::CloseMenu => {}
+        }
+        self.active_context_menu = None;
+        cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[std::prelude::v1::test]
+    fn test_add_message_deduplicates_by_id_and_preserves_highest_delivery_status() {
+        let mut stage = ConversationStage::new();
+        stage.set_chat(7, "Alice", "online", "AL", 0x2AABEE);
+
+        stage.add_message(MessageItemModel {
+            id: 42,
+            sender_id: 1,
+            sender_name: "Me".to_string(),
+            avatar_initials: "ME".to_string(),
+            avatar_color: 0x2AABEE,
+            direction: MessageDirection::Outgoing,
+            timestamp: "12:00".to_string(),
+            delivery_status: DeliveryStatus::Sent,
+            reply_to: None,
+            reactions: vec![],
+            content: MessageContent::Text {
+                text: "Initial".to_string(),
+                is_edited: false,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        });
+        assert_eq!(stage.messages.len(), 1);
+
+        // Stale Sending re-delivery refreshes content/reply/reactions without downgrading Sent or duplicating
+        stage.add_message(MessageItemModel {
+            id: 42,
+            sender_id: 1,
+            sender_name: "Me".to_string(),
+            avatar_initials: "ME".to_string(),
+            avatar_color: 0x2AABEE,
+            direction: MessageDirection::Outgoing,
+            timestamp: "12:00".to_string(),
+            delivery_status: DeliveryStatus::Sending,
+            reply_to: Some(ReplyReference {
+                message_id: 41,
+                sender_name: "Alice".to_string(),
+                snippet: "Hi".to_string(),
+            }),
+            reactions: vec![ReactionItem {
+                emoji: "👍".to_string(),
+                count: 1,
+                user_reacted: true,
+            }],
+            content: MessageContent::Text {
+                text: "Updated".to_string(),
+                is_edited: true,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        });
+
+        assert_eq!(stage.messages.len(), 1);
+        assert_eq!(stage.chat_histories.get(&7).map(|h| h.len()), Some(1));
+        assert_eq!(stage.messages[0].delivery_status, DeliveryStatus::Sent);
+        assert_eq!(stage.messages[0].reactions.len(), 1);
+        assert_eq!(stage.messages[0].reply_to.as_ref().map(|r| r.message_id), Some(41));
+        assert!(matches!(
+            stage.messages[0].content,
+            MessageContent::Text { ref text, is_edited: true } if text == "Updated"
+        ));
+
+        // Higher Read status upgrades existing bubble cleanly
+        stage.add_message(MessageItemModel {
+            id: 42,
+            sender_id: 1,
+            sender_name: "Me".to_string(),
+            avatar_initials: "ME".to_string(),
+            avatar_color: 0x2AABEE,
+            direction: MessageDirection::Outgoing,
+            timestamp: "12:00".to_string(),
+            delivery_status: DeliveryStatus::Read,
+            reply_to: None,
+            reactions: vec![],
+            content: MessageContent::Text {
+                text: "Updated".to_string(),
+                is_edited: true,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        });
+
+        assert_eq!(stage.messages.len(), 1);
+        assert_eq!(stage.messages[0].delivery_status, DeliveryStatus::Read);
     }
 }

@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/marquee_label.cpp:L29-L120
 //! Reference: Telegram/SourceFiles/ui/widgets/marquee_label.h:L35-L126
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::{hsla, rgba, Hsla, Rgba};
 

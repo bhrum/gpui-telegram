@@ -37,7 +37,7 @@ fn test_four_official_tdesktop_themes_and_metrics() {
 
 #[test]
 fn test_main_menu_multi_account_and_modal_suite() {
-    let mut bridge = SessionPersistenceBridge::default();
+    let mut bridge = SessionPersistenceBridge::new_demo();
     let menu = MainMenuDrawer::new(bridge.state.accounts.clone(), bridge.state.active_account_id);
     assert!(menu.accounts.len() >= 2);
     assert_eq!(menu.active_account().account_id, 1);
@@ -115,7 +115,7 @@ fn test_stage_composer_sidebar_and_e2ee_call_parity() {
     let call = CallOverlay::new("Alice Smith".to_string());
     assert_eq!(call.e2ee_emojis.split_whitespace().count(), 4);
 
-    let inspector = ContextInspector::new();
+    let inspector = ContextInspector::new_demo();
     assert_eq!(inspector.channel_boost_level, 8);
 
     let mut viewer = MediaViewer::new("https://example.com/a.jpg".into(), false);
@@ -124,7 +124,7 @@ fn test_stage_composer_sidebar_and_e2ee_call_parity() {
     assert_eq!(viewer.rotation_deg, 0);
 
     let mut settings = SettingsWorkspaceView::new(
-        SessionPersistenceBridge::default().state,
+        SessionPersistenceBridge::new_demo().state,
         TdesktopThemePalette::default(),
     );
     settings.active_page = SettingsPageId::TonWallet;

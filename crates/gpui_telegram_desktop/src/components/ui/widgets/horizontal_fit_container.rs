@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/horizontal_fit_container.cpp:L14-L56
 //! Reference: Telegram/SourceFiles/ui/widgets/horizontal_fit_container.h:L14-L36
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChildButtonSlot {

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/image/image.cpp:L1-L169` & `image.h:L1-L75`
 //! Authentic GPUI implementation of image representation with round corners and caching.
-#![allow(dead_code)]
 
 use gpui::{px, DevicePixels, Pixels, Size};
 

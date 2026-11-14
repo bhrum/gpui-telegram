@@ -1,7 +1,6 @@
 //! Target Symbol: IvMarkdownPrepareInlineMarkdown
 //! Subsystem: iv, Feature: TCG-N42
 //! Upstream: Telegram/SourceFiles/iv/markdown/iv_markdown_prepare_inline.h/.cpp
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

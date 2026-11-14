@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_font_box.cpp:L40-L965
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_font_box.h:L12-L20
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

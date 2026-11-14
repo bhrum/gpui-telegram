@@ -116,7 +116,7 @@ impl Render for WindowsTaskbarButtonsWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_taskbar_buttons_win_lifecycle() {
         let mut tb = WindowsTaskbarButtonsWin::new();
         assert!(!tb.buttons_added);

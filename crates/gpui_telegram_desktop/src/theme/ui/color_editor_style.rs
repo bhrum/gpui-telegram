@@ -1,8 +1,7 @@
 //! Upstream C++ style sheet mapping: `ui/widgets/color_editor.style:L1-L28`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{px, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/widgets/color_editor.style:L1-L28`.
 #[derive(Debug, Clone, Copy)]

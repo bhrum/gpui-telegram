@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/community/info_community_widget.h`
 //! Subsystem: info | Feature ID: TCG-N23 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use serde::{Deserialize, Serialize};

@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_userpic_emoji_builder_common::{EmojiBuilderResult, EmojiBuilderStartData};
@@ -102,7 +101,7 @@ impl Render for InfoUserpicEmojiBuilderUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_emoji_builder_lifecycle() {
         let mut builder = InfoUserpicEmojiBuilderUserpic::default();
         assert!(!builder.is_layer_open);

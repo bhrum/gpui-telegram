@@ -1,9 +1,13 @@
 //! Upstream Source: Telegram/SourceFiles/intro/intro_code.cpp, intro_code.h
 //! Subsystem: intro | Feature ID: TCG-N01 | Disposition: rust_domain_or_server_1to1
 
-use gpui::*;
+use super::intro_chrome::{render_error_banner, render_primary_cta, render_text_link, IntroAction};
 use super::intro_code_input::IntroCodeInput;
-use super::intro_step::{IntroStep, IntroStepType};
+use super::intro_step::{IntroCallStatus, IntroStep, IntroStepType};
+use super::intro_widget::IntroWidget;
+use crate::i18n::tr_str;
+use crate::theme::TdesktopThemePalette;
+use gpui::*;
 
 #[derive(Debug, Clone)]
 pub struct IntroCode {
@@ -43,32 +47,29 @@ impl IntroCode {
         if self.call_timeout_sec <= 0 {
             return String::new();
         }
-        if self.call_timeout_sec >= 3600 {
-            let hours = self.call_timeout_sec / 3600;
-            let minutes = (self.call_timeout_sec / 60) % 60;
-            let seconds = self.call_timeout_sec % 60;
+        let hours = self.call_timeout_sec / 3600;
+        let minutes = (self.call_timeout_sec / 60) % 60;
+        let seconds = self.call_timeout_sec % 60;
+        if hours > 0 {
             format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
         } else {
-            let minutes = self.call_timeout_sec / 60;
-            let seconds = self.call_timeout_sec % 60;
             format!("{}:{:02}", minutes, seconds)
         }
     }
 
     pub fn no_telegram_code(&mut self) {
         self.is_by_telegram = false;
-        self.call_timeout_sec = 60;
+        self.step.data.call_status = IntroCallStatus::Waiting;
     }
 
     pub fn submit(&mut self, is_2fa_enabled: bool) -> Result<IntroStepType, &'static str> {
         if !self.input.is_complete() {
             self.input.set_error(true);
-            self.step.show_error("Please enter the full code");
-            return Err("Code incomplete");
+            self.step.show_error("Please enter the complete verification code.");
+            return Err("Incomplete code");
         }
         self.step.hide_error();
         self.is_submitting = true;
-
         if is_2fa_enabled {
             Ok(IntroStepType::PasswordCheck)
         } else {
@@ -77,100 +78,129 @@ impl IntroCode {
     }
 
     pub fn render_view(&self) -> AnyElement {
-        let timeout_str = self.formatted_timeout();
-        let subtitle = if self.is_by_telegram {
-            "We have sent you a code via Telegram to your other devices."
+        self.render_card(&TdesktopThemePalette::default(), "en", None)
+    }
+
+    pub fn render_interactive(
+        &self,
+        palette: &TdesktopThemePalette,
+        lang_id: &str,
+        cx: &mut Context<IntroWidget>,
+    ) -> AnyElement {
+        self.render_card(palette, lang_id, Some(cx))
+    }
+
+    fn render_card(
+        &self,
+        palette: &TdesktopThemePalette,
+        lang_id: &str,
+        mut cx: Option<&mut Context<IntroWidget>>,
+    ) -> AnyElement {
+        let timer_text = self.formatted_timeout();
+        let phone_display = if self.step.data.phone.is_empty() {
+            tr_str(lang_id, "输入验证码", "Enter verification code").to_string()
         } else {
-            "We have sent you a code via SMS to your phone."
+            self.step.data.phone.clone()
         };
 
-        let timeout_el: Option<AnyElement> = if !timeout_str.is_empty() {
-            Some(
-                div()
-                    .mt(px(14.0))
-                    .text_xs()
-                    .text_color(rgb(0x8292a1))
-                    .child(format!("Resend code in {}", timeout_str))
-                    .into_any_element(),
-            )
-        } else {
-            Some(
-                div()
-                    .mt(px(14.0))
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(0x2aabee))
-                    .cursor_pointer()
-                    .child("Send code via SMS")
-                    .into_any_element(),
-            )
-        };
-
-        let no_tg_el: Option<AnyElement> = if self.is_by_telegram {
-            Some(
-                div()
-                    .mt(px(18.0))
-                    .text_xs()
-                    .text_color(rgb(0x2aabee))
-                    .hover(|s| s.text_color(rgb(0x54c0f5)))
-                    .cursor_pointer()
-                    .child("Haven't received code in Telegram?")
-                    .into_any_element(),
-            )
-        } else {
-            None
-        };
+        let mut submit_btn = render_primary_cta(
+            tr_str(lang_id, "继续", "Continue"),
+            self.input.is_complete(),
+            palette,
+        );
+        let mut resend_link = render_text_link(
+            if timer_text.is_empty() {
+                tr_str(lang_id, "重新发送短信验证码", "Resend verification code").to_string()
+            } else {
+                format!(
+                    "{} ({})",
+                    tr_str(lang_id, "语音/短信重发倒计时", "Telegram call in"),
+                    timer_text
+                )
+            },
+            palette,
+        );
+        let mut edit_phone_link = render_text_link(
+            tr_str(lang_id, "修改手机号", "Edit phone number"),
+            palette,
+        );
+        if let Some(cx_ref) = cx.as_deref_mut() {
+            submit_btn = submit_btn.on_mouse_down(
+                MouseButton::Left,
+                cx_ref.listener(|this, _, _w, cx| {
+                    let code = this.code_view.input.code();
+                    if this.code_view.input.is_complete() {
+                        this.code_view.step.hide_error();
+                        this.pending_action = Some(IntroAction::SubmitCode { code });
+                    } else {
+                        this.code_view.input.set_error(true);
+                        this.code_view
+                            .step
+                            .show_error("Please enter the complete verification code.");
+                    }
+                    cx.notify();
+                }),
+            );
+            resend_link = resend_link.on_mouse_down(
+                MouseButton::Left,
+                cx_ref.listener(|this, _, _w, cx| {
+                    this.code_view.no_telegram_code();
+                    this.pending_action = Some(IntroAction::ResendCode);
+                    cx.notify();
+                }),
+            );
+            edit_phone_link = edit_phone_link.on_mouse_down(
+                MouseButton::Left,
+                cx_ref.listener(|this, _, _w, cx| {
+                    this.show_step(IntroStepType::Phone);
+                    cx.notify();
+                }),
+            );
+        }
 
         div()
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
-            .size_full()
-            .p(px(24.0))
+            .gap(px(16.0))
             .child(
                 div()
-                    .text_xl()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xffffff))
-                    .child("Enter Code"),
+                    .text_size(px(21.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(palette.text_primary))
+                    .child(phone_display),
             )
             .child(
                 div()
-                    .mt(px(8.0))
-                    .text_sm()
-                    .text_color(rgb(0x8292a1))
+                    .max_w(px(300.0))
+                    .text_size(px(13.5))
+                    .text_color(rgb(palette.text_secondary))
                     .text_center()
-                    .max_w(px(320.0))
-                    .child(subtitle),
+                    .child(if self.is_by_telegram {
+                        tr_str(
+                            lang_id,
+                            "我们已向您其他设备上的 Telegram 应用发送验证码，请直接输入。",
+                            "We have sent the code to the Telegram app on your other device.",
+                        )
+                    } else {
+                        tr_str(
+                            lang_id,
+                            "我们已发送短信验证码，请在下方输入您收到的数字验证码。",
+                            "We have sent a verification code via SMS. Enter it below.",
+                        )
+                    }),
             )
+            .child(self.input.render_themed(palette))
+            .child(render_error_banner(self.step.data.error_text.as_deref(), palette))
+            .child(submit_btn)
             .child(
                 div()
-                    .mt(px(24.0))
-                    .child(self.input.render_view()),
-            )
-            .children(timeout_el)
-            .children(no_tg_el)
-            .child(
-                // Next Button
-                div()
-                    .mt(px(28.0))
-                    .w(px(300.0))
-                    .h(px(42.0))
-                    .rounded(px(6.0))
-                    .bg(rgb(0x2aabee))
-                    .hover(|s| s.bg(rgb(0x229ed9)))
-                    .cursor_pointer()
                     .flex()
+                    .flex_col()
                     .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(0xffffff))
-                            .child("NEXT"),
-                    ),
+                    .gap(px(4.0))
+                    .child(resend_link)
+                    .child(edit_phone_link),
             )
             .into_any_element()
     }

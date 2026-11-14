@@ -2,7 +2,6 @@
 //! Source: `Telegram/SourceFiles/info/reactions_list/info_reactions_list_widget.cpp:L1-L351`, `info_reactions_list_widget.h:L1-L82`
 //! Subsystem: info | Feature ID: TCG-N14 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

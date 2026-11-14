@@ -208,7 +208,7 @@ impl Render for InfoProfileTabPollsProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_polls_adapter_voting_and_closure() {
         let mut adapter = InfoProfileTabPollsProfileTabsAdapters::new(2002);
         assert_eq!(adapter.channel_id, 2002);

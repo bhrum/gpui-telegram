@@ -5,7 +5,6 @@
 //!
 //! Renders the service message media card displayed when content protection / no-forwards
 //! is requested by an administrator or peer in a dialogue or supergroup.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

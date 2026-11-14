@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_slider.cpp:L19-L100
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_slider.h:L28-L80
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::chat_filters_tabs_mode::ChatsFiltersTabsMode;

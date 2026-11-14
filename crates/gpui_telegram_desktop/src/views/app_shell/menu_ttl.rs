@@ -52,9 +52,17 @@ impl Default for MenuTtl {
 
 impl Render for MenuTtl {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let label = match self.current_period {
+            TtlPeriod::Disabled => "Auto-Delete: Off",
+            TtlPeriod::Day1 => "Auto-Delete: 24 hours",
+            TtlPeriod::Week1 => "Auto-Delete: 7 days",
+            TtlPeriod::Month1 => "Auto-Delete: 1 month",
+        };
         div()
+            .px(px(12.0))
+            .py(px(6.0))
             .text_xs()
             .text_color(rgb(0xFFFFFF))
-            .child(format!("Auto-Delete: {:?}", self.current_period))
+            .child(label)
     }
 }

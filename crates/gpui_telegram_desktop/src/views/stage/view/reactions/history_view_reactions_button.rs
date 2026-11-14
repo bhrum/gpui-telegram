@@ -5,9 +5,13 @@
 
 use gpui::*;
 use crate::views::stage::reactions::button::{
-    scale_for_state, opacity_for_scale, ButtonParameters, ExpandDirection, ReactionButtonState,
-    K_ACTIVATE_DURATION_MS, K_COLLAPSE_DURATION_MS, K_EXPAND_DURATION_MS, K_TOGGLE_DURATION_MS,
-    REACTION_CORNER_SIZE, REACTION_CORNER_SKIP,
+    scale_for_state,
+    opacity_for_scale,
+    ButtonParameters,
+    ExpandDirection,
+    ReactionButtonState,
+    REACTION_CORNER_SIZE,
+    REACTION_CORNER_SKIP,
 };
 
 #[derive(Debug, Clone)]

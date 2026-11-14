@@ -9,21 +9,42 @@
 //!   - Remote Computer Workbench Overlay (`ComputerWorkbench`)
 //!   - Media Viewer Lightbox Overlay (`MediaViewer`)
 
+pub use crate::views::app_shell::shell_truth::{
+    apply_authoritative_chat_list, apply_fenced_chat_list_response,
+    apply_fenced_history_response, derive_initials, format_authoritative_timestamp,
+    historical_message_to_model, overlay_rich_message_metadata, peer_subtitle_for_dialog,
+    reset_account_conversation_views, select_authoritative_dialog, try_consume_composer_for_send,
+    validate_selected_send_target, SessionRequestFence, VerifiedSendTarget,
+};
+use crate::app::{preferences::AppPreferences, TelegramApp};
+use crate::i18n::tr_str;
+use crate::theme::{tg_icon, IconName, TdesktopThemeMode, TdesktopThemePalette};
 use crate::views::{
-    composer::KeyAction,
-    CallOverlay, CanonicalComposer, ChatSidebar, ComputerWorkbench, ContextInspector,
-    ConversationStage, MediaViewer, ModalContainer, NavRail,
-    nav_rail::NavDestination,
+    app_shell::{
+        build_account_record, compute_shell_palette, render_empty_panel_notice,
+        render_panel_header, toggle_desktop_theme_mode,
+        window_connecting_widget::ConnectionStatus as BannerConnectionStatus, ShellPanelState,
+    },
+    boxes::modal_types::ModalDialogKind,
     chat_sidebar::{
         CategorizedSearchResult, CreationInputField, DialogDeliveryStatus, DialogItemModel,
         PendingAddContactRequest, PendingCreateGroupRequest,
     },
+    composer::KeyAction,
+    global_tasks_workspace::TasksWorkspaceTab,
+    iv::IvViewer,
+    nav_rail::NavDestination,
     stage::cards::{
-        AlbumItem, DeliveryStatus, InlineButtonType, InlineKeyboardButton, MediaType,
-        MessageContent, MessageDirection, MessageItemModel, PollOption, PollType,
+        DeliveryStatus, MessageContent, MessageDirection, MessageItemModel,
     },
+    CallOverlay, CanonicalComposer, ChatSidebar, ComputerWorkbench, ContextInspector,
+    ConversationStage, GlobalTasksWorkspace, MainMenuDrawer, MediaViewer, ModalContainer, NavRail,
 };
-use crate::app::preferences::AppPreferences;
+use crate::window::WindowSubsystemRuntime;
+use gpui_telegram_agent::TalkCoordinator;
+use gpui_telegram_media::{AudioPlaybackEngine, VoiceRecorder};
+use gpui_telegram_proto::contracts::auth::ContactDto;
+use gpui_telegram_webrtc::WebRtcCallEngine;
 use crate::views::settings::sections::{
     SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsBlockedPeersSections,
     SettingsBusinessSections, SettingsCallsSections, SettingsChatSections,
@@ -41,19 +62,23 @@ use gpui::prelude::FluentBuilder;
 use gpui_telegram_client::storage::Localstorage;
 
 use gpui_telegram_client::{
-    net::http_client::{
-        AddContactHttpRequest, AlipayPollResponse, AlipayStartResponse, EmailRegisterRequest,
-        EmailSendCodeRequest, EmailSendCodeResponse,
+    net::{
+        hermes_client::HermesRichChatDto,
+        http_client::{
+            AddContactHttpRequest, AlipayPollResponse, AlipayStartResponse, EmailRegisterRequest,
+            EmailSendCodeRequest,
+        },
+        RichSendMessageRequest,
     },
-    AgentRunRequest, AuthResponse, ChatSummary, ClientConfig, ConnectionStatus, HttpClientError,
-    LoginRequest, RegisterRequest, SendMessageHttpRequest, StoredSession, SyncOutcome,
-    TelegramClient,
+    AuthResponse, ClientConfig, ConnectionStatus, HttpClientError, LoginRequest,
+    RegisterRequest, StoredSession, SyncOutcome, TelegramClient,
 };
 use gpui_telegram_core::types::ChatId;
 use gpui_telegram_proto::sync::{
     PtsUpdate, SyncGetDifferenceRequest, SyncGetDifferenceResponse, UpdateEvent,
 };
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -105,6 +130,40 @@ pub enum ActiveWorkspacePanel {
     TaskCenter,
     McpTools,
     Settings,
+}
+
+/// Cycles the 4 built-in Telegram Desktop theme palettes (`Night -> Tinted -> Day -> Classic`).
+pub fn next_tdesktop_theme_cycle(current: TdesktopThemeMode) -> TdesktopThemeMode {
+    match current {
+        TdesktopThemeMode::Night => TdesktopThemeMode::Tinted,
+        TdesktopThemeMode::Tinted => TdesktopThemeMode::Day,
+        TdesktopThemeMode::Day => TdesktopThemeMode::Classic,
+        TdesktopThemeMode::Classic => TdesktopThemeMode::Night,
+    }
+}
+
+/// Toggles the UI language code between `zh-CN` and `en-US`.
+pub fn toggled_language_code(current: &str) -> &'static str {
+    if current.starts_with("zh") {
+        "en-US"
+    } else {
+        "zh-CN"
+    }
+}
+
+/// Maps `Cmd+1..8` keystrokes to primary `NavDestination` tabs when authenticated.
+pub fn nav_destination_for_shortcut_digit(key: &str) -> Option<NavDestination> {
+    match key {
+        "1" => Some(NavDestination::Chats),
+        "2" => Some(NavDestination::Folders),
+        "3" => Some(NavDestination::Calls),
+        "4" => Some(NavDestination::TaskCenter),
+        "5" => Some(NavDestination::McpTools),
+        "6" => Some(NavDestination::TalkMode),
+        "7" => Some(NavDestination::SavedMessages),
+        "8" => Some(NavDestination::Settings),
+        _ => None,
+    }
 }
 
 pub struct AppShell {
@@ -194,6 +253,103 @@ pub struct AppShell {
     pub settings_search: Entity<SettingsSearch>,
     pub preferences: AppPreferences,
     pub local_storage: Localstorage,
+    pub main_menu_drawer: Entity<MainMenuDrawer>,
+    pub iv_viewer_overlay: Option<Entity<IvViewer>>,
+    pub tasks_workspace: Entity<GlobalTasksWorkspace>,
+    pub app: TelegramApp,
+    pub window_runtime: WindowSubsystemRuntime,
+    pub palette: TdesktopThemePalette,
+    pub theme_mode: TdesktopThemeMode,
+    pub accent_color: Option<u32>,
+    pub bubble_radius_px: u32,
+    pub wallpaper_id: Option<String>,
+    pub panel_state: ShellPanelState,
+    pub auth_generation: u64,
+    pub chat_list_request_generation: u64,
+    pub history_request_generation: u64,
+    pub audio_player: AudioPlaybackEngine,
+    pub voice_recorder: VoiceRecorder,
+    pub webrtc_engine: WebRtcCallEngine,
+    pub active_call_id: Option<String>,
+    pub contacts_list: Vec<ContactDto>,
+    pub rich_chats_by_id: HashMap<u64, HermesRichChatDto>,
+    pub chat_peer_user_ids: HashMap<u64, u64>,
+    pub talk_coordinator: TalkCoordinator,
+    pub active_talk_session_is_ai: bool,
+    pub active_talk_bot_chat_id: Option<u64>,
+    pub active_talk_session_id: Option<String>,
+    pub last_viewport_width: f32,
+    pub last_sidebar_selection_revision: u64,
+    pub pending_outgoing_nonces: HashMap<u64, u64>,
+    pub resolved_outgoing_nonces: HashMap<u64, u64>,
+}
+
+fn should_switch_to_chats_on_sidebar_selection(
+    current_revision: u64,
+    last_seen_revision: &mut u64,
+    has_selected_dialog: bool,
+) -> bool {
+    if current_revision == *last_seen_revision {
+        return false;
+    }
+    *last_seen_revision = current_revision;
+    has_selected_dialog
+}
+
+fn delivery_status_rank(status: DeliveryStatus) -> u8 {
+    match status {
+        DeliveryStatus::Sending => 0,
+        DeliveryStatus::Sent => 1,
+        DeliveryStatus::Read => 2,
+    }
+}
+
+fn max_delivery_status(a: DeliveryStatus, b: DeliveryStatus) -> DeliveryStatus {
+    if delivery_status_rank(a) >= delivery_status_rank(b) {
+        a
+    } else {
+        b
+    }
+}
+
+/// Promotes an optimistic message (`local_id`) to authoritative `server_id` in place,
+/// preserving the highest delivery status and collapsing any duplicate with `server_id`.
+fn reconcile_stage_message_list(
+    list: &mut Vec<MessageItemModel>,
+    local_id: u64,
+    server_id: u64,
+    min_status: DeliveryStatus,
+) -> bool {
+    let existing_server_idx = (server_id > 0)
+        .then(|| list.iter().position(|m| m.id == server_id))
+        .flatten();
+    let local_idx = list.iter().position(|m| m.id == local_id);
+
+    match (local_idx, existing_server_idx) {
+        (Some(l_idx), Some(s_idx)) if l_idx != s_idx => {
+            let local_status = list[l_idx].delivery_status;
+            list[s_idx].delivery_status = max_delivery_status(
+                max_delivery_status(list[s_idx].delivery_status, local_status),
+                min_status,
+            );
+            list.remove(l_idx);
+            true
+        }
+        (Some(l_idx), _) => {
+            if server_id > 0 {
+                list[l_idx].id = server_id;
+            }
+            list[l_idx].delivery_status =
+                max_delivery_status(list[l_idx].delivery_status, min_status);
+            true
+        }
+        (None, Some(s_idx)) => {
+            list[s_idx].delivery_status =
+                max_delivery_status(list[s_idx].delivery_status, min_status);
+            true
+        }
+        (None, None) => false,
+    }
 }
 
 
@@ -266,13 +422,72 @@ impl AppShell {
         let _ = local_storage.start();
         let preferences = AppPreferences::load(&app_dir, &local_storage);
         let is_chinese_locale = preferences.localization.language_code.starts_with("zh");
+        let (theme_mode, init_palette) = compute_shell_palette(&preferences, None, None, 12, None);
+        let init_lang = if is_chinese_locale { "zh-CN" } else { "en" };
 
-        // 1. Observe NavRail clicks (Destinations, Overlays, Logout)
+        let main_menu_drawer = cx.new(|_| {
+            let mut m = MainMenuDrawer::new(Vec::new(), 0);
+            m.set_palette(init_palette);
+            m.set_language(init_lang);
+            m
+        });
+        let tasks_workspace = cx.new(|_| GlobalTasksWorkspace::new_live(init_palette, init_lang));
+
+        cx.observe(&main_menu_drawer, |shell: &mut AppShell, drawer: Entity<MainMenuDrawer>, cx: &mut Context<AppShell>| {
+            if let Some(cmd) = drawer.update(cx, |d, _| d.take_command()) {
+                shell.handle_main_menu_command(cmd, cx);
+            }
+        }).detach();
+        cx.observe(&modal_container, |shell: &mut AppShell, modal: Entity<ModalContainer>, cx: &mut Context<AppShell>| {
+            if let Some(outcome) = modal.update(cx, |m, _| m.take_outcome()) {
+                shell.handle_modal_outcome(outcome, cx);
+            }
+        }).detach();
+        cx.observe(&tasks_workspace, |shell: &mut AppShell, tw: Entity<GlobalTasksWorkspace>, cx: &mut Context<AppShell>| {
+            if let Some(act) = tw.update(cx, |w, _| w.take_action()) {
+                shell.handle_tasks_workspace_action(act, cx);
+            }
+        }).detach();
+        cx.observe(&settings_chat, |shell: &mut AppShell, sc: Entity<SettingsChatSections>, cx: &mut Context<AppShell>| {
+            if let Some((mode, accent, wallpaper)) = sc.update(cx, |s, _| s.take_theme_change()) {
+                shell.apply_theme_selection(mode, Some(accent), Some(wallpaper), cx);
+            }
+        }).detach();
+        cx.observe(&settings_search, |shell: &mut AppShell, ss: Entity<SettingsSearch>, cx: &mut Context<AppShell>| {
+            if let Some(target) = ss.update(cx, |s, _| s.take_selected_section()) {
+                shell.navigate_settings_to(target, cx);
+            }
+        }).detach();
+
+        // 1. Observe NavRail clicks (Destinations, Overlays, Logout, MainMenu, Theme, Folders)
         cx.observe(&nav_rail, |shell: &mut AppShell, rail: Entity<NavRail>, cx: &mut Context<AppShell>| {
-            let (dest, logout_req, trigger) = {
-                let r = rail.read(cx);
-                (r.active_destination, r.logout_requested, r.trigger_counter)
-            };
+            let (dest, logout_req, trigger, menu_req, archive_req, theme_req, folder_req) = rail.update(cx, |r, _| {
+                let f = r.selected_folder_requested.take().and_then(|fid| {
+                    r.custom_folders.iter().find(|item| item.folder_id == fid).map(|item| item.title.clone())
+                });
+                let mr = if r.menu_open_requested { r.menu_open_requested = false; true } else { false };
+                let ar = if r.archive_open_requested { r.archive_open_requested = false; true } else { false };
+                let tr = if r.theme_toggle_requested { r.theme_toggle_requested = false; true } else { false };
+                (r.active_destination, r.logout_requested, r.trigger_counter, mr, ar, tr, f)
+            });
+            if menu_req {
+                shell.main_menu_drawer.update(cx, |d, _| d.toggle());
+                cx.notify();
+            }
+            if archive_req {
+                shell.active_panel = ActiveWorkspacePanel::Chats;
+                shell.sidebar.update(cx, |sb, _| { sb.is_archived_expanded = !sb.is_archived_expanded; });
+                cx.notify();
+            }
+            if theme_req {
+                let next = toggle_desktop_theme_mode(shell.theme_mode);
+                shell.apply_theme_selection(next, None, None, cx);
+            }
+            if let Some(folder_title) = folder_req {
+                shell.active_panel = ActiveWorkspacePanel::Chats;
+                shell.sidebar.update(cx, |sb, sb_cx| { sb.select_folder(folder_title); sb_cx.notify(); });
+                cx.notify();
+            }
             if logout_req {
                 rail.update(cx, |r, _| {
                     r.logout_requested = false;
@@ -283,7 +498,7 @@ impl AppShell {
             }
 
             // Click-intent & Change-detection Guard:
-            // Background notifications (e.g. WebSocket connection updates in line 913,
+            // Background notifications (e.g. WebSocket connection updates,
             // unread count updates, or badge updates) notify `nav_rail` but DO NOT
             // increment `trigger_counter`.
             // Ignore if trigger hasn't changed AND destination hasn't changed.
@@ -291,53 +506,15 @@ impl AppShell {
                 return;
             }
             shell.last_handled_nav_trigger = trigger;
-            shell.last_handled_nav_dest = Some(dest);
-
-            match dest {
-                NavDestination::Chats | NavDestination::Folders | NavDestination::SavedMessages => {
-                    shell.active_panel = ActiveWorkspacePanel::Chats;
-                    shell.sidebar.update(cx, |sb, sb_cx| {
-                        match dest {
-                            NavDestination::Chats => sb.select_folder("All"),
-                            NavDestination::Folders => sb.select_folder("Work"),
-                            NavDestination::SavedMessages => sb.select_dialog(3),
-                            _ => {}
-                        }
-                        sb_cx.notify();
-                    });
-                }
-                NavDestination::Calls => {
-                    shell.active_panel = ActiveWorkspacePanel::Calls;
-                }
-                NavDestination::TalkMode => {
-                    shell.show_talk_mode(cx);
-                }
-                NavDestination::RemoteComputer => {
-                    shell.show_remote_computer(cx);
-                }
-                NavDestination::TaskCenter => {
-                    shell.active_panel = ActiveWorkspacePanel::TaskCenter;
-                }
-                NavDestination::McpTools => {
-                    shell.active_panel = ActiveWorkspacePanel::McpTools;
-                }
-                NavDestination::Settings => {
-                    if shell.active_panel == ActiveWorkspacePanel::Settings {
-                        shell.settings_section = SettingsSectionType::Main;
-                        shell.settings_stack.clear();
-                    } else {
-                        shell.active_panel = ActiveWorkspacePanel::Settings;
-                    }
-                }
-            }
-            cx.notify();
+            shell.activate_nav_destination(dest, cx);
         }).detach();
 
 
-        // 2. Observe ChatSidebar clicks (Dialog selection, Story click, Search focus, + Creation Modal, Categorized Search)
+        // 2. Observe ChatSidebar clicks (Dialog selection, Story click, Search focus, + Creation Modal, Categorized Search, MainMenu, Context Actions)
         cx.observe(&sidebar, |shell: &mut AppShell, sb: Entity<ChatSidebar>, cx: &mut Context<AppShell>| {
             let (
                 selected_dialog,
+                selection_rev,
                 story_peer,
                 search_focused,
                 has_creation_modal,
@@ -346,9 +523,12 @@ impl AppShell {
                 search_query,
                 search_cat,
                 search_seq,
+                open_menu,
+                context_action,
             ) = sb.update(cx, |s, _| {
                 (
                     s.selected_dialog().cloned(),
+                    s.selection_revision,
                     s.story_clicked_peer.take(),
                     s.search_focused,
                     s.active_creation_modal.is_some(),
@@ -357,8 +537,16 @@ impl AppShell {
                     s.search_query.clone(),
                     s.active_search_category.clone(),
                     s.search_request_seq,
+                    s.take_open_main_menu_requested(),
+                    s.take_pending_context_action(),
                 )
             });
+            if open_menu {
+                shell.main_menu_drawer.update(cx, |d, _| d.toggle());
+            }
+            if let Some(action) = context_action {
+                shell.handle_sidebar_context_action(action, cx);
+            }
             if search_focused || has_creation_modal {
                 shell.composer.update(cx, |c, _| c.is_input_focused = false);
             }
@@ -372,70 +560,34 @@ impl AppShell {
                 shell.dispatch_categorized_search(search_query, search_cat, search_seq, cx);
             }
             if let Some(peer) = story_peer {
-                shell.show_media_viewer(format!("https://t.me/stories/{}", peer), false, cx);
+                let title = peer.clone();
+                shell.open_modal_dialog(title, ModalDialogKind::StoriesViewer { peer_name: peer }, 420.0, 560.0, cx);
             }
-            if let Some(d) = selected_dialog {
-                shell.active_panel = ActiveWorkspacePanel::Chats;
-                shell.last_handled_nav_dest = Some(NavDestination::Chats);
-                shell.nav_rail.update(cx, |r, _| {
-                    r.set_active_destination(NavDestination::Chats);
-                });
-                let subtitle = if d.is_online { "online" } else { "last seen recently" };
-                shell.stage.update(cx, |st, st_cx| {
-                    if st.active_chat_id != Some(d.id) {
-                        st.set_chat(d.id, &d.peer_name, subtitle, &d.avatar_initials, d.avatar_color);
-                        st_cx.notify();
+            if should_switch_to_chats_on_sidebar_selection(
+                selection_rev,
+                &mut shell.last_sidebar_selection_revision,
+                selected_dialog.is_some(),
+            ) {
+                if let Some(d) = selected_dialog {
+                    shell.active_panel = ActiveWorkspacePanel::Chats;
+                    shell.last_handled_nav_dest = Some(NavDestination::Chats);
+                    shell.nav_rail.update(cx, |r, _| {
+                        r.set_active_destination(NavDestination::Chats);
+                    });
+                    let needs_sync = shell.stage.read(cx).active_chat_id != Some(d.id)
+                        || shell.stage.read(cx).chat_title != d.peer_name;
+                    if needs_sync {
+                        shell.sync_selected_chat_inspector_and_stage(d.id, cx);
                     }
-                });
-                shell.inspector.update(cx, |insp, insp_cx| {
-                    insp.set_peer(&d.peer_name, subtitle, &d.avatar_initials, d.avatar_color);
-                    insp_cx.notify();
-                });
-                shell.load_historical_messages(d.id, cx);
+                }
             }
             cx.notify();
         }).detach();
 
-        // 3. Observe ConversationStage clicks (Call button, Inspector toggle, Media lightbox, Bot Keyboard)
+        // 3. Observe ConversationStage clicks (Call, Media, IV, Edit, Forward, Delete, Pin, Poll, Reactions, Voice, Files, Inspector)
         cx.observe(&stage, |shell: &mut AppShell, st: Entity<ConversationStage>, cx: &mut Context<AppShell>| {
-            let (call_req, media_req, bot_act, insp_open) = {
-                let s = st.read(cx);
-                (s.pending_call_request, s.pending_media_url.clone(), s.pending_bot_action.clone(), s.is_inspector_open)
-            };
-            if call_req {
-                st.update(cx, |s, _| s.pending_call_request = false);
-                shell.show_talk_mode(cx);
-            }
-            if let Some((url, is_video)) = media_req {
-                st.update(cx, |s, _| s.pending_media_url = None);
-                shell.show_media_viewer(url, is_video, cx);
-            }
-            if let Some(action) = bot_act {
-                st.update(cx, |s, _| s.pending_bot_action = None);
-                match action.as_str() {
-                    "Launch Talk Mode" => shell.show_talk_mode(cx),
-                    "Remote Computer" => shell.show_remote_computer(cx),
-                    "View Task Matrix" => {
-                        shell.active_panel = ActiveWorkspacePanel::TaskCenter;
-                        shell.last_handled_nav_dest = Some(NavDestination::TaskCenter);
-                        shell.nav_rail.update(cx, |r, _| {
-                            r.set_active_destination(NavDestination::TaskCenter);
-                        });
-                    }
-                    other => {
-                        let modal_title = format!("{} • GPUI Telegram Docs", other);
-                        shell.modal_container.update(cx, |mc, mc_cx| {
-                            mc.show_modal(
-                                modal_title,
-                                440.0,
-                                240.0,
-                                crate::components::ui::layers::LayerStackOption::CloseOther,
-                            );
-                            mc_cx.notify();
-                        });
-                    }
-                }
-            }
+            shell.handle_stage_pending_actions(cx);
+            let insp_open = st.read(cx).is_inspector_open;
             shell.inspector.update(cx, |insp, insp_cx| {
                 if insp.is_open != insp_open {
                     insp.is_open = insp_open;
@@ -445,35 +597,33 @@ impl AppShell {
             cx.notify();
         }).detach();
 
-        // 4. Observe CanonicalComposer (Send message, Send attachment/voice, Input focus)
+        // 4. Observe CanonicalComposer (Send message, Silent/Scheduled, Edit, Attachments, Stickers, Polls, Voice, Input focus)
         cx.observe(&composer, |shell: &mut AppShell, comp: Entity<CanonicalComposer>, cx: &mut Context<AppShell>| {
-            let (msg_opt, att_opt, focused) = {
+            let (att_opt, focused) = {
                 let c = comp.read(cx);
-                (c.submitted_message.clone(), c.submitted_attachment.clone(), c.is_input_focused)
+                (c.submitted_attachment.clone(), c.is_input_focused)
             };
             if focused {
                 shell.sidebar.update(cx, |sb, _| sb.search_focused = false);
-            }
-            if let Some(text) = msg_opt {
-                comp.update(cx, |c, _| c.submitted_message = None);
-                shell.append_outgoing_text(text, cx);
             }
             if let Some(kind) = att_opt {
                 comp.update(cx, |c, _| c.submitted_attachment = None);
                 shell.append_outgoing_attachment(&kind, cx);
             }
+            shell.handle_composer_pending_actions(cx);
             cx.notify();
         }).detach();
 
-        // 5. Observe ContextInspector close button & shared media item clicks
+        // 5. Observe ContextInspector close button, shared media clicks, and InspectorActions
         cx.observe(&inspector, |shell: &mut AppShell, insp: Entity<ContextInspector>, cx: &mut Context<AppShell>| {
-            let (is_open, media_open) = {
-                let i = insp.read(cx);
-                (i.is_open, i.pending_media_open.clone())
-            };
+            let (is_open, media_open, action) = insp.update(cx, |i, _| {
+                (i.is_open, i.pending_media_open.take(), i.take_action())
+            });
             if let Some((url, is_video)) = media_open {
-                insp.update(cx, |i, _| i.pending_media_open = None);
                 shell.show_media_viewer(url, is_video, cx);
+            }
+            if let Some(act) = action {
+                shell.handle_inspector_action(act, cx);
             }
             shell.stage.update(cx, |st, _| {
                 st.is_inspector_open = is_open;
@@ -481,7 +631,7 @@ impl AppShell {
             cx.notify();
         }).detach();
 
-        let shell_instance = Self {
+        let mut shell_instance = Self {
             nav_rail,
             sidebar,
             stage,
@@ -494,7 +644,7 @@ impl AppShell {
             is_authenticated: false,
             login_step: LoginWizardStep::Start,
             country_code: "+86".to_string(),
-            phone_number: "138 0013 8000".to_string(),
+            phone_number: String::new(),
             verification_code: String::new(),
             login_error: None,
             is_chinese_locale,
@@ -559,8 +709,37 @@ impl AppShell {
             settings_search,
             preferences,
             local_storage,
+            main_menu_drawer,
+            iv_viewer_overlay: None,
+            tasks_workspace,
+            app: TelegramApp::new(),
+            window_runtime: WindowSubsystemRuntime::new(),
+            palette: init_palette,
+            theme_mode,
+            accent_color: None,
+            bubble_radius_px: 12,
+            wallpaper_id: None,
+            panel_state: ShellPanelState::default(),
+            auth_generation: 0,
+            chat_list_request_generation: 0,
+            history_request_generation: 0,
+            audio_player: AudioPlaybackEngine::new(),
+            voice_recorder: VoiceRecorder::new(16_000),
+            webrtc_engine: WebRtcCallEngine::default(),
+            active_call_id: None,
+            contacts_list: Vec::new(),
+            rich_chats_by_id: HashMap::new(),
+            chat_peer_user_ids: HashMap::new(),
+            talk_coordinator: TalkCoordinator::new(),
+            active_talk_session_is_ai: false,
+            active_talk_bot_chat_id: None,
+            active_talk_session_id: None,
+            last_viewport_width: 1280.0,
+            last_sidebar_selection_revision: 0,
+            pending_outgoing_nonces: HashMap::new(),
+            resolved_outgoing_nonces: HashMap::new(),
         };
-
+        shell_instance.sync_theme_and_locale_to_views(cx);
 
         // Hydrate stored session on startup if present
         if let Some(stored) = ClientConfig::load_session() {
@@ -576,28 +755,17 @@ impl AppShell {
                         Ok(me) => {
                             let resolved_user = me.username.or(Some(username));
                             let srv_url = shell.client.config.server_url.clone();
-                            shell.is_authenticated = true;
-                            shell.session_token = Some(token.clone());
-                            shell.session_id = Some(session_id);
-                            shell.user_id = Some(me.user_id);
-                            shell.username = resolved_user.clone();
-                            shell.client.ws_transport.set_token(Some(token));
-                            shell.client.ws_transport.start();
-                            shell.start_ws_inbound_stream(cx);
-                            shell.refresh_chats(cx);
-                            shell.sidebar.update(cx, |sb, sb_cx| {
-                                sb.configure_for_cloud_workspace(&srv_url);
-                                sb_cx.notify();
-                            });
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.configure_for_cloud_workspace(&srv_url, resolved_user.as_deref());
-                                st_cx.notify();
-                            });
-                            shell.inspector.update(cx, |insp, insp_cx| {
-                                insp.configure_for_cloud_workspace(&srv_url);
-                                insp_cx.notify();
-                            });
-                            cx.notify();
+                            let auth = AuthResponse {
+                                token: token.clone(),
+                                session_id: session_id.clone(),
+                                user_id: me.user_id,
+                                username: resolved_user.clone().unwrap_or_default(),
+                                first_name: me.first_name.clone(),
+                                created_at: me.created_at.clone(),
+                                expires_at: me.expires_at.clone(),
+                            };
+                            shell.apply_authenticated_session(auth, cx);
+                            let _ = srv_url;
                         }
                         Err(_) => {
                             ClientConfig::clear_session();
@@ -616,28 +784,50 @@ impl AppShell {
 
     pub fn apply_authenticated_session(&mut self, auth: AuthResponse, cx: &mut Context<Self>) {
         let srv_url = self.client.config.server_url.clone();
+        self.auth_generation = self.auth_generation.wrapping_add(1);
+        self.chat_list_request_generation = self.chat_list_request_generation.wrapping_add(1);
+        self.history_request_generation = self.history_request_generation.wrapping_add(1);
         self.is_authenticated = true;
         self.session_token = Some(auth.token.clone());
         self.session_id = Some(auth.session_id.clone());
         self.user_id = Some(auth.user_id);
         self.username = Some(auth.username.clone());
         self.ime_preedit = None;
-        self.client.ws_transport.set_token(Some(auth.token.clone()));
-        self.client.ws_transport.start();
+        self.panel_state.reset();
+        self.client.set_auth_session(auth.clone());
+        self.client.connect_ws();
         self.start_ws_inbound_stream(cx);
-        self.refresh_chats(cx);
+
+        let full_name = match auth.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(name) => name.to_string(),
+            None => auth.username.clone(),
+        };
+        let acc = build_account_record(auth.user_id, &full_name, &auth.username, "", "");
+        self.app.bind_authenticated_session(auth.user_id, &full_name, "");
+        self.window_runtime.bind_session_user(auth.user_id, &full_name, "");
+        self.window_runtime.set_connection_status(BannerConnectionStatus::Connecting, None);
+        self.nav_rail.update(cx, |r, _| r.set_account(&acc.avatar_initials, &acc.display_name));
+        self.main_menu_drawer.update(cx, |m, _| {
+            m.accounts = vec![acc];
+            m.active_account_id = auth.user_id as u32;
+        });
+        self.pending_outgoing_nonces.clear();
+        self.resolved_outgoing_nonces.clear();
         self.sidebar.update(cx, |sb, sb_cx| {
-            sb.configure_for_cloud_workspace(&srv_url);
-            sb_cx.notify();
+            self.stage.update(sb_cx, |st, st_cx| {
+                self.inspector.update(st_cx, |insp, _| {
+                    reset_account_conversation_views(sb, st, insp, &srv_url, Some(&auth.username));
+                });
+            });
         });
-        self.stage.update(cx, |st, st_cx| {
-            st.configure_for_cloud_workspace(&srv_url, Some(&auth.username));
-            st_cx.notify();
-        });
-        self.inspector.update(cx, |insp, insp_cx| {
-            insp.configure_for_cloud_workspace(&srv_url);
-            insp_cx.notify();
-        });
+        self.last_sidebar_selection_revision = self.sidebar.read(cx).selection_revision;
+
+        self.refresh_chats(cx);
+        self.refresh_folders(cx);
+        self.refresh_contacts(cx);
+        self.refresh_wallet(cx);
+        self.refresh_tasks_and_mcp(cx);
+        self.refresh_hermes_commands(cx);
 
         let stored = StoredSession {
             server_url: srv_url,
@@ -1243,15 +1433,55 @@ impl AppShell {
         let token = self.session_token.take();
         let session_id = self.session_id.take();
         let client = self.client.clone();
+        let srv_url = self.client.config.server_url.clone();
+        self.auth_generation = self.auth_generation.wrapping_add(1);
+        self.chat_list_request_generation = self.chat_list_request_generation.wrapping_add(1);
+        self.history_request_generation = self.history_request_generation.wrapping_add(1);
         self.user_id = None;
         self.username = None;
         self.is_authenticated = false;
         self.ws_stream_started = false;
         self.login_step = LoginWizardStep::Start;
         self.verification_code.clear();
-        self.client.ws_transport.stop();
-        self.client.ws_transport.set_token(None);
-        self.nav_rail.update(cx, |r, _| r.is_connected = false);
+        self.ime_preedit = None;
+        self.contacts_list.clear();
+        self.active_call_id = None;
+        self.webrtc_engine.hangup_local("logout");
+        let _ = self.webrtc_engine.drain_outbound_frames();
+        let _ = self.voice_recorder.stop();
+        self.audio_player.stop();
+        self.talk_mode_overlay = None;
+        self.computer_overlay = None;
+        self.media_viewer_overlay = None;
+        self.iv_viewer_overlay = None;
+        self.active_panel = ActiveWorkspacePanel::Chats;
+        self.client.clear_session();
+        self.app.reset_session();
+        self.window_runtime.clear_session_user();
+        self.window_runtime
+            .set_connection_status(BannerConnectionStatus::Connecting, None);
+        self.panel_state.reset();
+        self.pending_outgoing_nonces.clear();
+        self.resolved_outgoing_nonces.clear();
+        self.sidebar.update(cx, |sb, sb_cx| {
+            self.stage.update(sb_cx, |st, st_cx| {
+                self.inspector.update(st_cx, |insp, _| {
+                    reset_account_conversation_views(sb, st, insp, &srv_url, None);
+                });
+            });
+        });
+        self.last_sidebar_selection_revision = self.sidebar.read(cx).selection_revision;
+        self.main_menu_drawer.update(cx, |m, _| {
+            m.close();
+            m.accounts.clear();
+            m.active_account_id = 0;
+        });
+        self.modal_container.update(cx, |m, _| m.hide_all());
+        self.nav_rail.update(cx, |r, _| {
+            r.is_connected = false;
+            r.set_account("?", "");
+            r.active_destination = NavDestination::Chats;
+        });
         ClientConfig::clear_session();
 
         if let (Some(token), Some(session_id)) = (token, session_id) {
@@ -1341,25 +1571,52 @@ impl AppShell {
         self.media_viewer_overlay = None;
     }
 
-    fn append_outgoing_text(&mut self, text: String, cx: &mut Context<Self>) {
-        let msg_id = self.next_message_id;
-        self.next_message_id += 1;
+    pub fn append_outgoing_text(&mut self, text: String, cx: &mut Context<Self>) {
+        let verified_target = {
+            let sb = self.sidebar.read(cx);
+            let st = self.stage.read(cx);
+            validate_selected_send_target(
+                self.is_authenticated,
+                self.session_token.as_deref(),
+                self.user_id,
+                sb,
+                st,
+            )
+        };
+        let Some(target) = verified_target else {
+            return;
+        };
+        let active_chat_id = target.chat_id;
+        let my_user_id = target.user_id;
+        let Some(token) = self.session_token.clone() else {
+            return;
+        };
 
-        let active_chat_id = self.stage.read(cx).active_chat_id.unwrap_or(1);
+        let msg_id = self.client.next_client_nonce();
+        self.pending_outgoing_nonces.insert(msg_id, active_chat_id);
+
         let peer_name = self.stage.read(cx).chat_title.clone();
-        let peer_initials = self.stage.read(cx).chat_avatar_initials.clone();
-        let peer_color = self.stage.read(cx).chat_avatar_color;
+        let my_name = self.username.clone().unwrap_or_else(|| "Me".to_string());
+        let my_initials = crate::views::app_shell::shell_truth::derive_initials(&my_name);
+        let my_color = crate::views::app_shell::peer_avatar_color(my_user_id);
+        let now_ts = format_authoritative_timestamp(Some(chrono::Utc::now().timestamp_millis()));
+        let fence = SessionRequestFence {
+            auth_generation: self.auth_generation,
+            request_generation: 0,
+            token: token.clone(),
+            user_id: my_user_id,
+        };
 
         // 1. Add user's outgoing message bubble
         self.stage.update(cx, |st, st_cx| {
             st.add_message(MessageItemModel {
                 id: msg_id,
-                sender_id: self.user_id.unwrap_or(1),
-                sender_name: "You".to_string(),
-                avatar_initials: "ME".to_string(),
-                avatar_color: 0x3498DB,
+                sender_id: my_user_id,
+                sender_name: my_name.clone(),
+                avatar_initials: my_initials,
+                avatar_color: my_color,
                 direction: MessageDirection::Outgoing,
-                timestamp: "Just now".to_string(),
+                timestamp: now_ts.clone(),
                 delivery_status: DeliveryStatus::Sending,
                 reply_to: None,
                 reactions: vec![],
@@ -1374,57 +1631,79 @@ impl AppShell {
         });
 
         // 2. Update sidebar preview
+        let is_bot_dialog = {
+            let sb = self.sidebar.read(cx);
+            sb.bot_ids.contains(&active_chat_id)
+                || sb
+                    .dialogs
+                    .iter()
+                    .any(|d| d.id == active_chat_id && d.folder == "Bots")
+        };
         self.sidebar.update(cx, |sb, sb_cx| {
             if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == active_chat_id) {
-                d.last_message = format!("You: {}", text);
-                d.timestamp = "Just now".to_string();
+                d.last_message = text.clone();
+                d.timestamp = now_ts.clone();
                 d.delivery_status = DialogDeliveryStatus::Sending;
             }
             sb_cx.notify();
         });
 
-        // 3. Dispatch real HTTP POST /api/v1/messages/send
-        if let Some(token) = self.session_token.clone() {
+        // 3. Dispatch real HTTP POST /api/v1/messages/send (fenced by session, carrying client_nonce)
+        {
             let client = self.client.clone();
-            let http_req = SendMessageHttpRequest {
-                chat_id: active_chat_id,
-                text: text.clone(),
+            let http_req = RichSendMessageRequest {
+                chat_id: active_chat_id as i64,
+                text: Some(text.clone()),
+                content: Some(gpui_telegram_proto::message::MessageContent::plain_text(text.clone())),
+                entities: Vec::new(),
                 reply_to: None,
+                quote_text: None,
+                topic_id: None,
+                client_nonce: Some(msg_id),
+                forward_from_chat_id: None,
+                forward_from_msg_id: None,
+                silent: false,
+                scheduled_at_ms: None,
+                inline_keyboard: None,
             };
             let sent_msg_id = msg_id;
+            let http_fence = fence.clone();
 
             cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
-                let res = client.http_client.send_message(&token, &http_req).await;
+                let res = client.http_client.send_message_rich(&token, &http_req).await;
                 let _ = weak_shell.update(app, |shell, cx| {
+                    if !http_fence.matches(
+                        shell.is_authenticated,
+                        shell.auth_generation,
+                        0,
+                        shell.session_token.as_deref(),
+                        shell.user_id,
+                    ) {
+                        return;
+                    }
+                    shell.pending_outgoing_nonces.remove(&sent_msg_id);
                     match res {
                         Ok(resp) => {
-                            shell.client.sync_coordinator.set_pts(
-                                ChatId(active_chat_id as i64),
+                            let server_id = u64::try_from(resp.message_id).unwrap_or(0);
+                            if server_id > 0 {
+                                shell.resolved_outgoing_nonces.insert(sent_msg_id, server_id);
+                            }
+                            shell.reconcile_outgoing_message(
+                                active_chat_id,
+                                sent_msg_id,
+                                server_id,
+                                DeliveryStatus::Sent,
                                 resp.pts,
+                                cx,
                             );
-
-                            shell.stage.update(cx, |st, st_cx| {
-                                if let Some(m) = st.messages.iter_mut().find(|m| m.id == sent_msg_id) {
-                                    m.id = resp.message_id;
-                                    m.delivery_status = DeliveryStatus::Sent;
-                                }
-                                if let Some(hist) = st.chat_histories.get_mut(&active_chat_id) {
-                                    if let Some(m) = hist.iter_mut().find(|m| m.id == sent_msg_id) {
-                                        m.id = resp.message_id;
-                                        m.delivery_status = DeliveryStatus::Sent;
-                                    }
-                                }
-                                st_cx.notify();
-                            });
-                            shell.sidebar.update(cx, |sb, sb_cx| {
-                                if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == active_chat_id) {
-                                    d.delivery_status = DialogDeliveryStatus::Sent;
-                                }
-                                sb_cx.notify();
-                            });
                         }
                         Err(err) => {
-                            eprintln!("[AppShell] Message send HTTP failure: {}. Preserving local message", err);
+                            let err_text = format!(
+                                "{}: {}",
+                                tr_str(shell.active_lang_id(), "发送失败", "Message send failed"),
+                                err
+                            );
+                            shell.window_runtime.enqueue_toast(err_text, 3500);
                         }
                     }
                     cx.notify();
@@ -1433,176 +1712,22 @@ impl AppShell {
             .detach();
         }
 
-        // 4. Also dispatch WebSocket frame
-        let ws_req = gpui_telegram_proto::ws::SendMessageRequest::new(
-            ChatId(active_chat_id as i64),
-            msg_id,
-            gpui_telegram_proto::message::MessageContent::plain_text(text.clone()),
-        );
-        let _ = self.client.ws_channel.send(WsClientFrame::SendMessage(ws_req));
-
-        // 5. Check if target chat is an AI Bot (Chat 4 or contains "Autonomous Agent" / "Bot")
-        let is_ai_bot = active_chat_id == 4
+        // 4. For AI Bot chats, the server's `POST /api/v1/messages/send` triggers `maybe_trigger_bot_reply`
+        //    and pushes the single authoritative reply over WebSocket. Do NOT spawn a duplicate `agent_runs` call.
+        let is_ai_bot = is_bot_dialog
+            || self.is_chat_bot(active_chat_id, cx)
             || peer_name.contains("Autonomous Agent")
             || peer_name.contains("Bot");
 
         if is_ai_bot {
-            let reply_id = self.next_message_id;
-            self.next_message_id += 1;
-
-            // Insert placeholder thinking bubble
-            self.stage.update(cx, |st, st_cx| {
-                st.add_message(MessageItemModel {
-                    id: reply_id,
-                    sender_id: active_chat_id,
-                    sender_name: peer_name.clone(),
-                    avatar_initials: peer_initials.clone(),
-                    avatar_color: peer_color,
-                    direction: MessageDirection::Incoming,
-                    timestamp: "Just now".to_string(),
-                    delivery_status: DeliveryStatus::Read,
-                    reply_to: None,
-                    reactions: vec![],
-                    content: MessageContent::Text {
-                        text: "Thinking... 💭".to_string(),
-                        is_edited: false,
-                    },
-                    bot_keyboard: None,
-                    is_pinned: false,
-                });
-                st_cx.notify();
-            });
-
-            // Set typing indicator in ChatSidebar
+            let lang = self.active_lang_id();
             self.sidebar.update(cx, |sb, sb_cx| {
                 sb.set_typing(
                     active_chat_id,
-                    Some("Autonomous Agent Bot is thinking...".to_string()),
+                    Some(tr_str(lang, "AI 助手正在思考...", "Assistant is thinking...").to_string()),
                 );
                 sb_cx.notify();
             });
-
-            let client = self.client.clone();
-            let token = self.session_token.clone().unwrap_or_default();
-            let session_id = self
-                .session_id
-                .clone()
-                .unwrap_or_else(|| format!("sess_guest_{}", active_chat_id));
-            let prompt = text.clone();
-
-            cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
-                let agent_req = AgentRunRequest {
-                    prompt,
-                    session_id,
-                    model_id: Some("grok-3".to_string()),
-                    thinking_budget_tokens: Some(1024),
-                };
-                let result = client.http_client.agent_runs(&token, &agent_req).await;
-
-                let _ = weak_shell.update(app, |shell, cx| {
-                    // Clear typing indicator in ChatSidebar
-                    shell.sidebar.update(cx, |sb, sb_cx| {
-                        sb.set_typing(active_chat_id, None);
-                        sb_cx.notify();
-                    });
-
-                    match result {
-                        Ok(run_resp) => {
-                            let response_text = run_resp.response;
-                            let snippet = response_text
-                                .lines()
-                                .next()
-                                .unwrap_or(&response_text)
-                                .to_string();
-
-                            let is_current =
-                                shell.stage.read(cx).active_chat_id == Some(active_chat_id);
-                            if is_current {
-                                shell.stage.update(cx, |st, st_cx| {
-                                    if let Some(msg) =
-                                        st.messages.iter_mut().find(|m| m.id == reply_id)
-                                    {
-                                        msg.content = MessageContent::Text {
-                                            text: response_text.clone(),
-                                            is_edited: false,
-                                        };
-                                        msg.bot_keyboard = Some(vec![vec![
-                                            InlineKeyboardButton {
-                                                text: "Launch Talk Mode".to_string(),
-                                                button_type: InlineButtonType::Callback(
-                                                    "action_talk_mode".to_string(),
-                                                ),
-                                            },
-                                            InlineKeyboardButton {
-                                                text: "Remote Computer".to_string(),
-                                                button_type: InlineButtonType::Callback(
-                                                    "action_remote_computer".to_string(),
-                                                ),
-                                            },
-                                        ]]);
-                                    }
-                                    st_cx.notify();
-                                });
-                            } else {
-                                shell.stage.update(cx, |st, _| {
-                                    if let Some(history) =
-                                        st.chat_histories.get_mut(&active_chat_id)
-                                    {
-                                        if let Some(msg) =
-                                            history.iter_mut().find(|m| m.id == reply_id)
-                                        {
-                                            msg.content = MessageContent::Text {
-                                                text: response_text.clone(),
-                                                is_edited: false,
-                                            };
-                                            msg.bot_keyboard = Some(vec![vec![
-                                                InlineKeyboardButton {
-                                                    text: "Launch Talk Mode".to_string(),
-                                                    button_type: InlineButtonType::Callback(
-                                                        "action_talk_mode".to_string(),
-                                                    ),
-                                                },
-                                                InlineKeyboardButton {
-                                                    text: "Remote Computer".to_string(),
-                                                    button_type: InlineButtonType::Callback(
-                                                        "action_remote_computer".to_string(),
-                                                    ),
-                                                },
-                                            ]]);
-                                        }
-                                    }
-                                });
-                            }
-
-                            shell.sidebar.update(cx, |sb, sb_cx| {
-                                if let Some(d) =
-                                    sb.dialogs.iter_mut().find(|d| d.id == active_chat_id)
-                                {
-                                    d.last_message = snippet;
-                                    d.timestamp = "Just now".to_string();
-                                }
-                                sb_cx.notify();
-                            });
-                        }
-                        Err(err) => {
-                            let err_msg = format!("⚠️ AI Agent Error: {}", err);
-                            shell.stage.update(cx, |st, st_cx| {
-                                if let Some(msg) =
-                                    st.messages.iter_mut().find(|m| m.id == reply_id)
-                                {
-                                    msg.content = MessageContent::Text {
-                                        text: err_msg,
-                                        is_edited: false,
-                                    };
-                                }
-                                st_cx.notify();
-                            });
-                        }
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
         }
     }
 
@@ -1625,6 +1750,13 @@ impl AppShell {
                     shell.nav_rail.update(cx, |r, _| {
                         r.set_connected(is_connected);
                     });
+                    let banner_status = match &status {
+                        ConnectionStatus::Connected => BannerConnectionStatus::Connected,
+                        ConnectionStatus::Connecting => BannerConnectionStatus::Connecting,
+                        ConnectionStatus::Reconnecting { .. } => BannerConnectionStatus::Updating,
+                        ConnectionStatus::Offline { .. } => BannerConnectionStatus::WaitingForNetwork,
+                    };
+                    shell.window_runtime.set_connection_status(banner_status, None);
                     if is_connected && !was_connected {
                         // When WebSocket establishes or re-establishes connection,
                         // trigger catch-up sync (refresh_chats and refresh historical messages
@@ -1681,8 +1813,11 @@ impl AppShell {
                 self.handle_ws_sync_diff(diff_response, cx);
             }
             WsServerFrame::Update(update_event) => {
-                let active_chat = self.stage.read(cx).active_chat_id.unwrap_or(1);
-                self.apply_update_event(ChatId(active_chat as i64), update_event, cx);
+                if let Some(active_chat) = self.stage.read(cx).active_chat_id {
+                    self.apply_update_event(ChatId(active_chat as i64), update_event, cx);
+                } else {
+                    self.apply_update_event(ChatId(0), update_event, cx);
+                }
             }
             WsServerFrame::Pong { .. } => {
                 // Heartbeat roundtrip successful; connection alive
@@ -1696,43 +1831,66 @@ impl AppShell {
         }
     }
 
-    fn handle_ws_ack(&mut self, client_nonce: u64, message_id: i64, pts: u64, cx: &mut Context<Self>) {
-        let active_chat = self.stage.read(cx).active_chat_id;
-        if let Some(cid) = active_chat {
-            if pts > 0 {
-                self.client.sync_coordinator.set_pts(ChatId(cid as i64), pts);
-            }
-        }
+    fn has_stage_or_history_message(&self, chat_id: u64, msg_id: u64, cx: &App) -> bool {
+        let st = self.stage.read(cx);
+        let in_active = st.active_chat_id == Some(chat_id)
+            && st.messages.iter().any(|m| m.id == msg_id);
+        in_active
+            || st
+                .chat_histories
+                .get(&chat_id)
+                .is_some_and(|hist| hist.iter().any(|m| m.id == msg_id))
+    }
 
+    fn reconcile_outgoing_message(
+        &mut self,
+        chat_id: u64,
+        local_id: u64,
+        server_id: u64,
+        min_status: DeliveryStatus,
+        pts: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if pts > 0 {
+            self.client.sync_coordinator.set_pts(ChatId(chat_id as i64), pts);
+        }
         self.stage.update(cx, |st, st_cx| {
-            if let Some(msg) = st.messages.iter_mut().find(|m| m.id == client_nonce) {
-                if message_id > 0 {
-                    msg.id = message_id as u64;
+            let mut changed = false;
+            if st.active_chat_id == Some(chat_id) {
+                if reconcile_stage_message_list(&mut st.messages, local_id, server_id, min_status) {
+                    st.row_height_cache.rebuild_prefix_sums(&st.messages);
+                    changed = true;
                 }
-                msg.delivery_status = DeliveryStatus::Sent;
+            }
+            if let Some(history) = st.chat_histories.get_mut(&chat_id) {
+                reconcile_stage_message_list(history, local_id, server_id, min_status);
+            }
+            if changed {
                 st_cx.notify();
             }
-            if let Some(cid) = active_chat {
-                if let Some(history) = st.chat_histories.get_mut(&cid) {
-                    if let Some(msg) = history.iter_mut().find(|m| m.id == client_nonce) {
-                        if message_id > 0 {
-                            msg.id = message_id as u64;
-                        }
-                        msg.delivery_status = DeliveryStatus::Sent;
-                    }
-                }
-            }
         });
-
-        if let Some(cid) = active_chat {
-            self.sidebar.update(cx, |sb, sb_cx| {
-                if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == cid) {
-                    d.delivery_status = DialogDeliveryStatus::Sent;
-                }
-                sb_cx.notify();
-            });
-        }
+        self.sidebar.update(cx, |sb, sb_cx| {
+            if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == chat_id) {
+                d.delivery_status = if matches!(min_status, DeliveryStatus::Read) {
+                    DialogDeliveryStatus::Read
+                } else {
+                    DialogDeliveryStatus::Sent
+                };
+            }
+            sb_cx.notify();
+        });
         cx.notify();
+    }
+
+    fn handle_ws_ack(&mut self, client_nonce: u64, message_id: i64, pts: u64, cx: &mut Context<Self>) {
+        let tracked_chat = self.pending_outgoing_nonces.remove(&client_nonce);
+        let server_id = u64::try_from(message_id).unwrap_or(0);
+        if server_id > 0 {
+            self.resolved_outgoing_nonces.insert(client_nonce, server_id);
+        }
+        if let Some(cid) = tracked_chat.or(self.stage.read(cx).active_chat_id) {
+            self.reconcile_outgoing_message(cid, client_nonce, server_id, DeliveryStatus::Sent, pts, cx);
+        }
     }
 
     fn handle_ws_pts_push(&mut self, pts_update: PtsUpdate, cx: &mut Context<Self>) {
@@ -1754,19 +1912,131 @@ impl AppShell {
         }
     }
 
+    fn resolve_incoming_sender_identity(
+        &self,
+        chat_u64: u64,
+        sender_id: u64,
+        cx: &gpui::App,
+    ) -> (String, String, u32) {
+        let color = crate::views::app_shell::peer_avatar_color(sender_id);
+        if let Some(c) = self.contacts_list.iter().find(|c| c.user_id == sender_id) {
+            let mut full = c.first_name.trim().to_string();
+            if let Some(ref last) = c.last_name {
+                let l = last.trim();
+                if !l.is_empty() {
+                    if !full.is_empty() {
+                        full.push(' ');
+                    }
+                    full.push_str(l);
+                }
+            }
+            if full.is_empty() {
+                if let Some(ref u) = c.username {
+                    full = u.trim().to_string();
+                }
+            }
+            if !full.is_empty() {
+                let init = derive_initials(&full);
+                return (
+                    full,
+                    if init.is_empty() { "TG".to_string() } else { init },
+                    color,
+                );
+            }
+        }
+        if let Some(rc) = self.rich_chats_by_id.get(&chat_u64) {
+            if rc.peer_user_id == Some(sender_id)
+                || rc.is_bot
+                || (!rc.is_group && !rc.is_channel)
+            {
+                let candidate = rc
+                    .peer_display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        let t = rc.title.trim();
+                        if t.is_empty() { None } else { Some(t) }
+                    });
+                if let Some(name) = candidate {
+                    let init = derive_initials(name);
+                    return (
+                        name.to_string(),
+                        if init.is_empty() { "TG".to_string() } else { init },
+                        color,
+                    );
+                }
+            }
+        }
+        let sb = self.sidebar.read(cx);
+        if let Some(d) = sb.dialogs.iter().find(|d| d.id == chat_u64) {
+            let is_group_or_channel = d.folder == "Groups" || d.folder == "Channels";
+            if (!is_group_or_channel || sender_id == chat_u64) && !d.peer_name.trim().is_empty() {
+                let init = derive_initials(&d.peer_name);
+                return (
+                    d.peer_name.clone(),
+                    if init.is_empty() { "TG".to_string() } else { init },
+                    d.avatar_color,
+                );
+            }
+        }
+        let st = self.stage.read(cx);
+        if st.active_chat_id == Some(chat_u64) && !st.chat_title.trim().is_empty() {
+            let init = derive_initials(&st.chat_title);
+            return (
+                st.chat_title.clone(),
+                if init.is_empty() { "TG".to_string() } else { init },
+                st.chat_avatar_color,
+            );
+        }
+        let fallback = format!("User {}", sender_id);
+        let init = derive_initials(&fallback);
+        (
+            fallback,
+            if init.is_empty() { "TG".to_string() } else { init },
+            color,
+        )
+    }
+
     fn apply_update_event(&mut self, chat_id: ChatId, event: UpdateEvent, cx: &mut Context<Self>) {
         match event {
             UpdateEvent::NewMessage(msg) => {
                 let current_user_id = self.user_id.unwrap_or(0);
                 let is_outgoing = msg.sender_id.0 == current_user_id;
+                let chat_u64 = chat_id.0 as u64;
+                let server_id = u64::try_from(msg.id.0).unwrap_or(0);
 
                 if is_outgoing {
                     if let Some(nonce) = msg.client_nonce {
-                        let found = self.stage.read(cx).messages.iter().any(|m| m.id == nonce);
-                        if found {
-                            self.handle_ws_ack(nonce, msg.id.0, 0, cx);
+                        let was_tracked = self.pending_outgoing_nonces.remove(&nonce).is_some()
+                            || self.resolved_outgoing_nonces.contains_key(&nonce)
+                            || self.has_stage_or_history_message(chat_u64, nonce, cx)
+                            || (server_id > 0 && self.has_stage_or_history_message(chat_u64, server_id, cx));
+                        if was_tracked {
+                            if server_id > 0 {
+                                self.resolved_outgoing_nonces.insert(nonce, server_id);
+                            }
+                            self.reconcile_outgoing_message(
+                                chat_u64,
+                                nonce,
+                                server_id,
+                                DeliveryStatus::Read,
+                                0,
+                                cx,
+                            );
                             return;
                         }
+                    }
+                    if server_id > 0 && self.has_stage_or_history_message(chat_u64, server_id, cx) {
+                        self.reconcile_outgoing_message(
+                            chat_u64,
+                            server_id,
+                            server_id,
+                            DeliveryStatus::Read,
+                            0,
+                            cx,
+                        );
+                        return;
                     }
                 }
 
@@ -1774,13 +2044,28 @@ impl AppShell {
                     gpui_telegram_proto::message::MessageContent::Text { text, .. } => text.clone(),
                     _ => "[Media attachment]".to_string(),
                 };
+                let inline_kb = serde_json::to_value(&msg.content)
+                    .ok()
+                    .and_then(|val| crate::views::app_shell::shell_truth::decode_inline_keyboard_json(&val));
+
+                let (sender_name, avatar_initials, avatar_color) = if is_outgoing {
+                    let my_name = self.username.clone().unwrap_or_else(|| "You".to_string());
+                    let init = derive_initials(&my_name);
+                    (
+                        my_name,
+                        if init.is_empty() { "ME".to_string() } else { init },
+                        crate::views::app_shell::peer_avatar_color(current_user_id),
+                    )
+                } else {
+                    self.resolve_incoming_sender_identity(chat_u64, msg.sender_id.0, cx)
+                };
 
                 let model = MessageItemModel {
-                    id: msg.id.0 as u64,
+                    id: server_id,
                     sender_id: msg.sender_id.0,
-                    sender_name: if is_outgoing { "You".to_string() } else { "Peer".to_string() },
-                    avatar_initials: if is_outgoing { "ME".to_string() } else { "PR".to_string() },
-                    avatar_color: if is_outgoing { 0x3498DB } else { 0x9B59B6 },
+                    sender_name: sender_name.clone(),
+                    avatar_initials,
+                    avatar_color,
                     direction: if is_outgoing { MessageDirection::Outgoing } else { MessageDirection::Incoming },
                     timestamp: msg.date.format("%H:%M").to_string(),
                     delivery_status: DeliveryStatus::Read,
@@ -1790,11 +2075,10 @@ impl AppShell {
                         text: preview_text.clone(),
                         is_edited: false,
                     },
-                    bot_keyboard: None,
+                    bot_keyboard: inline_kb.clone(),
                     is_pinned: false,
                 };
 
-                let chat_u64 = chat_id.0 as u64;
                 let is_current_chat = self.stage.read(cx).active_chat_id == Some(chat_u64);
 
                 if is_current_chat {
@@ -1804,11 +2088,33 @@ impl AppShell {
                     });
                 } else {
                     self.stage.update(cx, |st, _| {
-                        st.chat_histories.entry(chat_u64).or_default().push(model);
+                        let hist = st.chat_histories.entry(chat_u64).or_default();
+                        if !reconcile_stage_message_list(hist, model.id, model.id, DeliveryStatus::Read) {
+                            hist.push(model);
+                        }
                     });
                 }
 
+                let is_bot_chat = self.is_chat_bot(chat_u64, cx)
+                    || self.sidebar.read(cx).bot_ids.contains(&msg.sender_id.0);
+
+                if !is_outgoing
+                    && self.talk_mode_overlay.is_some()
+                    && self.active_talk_session_is_ai
+                    && self.active_talk_bot_chat_id == Some(chat_u64)
+                    && !preview_text.trim().is_empty()
+                {
+                    if let Some(ov) = self.talk_mode_overlay.clone() {
+                        ov.update(cx, |o, _| {
+                            o.add_transcript(&sender_name, &preview_text, false);
+                        });
+                    }
+                }
+
                 self.sidebar.update(cx, |sb, sb_cx| {
+                    if !is_outgoing {
+                        sb.set_typing(chat_u64, None);
+                    }
                     if let Some(dialog) = sb.dialogs.iter_mut().find(|d| d.id == chat_u64) {
                         dialog.last_message = preview_text;
                         dialog.timestamp = msg.date.format("%H:%M").to_string();
@@ -1818,6 +2124,42 @@ impl AppShell {
                     }
                     sb_cx.notify();
                 });
+
+                if !is_outgoing && is_bot_chat && inline_kb.is_none() && server_id > 0 {
+                    if let (Some(token), Some(uid)) = (self.session_token.clone(), self.user_id) {
+                        let fence = SessionRequestFence {
+                            auth_generation: self.auth_generation,
+                            request_generation: 0,
+                            token,
+                            user_id: uid,
+                        };
+                        let client = self.client.clone();
+                        cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+                            if let Ok(rich) = client.hermes_messages_history_rich(chat_u64 as i64, Some(10)).await {
+                                let _ = weak.update(app, |shell, cx| {
+                                    if !fence.matches(
+                                        shell.is_authenticated,
+                                        shell.auth_generation,
+                                        0,
+                                        shell.session_token.as_deref(),
+                                        shell.user_id,
+                                    ) {
+                                        return;
+                                    }
+                                    shell.stage.update(cx, |st, st_cx| {
+                                        overlay_rich_message_metadata(&mut st.messages, &rich);
+                                        if let Some(hist) = st.chat_histories.get_mut(&chat_u64) {
+                                            overlay_rich_message_metadata(hist, &rich);
+                                        }
+                                        st_cx.notify();
+                                    });
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .detach();
+                    }
+                }
                 cx.notify();
             }
             UpdateEvent::EditMessage(msg) => {
@@ -1868,6 +2210,183 @@ impl AppShell {
                     );
                     sb_cx.notify();
                 });
+                cx.notify();
+            }
+            UpdateEvent::MessageReactions(ev) | UpdateEvent::ReactionUpdated(ev) => {
+                let chat_u64 = ev.chat_id.0 as u64;
+                let msg_u64 = ev.message_id.0 as u64;
+                let mapped: Vec<crate::views::stage::cards::ReactionItem> = ev
+                    .reactions
+                    .into_iter()
+                    .map(|r| crate::views::stage::cards::ReactionItem {
+                        emoji: r.emoji,
+                        count: r.count,
+                        user_reacted: r.is_chosen_by_me,
+                    })
+                    .collect();
+                self.stage.update(cx, |st, st_cx| {
+                    if let Some(m) = st.messages.iter_mut().find(|m| m.id == msg_u64) {
+                        m.reactions = mapped.clone();
+                    }
+                    if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                        if let Some(m) = history.iter_mut().find(|m| m.id == msg_u64) {
+                            m.reactions = mapped;
+                        }
+                    }
+                    st_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::PinnedMessagesChanged {
+                chat_id: ev_chat,
+                pinned_ids,
+            } => {
+                let chat_u64 = ev_chat.0 as u64;
+                let ids: Vec<i64> = pinned_ids.iter().map(|id| id.0).collect();
+                self.stage.update(cx, |st, st_cx| {
+                    if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                        for m in history.iter_mut() {
+                            m.is_pinned = ids.contains(&(m.id as i64));
+                        }
+                    }
+                    if st.active_chat_id == Some(chat_u64) {
+                        st.pinned_tracker.set_pinned_ids(ids.clone());
+                        for m in &mut st.messages {
+                            m.is_pinned = ids.contains(&(m.id as i64));
+                        }
+                    }
+                    st_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::PinnedMessageChanged { message_id } => {
+                let pin_u64 = message_id.map(|id| id.0 as u64);
+                self.stage.update(cx, |st, st_cx| {
+                    if let Some(id) = pin_u64 {
+                        st.pinned_tracker.set_pinned_ids(vec![id as i64]);
+                    } else {
+                        st.pinned_tracker.set_pinned_ids(Vec::new());
+                    }
+                    for m in &mut st.messages {
+                        m.is_pinned = Some(m.id) == pin_u64;
+                    }
+                    st_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::DraftUpdated {
+                chat_id: ev_chat,
+                draft,
+                ..
+            } => {
+                let text = draft.map(|d| d.text).unwrap_or_default();
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.set_draft(ev_chat.0 as u64, text);
+                    sb_cx.notify();
+                });
+                cx.notify();
+            }
+            UpdateEvent::FolderChanged { .. } => {
+                self.refresh_folders(cx);
+            }
+            UpdateEvent::PollUpdated {
+                chat_id: ev_chat, ..
+            } => {
+                if self.stage.read(cx).active_chat_id == Some(ev_chat.0 as u64) {
+                    self.load_historical_messages(ev_chat.0 as u64, cx);
+                }
+            }
+            UpdateEvent::CallUpdated {
+                call_id,
+                state,
+                signal,
+            } => {
+                if let Some(sig) = signal {
+                    let frame_opt = match sig.signal_type.as_str() {
+                        "offer" => sig.sdp.map(|sdp| gpui_telegram_webrtc::SignalingFrame::Offer {
+                            call_id: call_id.clone(),
+                            sdp,
+                        }),
+                        "answer" => sig.sdp.map(|sdp| gpui_telegram_webrtc::SignalingFrame::Answer {
+                            call_id: call_id.clone(),
+                            sdp,
+                        }),
+                        "ice_candidate" => sig.candidate.map(|candidate| {
+                            gpui_telegram_webrtc::SignalingFrame::IceCandidate {
+                                call_id: call_id.clone(),
+                                candidate,
+                                sdp_mid: sig.sdp_mid,
+                                sdp_mline_index: sig.sdp_mline_index.map(|v| v as u16),
+                            }
+                        }),
+                        "ringing" => Some(gpui_telegram_webrtc::SignalingFrame::Ringing {
+                            call_id: call_id.clone(),
+                        }),
+                        "accept" => Some(gpui_telegram_webrtc::SignalingFrame::Accept {
+                            call_id: call_id.clone(),
+                        }),
+                        "hangup" => Some(gpui_telegram_webrtc::SignalingFrame::Hangup {
+                            call_id: call_id.clone(),
+                            reason: sig.reason.unwrap_or_else(|| "remote_hangup".to_string()),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(frame) = frame_opt {
+                        self.webrtc_engine.apply_signaling_frame(frame);
+                    }
+                }
+                let emojis = self
+                    .webrtc_engine
+                    .emoji_fingerprint()
+                    .map(|f| f.emoji_chars.join(" "));
+                match state.as_str() {
+                    "ended" | "declined" | "missed" | "cancelled" => {
+                        if self.active_call_id.as_deref() == Some(call_id.as_str()) {
+                            self.active_call_id = None;
+                            self.talk_mode_overlay = None;
+                        }
+                        self.sync_calls_history(cx);
+                    }
+                    "accepted" | "active" | "connected" => {
+                        if let Some(ov) = self.talk_mode_overlay.clone() {
+                            ov.update(cx, |o, _| {
+                                if let Some(ref e) = emojis {
+                                    o.e2ee_emojis = e.clone();
+                                }
+                                o.is_connected = true;
+                                o.set_state(crate::views::call_overlay::TalkModeState::Listening);
+                            });
+                        }
+                    }
+                    "ringing" | "initiated" => {
+                        if self.talk_mode_overlay.is_none() && !call_id.is_empty() {
+                            self.active_call_id = Some(call_id.clone());
+                            let pal = self.palette;
+                            let lang = self.active_lang_id();
+                            let ov = cx.new(|_| {
+                                let mut o = CallOverlay::new_live(
+                                    tr_str(lang, "来电通话", "Incoming Call").to_string(),
+                                    None,
+                                    None,
+                                    pal,
+                                    lang,
+                                );
+                                o.is_connected = false;
+                                o.set_state(crate::views::call_overlay::TalkModeState::Connecting);
+                                if let Some(ref e) = emojis {
+                                    o.e2ee_emojis = e.clone();
+                                }
+                                o
+                            });
+                            self.talk_mode_overlay = Some(ov);
+                        }
+                        self.sync_calls_history(cx);
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            }
+            UpdateEvent::StoryUpdated { .. } | UpdateEvent::ForumTopicChanged { .. } => {
                 cx.notify();
             }
             _ => {}
@@ -2073,129 +2592,117 @@ impl AppShell {
 
     /// Refreshes authentic chat list from GET /api/v1/chats
     pub fn refresh_chats(&mut self, cx: &mut Context<Self>) {
-        let token = match self.session_token.clone() {
-            Some(t) => t,
-            None => return,
+        let (Some(token), Some(uid)) = (self.session_token.clone(), self.user_id) else {
+            return;
+        };
+        if !self.is_authenticated {
+            return;
+        }
+        self.chat_list_request_generation = self.chat_list_request_generation.wrapping_add(1);
+        let fence = SessionRequestFence {
+            auth_generation: self.auth_generation,
+            request_generation: self.chat_list_request_generation,
+            token: token.clone(),
+            user_id: uid,
         };
         let client = self.client.clone();
 
         cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
             let res = client.http_client.get_chats(&token).await;
+            let rich_chats = client.hermes_list_chats_rich().await.ok();
             let _ = weak_shell.update(app, |shell, cx| {
                 match res {
-                    Ok(chats) if !chats.is_empty() => {
-                        let mut auto_selected_welcome: Option<DialogItemModel> = None;
-                        shell.sidebar.update(cx, |sb, sb_cx| {
-                            // Remove any fabricated local bootstrap dialogs (id <= 5) not present on the server
-                            sb.dialogs
-                                .retain(|d| d.id > 5 || chats.iter().any(|c| c.chat_id == d.id));
-
-                            for server_chat in chats {
-                                let is_welcome_bot = (server_chat.chat_id >= 700_000_000
-                                    && server_chat.chat_id < 750_000_000)
-                                    || server_chat.title.contains("Telegram Official Bot");
-                                let is_bot = is_welcome_bot || server_chat.is_bot.unwrap_or(false);
-                                if let Some(existing) = sb.dialogs.iter_mut().find(|d| d.id == server_chat.chat_id) {
-                                    existing.peer_name = server_chat.title;
-                                    if let Some(msg) = server_chat.last_message {
-                                        existing.last_message = msg;
-                                    }
-                                    existing.unread_count = server_chat.unread_count;
-                                    if is_welcome_bot && (sb.active_chat_id == Some(4) || sb.active_chat_id.is_none()) {
-                                        auto_selected_welcome = Some(existing.clone());
-                                    }
-                                } else {
-                                    let initials = if is_welcome_bot {
-                                        "TG".to_string()
-                                    } else if is_bot {
-                                        "🤖".to_string()
-                                    } else {
-                                        server_chat
-                                            .title
-                                            .chars()
-                                            .take(2)
-                                            .collect::<String>()
-                                            .to_uppercase()
-                                    };
-                                    let folder = if is_bot {
-                                        "Bots".to_string()
-                                    } else if server_chat.chat_type != 0 {
-                                        "Work".to_string()
-                                    } else {
-                                        "Personal".to_string()
-                                    };
-                                    let dialog_model = DialogItemModel {
-                                        id: server_chat.chat_id,
-                                        peer_name: server_chat.title,
-                                        avatar_initials: initials,
-                                        avatar_color: server_chat.avatar_color.unwrap_or(0x2AABEE),
-                                        last_message: server_chat
-                                            .last_message
-                                            .unwrap_or_else(|| "No messages yet".to_string()),
-                                        timestamp: "刚刚".to_string(),
-                                        unread_count: server_chat.unread_count,
-                                        is_muted: false,
-                                        is_pinned: is_welcome_bot,
-                                        is_online: is_bot || server_chat.chat_type == 0,
-                                        typing_indicator: None,
-                                        delivery_status: DialogDeliveryStatus::Read,
-                                        folder,
-                                    };
-                                    if is_welcome_bot {
-                                        sb.dialogs.insert(0, dialog_model.clone());
-                                        if sb.active_chat_id == Some(4) || sb.active_chat_id.is_none() {
-                                            sb.active_chat_id = Some(dialog_model.id);
-                                            auto_selected_welcome = Some(dialog_model);
+                    Ok(chats) => {
+                        if let Some(ref rich_list) = rich_chats {
+                            for rc in rich_list {
+                                if rc.chat_id > 0 {
+                                    let cid = rc.chat_id as u64;
+                                    shell.rich_chats_by_id.insert(cid, rc.clone());
+                                    if let Some(pid) = rc.peer_user_id {
+                                        if pid > 0 {
+                                            shell.chat_peer_user_ids.insert(cid, pid);
                                         }
-                                    } else {
-                                        sb.dialogs.push(dialog_model);
                                     }
                                 }
                             }
-
-                            // Ensure an active dialog is selected if the previous active_chat_id was a removed placeholder
-                            if auto_selected_welcome.is_none() {
-                                let current_valid = sb
-                                    .active_chat_id
-                                    .map(|id| sb.dialogs.iter().any(|d| d.id == id))
-                                    .unwrap_or(false);
-                                if !current_valid {
-                                    if let Some(first) = sb.dialogs.first().cloned() {
-                                        sb.active_chat_id = Some(first.id);
-                                        auto_selected_welcome = Some(first);
+                        }
+                        let applied = shell.sidebar.update(cx, |sb, sb_cx| {
+                            let ok = shell.stage.update(sb_cx, |st, st_cx| {
+                                let applied = shell.inspector.update(st_cx, |insp, insp_cx| {
+                                    let applied = apply_fenced_chat_list_response(
+                                        &fence,
+                                        shell.is_authenticated,
+                                        shell.auth_generation,
+                                        shell.chat_list_request_generation,
+                                        shell.session_token.as_deref(),
+                                        shell.user_id,
+                                        sb,
+                                        st,
+                                        insp,
+                                        &chats,
+                                    );
+                                    if applied {
+                                        insp_cx.notify();
+                                    }
+                                    applied
+                                });
+                                if applied {
+                                    st_cx.notify();
+                                }
+                                applied
+                            });
+                            if ok {
+                                for c in &chats {
+                                    if c.is_bot.unwrap_or(false) {
+                                        sb.bot_ids.insert(c.chat_id);
                                     }
                                 }
+                                if let Some(ref rich_list) = rich_chats {
+                                    for rc in rich_list {
+                                        if rc.is_bot && rc.chat_id > 0 {
+                                            sb.bot_ids.insert(rc.chat_id as u64);
+                                        }
+                                    }
+                                }
+                                for d in &mut sb.dialogs {
+                                    if d.avatar_initials.is_empty() || d.avatar_initials == "?" {
+                                        let fixed = derive_initials(&d.peer_name);
+                                        if !fixed.is_empty() {
+                                            d.avatar_initials = fixed;
+                                        }
+                                    }
+                                }
+                                sb_cx.notify();
                             }
-
-                            sb.recompute_folder_badges();
-                            sb_cx.notify();
+                            ok
                         });
-                        if let Some(welcome) = auto_selected_welcome {
-                            shell.stage.update(cx, |st, st_cx| {
-                                st.set_chat(
-                                    welcome.id,
-                                    &welcome.peer_name,
-                                    "official bot · online",
-                                    &welcome.avatar_initials,
-                                    welcome.avatar_color,
-                                );
-                                st_cx.notify();
-                            });
-                            shell.inspector.update(cx, |insp, insp_cx| {
-                                insp.set_peer(
-                                    &welcome.peer_name,
-                                    "official bot · online",
-                                    &welcome.avatar_initials,
-                                    welcome.avatar_color,
-                                );
-                                insp_cx.notify();
-                            });
-                            shell.load_historical_messages(welcome.id, cx);
+                        if applied {
+                            if let Some(selected_id) = shell.sidebar.read(cx).active_chat_id {
+                                shell.sync_selected_chat_inspector_and_stage(selected_id, cx);
+                            }
                         }
                     }
-                    Ok(_) => {}
                     Err(err) => {
-                        eprintln!("[AppShell] Failed to fetch /api/v1/chats: {}. Retaining existing dialogs", err);
+                        if fence.matches(
+                            shell.is_authenticated,
+                            shell.auth_generation,
+                            shell.chat_list_request_generation,
+                            shell.session_token.as_deref(),
+                            shell.user_id,
+                        ) {
+                            shell.window_runtime.enqueue_toast(
+                                format!(
+                                    "{}: {}",
+                                    tr_str(
+                                        shell.active_lang_id(),
+                                        "刷新会话列表失败",
+                                        "Failed to refresh chats"
+                                    ),
+                                    err
+                                ),
+                                3200,
+                            );
+                        }
                     }
                 }
                 cx.notify();
@@ -2206,77 +2713,87 @@ impl AppShell {
 
     /// Fetches historical messages from the backend for the selected chat
     pub fn load_historical_messages(&mut self, chat_id: u64, cx: &mut Context<Self>) {
-        let token = match self.session_token.clone() {
-            Some(t) => t,
-            None => return,
+        let (Some(token), Some(uid)) = (self.session_token.clone(), self.user_id) else {
+            return;
+        };
+        if !self.is_authenticated {
+            return;
+        }
+        self.history_request_generation = self.history_request_generation.wrapping_add(1);
+        let fence = SessionRequestFence {
+            auth_generation: self.auth_generation,
+            request_generation: self.history_request_generation,
+            token: token.clone(),
+            user_id: uid,
         };
         let client = self.client.clone();
-        let my_user_id = self.user_id.unwrap_or(0);
-        let (peer_name, peer_initials, peer_color) = {
-            let sb = self.sidebar.read(cx);
-            sb.dialogs
-                .iter()
-                .find(|d| d.id == chat_id)
-                .map(|d| (d.peer_name.clone(), d.avatar_initials.clone(), d.avatar_color))
-                .unwrap_or_else(|| ("Telegram Official Bot".to_string(), "TG".to_string(), 0x2AABEE))
-        };
 
         cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
             let res = client.http_client.get_chat_messages(&token, chat_id, Some(50)).await;
+            let rich_msgs = client.hermes_messages_history_rich(chat_id as i64, Some(50)).await.ok();
             let _ = weak_shell.update(app, |shell, cx| {
                 match res {
-                    Ok(msgs) if !msgs.is_empty() => {
-                        let models: Vec<MessageItemModel> = msgs
-                            .into_iter()
-                            .map(|hm| {
-                                let is_outgoing = hm.is_outgoing.unwrap_or(hm.sender_id == my_user_id);
-                                let incoming_name = if hm.sender_id == 777_000 {
-                                    "Telegram Official Bot".to_string()
-                                } else {
-                                    peer_name.clone()
-                                };
-                                let incoming_initials = if hm.sender_id == 777_000 {
-                                    "TG".to_string()
-                                } else {
-                                    peer_initials.clone()
-                                };
-                                MessageItemModel {
-                                    id: hm.message_id,
-                                    sender_id: hm.sender_id,
-                                    sender_name: if is_outgoing { "You".to_string() } else { incoming_name },
-                                    avatar_initials: if is_outgoing { "ME".to_string() } else { incoming_initials },
-                                    avatar_color: if is_outgoing { 0x3498DB } else { peer_color },
-                                    direction: if is_outgoing { MessageDirection::Outgoing } else { MessageDirection::Incoming },
-                                    timestamp: hm.date.map(|d| {
-                                        chrono::DateTime::from_timestamp_millis(d)
-                                            .map(|dt| dt.format("%H:%M").to_string())
-                                            .unwrap_or_else(|| "Earlier".to_string())
-                                    }).unwrap_or_else(|| "Earlier".to_string()),
-                                    delivery_status: DeliveryStatus::Read,
-                                    reply_to: None,
-                                    reactions: vec![],
-                                    content: MessageContent::Text {
-                                        text: hm.text,
-                                        is_edited: false,
-                                    },
-                                    bot_keyboard: None,
-                                    is_pinned: false,
+                    Ok(msgs) => {
+                        let applied = shell.sidebar.read_with(cx, |sb, _| sb.dialogs.clone());
+                        let _ = applied;
+                        let ok = shell.sidebar.update(cx, |sb, sb_cx| {
+                            shell.stage.update(sb_cx, |st, st_cx| {
+                                let res = apply_fenced_history_response(
+                                    &fence,
+                                    shell.is_authenticated,
+                                    shell.auth_generation,
+                                    shell.history_request_generation,
+                                    shell.session_token.as_deref(),
+                                    shell.user_id,
+                                    sb,
+                                    st,
+                                    chat_id,
+                                    msgs,
+                                );
+                                if res {
+                                    if let Some(ref rich) = rich_msgs {
+                                        overlay_rich_message_metadata(&mut st.messages, rich);
+                                        if let Some(hist) = st.chat_histories.get_mut(&chat_id) {
+                                            overlay_rich_message_metadata(hist, rich);
+                                        }
+                                    }
+                                    st_cx.notify();
                                 }
+                                res
                             })
-                            .collect();
-
-                        shell.stage.update(cx, |st, st_cx| {
-                            if st.active_chat_id == Some(chat_id) {
-                                st.merge_historical_messages(models.clone());
-                                st.row_height_cache.rebuild_prefix_sums(&st.messages);
-                                st_cx.notify();
-                            }
-                            st.chat_histories.insert(chat_id, models);
                         });
+                        if ok && shell.stage.read(cx).active_chat_id == Some(chat_id) {
+                            let (_, media, files, links, voices) =
+                                crate::views::app_shell::map_stage_media_to_gallery(
+                                    &shell.stage.read(cx).messages,
+                                );
+                            shell.inspector.update(cx, |insp, insp_cx| {
+                                insp.sync_shared_content(media, files, links, voices, Vec::new());
+                                insp_cx.notify();
+                            });
+                        }
                     }
-                    Ok(_) => {}
                     Err(err) => {
-                        eprintln!("[AppShell] Failed to fetch history for chat {}: {}. Retaining cached messages", chat_id, err);
+                        if fence.matches(
+                            shell.is_authenticated,
+                            shell.auth_generation,
+                            shell.history_request_generation,
+                            shell.session_token.as_deref(),
+                            shell.user_id,
+                        ) {
+                            shell.window_runtime.enqueue_toast(
+                                format!(
+                                    "{}: {}",
+                                    tr_str(
+                                        shell.active_lang_id(),
+                                        "加载聊天记录失败",
+                                        "Failed to load history"
+                                    ),
+                                    err
+                                ),
+                                3200,
+                            );
+                        }
                     }
                 }
                 cx.notify();
@@ -2286,70 +2803,45 @@ impl AppShell {
     }
 
     fn append_outgoing_attachment(&mut self, kind: &str, cx: &mut Context<Self>) {
-        let msg_id = self.next_message_id;
-        self.next_message_id += 1;
-
-        let content = match kind {
-            "voice" => MessageContent::Voice {
-                duration_secs: 8,
-                waveform_5bit: vec![5, 12, 24, 30, 28, 19, 14, 22, 31, 25, 16, 10, 18, 27, 21, 9],
-                playback_position_secs: 0.0,
-                is_playing: false,
-                playback_speed: 1.0,
-            },
-            "photo" => MessageContent::Album {
-                items: vec![
-                    AlbumItem { id: 1, media_type: MediaType::Photo, url: "".to_string(), aspect_ratio: 1.33, preview_color: 0x2980B9, caption: None },
-                ],
-                caption: Some("📷 High-resolution screenshot sent from GPUI Desktop".to_string()),
-            },
-            "video" => MessageContent::Media {
-                media_type: MediaType::Video,
-                url: "https://example.com/capture.mp4".to_string(),
-                width: 1920,
-                height: 1080,
-                duration_secs: Some(45),
-                file_size_bytes: 8_400_000,
-                caption: Some("🎬 120fps GPUI Metal Capture".to_string()),
-                is_streaming: true,
-            },
-            "location" => MessageContent::Location {
-                latitude: 31.2304,
-                longitude: 121.4737,
-                title: "Shared Live Location".to_string(),
-                address: "GPUI Telegram Desktop Client".to_string(),
-            },
-            _ => MessageContent::Poll {
-                question: "Ready to ship GPUI Telegram v1.0?".to_string(),
-                poll_type: PollType::Regular,
-                options: vec![
-                    PollOption { id: 1, text: "Yes, ship it! 🚀".to_string(), votes: 1, percentage: 100.0, is_selected: true, is_correct: true },
-                    PollOption { id: 2, text: "Run one more benchmark".to_string(), votes: 0, percentage: 0.0, is_selected: false, is_correct: false },
-                ],
-                total_votes: 1,
-                is_closed: false,
-                selected_option_id: Some(1),
-            },
-        };
-
-        self.stage.update(cx, |st, st_cx| {
-            st.add_message(MessageItemModel {
-                id: msg_id,
-                sender_id: 1,
-                sender_name: "You".to_string(),
-                avatar_initials: "ME".to_string(),
-                avatar_color: 0x3498DB,
-                direction: MessageDirection::Outgoing,
-                timestamp: "Just now".to_string(),
-                delivery_status: DeliveryStatus::Read,
-                reply_to: None,
-                reactions: vec![],
-                content,
-                bot_keyboard: None,
-                is_pinned: false,
-            });
-            st_cx.notify();
-        });
+        let lang = self.active_lang_id();
+        match kind {
+            "poll" => {
+                self.open_modal_dialog(
+                    tr_str(lang, "创建投票", "Create Poll"),
+                    ModalDialogKind::CreatePoll,
+                    420.0,
+                    480.0,
+                    cx,
+                );
+            }
+            "voice" => {
+                let start = !self.voice_recorder.is_recording();
+                self.toggle_voice_recording(start, cx);
+            }
+            "photo" | "video" | "file" => {
+                self.window_runtime.enqueue_toast(
+                    tr_str(
+                        lang,
+                        "请将文件拖拽至聊天窗口上传发送",
+                        "Drop a local file into the chat window to upload and send",
+                    ),
+                    2600,
+                );
+                cx.notify();
+            }
+            "location" => {
+                self.window_runtime.enqueue_toast(
+                    tr_str(
+                        lang,
+                        "位置共享需要选择真实位置后发送",
+                        "Location sharing requires selecting a location",
+                    ),
+                    2600,
+                );
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 
     pub fn active_text_and_preedit(&self, cx: &App) -> (String, Option<String>) {
@@ -2438,6 +2930,13 @@ impl AppShell {
         cx.notify();
     }
 
+    fn is_studio_input_active(&self, cx: &gpui::App) -> bool {
+        (self.active_panel == ActiveWorkspacePanel::TaskCenter
+            || self.active_panel == ActiveWorkspacePanel::McpTools)
+            && self.tasks_workspace.read(cx).active_input
+                != crate::views::global_tasks_workspace::StudioInputTarget::None
+    }
+
     pub fn insert_committed_text(&mut self, raw_text: &str, cx: &mut Context<Self>) {
         self.ime_preedit = None;
         let clean: String = raw_text
@@ -2498,6 +2997,15 @@ impl AppShell {
             return;
         }
 
+        if self.modal_container.read(cx).is_modal_active() {
+            self.modal_container.update(cx, |mc, mc_cx| {
+                mc.handle_key_input("", Some(&clean));
+                mc_cx.notify();
+            });
+            cx.notify();
+            return;
+        }
+
         if self.sidebar.read(cx).active_creation_modal.is_some() {
             self.sidebar.update(cx, |sb, sb_cx| {
                 sb.push_creation_text(&clean);
@@ -2518,6 +3026,15 @@ impl AppShell {
             return;
         }
 
+        if self.is_studio_input_active(cx) {
+            self.tasks_workspace.update(cx, |w, w_cx| {
+                w.apply_text_key_to_active_input("", Some(&clean));
+                w_cx.notify();
+            });
+            cx.notify();
+            return;
+        }
+
         self.composer.update(cx, |c, c_cx| {
             c.is_input_focused = true;
             if c.ime_machine.is_composing() {
@@ -2525,13 +3042,14 @@ impl AppShell {
             } else {
                 c.ime_machine.insert_text(&clean);
             }
+            c.sync_autocomplete();
             c_cx.notify();
         });
         cx.notify();
     }
 
     fn handle_non_char_key(&mut self, key: &str, is_shift: bool, cx: &mut Context<Self>) -> bool {
-        // Escape closes any active modal, overlay, or search focus
+        // Escape dismisses topmost active layer first (viewer overlays -> modals -> drawer -> inspector -> settings -> search/reply)
         if key == "escape" {
             if !self.is_authenticated && self.editing_server_url {
                 self.ime_preedit = None;
@@ -2547,8 +3065,47 @@ impl AppShell {
             if self.composer.read(cx).ime_machine.is_composing() {
                 self.composer.update(cx, |c, c_cx| {
                     c.ime_machine.on_ime_cancel();
+                    c.sync_autocomplete();
                     c_cx.notify();
                 });
+                cx.notify();
+                return true;
+            }
+            if self.is_studio_input_active(cx) {
+                self.tasks_workspace.update(cx, |w, w_cx| {
+                    w.active_input = crate::views::global_tasks_workspace::StudioInputTarget::None;
+                    w_cx.notify();
+                });
+                cx.notify();
+                return true;
+            }
+            let ac_dismissed = self.composer.update(cx, |c, c_cx| {
+                let ok = c.handle_hermes_autocomplete_nav("escape", is_shift);
+                if ok {
+                    c_cx.notify();
+                }
+                ok
+            });
+            if ac_dismissed {
+                cx.notify();
+                return true;
+            }
+            if self.iv_viewer_overlay.is_some() {
+                self.iv_viewer_overlay = None;
+                cx.notify();
+                return true;
+            }
+            if self.media_viewer_overlay.is_some() {
+                self.hide_media_viewer();
+                cx.notify();
+                return true;
+            }
+            if self.talk_mode_overlay.is_some() {
+                self.hangup_active_call(cx);
+                return true;
+            }
+            if self.computer_overlay.is_some() {
+                self.hide_remote_computer(cx);
                 cx.notify();
                 return true;
             }
@@ -2560,18 +3117,11 @@ impl AppShell {
                 cx.notify();
                 return true;
             }
-            if self.media_viewer_overlay.is_some() {
-                self.hide_media_viewer();
-                cx.notify();
-                return true;
-            }
-            if self.talk_mode_overlay.is_some() {
-                self.hide_talk_mode(cx);
-                cx.notify();
-                return true;
-            }
-            if self.computer_overlay.is_some() {
-                self.hide_remote_computer(cx);
+            if self.is_authenticated && self.sidebar.read(cx).is_contacts_modal_open {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.close_contacts_modal();
+                    sb_cx.notify();
+                });
                 cx.notify();
                 return true;
             }
@@ -2590,7 +3140,41 @@ impl AppShell {
                 cx.notify();
                 return true;
             }
-            if self.is_authenticated && self.sidebar.read(cx).search_focused {
+            if self.main_menu_drawer.read(cx).is_open {
+                self.main_menu_drawer.update(cx, |m, m_cx| {
+                    m.close();
+                    m_cx.notify();
+                });
+                cx.notify();
+                return true;
+            }
+            if self.is_authenticated && self.inspector.read(cx).is_open {
+                self.set_inspector_open(false, cx);
+                return true;
+            }
+            if self.is_authenticated && self.active_panel == ActiveWorkspacePanel::Settings {
+                self.navigate_settings_back(cx);
+                return true;
+            }
+            if self.is_authenticated && self.stage.read(cx).search_open {
+                self.stage.update(cx, |st, st_cx| {
+                    st.search_open = false;
+                    st.search_query.clear();
+                    st.search_match_ids.clear();
+                    st.search_match_cursor = 0;
+                    st_cx.notify();
+                });
+                self.composer.update(cx, |c, c_cx| {
+                    c.is_input_focused = true;
+                    c_cx.notify();
+                });
+                cx.notify();
+                return true;
+            }
+            if self.is_authenticated
+                && (self.sidebar.read(cx).search_focused
+                    || !self.sidebar.read(cx).search_query.is_empty())
+            {
                 self.sidebar.update(cx, |sb, sb_cx| {
                     sb.exit_search();
                     sb_cx.notify();
@@ -2602,12 +3186,39 @@ impl AppShell {
                 cx.notify();
                 return true;
             }
-            if self.active_panel == ActiveWorkspacePanel::Settings {
-                self.navigate_settings_back(cx);
+            if self.is_authenticated
+                && (self.composer.read(cx).replying_to.is_some()
+                    || self.stage.read(cx).pending_reply.is_some())
+            {
+                self.composer.update(cx, |c, c_cx| {
+                    c.cancel_reply_or_edit();
+                    c_cx.notify();
+                });
+                self.stage.update(cx, |st, st_cx| {
+                    st.pending_reply = None;
+                    st_cx.notify();
+                });
                 cx.notify();
                 return true;
             }
             return false;
+        }
+
+        if self.is_authenticated && self.modal_container.read(cx).is_modal_active() {
+            let handled = self.modal_container.update(cx, |mc, mc_cx| {
+                let ok = mc.handle_key_input(key, None);
+                if ok {
+                    mc_cx.notify();
+                }
+                ok
+            });
+            if let Some(outcome) = self.modal_container.update(cx, |mc, _| mc.take_outcome()) {
+                self.handle_modal_outcome(outcome, cx);
+            }
+            if handled {
+                cx.notify();
+                return true;
+            }
         }
 
         if !self.is_authenticated && self.editing_server_url {
@@ -2784,6 +3395,38 @@ impl AppShell {
         }
 
         // Authenticated workspace non-char keys
+        if self.is_studio_input_active(cx) {
+            let handled = self.tasks_workspace.update(cx, |w, w_cx| {
+                let ok = w.apply_text_key_to_active_input(key, None);
+                if ok {
+                    w_cx.notify();
+                }
+                ok
+            });
+            if handled {
+                cx.notify();
+                return true;
+            }
+        }
+
+        if self.active_panel == ActiveWorkspacePanel::Chats
+            && !self.sidebar.read(cx).search_focused
+            && self.sidebar.read(cx).active_creation_modal.is_none()
+            && matches!(key, "up" | "down" | "tab" | "enter")
+        {
+            let ac_handled = self.composer.update(cx, |c, c_cx| {
+                let ok = c.handle_hermes_autocomplete_nav(key, is_shift);
+                if ok {
+                    c_cx.notify();
+                }
+                ok
+            });
+            if ac_handled {
+                cx.notify();
+                return true;
+            }
+        }
+
         if key == "tab" {
             let currently_search = self.sidebar.read(cx).search_focused;
             self.sidebar.update(cx, |sb, sb_cx| {
@@ -2859,17 +3502,11 @@ impl AppShell {
 
                 match action {
                     KeyAction::SendMessage => {
-                        let text_to_send = {
-                            let c = self.composer.read(cx);
-                            c.text().trim().to_string()
-                        };
-                        if !text_to_send.is_empty() {
-                            self.composer.update(cx, |c, c_cx| {
-                                c.clear();
-                                c_cx.notify();
-                            });
-                            self.append_outgoing_text(text_to_send, cx);
-                        }
+                        self.composer.update(cx, |c, c_cx| {
+                            c.submit_primary();
+                            c_cx.notify();
+                        });
+                        self.handle_composer_pending_actions(cx);
                     }
                     KeyAction::InsertNewline | KeyAction::ImeCandidateChosen | KeyAction::DefaultEdit | KeyAction::None => {
                         // Suppressed: strictly NO message dispatch!
@@ -2885,12 +3522,242 @@ impl AppShell {
                     } else {
                         c.ime_machine.backspace();
                     }
+                    c.sync_autocomplete();
                     c_cx.notify();
                 });
                 cx.notify();
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Synchronizes `ContextInspector` open state with `ConversationStage::is_inspector_open`.
+    pub fn set_inspector_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.inspector.update(cx, |insp, insp_cx| {
+            if open {
+                insp.open();
+            } else {
+                insp.close();
+            }
+            insp_cx.notify();
+        });
+        self.stage.update(cx, |st, st_cx| {
+            st.is_inspector_open = open;
+            st_cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// Toggles the active interface language (`zh-CN` <-> `en-US`) and persists preferences.
+    pub fn toggle_language(&mut self, cx: &mut Context<Self>) {
+        let next_lang = toggled_language_code(&self.preferences.localization.language_code);
+        self.update_preferences(cx, |p| {
+            p.localization.language_code = next_lang.to_string();
+        });
+    }
+
+    /// Switches to a `NavDestination` panel and synchronizes `NavRail` + workspace data cleanly.
+    pub fn activate_nav_destination(&mut self, dest: NavDestination, cx: &mut Context<Self>) {
+        self.last_handled_nav_dest = Some(dest);
+        self.nav_rail.update(cx, |r, r_cx| {
+            r.set_active_destination(dest);
+            r_cx.notify();
+        });
+        match dest {
+            NavDestination::Chats | NavDestination::Folders | NavDestination::SavedMessages => {
+                self.active_panel = ActiveWorkspacePanel::Chats;
+                let target_saved = if dest == NavDestination::SavedMessages {
+                    let sb = self.sidebar.read(cx);
+                    sb.saved_messages_id.or_else(|| {
+                        let uid = self.user_id?;
+                        sb.dialogs.iter().find(|d| d.id == uid).map(|d| d.id)
+                    })
+                } else {
+                    None
+                };
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    match dest {
+                        NavDestination::Chats => sb.select_folder("All"),
+                        NavDestination::Folders => {
+                            if let Some(first_folder) = sb
+                                .folders
+                                .iter()
+                                .find(|(f, _)| f != "All")
+                                .map(|(f, _)| f.clone())
+                            {
+                                sb.select_folder(first_folder);
+                            }
+                        }
+                        NavDestination::SavedMessages => {
+                            if let Some(saved_id) = target_saved {
+                                sb.select_dialog(saved_id);
+                            }
+                        }
+                        _ => {}
+                    }
+                    sb_cx.notify();
+                });
+                if let Some(saved_id) = target_saved {
+                    self.sync_selected_chat_inspector_and_stage(saved_id, cx);
+                }
+            }
+            NavDestination::Calls => {
+                let shell = self;
+                shell.active_panel = ActiveWorkspacePanel::Calls;
+                shell.sync_calls_history(cx);
+            }
+            NavDestination::TalkMode => {
+                if self.is_active_chat_bot(cx) {
+                    self.start_ai_talk_mode_session(false, cx);
+                } else if let Some(pid) = self.current_peer_user_id(cx) {
+                    let name = self.stage.read(cx).chat_title.clone();
+                    self.start_webrtc_call(pid, name, false, cx);
+                } else {
+                    self.show_talk_mode(cx);
+                }
+            }
+            NavDestination::RemoteComputer => {
+                self.open_computer_workbench_live(cx);
+            }
+            NavDestination::TaskCenter => {
+                self.active_panel = ActiveWorkspacePanel::TaskCenter;
+                self.tasks_workspace
+                    .update(cx, |w, _| w.set_tab(TasksWorkspaceTab::Tasks));
+                self.refresh_tasks_and_mcp(cx);
+            }
+            NavDestination::McpTools => {
+                self.active_panel = ActiveWorkspacePanel::McpTools;
+                self.tasks_workspace
+                    .update(cx, |w, _| w.set_tab(TasksWorkspaceTab::McpTools));
+                self.refresh_tasks_and_mcp(cx);
+            }
+            NavDestination::Settings => {
+                if self.active_panel == ActiveWorkspacePanel::Settings {
+                    self.settings_section = SettingsSectionType::Main;
+                    self.settings_stack.clear();
+                } else {
+                    self.active_panel = ActiveWorkspacePanel::Settings;
+                    self.refresh_wallet(cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_shortcut_key(&mut self, key: &str, is_shift: bool, cx: &mut Context<Self>) -> bool {
+        let key_lower = key.to_ascii_lowercase();
+        match key_lower.as_str() {
+            "v" => {
+                if let Some(clip_text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    self.insert_committed_text(&clip_text, cx);
+                }
+                return true;
+            }
+            "backspace" | "a" | "u" => {
+                self.clear_active_field(cx);
+                return true;
+            }
+            "d" => {
+                let next = next_tdesktop_theme_cycle(self.theme_mode);
+                self.apply_theme_selection(next, None, None, cx);
+                return true;
+            }
+            "l" => {
+                self.toggle_language(cx);
+                return true;
+            }
+            _ => {}
+        }
+
+        if !self.is_authenticated {
+            return false;
+        }
+
+        let lang = self.active_lang_id();
+        match key_lower.as_str() {
+            "k" => {
+                self.sidebar.update(cx, |sb, sb_cx| {
+                    sb.focus_search();
+                    sb_cx.notify();
+                });
+                self.composer.update(cx, |c, c_cx| {
+                    c.is_input_focused = false;
+                    c_cx.notify();
+                });
+                cx.notify();
+                true
+            }
+            "," if self.is_authenticated => {
+                self.navigate_settings_to(SettingsSectionType::Main, cx);
+                true
+            }
+            "[" if self.active_panel == ActiveWorkspacePanel::Settings => {
+                self.navigate_settings_back(cx);
+                true
+            }
+            "i" => {
+                let next_open = !self.inspector.read(cx).is_open;
+                self.set_inspector_open(next_open, cx);
+                true
+            }
+            "e" => {
+                self.main_menu_drawer.update(cx, |d, d_cx| {
+                    d.toggle();
+                    d_cx.notify();
+                });
+                cx.notify();
+                true
+            }
+            "j" => {
+                self.refresh_contacts(cx);
+                self.open_modal_dialog(
+                    tr_str(lang, "联系人", "Contacts"),
+                    ModalDialogKind::Contacts,
+                    420.0,
+                    500.0,
+                    cx,
+                );
+                true
+            }
+            "n" => {
+                if is_shift {
+                    self.open_modal_dialog(
+                        tr_str(lang, "新建频道", "New Channel"),
+                        ModalDialogKind::NewChannel,
+                        420.0,
+                        380.0,
+                        cx,
+                    );
+                } else {
+                    self.open_modal_dialog(
+                        tr_str(lang, "新建群组", "New Group"),
+                        ModalDialogKind::NewGroup,
+                        420.0,
+                        380.0,
+                        cx,
+                    );
+                }
+                true
+            }
+            "p" => {
+                self.open_modal_dialog(
+                    tr_str(lang, "创建投票", "Create Poll"),
+                    ModalDialogKind::CreatePoll,
+                    420.0,
+                    480.0,
+                    cx,
+                );
+                true
+            }
+            digit => {
+                if let Some(dest) = nav_destination_for_shortcut_digit(digit) {
+                    self.activate_nav_destination(dest, cx);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
@@ -2902,40 +3769,10 @@ impl AppShell {
     ) {
         let key = event.keystroke.key.as_str();
 
-        // 1. Handle Cmd / Ctrl shortcuts (Paste, Clear, Search focus)
+        // 1. Handle Cmd / Ctrl shortcuts (Theme, Language, Navigation, Modals, Search, Paste)
         if event.keystroke.modifiers.platform || event.keystroke.modifiers.control {
-            match key {
-                "v" => {
-                    if let Some(clip_text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.insert_committed_text(&clip_text, cx);
-                    }
-                    cx.stop_propagation();
-                }
-                "backspace" | "a" | "u" => {
-                    self.clear_active_field(cx);
-                    cx.stop_propagation();
-                }
-                "k" if self.is_authenticated => {
-                    self.sidebar.update(cx, |sb, sb_cx| {
-                        sb.focus_search();
-                        sb_cx.notify();
-                    });
-                    self.composer.update(cx, |c, c_cx| {
-                        c.is_input_focused = false;
-                        c_cx.notify();
-                    });
-                    cx.notify();
-                    cx.stop_propagation();
-                }
-                "," if self.is_authenticated => {
-                    self.navigate_settings_to(SettingsSectionType::Main, cx);
-                    cx.stop_propagation();
-                }
-                "[" if self.active_panel == ActiveWorkspacePanel::Settings => {
-                    self.navigate_settings_back(cx);
-                    cx.stop_propagation();
-                }
-                _ => {}
+            if self.handle_shortcut_key(key, event.keystroke.modifiers.shift, cx) {
+                cx.stop_propagation();
             }
             return;
         }
@@ -2953,23 +3790,7 @@ impl AppShell {
         let key = event.keystroke.key.as_str();
 
         if event.keystroke.modifiers.platform || event.keystroke.modifiers.control {
-            match key {
-                "v" => {
-                    if let Some(clip_text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.insert_committed_text(&clip_text, cx);
-                    }
-                }
-                "backspace" | "a" | "u" => {
-                    self.clear_active_field(cx);
-                }
-                "," if self.is_authenticated => {
-                    self.navigate_settings_to(SettingsSectionType::Main, cx);
-                }
-                "[" if self.active_panel == ActiveWorkspacePanel::Settings => {
-                    self.navigate_settings_back(cx);
-                }
-                _ => {}
-            }
+            self.handle_shortcut_key(key, event.keystroke.modifiers.shift, cx);
             return;
         }
 
@@ -3082,12 +3903,13 @@ impl EntityInputHandler for AppShell {
         let sidebar_capturing = {
             let sb = self.sidebar.read(cx);
             sb.search_focused || sb.active_creation_modal.is_some()
-        };
+        } || self.is_studio_input_active(cx);
         if new_text.is_empty() {
             self.ime_preedit = None;
             if self.is_authenticated && !sidebar_capturing {
                 self.composer.update(cx, |c, c_cx| {
                     c.ime_machine.on_ime_cancel();
+                    c.sync_autocomplete();
                     c_cx.notify();
                 });
             }
@@ -3101,6 +3923,7 @@ impl EntityInputHandler for AppShell {
             self.composer.update(cx, |c, c_cx| {
                 c.is_input_focused = true;
                 c.ime_machine.on_ime_update(new_text, new_text.len());
+                c.sync_autocomplete();
                 c_cx.notify();
             });
         }
@@ -3182,6 +4005,16 @@ impl Render for AppShell {
         if !self.focus_handle.is_focused(window) {
             self.focus_handle.focus(window);
         }
+        let vp = window.viewport_size();
+        let vp_w = f32::from(vp.width);
+        let vp_h = f32::from(vp.height);
+        if (vp_w - self.last_viewport_width).abs() >= 1.0 && vp_w > 0.0 {
+            self.last_viewport_width = vp_w;
+            self.app.sync_viewport_size(vp_w, vp_h);
+        }
+        let pal = self.palette;
+        let lang = self.active_lang_id();
+
         let focus_handle = self.focus_handle.clone();
         let view = cx.entity().clone();
         let ime_canvas = canvas(
@@ -3204,7 +4037,7 @@ impl Render for AppShell {
                     this.handle_window_key_down(event, window, cx);
                 }))
                 .size_full()
-                .bg(rgb(0x0E1621))
+                .bg(rgb(pal.window_bg))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -3212,6 +4045,10 @@ impl Render for AppShell {
                 .child(self.render_login_wizard(cx))
                 .into_any_element();
         }
+
+        let show_conn_banner = self.window_runtime.connecting_widget.is_visible;
+        let conn_banner_text = self.window_runtime.connecting_widget.status_text();
+        let current_toast = self.window_runtime.controller.current_toast.clone();
 
         div()
             .id("app-shell-authenticated-root")
@@ -3222,31 +4059,54 @@ impl Render for AppShell {
             .relative()
             .size_full()
             .flex()
-            .bg(rgb(0x0E1621))
+            .flex_col()
+            .bg(rgb(pal.window_bg))
             .child(ime_canvas)
-            // 1. Left Primary Nav Rail (52px)
-            .child(self.nav_rail.clone())
-            // 2. Chat Sidebar (288px)
-            .child(self.sidebar.clone())
-            // 3. Main Stage + Composer Column (or Calls / TaskCenter / McpTools / Settings Panel)
-            .child(match self.active_panel {
-                ActiveWorkspacePanel::Chats => div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .h_full()
-                    .overflow_hidden()
-                    .child(self.stage.clone())
-                    .child(self.composer.clone())
-                    .into_any_element(),
-                ActiveWorkspacePanel::Calls => self.render_calls_panel(cx).into_any_element(),
-                ActiveWorkspacePanel::TaskCenter => self.render_task_center_panel(cx).into_any_element(),
-                ActiveWorkspacePanel::McpTools => self.render_mcp_tools_panel(cx).into_any_element(),
-                ActiveWorkspacePanel::Settings => self.render_settings_panel(cx).into_any_element(),
+            .when(show_conn_banner, |el| {
+                el.child(
+                    div()
+                        .w_full()
+                        .h(px(26.0))
+                        .bg(rgb(pal.accent))
+                        .text_color(rgb(pal.active_button_fg))
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(conn_banner_text),
+                )
             })
-            // 4. Right Context Inspector (320px)
-            .child(self.inspector.clone())
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_h(px(0.0))
+                    .flex()
+                    // 1. Left Primary Nav Rail (52px)
+                    .child(self.nav_rail.clone())
+                    // 2. Chat Sidebar (288px)
+                    .child(self.sidebar.clone())
+                    // 3. Main Stage + Composer Column (or Calls / TaskCenter / McpTools / Settings Panel)
+                    .child(match self.active_panel {
+                        ActiveWorkspacePanel::Chats => div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.stage.clone())
+                            .child(self.composer.clone())
+                            .into_any_element(),
+                        ActiveWorkspacePanel::Calls => self.render_calls_panel(cx).into_any_element(),
+                        ActiveWorkspacePanel::TaskCenter => self.render_task_center_panel(cx).into_any_element(),
+                        ActiveWorkspacePanel::McpTools => self.render_mcp_tools_panel(cx).into_any_element(),
+                        ActiveWorkspacePanel::Settings => self.render_settings_panel(cx).into_any_element(),
+                    })
+                    // 4. Right Context Inspector (320px)
+                    .child(self.inspector.clone()),
+            )
             // 5. Capability Overlays (Floating / Fullscreen layers)
             .when_some(self.computer_overlay.clone(), |el, overlay| {
                 el.child(
@@ -3260,6 +4120,10 @@ impl Render for AppShell {
                 )
             })
             .when_some(self.talk_mode_overlay.clone(), |el, overlay| {
+                let is_ai_talk = self.active_talk_session_is_ai;
+                let is_rec = self.voice_recorder.is_recording();
+                let talk_lang = self.active_lang_id();
+                let talk_pal = self.palette;
                 el.child(
                     div()
                         .absolute()
@@ -3269,9 +4133,98 @@ impl Render for AppShell {
                         .occlude()
                         .bg(rgba(0x00000088))
                         .flex()
+                        .flex_col()
                         .items_center()
                         .justify_center()
-                        .child(overlay),
+                        .gap(px(12.0))
+                        .child(overlay)
+                        .when(is_ai_talk, |wrap| {
+                            wrap.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.0))
+                                    .px(px(16.0))
+                                    .py(px(10.0))
+                                    .rounded(px(14.0))
+                                    .bg(rgb(talk_pal.card_bg))
+                                    .border_1()
+                                    .border_color(rgb(talk_pal.border_fg))
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .px(px(12.0))
+                                            .py(px(6.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(if is_rec { talk_pal.danger } else { talk_pal.accent }))
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |this, _e, _w, cx| {
+                                                    let next = !this.voice_recorder.is_recording();
+                                                    this.toggle_voice_recording(next, cx);
+                                                }),
+                                            )
+                                            .child(if is_rec {
+                                                tr_str(talk_lang, "停止并发送语音", "Stop & Send Voice")
+                                            } else {
+                                                tr_str(talk_lang, "按住/点击说话", "Push to Talk")
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .px(px(12.0))
+                                            .py(px(6.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(talk_pal.input_bg))
+                                            .border_1()
+                                            .border_color(rgb(talk_pal.border_fg))
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(talk_pal.text_primary))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _e, _w, cx| {
+                                                    let draft = this.composer.read(cx).text().trim().to_string();
+                                                    let prompt = if !draft.is_empty() {
+                                                        this.composer.update(cx, |c, _| c.set_text(String::new()));
+                                                        draft
+                                                    } else {
+                                                        tr_str(
+                                                            this.active_lang_id(),
+                                                            "请用简洁的语音总结当前状态",
+                                                            "Give me a concise spoken briefing of my current status.",
+                                                        )
+                                                        .to_string()
+                                                    };
+                                                    this.send_ai_talk_voice_turn(prompt, true, cx);
+                                                }),
+                                            )
+                                            .child(tr_str(talk_lang, "发送对话回合", "Send Voice Turn")),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor_pointer()
+                                            .px(px(12.0))
+                                            .py(px(6.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(talk_pal.input_bg))
+                                            .border_1()
+                                            .border_color(rgb(talk_pal.danger))
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(talk_pal.danger))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _e, _w, cx| {
+                                                    this.interrupt_ai_talk_barge_in(cx);
+                                                }),
+                                            )
+                                            .child(tr_str(talk_lang, "打断播报 (<60ms)", "Barge-In (<60ms)")),
+                                    ),
+                            )
+                        }),
                 )
             })
             .when_some(self.media_viewer_overlay.clone(), |el, overlay| {
@@ -3285,23 +4238,83 @@ impl Render for AppShell {
                         .child(overlay),
                 )
             })
-            // 5b. Centered Telegram-style Contacts Modal Overlay (`media_1794178846290_753d90ef.jpg`)
+            .when_some(self.iv_viewer_overlay.clone(), |el, overlay| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .occlude()
+                        .child(overlay),
+                )
+            })
+            // 5b. Contacts Modal Overlay backed by contacts_list + dialogs
             .when(self.sidebar.read(cx).is_contacts_modal_open, |el| {
                 let sb_ref = self.sidebar.read(cx);
                 let contact_q = sb_ref.contacts_search_query.clone();
                 let q_lower = contact_q.trim().to_lowercase();
-                let contact_dialogs: Vec<DialogItemModel> = sb_ref
-                    .dialogs
-                    .iter()
-                    .filter(|d| {
-                        (d.folder == "Personal" || d.folder == "Bots")
-                            && !d.peer_name.contains("Telegram Official Bot")
-                            && (q_lower.is_empty()
-                                || d.peer_name.to_lowercase().contains(&q_lower)
-                                || d.last_message.to_lowercase().contains(&q_lower))
-                    })
-                    .cloned()
-                    .collect();
+                let mut rows: Vec<(u64, Option<u64>, String, String, String, u32)> = Vec::new();
+                for c in &self.contacts_list {
+                    let full = format!(
+                        "{} {}",
+                        c.first_name,
+                        c.last_name.as_deref().unwrap_or("")
+                    )
+                    .trim()
+                    .to_string();
+                    let name = if full.is_empty() {
+                        c.username
+                            .clone()
+                            .unwrap_or_else(|| format!("User {}", c.user_id))
+                    } else {
+                        full
+                    };
+                    let sub = c
+                        .username
+                        .as_deref()
+                        .map(|u| format!("@{u}"))
+                        .or_else(|| c.phone.clone())
+                        .unwrap_or_default();
+                    let matched = q_lower.is_empty()
+                        || name.to_lowercase().contains(&q_lower)
+                        || sub.to_lowercase().contains(&q_lower);
+                    if matched {
+                        let resolved_chat = c.chat_id.map(|id| id as u64).or_else(|| {
+                            sb_ref
+                                .dialogs
+                                .iter()
+                                .find(|d| d.id == c.user_id || d.peer_name == name)
+                                .map(|d| d.id)
+                        });
+                        rows.push((
+                            c.user_id,
+                            resolved_chat,
+                            crate::views::app_shell::shell_truth::derive_initials(&name),
+                            name,
+                            sub,
+                            crate::views::app_shell::peer_avatar_color(c.user_id),
+                        ));
+                    }
+                }
+                for d in &sb_ref.dialogs {
+                    if d.folder != "Groups"
+                        && !d.peer_name.contains("Telegram Official Bot")
+                        && !rows.iter().any(|(_, cid, _, n, _, _)| *cid == Some(d.id) || n == &d.peer_name)
+                        && (q_lower.is_empty()
+                            || d.peer_name.to_lowercase().contains(&q_lower)
+                            || d.last_message.to_lowercase().contains(&q_lower))
+                    {
+                        rows.push((
+                            d.id,
+                            Some(d.id),
+                            d.avatar_initials.clone(),
+                            d.peer_name.clone(),
+                            peer_subtitle_for_dialog(d),
+                            d.avatar_color,
+                        ));
+                    }
+                }
 
                 el.child(
                     div()
@@ -3321,13 +4334,12 @@ impl Render for AppShell {
                                 .w(px(360.0))
                                 .h(px(480.0))
                                 .rounded(px(12.0))
-                                .bg(rgb(0x17212B))
+                                .bg(rgb(pal.modal_bg))
                                 .border_1()
-                                .border_color(rgb(0x242F3D))
+                                .border_color(rgb(pal.border_fg))
                                 .flex()
                                 .flex_col()
                                 .overflow_hidden()
-                                // Header: "联系人" + Sort button "⇅A"
                                 .child(
                                     div()
                                         .w_full()
@@ -3340,49 +4352,42 @@ impl Render for AppShell {
                                             div()
                                                 .text_size(px(16.0))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0xFFFFFF))
-                                                .child("联系人"),
+                                                .text_color(rgb(pal.text_primary))
+                                                .child(tr_str(lang, "联系人", "Contacts")),
                                         )
                                         .child(
                                             div()
-                                                .text_size(px(13.0))
-                                                .text_color(rgb(0x8A9AA8))
-                                                .child("⇅A"),
+                                                .text_size(px(12.0))
+                                                .text_color(rgb(pal.text_secondary))
+                                                .child(format!("{} {}", rows.len(), tr_str(lang, "位联系人", "contacts"))),
                                         ),
                                 )
-                                // Search Bar: "🔍 搜索"
                                 .child(
                                     div()
                                         .w_full()
                                         .px(px(16.0))
                                         .py(px(8.0))
                                         .border_b_1()
-                                        .border_color(rgb(0x0E1621))
+                                        .border_color(rgb(pal.border_fg))
                                         .flex()
                                         .items_center()
                                         .gap(px(8.0))
-                                        .child(
-                                            div()
-                                                .text_size(px(14.0))
-                                                .text_color(rgb(0x6B808D))
-                                                .child("🔍"),
-                                        )
+                                        .child(tg_icon(IconName::Search, 14.0, pal.icon_fg))
                                         .child(
                                             div()
                                                 .text_size(px(13.5))
                                                 .text_color(if contact_q.is_empty() {
-                                                    rgb(0x6B808D)
+                                                    rgb(pal.text_secondary)
                                                 } else {
-                                                    rgb(0xFFFFFF)
+                                                    rgb(pal.text_primary)
                                                 })
                                                 .child(if contact_q.is_empty() {
-                                                    "搜索".to_string()
+                                                    tr_str(lang, "搜索", "Search").to_string()
                                                 } else {
                                                     contact_q
                                                 }),
                                         ),
                                 )
-                                // Body: Contact rows or "未找到相关联系人" empty state
                                 .child(
                                     div()
                                         .id("contacts-modal-scroll")
@@ -3391,32 +4396,54 @@ impl Render for AppShell {
                                         .overflow_y_scroll()
                                         .flex()
                                         .flex_col()
-                                        .when(contact_dialogs.is_empty(), |body| {
+                                        .when(rows.is_empty(), |body| {
                                             body.items_center().justify_center().child(
                                                 div()
                                                     .text_size(px(13.5))
-                                                    .text_color(rgb(0x6B808D))
-                                                    .child("未找到相关联系人"),
+                                                    .text_color(rgb(pal.text_secondary))
+                                                    .child(tr_str(lang, "未找到相关联系人", "No matching contacts")),
                                             )
                                         })
-                                        .when(!contact_dialogs.is_empty(), |body| {
-                                            body.children(contact_dialogs.into_iter().map(|d| {
-                                                let cid = d.id;
+                                        .when(!rows.is_empty(), |body| {
+                                            body.children(rows.into_iter().map(|(uid, cid_opt, initials, name, sub, col)| {
+                                                let click_name = name.clone();
                                                 div()
                                                     .cursor_pointer()
                                                     .w_full()
                                                     .px(px(16.0))
                                                     .py(px(10.0))
-                                                    .hover(|s| s.bg(rgb(0x202B36)))
+                                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(12.0))
                                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                         this.sidebar.update(cx, |sb, sb_cx| {
                                                             sb.close_contacts_modal();
-                                                            sb.select_dialog(cid);
+                                                            if let Some(cid) = cid_opt {
+                                                                sb.select_dialog_from_user(cid);
+                                                            }
                                                             sb_cx.notify();
                                                         });
+                                                        if let Some(cid) = cid_opt {
+                                                            this.sync_selected_chat_inspector_and_stage(cid, cx);
+                                                        } else {
+                                                            let req = gpui_telegram_proto::contracts::chats::CreateChatRequest {
+                                                                title: click_name.clone(),
+                                                                chat_type: Some(serde_json::json!(0)),
+                                                                peer_user_id: Some(uid),
+                                                                ..Default::default()
+                                                            };
+                                                            let client = this.client.clone();
+                                                            cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+                                                                if let Ok(created) = client.create_chat(&req).await {
+                                                                    let _ = weak.update(app, |s, cx| {
+                                                                        s.sidebar.update(cx, |sb, _| sb.select_dialog_from_user(created.chat_id as u64));
+                                                                        s.refresh_chats(cx);
+                                                                    });
+                                                                }
+                                                            })
+                                                            .detach();
+                                                        }
                                                         cx.notify();
                                                     }))
                                                     .child(
@@ -3424,14 +4451,14 @@ impl Render for AppShell {
                                                             .w(px(40.0))
                                                             .h(px(40.0))
                                                             .rounded_full()
-                                                            .bg(rgb(d.avatar_color))
+                                                            .bg(rgb(col))
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
                                                             .text_size(px(14.0))
                                                             .font_weight(FontWeight::BOLD)
-                                                            .text_color(rgb(0xFFFFFF))
-                                                            .child(d.avatar_initials),
+                                                            .text_color(rgb(pal.active_button_fg))
+                                                            .child(initials),
                                                     )
                                                     .child(
                                                         div()
@@ -3441,31 +4468,28 @@ impl Render for AppShell {
                                                                 div()
                                                                     .text_size(px(14.0))
                                                                     .font_weight(FontWeight::BOLD)
-                                                                    .text_color(rgb(0xFFFFFF))
-                                                                    .child(d.peer_name),
+                                                                    .text_color(rgb(pal.text_primary))
+                                                                    .child(name),
                                                             )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(px(12.0))
-                                                                    .text_color(rgb(0x5288C1))
-                                                                    .child(if d.folder == "Bots" {
-                                                                        "AI Bot · 在线"
-                                                                    } else {
-                                                                        "在线"
-                                                                    }),
-                                                            ),
+                                                            .when(!sub.is_empty(), |el| {
+                                                                el.child(
+                                                                    div()
+                                                                        .text_size(px(12.0))
+                                                                        .text_color(rgb(pal.accent))
+                                                                        .child(sub),
+                                                                )
+                                                            }),
                                                     )
                                             }))
                                         }),
                                 )
-                                // Bottom Bar: "添加联系人" (left) and "关闭" (right)
                                 .child(
                                     div()
                                         .w_full()
                                         .px(px(16.0))
                                         .py(px(12.0))
                                         .border_t_1()
-                                        .border_color(rgb(0x0E1621))
+                                        .border_color(rgb(pal.border_fg))
                                         .flex()
                                         .items_center()
                                         .justify_between()
@@ -3476,18 +4500,25 @@ impl Render for AppShell {
                                                 .px(px(10.0))
                                                 .py(px(6.0))
                                                 .rounded(px(6.0))
-                                                .hover(|s| s.bg(rgb(0x202B36)))
+                                                .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                 .text_size(px(13.5))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x2AABEE))
+                                                .text_color(rgb(pal.accent))
                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                     this.sidebar.update(cx, |sb, sb_cx| {
-                                                        sb.open_add_contact_modal(crate::views::chat_sidebar::AddContactKind::AiBot);
+                                                        sb.close_contacts_modal();
                                                         sb_cx.notify();
                                                     });
-                                                    cx.notify();
+                                                    let l = this.active_lang_id();
+                                                    this.open_modal_dialog(
+                                                        tr_str(l, "添加联系人", "Add Contact"),
+                                                        ModalDialogKind::AddContact,
+                                                        380.0,
+                                                        360.0,
+                                                        cx,
+                                                    );
                                                 }))
-                                                .child("添加联系人"),
+                                                .child(tr_str(lang, "添加联系人", "Add Contact")),
                                         )
                                         .child(
                                             div()
@@ -3496,10 +4527,10 @@ impl Render for AppShell {
                                                 .px(px(10.0))
                                                 .py(px(6.0))
                                                 .rounded(px(6.0))
-                                                .hover(|s| s.bg(rgb(0x202B36)))
+                                                .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                 .text_size(px(13.5))
                                                 .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0x2AABEE))
+                                                .text_color(rgb(pal.accent))
                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                     this.sidebar.update(cx, |sb, sb_cx| {
                                                         sb.close_contacts_modal();
@@ -3507,14 +4538,41 @@ impl Render for AppShell {
                                                     });
                                                     cx.notify();
                                                 }))
-                                                .child("关闭"),
+                                                .child(tr_str(lang, "关闭", "Close")),
                                         ),
                                 ),
                         ),
                 )
             })
+            // 5c. Slide-out Main Menu Drawer
+            .child(self.main_menu_drawer.clone())
             // 6. Modal Layer Stack Container
             .child(self.modal_container.clone())
+            // 7. Window Toast Banner
+            .when_some(current_toast, |el, toast| {
+                el.child(
+                    div()
+                        .id("window-toast-banner")
+                        .cursor_pointer()
+                        .absolute()
+                        .bottom(px(28.0))
+                        .right(px(28.0))
+                        .px(px(16.0))
+                        .py(px(9.0))
+                        .rounded(px(16.0))
+                        .bg(rgb(pal.card_bg))
+                        .border_1()
+                        .border_color(rgb(pal.border_fg))
+                        .shadow_lg()
+                        .text_size(px(12.5))
+                        .text_color(rgb(pal.text_primary))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                            this.window_runtime.controller.dismiss_current_toast();
+                            cx.notify();
+                        }))
+                        .child(toast.text),
+                )
+            })
             .into_any_element()
     }
 }
@@ -3522,6 +4580,8 @@ impl Render for AppShell {
 impl AppShell {
     fn render_login_wizard(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let zh = self.is_chinese_locale;
+        let pal = self.palette;
+        let lang = self.active_lang_id();
         let step = self.login_step;
         let country = self.country_code.clone();
         let phone = self.phone_number.clone();
@@ -3530,15 +4590,15 @@ impl AppShell {
         div()
             .w(px(440.0))
             .rounded(px(16.0))
-            .bg(rgb(0x17212B))
+            .bg(rgb(pal.modal_bg))
             .border_1()
-            .border_color(rgb(0x242F3D))
+            .border_color(rgb(pal.border_fg))
             .p(px(32.0))
             .flex()
             .flex_col()
             .items_center()
             .gap(px(18.0))
-            // Top Language Switcher Row
+            // Top Controls Row (Language + Theme Switcher)
             .child(
                 div()
                     .w_full()
@@ -3548,25 +4608,68 @@ impl AppShell {
                     .child(
                         div()
                             .text_size(px(12.0))
-                            .text_color(rgb(0x6B808D))
+                            .text_color(rgb(pal.text_secondary))
                             .child("GPUI Telegram Desktop • MTProto 2.0"),
                     )
                     .child(
                         div()
-                            .cursor_pointer()
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0x242F3D))
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.is_chinese_locale = !this.is_chinese_locale;
-                                cx.notify();
-                            }))
-                            .child(if zh { "🌐 中文 / EN" } else { "🌐 EN / 中文" }),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child({
+                                let is_dark = self.theme_mode.is_dark();
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        let next = toggle_desktop_theme_mode(this.theme_mode);
+                                        this.apply_theme_selection(next, None, None, cx);
+                                    }))
+                                    .child(tg_icon(
+                                        if is_dark { IconName::SunDay } else { IconName::NightMoon },
+                                        13.0,
+                                        pal.icon_fg,
+                                    ))
+                                    .child(if is_dark {
+                                        tr_str(lang, "日间", "Day")
+                                    } else {
+                                        tr_str(lang, "夜间", "Night")
+                                    })
+                            })
+                            .child(
+                                div()
+                                    .cursor_pointer()
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                        this.toggle_language(cx);
+                                    }))
+                                    .child(tg_icon(IconName::Translate, 13.0, pal.icon_fg))
+                                    .child(tr_str(lang, "中文 / EN", "EN / 中文")),
+                            ),
                     ),
             )
             // Telegram Plane Logo Circle
@@ -3575,13 +4678,11 @@ impl AppShell {
                     .w(px(84.0))
                     .h(px(84.0))
                     .rounded_full()
-                    .bg(rgb(0x2AABEE))
+                    .bg(rgb(pal.accent))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(40.0))
-                    .text_color(rgb(0xFFFFFF))
-                    .child("✈️"),
+                    .child(tg_icon(IconName::TelegramPlaneLogo, 44.0, pal.active_button_fg)),
             )
             // Step-specific Body
             .child(match step {
@@ -3600,7 +4701,7 @@ impl AppShell {
                                 .login_error
                                 .as_deref()
                                 .is_some_and(|e| e.contains("Network connection error") || e.contains("timed out") || e.contains("Connection refused"));
-                            let dot_color = if has_net_err { rgb(0xEF5350) } else { rgb(0x4CAF50) };
+                            let dot_color = if has_net_err { rgb(pal.danger) } else { rgb(pal.success) };
                             if self.editing_server_url {
                                 let draft_display = if self.server_url_draft.is_empty() {
                                     "http://<Google-Cloud-IP>:8080".to_string()
@@ -3618,16 +4719,16 @@ impl AppShell {
                                             .h(px(30.0))
                                             .px(px(10.0))
                                             .rounded(px(6.0))
-                                            .bg(rgb(0x101921))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(rgb(0x2AABEE))
+                                            .border_color(rgb(pal.accent))
                                             .flex()
                                             .items_center()
                                             .text_size(px(11.5))
                                             .text_color(if self.server_url_draft.is_empty() {
-                                                rgb(0x5B6B79)
+                                                rgb(pal.text_secondary)
                                             } else {
-                                                rgb(0xFFFFFF)
+                                                rgb(pal.text_primary)
                                             })
                                             .child(draft_display),
                                     )
@@ -3637,18 +4738,18 @@ impl AppShell {
                                             .h(px(30.0))
                                             .px(px(10.0))
                                             .rounded(px(6.0))
-                                            .bg(rgb(0x2AABEE))
-                                            .hover(|s| s.bg(rgb(0x229ED9)))
+                                            .bg(rgb(pal.accent))
+                                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .text_size(px(11.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
+                                            .text_color(rgb(pal.active_button_fg))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.apply_custom_server_url(cx);
                                             }))
-                                            .child(if zh { "保存" } else { "Save" }),
+                                            .child(tr_str(lang, "保存", "Save")),
                                     )
                                     .child(
                                         div()
@@ -3656,18 +4757,21 @@ impl AppShell {
                                             .h(px(30.0))
                                             .px(px(8.0))
                                             .rounded(px(6.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
+                                            .border_1()
+                                            .border_color(rgb(pal.border_fg))
+                                            .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .text_size(px(11.0))
-                                            .text_color(rgb(0x8A9AA8))
+                                            .text_color(rgb(pal.text_secondary))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.editing_server_url = false;
                                                 this.server_url_draft = this.client.config.server_url.clone();
                                                 cx.notify();
                                             }))
-                                            .child(if zh { "取消" } else { "Cancel" }),
+                                            .child(tr_str(lang, "取消", "Cancel")),
                                     )
                                     .into_any_element()
                             } else {
@@ -3679,10 +4783,10 @@ impl AppShell {
                                     .px(px(10.0))
                                     .py(px(4.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x101921))
+                                    .bg(rgb(pal.input_bg))
                                     .border_1()
-                                    .border_color(if has_net_err { rgb(0x7F1D1D) } else { rgb(0x242F3D) })
-                                    .hover(|s| s.border_color(rgb(0x2AABEE)))
+                                    .border_color(if has_net_err { rgb(pal.danger) } else { rgb(pal.border_fg) })
+                                    .hover(move |s| s.border_color(rgb(pal.accent)))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.server_url_draft = this.client.config.server_url.clone();
                                         this.editing_server_url = true;
@@ -3692,14 +4796,14 @@ impl AppShell {
                                     .child(
                                         div()
                                             .text_size(px(11.0))
-                                            .text_color(rgb(0x8A9AA8))
+                                            .text_color(rgb(pal.text_secondary))
                                             .child(format!("Cloud VM: {}", server_url)),
                                     )
                                     .child(
                                         div()
                                             .text_size(px(10.5))
-                                            .text_color(rgb(0x2AABEE))
-                                            .child(if zh { "修改" } else { "Edit" }),
+                                            .text_color(rgb(pal.accent))
+                                            .child(tr_str(lang, "修改", "Edit")),
                                     )
                                     .into_any_element()
                             }
@@ -3710,7 +4814,9 @@ impl AppShell {
                                 .w_full()
                                 .flex()
                                 .items_center()
-                                .bg(rgb(0x101921))
+                                .bg(rgb(pal.input_bg))
+                                .border_1()
+                                .border_color(rgb(pal.border_fg))
                                 .rounded(px(8.0))
                                 .p(px(3.0))
                                 .gap(px(4.0))
@@ -3721,18 +4827,20 @@ impl AppShell {
                                         .flex_1()
                                         .h(px(32.0))
                                         .rounded(px(6.0))
-                                        .bg(if is_pw { rgb(0x2AABEE) } else { rgb(0x101921) })
-                                        .hover(|s| if !is_pw { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .bg(if is_pw { rgb(pal.accent) } else { rgb(pal.input_bg) })
+                                        .hover(move |s| if !is_pw { s.bg(rgb(pal.hover_bg)) } else { s })
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .gap(px(5.0))
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
+                                        .text_color(if is_pw { rgb(pal.active_button_fg) } else { rgb(pal.text_primary) })
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.switch_auth_tab(AuthWizardTab::PasswordLogin, cx);
                                         }))
-                                        .child(if zh { "🔑 密码登录" } else { "🔑 Password" })
+                                        .child(tg_icon(IconName::Lock, 12.0, if is_pw { pal.active_button_fg } else { pal.icon_fg }))
+                                        .child(tr_str(lang, "密码登录", "Password"))
                                 })
                                 .child({
                                     let is_alipay = self.auth_wizard_tab == AuthWizardTab::AlipayQr;
@@ -3741,18 +4849,20 @@ impl AppShell {
                                         .flex_1()
                                         .h(px(32.0))
                                         .rounded(px(6.0))
-                                        .bg(if is_alipay { rgb(0x1677FF) } else { rgb(0x101921) })
-                                        .hover(|s| if !is_alipay { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .bg(if is_alipay { rgb(0x1677FF) } else { rgb(pal.input_bg) })
+                                        .hover(move |s| if !is_alipay { s.bg(rgb(pal.hover_bg)) } else { s })
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .gap(px(5.0))
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
+                                        .text_color(if is_alipay { rgb(pal.active_button_fg) } else { rgb(pal.text_primary) })
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.switch_auth_tab(AuthWizardTab::AlipayQr, cx);
                                         }))
-                                        .child(if zh { "💳 支付宝扫码" } else { "💳 Alipay QR" })
+                                        .child(tg_icon(IconName::WalletStars, 12.0, if is_alipay { pal.active_button_fg } else { pal.icon_fg }))
+                                        .child(tr_str(lang, "支付宝扫码", "Alipay QR"))
                                 })
                                 .child({
                                     let is_email = self.auth_wizard_tab == AuthWizardTab::EmailRegister;
@@ -3761,18 +4871,20 @@ impl AppShell {
                                         .flex_1()
                                         .h(px(32.0))
                                         .rounded(px(6.0))
-                                        .bg(if is_email { rgb(0x2AABEE) } else { rgb(0x101921) })
-                                        .hover(|s| if !is_email { s.bg(rgb(0x1E2C3A)) } else { s })
+                                        .bg(if is_email { rgb(pal.accent) } else { rgb(pal.input_bg) })
+                                        .hover(move |s| if !is_email { s.bg(rgb(pal.hover_bg)) } else { s })
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .gap(px(5.0))
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
+                                        .text_color(if is_email { rgb(pal.active_button_fg) } else { rgb(pal.text_primary) })
                                         .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                             this.switch_auth_tab(AuthWizardTab::EmailRegister, cx);
                                         }))
-                                        .child(if zh { "✉️ 邮箱注册" } else { "✉️ Email Register" })
+                                        .child(tg_icon(IconName::SendPlane, 12.0, if is_email { pal.active_button_fg } else { pal.icon_fg }))
+                                        .child(tr_str(lang, "邮箱注册", "Email Register"))
                                 }),
                         )
                         // Error Banner if present
@@ -3782,12 +4894,16 @@ impl AppShell {
                                     .w_full()
                                     .p(px(8.0))
                                     .rounded(px(6.0))
-                                    .bg(rgba(0xE5393522))
+                                    .bg(TdesktopThemePalette::rgba_with_alpha(pal.danger, 0.14))
                                     .border_1()
-                                    .border_color(rgb(0xE53935))
+                                    .border_color(rgb(pal.danger))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
                                     .text_size(px(12.0))
-                                    .text_color(rgb(0xFF5252))
-                                    .child(format!("⚠️ {}", err)),
+                                    .text_color(rgb(pal.danger))
+                                    .child(tg_icon(IconName::Close, 12.0, pal.danger))
+                                    .child(err),
                             )
                         })
                         // Tab Content Body
@@ -3812,11 +4928,11 @@ impl AppShell {
                                         div()
                                             .text_size(px(18.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child(if zh {
-                                                if is_reg { "注册 Telegram 云端账号" } else { "登录 Telegram 云端服务" }
+                                            .text_color(rgb(pal.text_primary))
+                                            .child(if is_reg {
+                                                tr_str(lang, "注册 Telegram 云端账号", "Create Cloud Account")
                                             } else {
-                                                if is_reg { "Create Cloud Account" } else { "Sign In to Cloud Server" }
+                                                tr_str(lang, "登录 Telegram 云端服务", "Sign In to Cloud Server")
                                             }),
                                     )
                                     // Register: First Name Input
@@ -3829,9 +4945,9 @@ impl AppShell {
                                                 .w_full()
                                                 .h(px(40.0))
                                                 .rounded(px(8.0))
-                                                .bg(rgb(0x242F3D))
+                                                .bg(rgb(pal.input_bg))
                                                 .border_1()
-                                                .border_color(if fn_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                                .border_color(if fn_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                                 .px(px(12.0))
                                                 .flex()
                                                 .items_center()
@@ -3846,11 +4962,11 @@ impl AppShell {
                                                     if fn_empty {
                                                         div()
                                                             .text_size(px(13.0))
-                                                            .text_color(rgb(0x6B808D))
+                                                            .text_color(rgb(pal.text_secondary))
                                                             .child(if fn_active {
-                                                                "| Your Display Name (输入昵称)".to_string()
+                                                                tr_str(lang, "| 请输入显示昵称", "| Your Display Name")
                                                             } else {
-                                                                "Your Display Name (显示昵称)".to_string()
+                                                                tr_str(lang, "显示昵称", "Your Display Name")
                                                             })
                                                     } else {
                                                         div()
@@ -3860,16 +4976,16 @@ impl AppShell {
                                                             .child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0xFFFFFF))
+                                                                    .text_color(rgb(pal.text_primary))
                                                                     .child(fn_val.clone()),
                                                             )
                                                             .when_some(fn_preedit, |p_el, p| {
                                                                 p_el.child(
                                                                     div()
                                                                         .text_size(px(13.0))
-                                                                        .text_color(rgb(0x2AABEE))
+                                                                        .text_color(rgb(pal.accent))
                                                                         .border_b_1()
-                                                                        .border_color(rgb(0x2AABEE))
+                                                                        .border_color(rgb(pal.accent))
                                                                         .child(p),
                                                                 )
                                                             })
@@ -3877,7 +4993,7 @@ impl AppShell {
                                                                 c_el.child(
                                                                     div()
                                                                         .text_size(px(13.0))
-                                                                        .text_color(rgb(0x2AABEE))
+                                                                        .text_color(rgb(pal.accent))
                                                                         .child("|"),
                                                                 )
                                                             })
@@ -3892,9 +5008,9 @@ impl AppShell {
                                                             c_el.child(
                                                                 div()
                                                                     .cursor_pointer()
-                                                                    .text_size(px(12.0))
-                                                                    .text_color(rgb(0x8A9AA8))
-                                                                    .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                    .p(px(2.0))
+                                                                    .rounded(px(4.0))
+                                                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                                                         this.first_name_input.clear();
                                                                         this.ime_preedit = None;
@@ -3903,15 +5019,10 @@ impl AppShell {
                                                                         cx.stop_propagation();
                                                                         cx.notify();
                                                                     }))
-                                                                    .child("✕"),
+                                                                    .child(tg_icon(IconName::Close, 11.0, pal.icon_fg)),
                                                             )
                                                         })
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(11.0))
-                                                                .text_color(rgb(0x6B808D))
-                                                                .child("🪪"),
-                                                        ),
+                                                        .child(tg_icon(IconName::Verified, 13.0, pal.text_secondary)),
                                                 ),
                                         )
                                     })
@@ -3924,9 +5035,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if u_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if u_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -3941,11 +5052,11 @@ impl AppShell {
                                                 if u_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if u_active {
-                                                            "| Username (请输入用户名)".to_string()
+                                                            tr_str(lang, "| 请输入用户名", "| Username")
                                                         } else {
-                                                            "Username (用户名)".to_string()
+                                                            tr_str(lang, "用户名", "Username")
                                                         })
                                                 } else {
                                                     div()
@@ -3955,16 +5066,16 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child(user_val.clone()),
                                                         )
                                                         .when_some(u_preedit, |p_el, p| {
                                                             p_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .border_b_1()
-                                                                    .border_color(rgb(0x2AABEE))
+                                                                    .border_color(rgb(pal.accent))
                                                                     .child(p),
                                                                 )
                                                         })
@@ -3972,7 +5083,7 @@ impl AppShell {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -3987,9 +5098,9 @@ impl AppShell {
                                                         c_el.child(
                                                             div()
                                                                 .cursor_pointer()
-                                                                .text_size(px(12.0))
-                                                                .text_color(rgb(0x8A9AA8))
-                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .p(px(2.0))
+                                                                .rounded(px(4.0))
+                                                                .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                                                     this.username_input.clear();
                                                                     this.ime_preedit = None;
@@ -3998,15 +5109,10 @@ impl AppShell {
                                                                     cx.stop_propagation();
                                                                     cx.notify();
                                                                 }))
-                                                                .child("✕"),
+                                                                .child(tg_icon(IconName::Close, 11.0, pal.icon_fg)),
                                                         )
                                                     })
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(11.0))
-                                                            .text_color(rgb(0x6B808D))
-                                                            .child("👤"),
-                                                    ),
+                                                    .child(tg_icon(IconName::ContactsUsers, 13.0, pal.text_secondary)),
                                             )
                                     })
                                     // Password Input Box
@@ -4018,9 +5124,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if p_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if p_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -4035,11 +5141,11 @@ impl AppShell {
                                                 if p_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if p_active {
-                                                            "| Password (请输入密码)".to_string()
+                                                            tr_str(lang, "| 请输入密码", "| Password")
                                                         } else {
-                                                            "Password (密码)".to_string()
+                                                            tr_str(lang, "密码", "Password")
                                                         })
                                                 } else {
                                                     div()
@@ -4049,16 +5155,16 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child("•".repeat(pass_val.chars().count())),
                                                         )
                                                         .when_some(p_preedit, |p_el, p| {
                                                             p_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .border_b_1()
-                                                                    .border_color(rgb(0x2AABEE))
+                                                                    .border_color(rgb(pal.accent))
                                                                     .child(p),
                                                                 )
                                                         })
@@ -4066,7 +5172,7 @@ impl AppShell {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -4081,9 +5187,9 @@ impl AppShell {
                                                         c_el.child(
                                                             div()
                                                                 .cursor_pointer()
-                                                                .text_size(px(12.0))
-                                                                .text_color(rgb(0x8A9AA8))
-                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .p(px(2.0))
+                                                                .rounded(px(4.0))
+                                                                .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
                                                                     this.password_input.clear();
                                                                     this.ime_preedit = None;
@@ -4092,15 +5198,10 @@ impl AppShell {
                                                                     cx.stop_propagation();
                                                                     cx.notify();
                                                                 }))
-                                                                .child("✕"),
+                                                                .child(tg_icon(IconName::Close, 11.0, pal.icon_fg)),
                                                         )
                                                     })
-                                                    .child(
-                                                        div()
-                                                            .text_size(px(11.0))
-                                                            .text_color(rgb(0x6B808D))
-                                                            .child("🔒"),
-                                                    ),
+                                                    .child(tg_icon(IconName::Lock, 13.0, pal.text_secondary)),
                                             )
                                     })
                                     // Submit Button
@@ -4110,14 +5211,14 @@ impl AppShell {
                                             .w_full()
                                             .h(px(42.0))
                                             .rounded(px(8.0))
-                                            .bg(if is_loading { rgb(0x1E96D8) } else { rgb(0x2AABEE) })
-                                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                                            .bg(if is_loading { rgb(pal.accent_hover) } else { rgb(pal.accent) })
+                                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .text_size(px(14.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
+                                            .text_color(rgb(pal.active_button_fg))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 if this.is_register_mode {
                                                     this.submit_register(cx);
@@ -4126,11 +5227,11 @@ impl AppShell {
                                                 }
                                             }))
                                             .child(if is_loading {
-                                                "Authenticating with Cloud Server..."
+                                                tr_str(lang, "正在连接云服务器登录...", "Authenticating with Cloud Server...")
                                             } else if is_reg {
-                                                "Create Account & Sign In (注册并登录)"
+                                                tr_str(lang, "注册并登录", "Create Account & Sign In")
                                             } else {
-                                                "Sign In (登录到云服务器)"
+                                                tr_str(lang, "登录到云服务器", "Sign In")
                                             }),
                                     )
                                     // Toggle Mode: Sign In vs Register
@@ -4138,39 +5239,17 @@ impl AppShell {
                                         div()
                                             .cursor_pointer()
                                             .text_size(px(12.0))
-                                            .text_color(rgb(0x2AABEE))
+                                            .text_color(rgb(pal.accent))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.is_register_mode = !this.is_register_mode;
                                                 this.login_error = None;
                                                 cx.notify();
                                             }))
                                             .child(if is_reg {
-                                                "← Already have an account? Sign In (已有账号？直接登录)"
+                                                tr_str(lang, "← 已有账号？直接登录", "← Already have an account? Sign In")
                                             } else {
-                                                "Don't have an account? Register (没有账号？点击注册)"
+                                                tr_str(lang, "没有账号？点击注册", "Don't have an account? Register")
                                             }),
-                                    )
-                                    // Quick 1-Click Demo Login Button (Real API call to live backend)
-                                    .child(
-                                        div()
-                                            .cursor_pointer()
-                                            .w_full()
-                                            .h(px(38.0))
-                                            .rounded(px(8.0))
-                                            .bg(rgb(0x1ABC9C))
-                                            .hover(|s| s.bg(rgb(0x16A085)))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                                this.username_input = "cloud_probe_user".to_string();
-                                                this.password_input = "probe_password_123".to_string();
-                                                this.submit_login(cx);
-                                            }))
-                                            .child("⚡ 1-Click Cloud Demo Login (cloud_probe_user)"),
                                     )
                                     .into_any_element()
                             }
@@ -4202,14 +5281,14 @@ impl AppShell {
                                         div()
                                             .text_size(px(18.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child(if zh { "使用支付宝扫码登录" } else { "Log in with Alipay QR" }),
+                                            .text_color(rgb(pal.text_primary))
+                                            .child(tr_str(lang, "使用支付宝扫码登录", "Log in with Alipay QR")),
                                     )
                                     .child(qr_card)
                                     .child(
                                         div()
                                             .text_size(px(12.0))
-                                            .text_color(if is_loading { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
+                                            .text_color(if is_loading { rgb(pal.accent) } else { rgb(pal.text_secondary) })
                                             .child(status_text),
                                     )
                                     // Open Real Alipay Web OAuth in Default Browser
@@ -4224,13 +5303,15 @@ impl AppShell {
                                             .flex()
                                             .items_center()
                                             .justify_center()
+                                            .gap(px(6.0))
                                             .text_size(px(13.0))
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(rgb(0xFFFFFF))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.open_alipay_web_auth(cx);
                                             }))
-                                            .child(if zh { "🌐 在浏览器打开支付宝授权" } else { "🌐 Open Alipay Authorization in Browser" }),
+                                            .child(tg_icon(IconName::SendPlane, 13.0, 0xFFFFFF))
+                                            .child(tr_str(lang, "在浏览器打开支付宝授权", "Open Alipay Authorization in Browser")),
                                     )
                                     // Refresh QR Code Button
                                     .child(
@@ -4239,17 +5320,21 @@ impl AppShell {
                                             .w_full()
                                             .h(px(36.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
-                                            .hover(|s| s.bg(rgb(0x2B5278)))
+                                            .bg(rgb(pal.input_bg))
+                                            .border_1()
+                                            .border_color(rgb(pal.border_fg))
+                                            .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
+                                            .gap(px(6.0))
                                             .text_size(px(12.0))
-                                            .text_color(rgb(0x8A9AA8))
+                                            .text_color(rgb(pal.text_primary))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.start_alipay_flow(cx);
                                             }))
-                                            .child(if zh { "🔄 刷新二维码" } else { "🔄 Refresh QR Code" }),
+                                            .child(tg_icon(IconName::ClockSending, 13.0, pal.icon_fg))
+                                            .child(tr_str(lang, "刷新二维码", "Refresh QR Code")),
                                     )
                                     .into_any_element()
                             }
@@ -4279,8 +5364,8 @@ impl AppShell {
                                         div()
                                             .text_size(px(18.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child(if zh { "邮箱注册账号" } else { "Register with Email" }),
+                                            .text_color(rgb(pal.text_primary))
+                                            .child(tr_str(lang, "邮箱注册账号", "Register with Email")),
                                     )
                                     // Row: Email Input + Send Code Button
                                     .child(
@@ -4297,9 +5382,9 @@ impl AppShell {
                                                     .flex_1()
                                                     .h(px(40.0))
                                                     .rounded(px(8.0))
-                                                    .bg(rgb(0x242F3D))
+                                                    .bg(rgb(pal.input_bg))
                                                     .border_1()
-                                                    .border_color(if e_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                                    .border_color(if e_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                                     .px(px(12.0))
                                                     .flex()
                                                     .items_center()
@@ -4314,11 +5399,11 @@ impl AppShell {
                                                         if e_empty {
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0x6B808D))
+                                                                .text_color(rgb(pal.text_secondary))
                                                                 .child(if e_active {
-                                                                    "| Email (输入邮箱)".to_string()
+                                                                    tr_str(lang, "| 请输入邮箱地址", "| Email")
                                                                 } else {
-                                                                    "Email (邮箱地址)".to_string()
+                                                                    tr_str(lang, "邮箱地址", "Email")
                                                                 })
                                                         } else {
                                                             div()
@@ -4328,16 +5413,16 @@ impl AppShell {
                                                                 .child(
                                                                     div()
                                                                         .text_size(px(13.0))
-                                                                        .text_color(rgb(0xFFFFFF))
+                                                                        .text_color(rgb(pal.text_primary))
                                                                         .child(e_val.clone()),
                                                                 )
                                                                 .when_some(e_preedit, |p_el, p| {
                                                                     p_el.child(
                                                                         div()
                                                                             .text_size(px(13.0))
-                                                                            .text_color(rgb(0x2AABEE))
+                                                                            .text_color(rgb(pal.accent))
                                                                             .border_b_1()
-                                                                            .border_color(rgb(0x2AABEE))
+                                                                            .border_color(rgb(pal.accent))
                                                                             .child(p),
                                                                     )
                                                                 })
@@ -4345,7 +5430,7 @@ impl AppShell {
                                                                     c_el.child(
                                                                         div()
                                                                             .text_size(px(13.0))
-                                                                            .text_color(rgb(0x2AABEE))
+                                                                            .text_color(rgb(pal.accent))
                                                                             .child("|"),
                                                                     )
                                                                 })
@@ -4358,25 +5443,29 @@ impl AppShell {
                                                     .px(px(12.0))
                                                     .h(px(40.0))
                                                     .rounded(px(8.0))
-                                                    .bg(if cooldown > 0 || is_sending { rgb(0x242F3D) } else { rgb(0x2AABEE) })
-                                                    .hover(|s| if cooldown == 0 && !is_sending { s.bg(rgb(0x1E96D8)) } else { s })
+                                                    .bg(if cooldown > 0 || is_sending { rgb(pal.input_bg) } else { rgb(pal.accent) })
+                                                    .border_1()
+                                                    .border_color(if cooldown > 0 || is_sending { rgb(pal.border_fg) } else { rgb(pal.accent) })
+                                                    .hover(move |s| if cooldown == 0 && !is_sending { s.bg(rgb(pal.accent_hover)) } else { s })
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
                                                     .text_size(px(12.0))
                                                     .font_weight(FontWeight::BOLD)
-                                                    .text_color(if cooldown > 0 || is_sending { rgb(0x8A9AA8) } else { rgb(0xFFFFFF) })
+                                                    .text_color(if cooldown > 0 || is_sending { rgb(pal.text_secondary) } else { rgb(pal.active_button_fg) })
                                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                         this.send_email_code(cx);
                                                     }))
                                                     .child(if is_sending {
-                                                        "发送中...".to_string()
+                                                        tr_str(lang, "发送中...", "Sending...").to_string()
                                                     } else if cooldown > 0 {
-                                                        format!("重新获取 ({}s)", cooldown)
-                                                    } else if zh {
-                                                        "获取验证码".to_string()
+                                                        if zh {
+                                                            format!("重新获取 ({}s)", cooldown)
+                                                        } else {
+                                                            format!("Resend ({}s)", cooldown)
+                                                        }
                                                     } else {
-                                                        "Send Code".to_string()
+                                                        tr_str(lang, "获取验证码", "Send Code").to_string()
                                                     }),
                                             ),
                                     )
@@ -4389,9 +5478,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if ec_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if ec_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -4406,11 +5495,11 @@ impl AppShell {
                                                 if ec_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if ec_active {
-                                                            "| 6-digit Code (输入6位验证码)".to_string()
+                                                            tr_str(lang, "| 请输入6位验证码", "| 6-digit Code")
                                                         } else {
-                                                            "Verification Code (验证码)".to_string()
+                                                            tr_str(lang, "验证码", "Verification Code")
                                                         })
                                                 } else {
                                                     div()
@@ -4420,14 +5509,14 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child(ec_val.clone()),
                                                         )
                                                         .when(ec_active, |c_el| {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -4443,9 +5532,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if u_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if u_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -4460,11 +5549,11 @@ impl AppShell {
                                                 if u_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if u_active {
-                                                            "| Username (输入用户名)".to_string()
+                                                            tr_str(lang, "| 请输入用户名", "| Username")
                                                         } else {
-                                                            "Username (用户名)".to_string()
+                                                            tr_str(lang, "用户名", "Username")
                                                         })
                                                 } else {
                                                     div()
@@ -4474,14 +5563,14 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child(u_val.clone()),
                                                         )
                                                         .when(u_active, |c_el| {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -4497,9 +5586,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if p_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if p_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -4514,11 +5603,11 @@ impl AppShell {
                                                 if p_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if p_active {
-                                                            "| Password (输入密码)".to_string()
+                                                            tr_str(lang, "| 请输入密码", "| Password")
                                                         } else {
-                                                            "Password (密码)".to_string()
+                                                            tr_str(lang, "密码", "Password")
                                                         })
                                                 } else {
                                                     div()
@@ -4528,14 +5617,14 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child("•".repeat(p_val.chars().count())),
                                                         )
                                                         .when(p_active, |c_el| {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -4551,9 +5640,9 @@ impl AppShell {
                                             .w_full()
                                             .h(px(40.0))
                                             .rounded(px(8.0))
-                                            .bg(rgb(0x242F3D))
+                                            .bg(rgb(pal.input_bg))
                                             .border_1()
-                                            .border_color(if fn_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                            .border_color(if fn_active { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                             .px(px(12.0))
                                             .flex()
                                             .items_center()
@@ -4568,11 +5657,11 @@ impl AppShell {
                                                 if fn_empty {
                                                     div()
                                                         .text_size(px(13.0))
-                                                        .text_color(rgb(0x6B808D))
+                                                        .text_color(rgb(pal.text_secondary))
                                                         .child(if fn_active {
-                                                            "| Display Name (输入昵称，可选)".to_string()
+                                                            tr_str(lang, "| 请输入显示昵称（可选）", "| Display Name (optional)")
                                                         } else {
-                                                            "Display Name (显示昵称，可选)".to_string()
+                                                            tr_str(lang, "显示昵称（可选）", "Display Name (optional)")
                                                         })
                                                 } else {
                                                     div()
@@ -4582,14 +5671,14 @@ impl AppShell {
                                                         .child(
                                                             div()
                                                                 .text_size(px(13.0))
-                                                                .text_color(rgb(0xFFFFFF))
+                                                                .text_color(rgb(pal.text_primary))
                                                                 .child(fn_val.clone()),
                                                         )
                                                         .when(fn_active, |c_el| {
                                                             c_el.child(
                                                                 div()
                                                                     .text_size(px(13.0))
-                                                                    .text_color(rgb(0x2AABEE))
+                                                                    .text_color(rgb(pal.accent))
                                                                     .child("|"),
                                                             )
                                                         })
@@ -4603,23 +5692,21 @@ impl AppShell {
                                             .w_full()
                                             .h(px(42.0))
                                             .rounded(px(8.0))
-                                            .bg(if is_loading { rgb(0x1E96D8) } else { rgb(0x2AABEE) })
-                                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                                            .bg(if is_loading { rgb(pal.accent_hover) } else { rgb(pal.accent) })
+                                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
                                             .flex()
                                             .items_center()
                                             .justify_center()
                                             .text_size(px(14.0))
                                             .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
+                                            .text_color(rgb(pal.active_button_fg))
                                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                                 this.submit_email_register(cx);
                                             }))
                                             .child(if is_loading {
-                                                "Authenticating..."
-                                            } else if zh {
-                                                "立即注册并登录"
+                                                tr_str(lang, "正在注册并登录...", "Authenticating...")
                                             } else {
-                                                "Register & Sign In"
+                                                tr_str(lang, "立即注册并登录", "Register & Sign In")
                                             }),
                                     )
                                     .into_any_element()
@@ -4637,8 +5724,8 @@ impl AppShell {
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if zh { "输入您的手机号码" } else { "Your Phone Number" }),
+                            .text_color(rgb(pal.text_primary))
+                            .child(tr_str(lang, "输入您的手机号码", "Your Phone Number")),
                     )
                     // Country Code Selector Pills
                     .child(
@@ -4654,10 +5741,12 @@ impl AppShell {
                                     .px(px(10.0))
                                     .py(px(5.0))
                                     .rounded(px(6.0))
-                                    .bg(if is_sel { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                    .bg(if is_sel { rgb(pal.accent) } else { rgb(pal.input_bg) })
+                                    .border_1()
+                                    .border_color(if is_sel { rgb(pal.accent) } else { rgb(pal.border_fg) })
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(if is_sel { rgb(pal.active_button_fg) } else { rgb(pal.text_primary) })
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
                                         this.country_code = cc_str.clone();
                                         cx.notify();
@@ -4671,9 +5760,9 @@ impl AppShell {
                             .w_full()
                             .h(px(42.0))
                             .rounded(px(8.0))
-                            .bg(rgb(0x242F3D))
+                            .bg(rgb(pal.input_bg))
                             .border_1()
-                            .border_color(rgb(0x2AABEE))
+                            .border_color(rgb(pal.accent))
                             .px(px(12.0))
                             .flex()
                             .items_center()
@@ -4682,19 +5771,20 @@ impl AppShell {
                                 div()
                                     .text_size(px(15.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .child(format!("{} {}", country, if phone.is_empty() { "___ ____ ____" } else { &phone })),
                             )
                             .child(
                                 div()
                                     .cursor_pointer()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0x8A9AA8))
+                                    .p(px(2.0))
+                                    .rounded(px(4.0))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                         this.phone_number.clear();
                                         cx.notify();
                                     }))
-                                    .child("✕"),
+                                    .child(tg_icon(IconName::Close, 11.0, pal.icon_fg)),
                             ),
                     )
                     // On-screen clickable numeric keypad (so mouse-only users can also dial)
@@ -4711,14 +5801,16 @@ impl AppShell {
                                     .w(px(58.0))
                                     .h(px(32.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x242F3D))
-                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
                                         if d_str == "⌫" {
                                             this.phone_number.pop();
@@ -4743,18 +5835,22 @@ impl AppShell {
                                     .px(px(14.0))
                                     .h(px(42.0))
                                     .rounded(px(8.0))
-                                    .bg(rgb(0x242F3D))
-                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
+                                    .gap(px(5.0))
                                     .text_size(px(13.0))
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                         this.login_step = LoginWizardStep::Start;
                                         cx.notify();
                                     }))
-                                    .child(if zh { "← 返回" } else { "← Back" }),
+                                    .child(tg_icon(IconName::BackArrow, 13.0, pal.icon_fg))
+                                    .child(tr_str(lang, "返回", "Back")),
                             )
                             .child(
                                 div()
@@ -4762,19 +5858,19 @@ impl AppShell {
                                     .flex_1()
                                     .h(px(42.0))
                                     .rounded(px(8.0))
-                                    .bg(rgb(0x2AABEE))
-                                    .hover(|s| s.bg(rgb(0x1E96D8)))
+                                    .bg(rgb(pal.accent))
+                                    .hover(move |s| s.bg(rgb(pal.accent_hover)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_size(px(14.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.active_button_fg))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                         this.login_step = LoginWizardStep::Code;
                                         cx.notify();
                                     }))
-                                    .child(if zh { "下一步 (获取验证码) →" } else { "NEXT →" }),
+                                    .child(tr_str(lang, "下一步 (获取验证码) →", "NEXT →")),
                             ),
                     )
                     .into_any_element(),
@@ -4789,8 +5885,8 @@ impl AppShell {
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if zh { "使用 Telegram 扫码登录" } else { "Scan QR Code with Telegram" }),
+                            .text_color(rgb(pal.text_primary))
+                            .child(tr_str(lang, "使用 Telegram 扫码登录", "Scan QR Code with Telegram")),
                     )
                     .child(Self::render_real_alipay_qr_matrix(
                         self.alipay_qr_payload.as_deref(),
@@ -4808,6 +5904,7 @@ impl AppShell {
                             .flex()
                             .items_center()
                             .justify_center()
+                            .gap(px(6.0))
                             .text_size(px(13.0))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
@@ -4815,18 +5912,19 @@ impl AppShell {
                                 this.login_step = LoginWizardStep::Start;
                                 this.switch_auth_tab(AuthWizardTab::AlipayQr, cx);
                             }))
-                            .child(if zh { "💳 切换至支付宝真实扫码登录" } else { "💳 Switch to Alipay QR Login" }),
+                            .child(tg_icon(IconName::WalletStars, 13.0, 0xFFFFFF))
+                            .child(tr_str(lang, "切换至支付宝真实扫码登录", "Switch to Alipay QR Login")),
                     )
                     .child(
                         div()
                             .cursor_pointer()
                             .text_size(px(13.0))
-                            .text_color(rgb(0x2AABEE))
+                            .text_color(rgb(pal.accent))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                 this.login_step = LoginWizardStep::Phone;
                                 cx.notify();
                             }))
-                            .child(if zh { "改用手机号登录" } else { "Log in by phone number" }),
+                            .child(tr_str(lang, "改用手机号登录", "Log in by phone number")),
                     )
                     .into_any_element(),
 
@@ -4839,7 +5937,7 @@ impl AppShell {
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
+                            .text_color(rgb(pal.text_primary))
                             .child(if zh {
                                 format!("验证码已发送至 {} {}", country, phone)
                             } else {
@@ -4852,38 +5950,38 @@ impl AppShell {
                             .w_full()
                             .h(px(44.0))
                             .rounded(px(8.0))
-                            .bg(rgb(0x242F3D))
+                            .bg(rgb(pal.input_bg))
                             .border_1()
-                            .border_color(rgb(0x2AABEE))
+                            .border_color(rgb(pal.accent))
                             .px(px(14.0))
                             .flex()
                             .items_center()
                             .justify_between()
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                if this.verification_code.is_empty() {
-                                    this.verification_code = "12345".to_string();
-                                    cx.notify();
-                                } else {
+                                if !this.verification_code.trim().is_empty() {
                                     this.submit_login(cx);
+                                } else {
+                                    cx.notify();
                                 }
                             }))
                             .child(
                                 div()
                                     .text_size(px(20.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .child(if code.is_empty() { "• • • • •".to_string() } else { code.clone() }),
                             )
                             .child(
                                 div()
                                     .cursor_pointer()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0x8A9AA8))
+                                    .p(px(2.0))
+                                    .rounded(px(4.0))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                         this.verification_code.clear();
                                         cx.notify();
                                     }))
-                                    .child("✕"),
+                                    .child(tg_icon(IconName::Close, 11.0, pal.icon_fg)),
                             ),
                     )
                     // On-screen clickable numeric keypad for verification code
@@ -4900,14 +5998,14 @@ impl AppShell {
                                     .w(px(58.0))
                                     .h(px(32.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x242F3D))
-                                    .hover(|s| s.bg(rgb(0x2B5278)))
+                                    .bg(rgb(pal.input_bg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
                                         if d_str == "⌫" {
                                             this.verification_code.pop();
@@ -4922,54 +6020,72 @@ impl AppShell {
                                     .child(digit)
                             })),
                     )
-                    // Auto-Fill Code & Sign In button
+                    // Submit Verification Code Button
                     .child(
                         div()
                             .cursor_pointer()
                             .w_full()
                             .h(px(44.0))
                             .rounded(px(8.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x1E96D8)))
+                            .bg(rgb(pal.accent))
+                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_size(px(14.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
+                            .text_color(rgb(pal.active_button_fg))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.verification_code = "12345".to_string();
-                                this.submit_login(cx);
+                                if this.verification_code.trim().is_empty() {
+                                    this.login_error = Some(
+                                        tr_str(
+                                            this.active_lang_id(),
+                                            "请输入您收到的验证码",
+                                            "Please enter the verification code you received",
+                                        )
+                                        .to_string(),
+                                    );
+                                    cx.notify();
+                                } else {
+                                    this.submit_login(cx);
+                                }
                             }))
-                            .child(if zh {
-                                "✅ 自动填入验证码 12345 并登录"
-                            } else {
-                                "✅ Auto-Fill Code 12345 & Sign In"
-                            }),
+                            .child(tr_str(lang, "验证并登录", "Verify & Sign In")),
                     )
                     .child(
                         div()
                             .cursor_pointer()
                             .text_size(px(12.0))
-                            .text_color(rgb(0x8A9AA8))
+                            .text_color(rgb(pal.text_secondary))
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
                                 this.login_step = LoginWizardStep::Phone;
                                 cx.notify();
                             }))
-                            .child(if zh { "← 修改手机号" } else { "← Change Phone Number" }),
+                            .child(tr_str(lang, "← 修改手机号", "← Change Phone Number")),
                     )
                     .into_any_element(),
             })
     }
 
     fn render_calls_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let zh = self.is_chinese_locale;
+        let pal = self.palette;
+        let lang = self.active_lang_id();
+        let (title_block, back_btn) = render_panel_header(
+            IconName::PhoneCall,
+            tr_str(lang, "通话记录", "Recent Calls"),
+            tr_str(lang, "返回对话", "Back to Chats"),
+            &pal,
+        );
+        let my_uid = self.user_id.unwrap_or(0);
+        let calls = self.panel_state.calls.clone();
+        let contacts = self.contacts_list.clone();
+
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(0x0E1621))
+            .bg(rgb(pal.window_bg))
             .p(px(24.0))
             .flex()
             .flex_col()
@@ -4979,83 +6095,161 @@ impl AppShell {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if zh { "📞 通话记录" } else { "📞 Recent Calls" }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x2492CA)))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.active_panel = ActiveWorkspacePanel::Chats;
-                                this.last_handled_nav_dest = Some(NavDestination::Chats);
-                                this.nav_rail.update(cx, |r, _| {
-                                    r.set_active_destination(NavDestination::Chats);
-                                });
-                                cx.notify();
-                            }))
-                            .child(if zh { "← 返回对话" } else { "← Back to Chats" }),
-                    ),
+                    .child(title_block)
+                    .child(back_btn.on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.active_panel = ActiveWorkspacePanel::Chats;
+                        this.last_handled_nav_dest = Some(NavDestination::Chats);
+                        this.nav_rail.update(cx, |r, _| {
+                            r.set_active_destination(NavDestination::Chats);
+                        });
+                        cx.notify();
+                    }))),
             )
-            // Authentic Centered Empty State matching Telegram Desktop calls_box_controller.cpp
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .w(px(72.0))
-                            .h(px(72.0))
-                            .rounded_full()
-                            .bg(rgb(0x2B5278))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(32.0))
-                            .child("📞"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if zh { "暂无通话记录" } else { "No recent calls" }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .child(if zh {
-                                "您发起或接收的通话将显示在这里。"
+            .when(self.panel_state.calls_loading, |el| {
+                el.child(render_empty_panel_notice(
+                    IconName::PhoneCall,
+                    tr_str(lang, "正在加载通话记录...", "Loading call history..."),
+                    "",
+                    None,
+                    &pal,
+                ))
+            })
+            .when(!self.panel_state.calls_loading && calls.is_empty(), |el| {
+                el.child(render_empty_panel_notice(
+                    IconName::PhoneCall,
+                    tr_str(lang, "暂无通话记录", "No recent calls"),
+                    tr_str(
+                        lang,
+                        "您发起或接收的通话将显示在这里。",
+                        "Calls you make or receive will appear here.",
+                    ),
+                    self.panel_state.calls_error.as_deref(),
+                    &pal,
+                ))
+            })
+            .when(!calls.is_empty(), |el| {
+                el.child(
+                    div()
+                        .id("calls-history-list")
+                        .flex_1()
+                        .w_full()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .children(calls.into_iter().map(|call| {
+                            let peer_id = if call.caller_id == my_uid {
+                                call.callee_id
                             } else {
-                                "Calls you make or receive will appear here."
-                            }),
-                    ),
-            )
+                                call.caller_id
+                            };
+                            let peer_name = contacts
+                                .iter()
+                                .find(|ct| ct.user_id == peer_id)
+                                .map(|ct| {
+                                    format!(
+                                        "{} {}",
+                                        ct.first_name,
+                                        ct.last_name.as_deref().unwrap_or("")
+                                    )
+                                    .trim()
+                                    .to_string()
+                                })
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| format!("User {}", peer_id));
+                            let ts = format_authoritative_timestamp(Some(call.started_at_ms));
+                            let state_label = crate::views::app_shell::shell_actions::localize_call_state(
+                                &call.state,
+                                lang,
+                            );
+                            let sub = if call.duration_secs > 0 {
+                                format!("{state_label} · {}s · {ts}", call.duration_secs)
+                            } else if !ts.is_empty() {
+                                format!("{state_label} · {ts}")
+                            } else {
+                                state_label
+                            };
+                            let is_missed = call.state.eq_ignore_ascii_case("missed")
+                                || call.state.eq_ignore_ascii_case("declined");
+                            let icon = if call.is_video {
+                                IconName::VideoCall
+                            } else {
+                                IconName::PhoneCall
+                            };
+                            let redial_name = peer_name.clone();
+                            let is_vid = call.is_video;
+
+                            div()
+                                .cursor_pointer()
+                                .w_full()
+                                .px(px(16.0))
+                                .py(px(12.0))
+                                .rounded(px(10.0))
+                                .bg(rgb(pal.card_bg))
+                                .border_1()
+                                .border_color(rgb(pal.border_fg))
+                                .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                    this.start_webrtc_call(peer_id, redial_name.clone(), is_vid, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.0))
+                                        .child(tg_icon(
+                                            icon,
+                                            18.0,
+                                            if is_missed { pal.danger } else { pal.accent },
+                                        ))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(2.0))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.0))
+                                                        .font_weight(FontWeight::BOLD)
+                                                        .text_color(rgb(pal.text_primary))
+                                                        .child(peer_name),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(if is_missed {
+                                                            rgb(pal.danger)
+                                                        } else {
+                                                            rgb(pal.text_secondary)
+                                                        })
+                                                        .child(sub),
+                                                ),
+                                        ),
+                                )
+                                .child(tg_icon(IconName::PhoneCall, 16.0, pal.accent))
+                        })),
+                )
+            })
     }
 
     fn render_task_center_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette;
+        let lang = self.active_lang_id();
+        let (title_block, back_btn) = render_panel_header(
+            IconName::Poll,
+            tr_str(lang, "Hermes 智能体工作台", "Hermes Agent Studio"),
+            tr_str(lang, "返回对话", "Back to Chats"),
+            &pal,
+        );
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(0x0E1621))
+            .bg(rgb(pal.window_bg))
             .p(px(24.0))
             .flex()
             .flex_col()
@@ -5065,84 +6259,34 @@ impl AppShell {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child("⚡ Autonomous Agent Task Center (CAP-02)"),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x2492CA)))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.active_panel = ActiveWorkspacePanel::Chats;
-                                this.last_handled_nav_dest = Some(NavDestination::Chats);
-                                this.nav_rail.update(cx, |r, _| {
-                                    r.set_active_destination(NavDestination::Chats);
-                                });
-                                cx.notify();
-                            }))
-                            .child("← Back to Chats"),
-                    ),
-            )
-            .children([
-                ("Task #101 • 13-Module Upstream C++ Parity Audit", "COMPLETED • 3,441 / 3,441 files verified", 0x4CAF50, false),
-                ("Task #102 • Local SQLite WAL + FTS5 + Tantivy Indexer", "RUNNING • 0ms query latency", 0x2AABEE, false),
-                ("Task #103 • WebRTC Full-Duplex Talk Mode Audio Pipeline", "READY • 18ms P2P RTT", 0x1ABC9C, true),
-            ].into_iter().map(|(title, status, color, is_talk_task)| {
-                div()
-                    .cursor_pointer()
-                    .w_full()
-                    .p(px(16.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x17212B))
-                    .border_1()
-                    .border_color(rgb(0x242F3D))
-                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                        if is_talk_task {
-                            this.show_talk_mode(cx);
-                        } else {
-                            this.show_remote_computer(cx);
-                        }
+                    .child(title_block)
+                    .child(back_btn.on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.active_panel = ActiveWorkspacePanel::Chats;
+                        this.last_handled_nav_dest = Some(NavDestination::Chats);
+                        this.nav_rail.update(cx, |r, _| {
+                            r.set_active_destination(NavDestination::Chats);
+                        });
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(color))
-                            .child(status),
-                    )
-            }))
+                    }))),
+            )
+            .child(div().flex_1().min_h(px(0.0)).w_full().child(self.tasks_workspace.clone()))
     }
 
     fn render_mcp_tools_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette;
+        let lang = self.active_lang_id();
+        let (title_block, back_btn) = render_panel_header(
+            IconName::TerminalMcp,
+            tr_str(lang, "Hermes 工具集与终端工作台", "Hermes Toolsets & Terminal Studio"),
+            tr_str(lang, "返回对话", "Back to Chats"),
+            &pal,
+        );
         div()
             .flex_1()
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(0x0E1621))
+            .bg(rgb(pal.window_bg))
             .p(px(24.0))
             .flex()
             .flex_col()
@@ -5152,74 +6296,31 @@ impl AppShell {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(20.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child("🔧 MCP Tools & Permission Dock (CAP-03)"),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x2492CA)))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.active_panel = ActiveWorkspacePanel::Chats;
-                                this.last_handled_nav_dest = Some(NavDestination::Chats);
-                                this.nav_rail.update(cx, |r, _| {
-                                    r.set_active_destination(NavDestination::Chats);
-                                });
-                                cx.notify();
-                            }))
-                            .child("← Back to Chats"),
-                    ),
-            )
-            .children([
-                ("filesystem.read_workspace", "Allowed (Read-Only Sandbox)", 0x4CAF50),
-                ("terminal.execute_command", "Requires Approval per Command", 0xE67E22),
-                ("remote_computer.webrtc_stream", "Encrypted E2EE Tunnel Active", 0x2AABEE),
-            ].into_iter().map(|(tool, policy, color)| {
-                div()
-                    .cursor_pointer()
-                    .w_full()
-                    .p(px(16.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x17212B))
-                    .border_1()
-                    .border_color(rgb(0x242F3D))
-                    .hover(|s| s.border_color(rgb(0x2AABEE)).bg(rgb(0x202B36)))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                        this.show_remote_computer(cx);
+                    .child(title_block)
+                    .child(back_btn.on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                        this.active_panel = ActiveWorkspacePanel::Chats;
+                        this.last_handled_nav_dest = Some(NavDestination::Chats);
+                        this.nav_rail.update(cx, |r, _| {
+                            r.set_active_destination(NavDestination::Chats);
+                        });
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(tool),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(color))
-                            .child(policy),
-                    )
-            }))
+                    }))),
+            )
+            .child(div().flex_1().min_h(px(0.0)).w_full().child(self.tasks_workspace.clone()))
     }
 
     pub fn navigate_settings_to(&mut self, target: SettingsSectionType, cx: &mut Context<Self>) {
+        if self.active_panel != ActiveWorkspacePanel::Settings {
+            self.settings_stack.clear();
+            self.settings_section = target;
+            self.active_panel = ActiveWorkspacePanel::Settings;
+            self.last_handled_nav_dest = Some(NavDestination::Settings);
+            self.nav_rail.update(cx, |r, _| {
+                r.set_active_destination(NavDestination::Settings);
+            });
+            cx.notify();
+            return;
+        }
         if self.settings_section == target {
             return;
         }
@@ -5272,11 +6373,128 @@ impl AppShell {
             eprintln!("[AppShell] Failed to sync Localstorage TDF settings: {e}");
         }
         self.is_chinese_locale = self.preferences.localization.language_code.starts_with("zh");
+        self.sync_theme_and_locale_to_views(cx);
         cx.notify();
+    }
+
+    fn render_language_option(
+        &self,
+        lang_code: &'static str,
+        badge_code: &'static str,
+        title: &'static str,
+        subtitle: &'static str,
+        is_selected: bool,
+        status_label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let pal = self.palette;
+        let badge_fg = if is_selected {
+            pal.active_button_fg
+        } else {
+            pal.text_primary
+        };
+        let badge_icon_fg = if is_selected {
+            pal.active_button_fg
+        } else {
+            pal.accent
+        };
+        div()
+            .cursor_pointer()
+            .p(px(16.0))
+            .rounded(px(10.0))
+            .bg(rgb(pal.card_bg))
+            .border_1()
+            .border_color(if is_selected {
+                rgb(pal.accent)
+            } else {
+                rgb(pal.border_fg)
+            })
+            .hover(move |s| s.bg(rgb(pal.hover_bg)))
+            .flex()
+            .items_center()
+            .justify_between()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.update_preferences(cx, |p| {
+                        p.localization.language_code = lang_code.to_string();
+                    });
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .px(px(10.0))
+                            .py(px(7.0))
+                            .rounded(px(8.0))
+                            .bg(rgb(if is_selected { pal.accent } else { pal.input_bg }))
+                            .border_1()
+                            .border_color(rgb(if is_selected {
+                                pal.accent
+                            } else {
+                                pal.border_fg
+                            }))
+                            .flex()
+                            .items_center()
+                            .gap(px(5.0))
+                            .child(tg_icon(IconName::Translate, 13.0, badge_icon_fg))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(badge_fg))
+                                    .child(badge_code),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(15.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(subtitle),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .when(is_selected, |el| {
+                        el.child(tg_icon(IconName::SelectCheck, 14.0, pal.accent))
+                    })
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(if is_selected {
+                                rgb(pal.accent)
+                            } else {
+                                rgb(pal.text_secondary)
+                            })
+                            .child(status_label),
+                    ),
+            )
     }
 
     fn render_language_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_zh = self.is_chinese_locale;
+        let pal = self.palette;
+        let lang = self.active_lang_id();
         div()
             .flex()
             .flex_col()
@@ -5284,15 +6502,22 @@ impl AppShell {
             .p(px(24.0))
             .child(
                 div()
-                    .text_size(px(20.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xFFFFFF))
-                    .child(if is_zh { "🌐 界面语言设置" } else { "🌐 Interface Language Settings" }),
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(tg_icon(IconName::Translate, 20.0, pal.accent))
+                    .child(
+                        div()
+                            .text_size(px(20.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(pal.text_primary))
+                            .child(tr_str(lang, "界面语言设置", "Interface Language Settings")),
+                    ),
             )
             .child(
                 div()
                     .text_size(px(13.0))
-                    .text_color(rgb(0x8A9AA8))
+                    .text_color(rgb(pal.text_secondary))
                     .child(if is_zh {
                         "选择 Telegram Desktop 的默认显示语言。修改后将即时生效并持久化。"
                     } else {
@@ -5304,129 +6529,45 @@ impl AppShell {
                     .flex()
                     .flex_col()
                     .gap(px(12.0))
-                    .child(
-                        // Chinese Option
-                        div()
-                            .cursor_pointer()
-                            .p(px(16.0))
-                            .rounded(px(10.0))
-                            .bg(rgb(0x17212B))
-                            .border_1()
-                            .border_color(if is_zh { rgb(0x2AABEE) } else { rgb(0x242F3D) })
-                            .hover(|s| s.bg(rgb(0x202B36)))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                this.update_preferences(cx, |p| {
-                                    p.localization.language_code = "zh-CN".to_string();
-                                });
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(12.0))
-                                    .child(div().text_size(px(22.0)).child("🇨🇳"))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_size(px(15.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child("简体中文 (Simplified Chinese)"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(rgb(0x8A9AA8))
-                                                    .child("zh-CN • 官方翻译完整支持"),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if is_zh { rgb(0x2AABEE) } else { rgb(0x56626E) })
-                                    .child(if is_zh { "✓ 已启用" } else { "选择" }),
-                            ),
-                    )
-                    .child(
-                        // English Option
-                        div()
-                            .cursor_pointer()
-                            .p(px(16.0))
-                            .rounded(px(10.0))
-                            .bg(rgb(0x17212B))
-                            .border_1()
-                            .border_color(if !is_zh { rgb(0x2AABEE) } else { rgb(0x242F3D) })
-                            .hover(|s| s.bg(rgb(0x202B36)))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                this.update_preferences(cx, |p| {
-                                    p.localization.language_code = "en-US".to_string();
-                                });
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(12.0))
-                                    .child(div().text_size(px(22.0)).child("🇺🇸"))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_size(px(15.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child("English (US)"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.0))
-                                                    .text_color(rgb(0x8A9AA8))
-                                                    .child("en-US • Default Telegram Desktop English"),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(14.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if !is_zh { rgb(0x2AABEE) } else { rgb(0x56626E) })
-                                    .child(if !is_zh { "✓ Active" } else { "Select" }),
-                            ),
-                    ),
+                    .child(self.render_language_option(
+                        "zh-CN",
+                        "ZH",
+                        "简体中文 (Simplified Chinese)",
+                        "zh-CN • 官方翻译完整支持",
+                        is_zh,
+                        if is_zh { "已启用" } else { "选择" },
+                        cx,
+                    ))
+                    .child(self.render_language_option(
+                        "en-US",
+                        "EN",
+                        "English (US)",
+                        "en-US • Default Telegram Desktop English",
+                        !is_zh,
+                        if !is_zh { "Active" } else { "Select" },
+                        cx,
+                    )),
             )
     }
 
     fn render_settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_root = self.settings_section.is_root();
         let zh = self.is_chinese_locale;
+        let pal = self.palette;
+        let lang = self.active_lang_id();
         let title = self.settings_section.display_title_localized(zh);
-        let icon = self.settings_section.icon();
+        let section_icon = self.settings_section.icon_name();
 
         let back_label = if is_root {
-            if zh { "← 返回对话".to_string() } else { "← Back to Chats".to_string() }
+            tr_str(lang, "返回对话", "Back to Chats").to_string()
         } else if let Some(&prev) = self.settings_stack.last() {
             if zh {
-                format!("← 返回 {}", prev.display_title_localized(true))
+                format!("返回 {}", prev.display_title_localized(true))
             } else {
-                format!("← {}", prev.display_title_localized(false))
+                prev.display_title_localized(false).to_string()
             }
-        } else if zh {
-            "← 返回".to_string()
         } else {
-            "← Back".to_string()
+            tr_str(lang, "返回", "Back").to_string()
         };
 
         let crumbs = self.settings_section.breadcrumb_path();
@@ -5436,7 +6577,7 @@ impl AppShell {
             .min_w(px(0.0))
             .h_full()
             .overflow_hidden()
-            .bg(rgb(0x0E1621))
+            .bg(rgb(pal.window_bg))
             .flex()
             .flex_col()
             // 1. Settings Navigation Bar
@@ -5447,9 +6588,9 @@ impl AppShell {
                     .justify_between()
                     .px(px(20.0))
                     .py(px(12.0))
-                    .bg(rgb(0x17212B))
+                    .bg(rgb(pal.topbar_bg))
                     .border_b_1()
-                    .border_color(rgb(0x1F2A38))
+                    .border_color(rgb(pal.border_fg))
                     .child(
                         div()
                             .flex()
@@ -5465,14 +6606,19 @@ impl AppShell {
                                     .px(px(12.0))
                                     .py(px(6.0))
                                     .rounded(px(6.0))
-                                    .bg(if is_root { rgb(0x2AABEE) } else { rgb(0x232E3C) })
-                                    .hover(|s| s.bg(if is_root { rgb(0x2492CA) } else { rgb(0x2B3846) }))
+                                    .bg(if is_root { rgb(pal.accent) } else { rgb(pal.input_bg) })
+                                    .hover(move |s| s.bg(if is_root { rgb(pal.accent_hover) } else { rgb(pal.hover_bg) }))
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(if is_root { rgb(pal.active_button_fg) } else { rgb(pal.text_primary) })
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.navigate_settings_back(cx);
                                     }))
+                                    .child(tg_icon(
+                                        IconName::BackArrow,
+                                        14.0,
+                                        if is_root { pal.active_button_fg } else { pal.icon_fg },
+                                    ))
                                     .child(back_label),
                             )
                             .child(
@@ -5496,7 +6642,7 @@ impl AppShell {
                                                             sep.child(
                                                                 div()
                                                                     .text_size(px(11.0))
-                                                                    .text_color(rgb(0x6C7883))
+                                                                    .text_color(rgb(pal.text_secondary))
                                                                     .child("›"),
                                                             )
                                                         })
@@ -5504,12 +6650,12 @@ impl AppShell {
                                                             div()
                                                                 .text_size(px(11.0))
                                                                 .text_color(if is_current {
-                                                                    rgb(0x2AABEE)
+                                                                    rgb(pal.accent)
                                                                 } else {
-                                                                    rgb(0x8A9AA8)
+                                                                    rgb(pal.text_secondary)
                                                                 })
                                                                 .cursor_pointer()
-                                                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
+                                                                .hover(move |s| s.text_color(rgb(pal.text_primary)))
                                                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                                                                     this.navigate_settings_to(sec, cx);
                                                                 }))
@@ -5523,12 +6669,12 @@ impl AppShell {
                                             .flex()
                                             .items_center()
                                             .gap(px(8.0))
-                                            .child(div().text_size(px(18.0)).child(icon))
+                                            .child(tg_icon(section_icon, 18.0, pal.accent))
                                             .child(
                                                 div()
                                                     .text_size(px(16.0))
                                                     .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
+                                                    .text_color(rgb(pal.text_primary))
                                                     .child(title),
                                             ),
                                     ),
@@ -5547,14 +6693,18 @@ impl AppShell {
                                     .px(px(10.0))
                                     .py(px(6.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x232E3C))
-                                    .hover(|s| s.bg(rgb(0x2B3846)))
+                                    .bg(rgb(pal.input_bg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
                                     .text_size(px(13.0))
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.navigate_settings_to(SettingsSectionType::Search, cx);
                                     }))
-                                    .child(if zh { "🔍 搜索" } else { "🔍 Search" }),
+                                    .child(tg_icon(IconName::Search, 13.0, pal.icon_fg))
+                                    .child(tr_str(lang, "搜索", "Search")),
                             )
                             .child(
                                 // Language Toggle
@@ -5563,10 +6713,13 @@ impl AppShell {
                                     .px(px(10.0))
                                     .py(px(6.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x232E3C))
-                                    .hover(|s| s.bg(rgb(0x2B3846)))
+                                    .bg(rgb(pal.input_bg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
                                     .text_size(px(13.0))
-                                    .text_color(rgb(0x2AABEE))
+                                    .text_color(rgb(pal.accent))
                                     .font_weight(FontWeight::BOLD)
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.update_preferences(cx, |p| {
@@ -5577,7 +6730,8 @@ impl AppShell {
                                             }
                                         });
                                     }))
-                                    .child(if zh { "🌐 中文" } else { "🌐 English" }),
+                                    .child(tg_icon(IconName::Translate, 13.0, pal.accent))
+                                    .child(tr_str(lang, "中文", "English")),
                             )
                             .child(
                                 // Close Button
@@ -5586,15 +6740,19 @@ impl AppShell {
                                     .px(px(10.0))
                                     .py(px(6.0))
                                     .rounded(px(6.0))
-                                    .bg(rgb(0x232E3C))
-                                    .hover(|s| s.bg(rgb(0xE53935)))
+                                    .bg(rgb(pal.input_bg))
+                                    .hover(move |s| s.bg(rgb(pal.danger)))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
+                                    .text_color(rgb(pal.text_primary))
                                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                         this.close_settings(cx);
                                     }))
-                                    .child(if zh { "✕ 关闭" } else { "✕ Close" }),
+                                    .child(tg_icon(IconName::Close, 13.0, pal.icon_fg))
+                                    .child(tr_str(lang, "关闭", "Close")),
                             ),
                     ),
             )
@@ -5633,4 +6791,154 @@ impl AppShell {
             )
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[std::prelude::v1::test]
+    fn test_theme_cycle_covers_all_four_tdesktop_modes() {
+        let m1 = next_tdesktop_theme_cycle(TdesktopThemeMode::Night);
+        let m2 = next_tdesktop_theme_cycle(m1);
+        let m3 = next_tdesktop_theme_cycle(m2);
+        let m4 = next_tdesktop_theme_cycle(m3);
+        assert_eq!(
+            (m1, m2, m3, m4),
+            (
+                TdesktopThemeMode::Tinted,
+                TdesktopThemeMode::Day,
+                TdesktopThemeMode::Classic,
+                TdesktopThemeMode::Night,
+            )
+        );
+    }
+
+    #[std::prelude::v1::test]
+    fn test_language_toggle_and_nav_shortcut_mapping() {
+        assert_eq!(toggled_language_code("zh-CN"), "en-US");
+        assert_eq!(toggled_language_code("zh-Hans"), "en-US");
+        assert_eq!(toggled_language_code("en-US"), "zh-CN");
+        assert_eq!(
+            nav_destination_for_shortcut_digit("1"),
+            Some(NavDestination::Chats)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("2"),
+            Some(NavDestination::Folders)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("3"),
+            Some(NavDestination::Calls)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("4"),
+            Some(NavDestination::TaskCenter)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("5"),
+            Some(NavDestination::McpTools)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("6"),
+            Some(NavDestination::TalkMode)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("7"),
+            Some(NavDestination::SavedMessages)
+        );
+        assert_eq!(
+            nav_destination_for_shortcut_digit("8"),
+            Some(NavDestination::Settings)
+        );
+        assert_eq!(nav_destination_for_shortcut_digit("9"), None);
+    }
+
+    #[std::prelude::v1::test]
+    fn test_sidebar_selection_revision_gates_panel_switch_ignoring_hover() {
+        let mut last_seen = 0u64;
+        // Hover/notify with unchanged revision (0 == 0) must NOT switch away from Settings.
+        assert!(!should_switch_to_chats_on_sidebar_selection(0, &mut last_seen, true));
+        assert_eq!(last_seen, 0);
+
+        // Explicit dialog selection bumps revision -> triggers switch and advances watermark.
+        assert!(should_switch_to_chats_on_sidebar_selection(1, &mut last_seen, true));
+        assert_eq!(last_seen, 1);
+
+        // Subsequent hover notifications at revision 1 again do NOT switch panels.
+        assert!(!should_switch_to_chats_on_sidebar_selection(1, &mut last_seen, true));
+    }
+
+    #[std::prelude::v1::test]
+    fn test_reconcile_stage_message_list_handles_ws_first_http_first_and_duplicates() {
+        let mk = |id: u64, status: DeliveryStatus| MessageItemModel {
+            id,
+            sender_id: 10,
+            sender_name: "Me".to_string(),
+            avatar_initials: "ME".to_string(),
+            avatar_color: 0x3498DB,
+            direction: MessageDirection::Outgoing,
+            timestamp: "13:45".to_string(),
+            delivery_status: status,
+            reply_to: None,
+            reactions: vec![],
+            content: MessageContent::Text {
+                text: "Hello".to_string(),
+                is_edited: false,
+            },
+            bot_keyboard: None,
+            is_pinned: false,
+        };
+
+        // 1. WS arrives first (Read), then HTTP arrives (Sent): stays 1 bubble at Read.
+        let mut ws_first = vec![mk(1_700_000_001, DeliveryStatus::Sending)];
+        assert!(reconcile_stage_message_list(
+            &mut ws_first,
+            1_700_000_001,
+            5,
+            DeliveryStatus::Read
+        ));
+        assert!(reconcile_stage_message_list(
+            &mut ws_first,
+            1_700_000_001,
+            5,
+            DeliveryStatus::Sent
+        ));
+        assert_eq!(ws_first.len(), 1);
+        assert_eq!(ws_first[0].id, 5);
+        assert_eq!(ws_first[0].delivery_status, DeliveryStatus::Read);
+
+        // 2. HTTP arrives first (Sent), then WS arrives (Read): stays 1 bubble promoted to Read.
+        let mut http_first = vec![mk(1_700_000_002, DeliveryStatus::Sending)];
+        assert!(reconcile_stage_message_list(
+            &mut http_first,
+            1_700_000_002,
+            6,
+            DeliveryStatus::Sent
+        ));
+        assert!(reconcile_stage_message_list(
+            &mut http_first,
+            1_700_000_002,
+            6,
+            DeliveryStatus::Read
+        ));
+        assert_eq!(http_first.len(), 1);
+        assert_eq!(http_first[0].id, 6);
+        assert_eq!(http_first[0].delivery_status, DeliveryStatus::Read);
+
+        // 3. Even if both optimistic and server bubbles exist simultaneously, collapses to 1.
+        let mut both = vec![
+            mk(7, DeliveryStatus::Read),
+            mk(1_700_000_003, DeliveryStatus::Sending),
+        ];
+        assert!(reconcile_stage_message_list(
+            &mut both,
+            1_700_000_003,
+            7,
+            DeliveryStatus::Sent
+        ));
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].id, 7);
+        assert_eq!(both[0].delivery_status, DeliveryStatus::Read);
+    }
 }

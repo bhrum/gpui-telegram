@@ -1,5 +1,4 @@
 //! Instant View Editor Commands & Enter Execution Chain (`iv_editor_commands.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

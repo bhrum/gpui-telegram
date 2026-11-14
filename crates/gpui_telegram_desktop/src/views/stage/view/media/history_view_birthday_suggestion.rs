@@ -3,10 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_birthday_suggestion.h:L20-L70`
 //! - `Telegram/SourceFiles/history/view/media/history_view_birthday_suggestion.cpp:L43-L60`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewBirthdaySuggestionViewMedia {

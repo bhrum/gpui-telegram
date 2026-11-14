@@ -355,18 +355,7 @@ async fn test_protected_routes_matrix() {
 
     let bearer = format!("Bearer {}", token);
 
-    // 1. POST /api/v1/messages/send
-    let req_send = Request::builder()
-        .method("POST")
-        .uri("/api/v1/messages/send")
-        .header(header::AUTHORIZATION, &bearer)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(r#"{"chat_id": 42, "text": "Hello world"}"#))
-        .unwrap();
-    let res = app.clone().oneshot(req_send).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-
-    // 2. POST /api/v1/chats/create
+    // 1. POST /api/v1/chats/create (create durable group chat before sending message)
     let req_chat = Request::builder()
         .method("POST")
         .uri("/api/v1/chats/create")
@@ -376,6 +365,22 @@ async fn test_protected_routes_matrix() {
         .unwrap();
     let res = app.clone().oneshot(req_chat).await.unwrap();
     assert_eq!(res.status(), StatusCode::CREATED);
+    let chat_bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let chat_json: serde_json::Value = serde_json::from_slice(&chat_bytes).unwrap();
+    let created_chat_id = chat_json["chat_id"].as_i64().unwrap();
+
+    // 2. POST /api/v1/messages/send
+    let req_send = Request::builder()
+        .method("POST")
+        .uri("/api/v1/messages/send")
+        .header(header::AUTHORIZATION, &bearer)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({"chat_id": created_chat_id, "text": "Hello world"}).to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req_send).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 
     // 3. GET /api/v1/sync/difference
     let req_sync = Request::builder()
@@ -1056,7 +1061,30 @@ async fn test_welcome_bot_provisioning_contacts_groups_and_categorized_search() 
         serde_json::from_slice(&to_bytes(res_reg.into_body(), usize::MAX).await.unwrap()).unwrap();
     let token = reg_json["token"].as_str().unwrap().to_string();
 
-    // 2. Fetch /api/v1/chats -> must immediately contain Telegram Official Bot + welcome message
+    // 2. Fetch /api/v1/chats -> newly registered account starts clean (empty chats), then opt-in via POST /api/v1/chats/welcome
+    let req_chats_init = Request::builder()
+        .method("GET")
+        .uri("/api/v1/chats")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let res_chats_init = app.clone().oneshot(req_chats_init).await.unwrap();
+    assert_eq!(res_chats_init.status(), StatusCode::OK);
+    let chats_init_json: Value =
+        serde_json::from_slice(&to_bytes(res_chats_init.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(chats_init_json["chats"].as_array().unwrap().len(), 0);
+    assert_eq!(chats_init_json["total"], 0);
+
+    let req_welcome = Request::builder()
+        .method("POST")
+        .uri("/api/v1/chats/welcome")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token))
+        .body(Body::empty())
+        .unwrap();
+    let res_welcome = app.clone().oneshot(req_welcome).await.unwrap();
+    assert_eq!(res_welcome.status(), StatusCode::CREATED);
+
     let req_chats = Request::builder()
         .method("GET")
         .uri("/api/v1/chats")
@@ -1069,7 +1097,7 @@ async fn test_welcome_bot_provisioning_contacts_groups_and_categorized_search() 
         serde_json::from_slice(&to_bytes(res_chats.into_body(), usize::MAX).await.unwrap())
             .unwrap();
     let chats_arr = chats_json["chats"].as_array().unwrap();
-    assert!(!chats_arr.is_empty(), "Newly registered user must have Official Welcome Bot chat");
+    assert!(!chats_arr.is_empty(), "Opt-in /chats/welcome must provision Official Welcome Bot chat");
     let welcome_chat = chats_arr
         .iter()
         .find(|c| c["title"] == "Telegram Official Bot")
@@ -1178,7 +1206,8 @@ async fn test_welcome_bot_provisioning_contacts_groups_and_categorized_search() 
         "username": "second_user_tg",
         "password": "StrongPassword!2",
         "first_name": "AAA",
-        "device_name": "Telegram GPUI Mac 2"
+        "device_name": "Telegram GPUI Mac 2",
+        "auto_welcome": true
     });
     let req_reg2 = Request::builder()
         .method("POST")
@@ -1210,4 +1239,182 @@ async fn test_welcome_bot_provisioning_contacts_groups_and_categorized_search() 
         .expect("Second user must also get Telegram Official Bot without UNIQUE constraint collision");
     assert_eq!(welcome_chat2["username"], "telegram_official_bot");
     assert_ne!(welcome_chat2["chat_id"], welcome_chat["chat_id"]);
+}
+
+#[tokio::test]
+async fn test_auth_registration_and_login_extended_bounds() {
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    struct AuthBoundsTempDir(PathBuf);
+    impl Drop for AuthBoundsTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!("gpui_auth_bounds_{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).expect("create temp test dir");
+    let _dir = AuthBoundsTempDir(root.clone());
+
+    let cfg = ServerConfig {
+        database_url: root.join("auth_bounds.db").to_string_lossy().into_owned(),
+        media_storage_path: root.join("cas").to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let state = Arc::new(AppState::try_new(cfg.clone()).expect("init AppState"));
+    let app = gpui_telegram_server::server::build_router_with_state(state);
+
+    // 1. 70-char username and 512-byte Argon2id password register cleanly and can log in
+    let user_70 = "u".repeat(70);
+    let pass_512 = "P".repeat(512);
+    let res_70 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": user_70,
+                        "password": pass_512,
+                        "first_name": "Extended"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_70.status(), StatusCode::CREATED);
+    let body_70: Value =
+        serde_json::from_slice(&to_bytes(res_70.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body_70["username"], user_70);
+
+    let login_70 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": user_70,
+                        "password": pass_512,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_70.status(), StatusCode::OK);
+
+    // 2. Exact upper bounds: 128-char username and 1024-byte password succeed
+    let user_128 = "a".repeat(128);
+    let pass_1024 = "B".repeat(1024);
+    let res_128 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": user_128,
+                        "password": pass_1024,
+                        "first_name": "Boundary"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_128.status(), StatusCode::CREATED);
+
+    let hash_1024 = hash_password(&pass_1024).expect("1024-byte password must hash");
+    assert!(verify_password(&pass_1024, &hash_1024));
+
+    // Reopen durable SQLite to ensure login works on SQLite fallback path for extended bounds too
+    drop(app);
+    let reopened = Arc::new(AppState::try_new(cfg).expect("reopen AppState"));
+    let reopened_app = gpui_telegram_server::server::build_router_with_state(reopened);
+    let login_128 = reopened_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": user_128,
+                        "password": pass_1024,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_128.status(), StatusCode::OK);
+
+    // 3. Reject 129-char username and 1025-byte password
+    let user_129 = "x".repeat(129);
+    let res_129 = reopened_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": user_129,
+                        "password": "ValidPassword123!",
+                        "first_name": "TooLong"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_129.status(), StatusCode::BAD_REQUEST);
+    let err_129: Value =
+        serde_json::from_slice(&to_bytes(res_129.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(err_129["message"], "username must be 1..=128 characters");
+
+    let pass_1025 = "Z".repeat(1025);
+    let res_1025 = reopened_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/register")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": "valid_user_1025",
+                        "password": pass_1025,
+                        "first_name": "TooLongPass"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_1025.status(), StatusCode::BAD_REQUEST);
+    let err_1025: Value =
+        serde_json::from_slice(&to_bytes(res_1025.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(err_1025["message"], "password must not exceed 1024 bytes");
+
+    assert!(hash_password(&pass_1025).is_err());
+    assert!(!verify_password(&pass_1025, &hash_1024));
+    drop(reopened_app);
 }

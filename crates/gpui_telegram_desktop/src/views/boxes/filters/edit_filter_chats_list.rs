@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Edit Filter Chats List Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/filters/edit_filter_chats_list.h:L29-L90`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/filters/edit_filter_chats_list.cpp:L30-L60`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

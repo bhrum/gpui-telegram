@@ -3,11 +3,8 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_premium_gift.h:L20-L78`
 //! - `Telegram/SourceFiles/history/view/media/history_view_premium_gift.cpp:L45-L95`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::gift::{RichStarGiftCard, GiftType};
+use crate::views::stage::media::gift::RichStarGiftCard;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewPremiumGiftViewMedia {

@@ -150,7 +150,7 @@ impl Render for InfoProfileTabSubControllerProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_sub_controller_scroll_and_collapse() {
         let mut ctrl = InfoProfileTabSubControllerProfileTabsAdapters::new();
         assert_eq!(ctrl.current_scroll_top, 0.0);

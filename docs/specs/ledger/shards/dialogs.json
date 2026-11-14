@@ -68,9 +68,7 @@
         "RowsByLetter",
         "RightButton"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/engine_tdrp_dialogs.rs",
@@ -588,9 +586,7 @@
         "Key",
         "RowDescriptor"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/engine_tdrp_dialogs.rs",

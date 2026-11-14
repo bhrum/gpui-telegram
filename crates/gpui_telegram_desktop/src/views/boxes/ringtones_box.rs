@@ -10,7 +10,6 @@
 //! - System standard sounds vs uploaded cloud custom notification sounds
 //! - Continuous volume level controller
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

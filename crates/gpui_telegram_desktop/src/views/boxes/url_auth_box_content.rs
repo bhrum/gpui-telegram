@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's UrlAuthBoxContent.
 //! Upstream reference: `Telegram/SourceFiles/boxes/url_auth_box_content.h:L20-L105`
 //! and `Telegram/SourceFiles/boxes/url_auth_box_content.cpp:L50-L140`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

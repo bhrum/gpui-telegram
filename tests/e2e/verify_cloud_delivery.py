@@ -45,8 +45,8 @@ RESET = "\033[0m"
 class E2EVerificationRunner:
     def __init__(
         self,
-        server_url: str = "http://34.170.16.35:8080",
-        gateway_url: str = "http://34.170.16.35:8788",
+        server_url: str = "http://34.46.77.133:8080",
+        gateway_url: str = "http://34.46.77.133:8788",
         repo_root: Optional[str] = None,
         desktop_binary: Optional[str] = None,
         skip_binary: bool = False,
@@ -80,7 +80,6 @@ class E2EVerificationRunner:
         candidates = [
             os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
             os.path.abspath(os.getcwd()),
-            "/Users/bhrum/teamwork_projects/gpui_telegram",
         ]
         for c in candidates:
             if os.path.isfile(os.path.join(c, "Cargo.toml")) and os.path.isdir(os.path.join(c, "crates")):
@@ -415,7 +414,7 @@ class E2EVerificationRunner:
         agent_payload = {
             "prompt": "Autonomous cloud verification prompt: compute 128 * 64 + 42, explain reasoning.",
             "session_id": session_id,
-            "model_id": "grok-3",
+            "model_id": "deepseek-flash",
             "thinking_budget_tokens": 1024,
         }
         status, resp, elapsed = self.http_request(
@@ -450,7 +449,7 @@ class E2EVerificationRunner:
         )
 
         # 4.2 Node.js AI Gateway SSE Stream Probe (8788)
-        stream_payload = json.dumps({"message": "E2E verification ping", "model": "deepseek-chat"}).encode(
+        stream_payload = json.dumps({"message": "E2E verification ping", "model": "deepseek-flash"}).encode(
             "utf-8"
         )
         req = urllib.request.Request(
@@ -494,10 +493,13 @@ class E2EVerificationRunner:
 
         binary_path = os.path.abspath(self.desktop_binary)
         if not os.path.isfile(binary_path):
-            # Check dist/bin/gpui_telegram_desktop fallback
-            dist_binary = os.path.join(self.repo_root, "dist", "bin", "gpui_telegram_desktop")
-            if os.path.isfile(dist_binary):
-                binary_path = dist_binary
+            for cand in [
+                os.path.join(self.repo_root, "dist", "GPUI Telegram.app", "Contents", "MacOS", "gpui_telegram_desktop"),
+                os.path.join(self.repo_root, "dist", "bin", "gpui_telegram_desktop"),
+            ]:
+                if os.path.isfile(cand):
+                    binary_path = cand
+                    break
 
         if not os.path.isfile(binary_path):
             self.record(
@@ -647,13 +649,13 @@ def main():
     )
     parser.add_argument(
         "--server-url",
-        default=os.getenv("GPUI_TELEGRAM_SERVER_URL", "http://34.170.16.35:8080"),
-        help="Base URL for Rust Axum Telegram Server (default: http://34.170.16.35:8080)",
+        default=os.getenv("GPUI_TELEGRAM_SERVER_URL", "http://34.46.77.133:8080"),
+        help="Base URL for Rust Axum Telegram Server (default: http://34.46.77.133:8080)",
     )
     parser.add_argument(
         "--gateway-url",
-        default="http://34.170.16.35:8788",
-        help="Base URL for Node.js AI Gateway (default: http://34.170.16.35:8788)",
+        default=os.getenv("GPUI_TELEGRAM_GATEWAY_URL", "http://34.46.77.133:8788"),
+        help="Base URL for Node.js AI Gateway (default: http://34.46.77.133:8788)",
     )
     parser.add_argument(
         "--repo-root",

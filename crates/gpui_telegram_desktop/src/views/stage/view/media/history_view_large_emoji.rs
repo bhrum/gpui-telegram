@@ -3,8 +3,6 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_large_emoji.h:L25-L67`
 //! - `Telegram/SourceFiles/history/view/media/history_view_large_emoji.cpp:L30-L51`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 

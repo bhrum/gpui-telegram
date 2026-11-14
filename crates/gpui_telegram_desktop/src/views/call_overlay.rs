@@ -1,13 +1,9 @@
-//! Full-Duplex Talk Mode Orb Overlay & Call Modal (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.6, CAP-05).
-//!
-//! Sub-components:
-//! 1. Glowing Full-Duplex Orb (states: Connecting, Listening, Thinking, Speaking, Muted).
-//! 2. Live Speech-to-Speech Transcript Stream.
-//! 3. Agent Persona Selector.
-//! 4. Control Toolbar (Mute, Output Device, End Session).
-
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
+use crate::i18n::tr_str;
+use crate::theme::assets::{tg_icon, IconName};
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TalkModeState {
@@ -20,7 +16,7 @@ pub enum TalkModeState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptEntry {
-    pub speaker: String, // "You" or Agent Name
+    pub speaker: String,
     pub text: String,
     pub is_user: bool,
 }
@@ -39,21 +35,26 @@ pub struct CallOverlay {
     pub is_screen_sharing: bool,
     pub noise_suppression_on: bool,
     pub is_group_call_grid: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
+    pub avatar_path: Option<String>,
+    pub duration_secs: u64,
+    pub signal_bars: u8,
+    pub is_speaker_on: bool,
+    pub available_outputs: Vec<String>,
+    pub selected_output_device: String,
+    pub show_rate_call: bool,
+    pub call_rating: u8,
+    pub pending_hangup: bool,
+    pub pending_rating_submit: Option<u8>,
 }
 
 impl CallOverlay {
     pub fn new(peer_name: String) -> Self {
-        let persona_name = if peer_name.trim().is_empty() {
-            "Voice Call".to_string()
-        } else {
-            peer_name.clone()
-        };
+        let persona_name = if peer_name.trim().is_empty() { "Voice Call".to_string() } else { peer_name.clone() };
         let emoji_pool = ["🔒", "🚀", "💎", "🔥", "🌈", "⚡", "🎯", "🐳", "🍀", "🛰️", "🪐", "🎸", "🏔️", "🦊", "🌊", "🔮"];
         let seed = peer_name.bytes().fold(0x9E3779B9usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
-        let e2ee_emojis = (0..4)
-            .map(|i| emoji_pool[(seed.wrapping_shr((i * 4) as u32)) % emoji_pool.len()])
-            .collect::<Vec<_>>()
-            .join(" ");
+        let e2ee_emojis = (0..4).map(|i| emoji_pool[(seed.wrapping_shr((i * 4) as u32)) % emoji_pool.len()]).collect::<Vec<_>>().join(" ");
         Self {
             peer_name,
             persona_name,
@@ -68,274 +69,143 @@ impl CallOverlay {
             is_screen_sharing: false,
             noise_suppression_on: true,
             is_group_call_grid: false,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".to_string(),
+            avatar_path: None,
+            duration_secs: 0,
+            signal_bars: 4,
+            is_speaker_on: true,
+            available_outputs: vec!["Default Output".into(), "Headphones".into(), "Speakers".into()],
+            selected_output_device: "Default Output".into(),
+            show_rate_call: false,
+            call_rating: 0,
+            pending_hangup: false,
+            pending_rating_submit: None,
         }
+    }
+
+    pub fn new_live(peer_name: String, avatar_path: Option<String>, e2ee_emojis: Option<String>, palette: TdesktopThemePalette, language_id: &str) -> Self {
+        let mut s = Self::new(peer_name);
+        s.state = TalkModeState::Connecting;
+        s.is_connected = false;
+        s.signal_bars = 0;
+        s.avatar_path = avatar_path;
+        if let Some(emojis) = e2ee_emojis.filter(|e| !e.trim().is_empty()) { s.e2ee_emojis = emojis; }
+        s.palette = palette;
+        s.language_id = language_id.to_string();
+        s
+    }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, language_id: impl Into<String>) { self.language_id = language_id.into(); }
+    pub fn set_signal_bars(&mut self, bars: u8) { self.signal_bars = bars.min(4); }
+    pub fn set_latency(&mut self, ms: u32) { self.latency_ms = ms; }
+    pub fn set_duration(&mut self, secs: u64) { self.duration_secs = secs; }
+    pub fn toggle_camera(&mut self) { self.is_camera_on = !self.is_camera_on; }
+    pub fn toggle_screen_share(&mut self) { self.is_screen_sharing = !self.is_screen_sharing; }
+    pub fn toggle_speaker(&mut self) { self.is_speaker_on = !self.is_speaker_on; }
+    pub fn enter_rate_call(&mut self) { self.show_rate_call = true; self.is_connected = false; }
+    pub fn take_rating_submission(&mut self) -> Option<u8> { self.pending_rating_submit.take() }
+
+    pub fn cycle_audio_output(&mut self) {
+        if let Some(idx) = self.available_outputs.iter().position(|d| d == &self.selected_output_device) {
+            self.selected_output_device = self.available_outputs[(idx + 1) % self.available_outputs.len()].clone();
+        }
+    }
+
+    pub fn submit_rating(&mut self, stars: u8) {
+        self.call_rating = stars.clamp(1, 5);
+        self.pending_rating_submit = Some(self.call_rating);
+        self.should_close = true;
+    }
+
+    pub fn hangup(&mut self) {
+        self.pending_hangup = true;
+        if self.duration_secs > 0 && !self.show_rate_call { self.enter_rate_call(); } else { self.should_close = true; }
     }
 
     pub fn set_state(&mut self, state: TalkModeState) {
         self.state = state;
-        if state == TalkModeState::Muted {
-            self.is_mic_muted = true;
-        } else if self.is_mic_muted {
-            self.is_mic_muted = false;
-        }
+        self.is_mic_muted = state == TalkModeState::Muted;
     }
 
     pub fn toggle_mute(&mut self) {
         self.is_mic_muted = !self.is_mic_muted;
-        self.state = if self.is_mic_muted {
-            TalkModeState::Muted
-        } else {
-            TalkModeState::Listening
-        };
+        self.state = if self.is_mic_muted { TalkModeState::Muted } else { TalkModeState::Listening };
     }
 
     pub fn add_transcript(&mut self, speaker: &str, text: &str, is_user: bool) {
-        self.transcript.push(TranscriptEntry {
-            speaker: speaker.to_string(),
-            text: text.to_string(),
-            is_user,
-        });
+        self.transcript.push(TranscriptEntry { speaker: speaker.to_string(), text: text.to_string(), is_user });
     }
 }
 
-impl Default for CallOverlay {
-    fn default() -> Self {
-        Self::new("Alice Smith".to_string())
-    }
-}
+impl Default for CallOverlay { fn default() -> Self { Self::new(String::new()) } }
 
 impl Render for CallOverlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (orb_color, orb_glow, state_label) = match self.state {
-            TalkModeState::Connecting => (rgb(0x8A9AA8), rgba(0x8A9AA833), "Connecting WebRTC..."),
-            TalkModeState::Listening => (rgb(0x2AABEE), rgba(0x2AABEE44), "Connected"),
-            TalkModeState::Thinking => (rgb(0x9B59B6), rgba(0x9B59B644), "Processing..."),
-            TalkModeState::Speaking => (rgb(0x1ABC9C), rgba(0x1ABC9C44), "Audio Active"),
-            TalkModeState::Muted => (rgb(0xE53935), rgba(0xE5393533), "Microphone Muted"),
+        let pal = self.palette.clone();
+        let lang = self.language_id.clone();
+        let (state_color, state_label) = match self.state {
+            TalkModeState::Connecting => (pal.text_secondary, tr_str(&lang, "正在连接...", "Connecting...")),
+            TalkModeState::Listening => (pal.accent, tr_str(&lang, "正在通话", "Connected")),
+            TalkModeState::Thinking => (0x9b51e0, tr_str(&lang, "正在处理...", "Processing...")),
+            TalkModeState::Speaking => (pal.success, tr_str(&lang, "语音传输中", "Audio Active")),
+            TalkModeState::Muted => (pal.danger, tr_str(&lang, "已静音", "Microphone Muted")),
+        };
+        let duration_text = if self.duration_secs > 0 { format!("{:02}:{:02}", self.duration_secs / 60, self.duration_secs % 60) } else { state_label.to_string() };
+        let latency_suffix = if self.latency_ms > 0 { format!(" · {} ms", self.latency_ms) } else { String::new() };
+        let initial = self.persona_name.chars().next().unwrap_or('T').to_uppercase().to_string();
+        let (av_top, _) = pal.peer_avatar_gradient(self.peer_name.len() as i64);
+        let transcript_slice: Vec<TranscriptEntry> = self.transcript.iter().rev().take(2).rev().cloned().collect();
+
+        let btn = |icon: IconName, active: bool, danger: bool, p: &TdesktopThemePalette| {
+            let bg = if danger { p.danger } else if active { p.accent } else { p.input_bg };
+            let fg = if danger || active { p.active_button_fg } else { p.icon_active };
+            div().cursor_pointer().size(px(44.0)).rounded_full().bg(rgb(bg)).flex().items_center().justify_center().child(tg_icon(icon, 18.0, fg))
         };
 
-        let transcript_slice: Vec<TranscriptEntry> = self.transcript.iter().rev().take(3).rev().cloned().collect();
+        if self.show_rate_call {
+            return div().w(px(380.0)).rounded(px(18.0)).bg(rgb(pal.modal_bg)).border_1().border_color(rgb(pal.border_fg)).p(px(24.0)).flex().flex_col().items_center().gap(px(14.0))
+                .child(tg_icon(IconName::PhoneCall, 28.0, pal.accent))
+                .child(div().text_base().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(tr_str(&lang, "通话质量评价", "Rate This Call")))
+                .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(format!("{} · {}", self.persona_name, duration_text)))
+                .child(div().flex().flex_row().gap(px(8.0)).children((1_u8..=5).map(|star| {
+                    let filled = star <= self.call_rating;
+                    div().cursor_pointer().p(px(6.0)).on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.call_rating = star; cx.notify(); }))
+                        .child(tg_icon(IconName::PremiumStar, 26.0, if filled { pal.accent } else { pal.muted_badge_bg }))
+                })))
+                .child(div().flex().flex_row().gap(px(10.0)).w_full().pt(px(6.0))
+                    .child(div().flex_1().py(px(8.0)).rounded(px(8.0)).bg(rgb(pal.input_bg)).flex().items_center().justify_center().text_xs().text_color(rgb(pal.text_secondary)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.should_close = true; cx.notify(); })).child(tr_str(&lang, "跳过", "Skip")))
+                    .when(self.call_rating > 0, |el| el.child(div().flex_1().py(px(8.0)).rounded(px(8.0)).bg(rgb(pal.accent)).flex().items_center().justify_center().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { let r = this.call_rating; this.submit_rating(r); cx.notify(); })).child(tr_str(&lang, "提交评价", "Submit")))))
+                .into_any_element();
+        }
 
-        div()
-            .w(px(380.0))
-            .h(px(520.0))
-            .rounded(px(20.0))
-            .bg(rgb(0x101923))
-            .border_1()
-            .border_color(rgb(0x233344))
-            .p(px(20.0))
-            .flex()
-            .flex_col()
-            .justify_between()
-            // 1. Top Header: Session Info & Connection Latency
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(15.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child(self.persona_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(0x8A9AA8))
-                                    .child(if self.latency_ms > 0 {
-                                        format!("WebRTC P2P • {}ms latency", self.latency_ms)
-                                    } else if self.is_connected {
-                                        "WebRTC P2P • Connected".to_string()
-                                    } else {
-                                        "WebRTC P2P • Connecting...".to_string()
-                                    }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .px(px(8.0))
-                            .py(px(3.0))
-                            .rounded_full()
-                            .bg(rgba(0xE5393533))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xE53935))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.should_close = true;
-                                cx.notify();
-                            }))
-                            .child("✕ Close"),
-                    ),
-            )
-            // 2. Center: Glowing Full-Duplex Pulsing Orb (Clickable to advance AI conversation turn)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(16.0))
-                    // Outer Ripple Ring
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w(px(140.0))
-                            .h(px(140.0))
-                            .rounded_full()
-                            .bg(orb_glow)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.toggle_mute();
-                                cx.notify();
-                            }))
-                            // Inner Pulsing Orb
-                            .child(
-                                div()
-                                    .w(px(100.0))
-                                    .h(px(100.0))
-                                    .rounded_full()
-                                    .bg(orb_color)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(36.0))
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child(match self.state {
-                                        TalkModeState::Listening => "🎙️",
-                                        TalkModeState::Thinking => "⚡",
-                                        TalkModeState::Speaking => "🔊",
-                                        TalkModeState::Muted => "🔇",
-                                        TalkModeState::Connecting => "⏳",
-                                    }),
-                            ),
-                    )
-                    // State status label
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(orb_color)
-                            .child(state_label),
-                    ),
-            )
-            // 3. Live Speech Transcript Box
-            .child(
-                div()
-                    .h(px(120.0))
-                    .w_full()
-                    .rounded(px(12.0))
-                    .bg(rgb(0x17222E))
-                    .p(px(10.0))
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .children(if transcript_slice.is_empty() {
-                        vec![
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(12.0))
-                                .text_color(rgb(0x8A9AA8))
-                                .child("Speech transcription will appear here when active.")
-                                .into_any_element()
-                        ]
-                    } else {
-                        transcript_slice.into_iter().map(|t| {
-                            div()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(if t.is_user { rgb(0x2AABEE) } else { rgb(0x1ABC9C) })
-                                        .child(t.speaker),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child(t.text),
-                                )
-                                .into_any_element()
-                        }).collect()
-                    }),
-            )
-            // 4. Bottom Controls: Mute, End Call, Speaker
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(18.0))
-                    // Mute Button
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w(px(46.0))
-                            .h(px(46.0))
-                            .rounded_full()
-                            .bg(if self.is_mic_muted { rgb(0xE53935) } else { rgb(0x243447) })
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(18.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.toggle_mute();
-                                cx.notify();
-                            }))
-                            .child(if self.is_mic_muted { "🔇" } else { "🎙️" }),
-                    )
-                    // End Session Button
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w(px(54.0))
-                            .h(px(54.0))
-                            .rounded_full()
-                            .bg(rgb(0xE53935))
-                            .hover(|s| s.bg(rgb(0xC62828)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(22.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.should_close = true;
-                                cx.notify();
-                            }))
-                            .child("📞"),
-                    )
-                    // Output Audio Switch
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .w(px(46.0))
-                            .h(px(46.0))
-                            .rounded_full()
-                            .bg(rgb(0x243447))
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(18.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|_this, _event, _window, _cx| {
-                                // Speaker output toggle placeholder (preserved for hardware routing)
-                            }))
-                            .child("🔊"),
-                    ),
-            )
+        div().w(px(380.0)).h(px(530.0)).rounded(px(18.0)).bg(rgb(pal.wallpaper_top)).border_1().border_color(rgb(pal.border_fg)).p(px(20.0)).flex().flex_col().justify_between()
+            .child(div().flex().items_center().justify_between()
+                .child(div().flex().flex_row().items_center().gap(px(8.0))
+                    .child(div().flex().flex_row().items_end().gap(px(2.0)).children((1_u8..=4).map(|b| div().w(px(3.0)).h(px((b as f32) * 3.0 + 2.0)).rounded(px(1.0)).bg(rgb(if b <= self.signal_bars { pal.success } else { pal.muted_badge_bg })))))
+                    .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(format!("{}{}", duration_text, latency_suffix))))
+                .child(div().flex().flex_row().items_center().gap(px(8.0))
+                    .child(div().px(px(8.0)).py(px(3.0)).rounded_full().bg(TdesktopThemePalette::rgba_with_alpha(pal.card_bg, 0.72)).flex().flex_row().items_center().gap(px(4.0)).child(tg_icon(IconName::Lock, 11.0, pal.text_secondary)).child(div().text_xs().text_color(rgb(pal.text_primary)).child(self.e2ee_emojis.clone())))
+                    .child(div().cursor_pointer().p(px(5.0)).rounded_full().bg(rgb(pal.input_bg)).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.should_close = true; cx.notify(); })).child(tg_icon(IconName::Close, 13.0, pal.icon_fg)))))
+            .child(div().flex().flex_col().items_center().gap(px(10.0))
+                .child(div().size(px(124.0)).rounded_full().bg(TdesktopThemePalette::rgba_with_alpha(state_color, 0.20)).flex().items_center().justify_center().child(if let Some(ref path) = self.avatar_path {
+                    div().size(px(96.0)).rounded_full().overflow_hidden().child(img(path.clone()).size_full().object_fit(ObjectFit::Cover)).into_any_element()
+                } else {
+                    div().size(px(96.0)).rounded_full().bg(rgb(av_top)).flex().items_center().justify_center().text_size(px(32.0)).font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg)).child(initial).into_any_element()
+                }))
+                .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(self.persona_name.clone()))
+                .child(div().text_xs().text_color(rgb(state_color)).child(if self.is_camera_on { format!("{} · Video On", state_label) } else { state_label.to_string() }))
+                .child(div().px(px(10.0)).py(px(4.0)).rounded_full().bg(rgb(pal.card_bg)).border_1().border_color(rgb(pal.border_fg)).text_xs().text_color(rgb(pal.text_secondary)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.cycle_audio_output(); cx.notify(); })).child(self.selected_output_device.clone())))
+            .when(!transcript_slice.is_empty(), |el| el.child(div().p(px(10.0)).rounded(px(10.0)).bg(rgb(pal.card_bg)).border_1().border_color(rgb(pal.border_fg)).flex().flex_col().gap(px(6.0)).children(transcript_slice.into_iter().map(|t| {
+                div().flex().flex_col().child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(if t.is_user { pal.accent } else { pal.success })).child(t.speaker)).child(div().text_xs().text_color(rgb(pal.text_primary)).child(t.text))
+            }))))
+            .child(div().flex().items_center().justify_center().gap(px(12.0))
+                .child(btn(IconName::Speaker, self.is_speaker_on, false, &pal).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.toggle_speaker(); cx.notify(); })))
+                .child(btn(IconName::VideoCall, self.is_camera_on, false, &pal).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.toggle_camera(); cx.notify(); })))
+                .child(btn(IconName::ScreenShare, self.is_screen_sharing, false, &pal).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.toggle_screen_share(); cx.notify(); })))
+                .child(btn(if self.is_mic_muted { IconName::Mute } else { IconName::Mic }, false, self.is_mic_muted, &pal).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.toggle_mute(); cx.notify(); })))
+                .child(btn(IconName::Hangup, false, true, &pal).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.hangup(); cx.notify(); }))))
+            .into_any_element()
     }
 }

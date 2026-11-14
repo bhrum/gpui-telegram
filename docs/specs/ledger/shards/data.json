@@ -123,8 +123,7 @@
         "WorkingHours"
       ],
       "source_methods_and_signals": [
-        "is_flag_type",
-        "bool"
+        "is_flag_type"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
@@ -521,7 +520,6 @@
       "source_methods_and_signals": [
         "GiftAuctions",
         "apply",
-        "bool",
         "request",
         "applyStateResponse",
         "checkSubscriptions",
@@ -1280,7 +1278,6 @@
         "~AbstractStructure",
         "registerAbstractStructure",
         "createIfNull",
-        "bool",
         "clearGlobalStructures"
       ],
       "style_tokens_and_metrics": [],
@@ -1374,8 +1371,7 @@
         "AudioMsgId::audio",
         "AudioMsgId::contextId",
         "AudioMsgId::externalPlayId",
-        "AudioMsgId::changeablePlaybackSpeed",
-        "bool"
+        "AudioMsgId::changeablePlaybackSpeed"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
@@ -1526,7 +1522,6 @@
         "Birthday"
       ],
       "source_methods_and_signals": [
-        "bool",
         "valid",
         "rpl::IsBirthdayTodayValue"
       ],
@@ -1809,9 +1804,7 @@
         "EarnInt",
         "OffsetToken"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": null,
@@ -2035,7 +2028,6 @@
         "CanSendAnyOf",
         "CanSend",
         "frozen",
-        "bool",
         "ShowSendErrorToast",
         "ShowSendError"
       ],
@@ -2292,9 +2284,7 @@
         "CreditTopupOptions",
         "PhotoId"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
@@ -2311,9 +2301,7 @@
       "source_classes_and_structs": [
         "CreditsEarnStatistics"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
@@ -2664,7 +2652,6 @@
         "ApplyPeerCloudDraft",
         "ClearPeerCloudDraft",
         "None",
-        "bool",
         "SetChatLinkDraft"
       ],
       "style_tokens_and_metrics": [],
@@ -2727,7 +2714,6 @@
         "Groups"
       ],
       "source_methods_and_signals": [
-        "bool",
         "EmojiStatuses",
         "refreshRecent",
         "refreshRecentDelayed",
@@ -2862,7 +2848,6 @@
         "userId",
         "accessHash",
         "slug",
-        "bool",
         "GetFileReferences"
       ],
       "style_tokens_and_metrics": [],
@@ -3155,7 +3140,6 @@
         "Flag"
       ],
       "source_methods_and_signals": [
-        "bool",
         "owningHistory",
         "history",
         "setClosed",
@@ -3732,7 +3716,6 @@
       ],
       "source_methods_and_signals": [
         "ParseVcard",
-        "bool",
         "Media",
         "parent",
         "clone",
@@ -3800,8 +3783,7 @@
         "DocumentId"
       ],
       "source_methods_and_signals": [
-        "QString",
-        "bool"
+        "QString"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
@@ -3939,7 +3921,6 @@
         "RequestDirection"
       ],
       "source_methods_and_signals": [
-        "bool",
         "addOne",
         "addNew",
         "addSlice",
@@ -3985,9 +3966,7 @@
       "source_methods_and_signals": [
         "QtPrivate::QHashCombine",
         "MsgId",
-        "bool",
         "valid",
-        "int",
         "StoryId",
         "till",
         "CreditsAmount"
@@ -4101,7 +4080,6 @@
         "Forum"
       ],
       "source_methods_and_signals": [
-        "bool",
         "ApplyBotMenuButton",
         "PeerClickHandler",
         "onClick",
@@ -4230,9 +4208,7 @@
         "StarsRating",
         "StarsRatingPending"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/conversation.rs",
@@ -4568,7 +4544,6 @@
         "Flags"
       ],
       "source_methods_and_signals": [
-        "bool",
         "is_flag_type",
         "closeByTimer",
         "applyChanges",
@@ -5616,7 +5591,6 @@
       ],
       "source_methods_and_signals": [
         "UniqueGiftRarity",
-        "bool",
         "rpl::PeerUniqueGiftsSlice",
         "rpl::MyUniqueGiftsSlice",
         "rpl::ResaleGiftsSlice",
@@ -5643,9 +5617,7 @@
         "AnyStatistics",
         "StoryStatistics"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": null,
@@ -5716,7 +5688,6 @@
         "OffsetToken"
       ],
       "source_methods_and_signals": [
-        "bool",
         "valid"
       ],
       "style_tokens_and_metrics": [],
@@ -5904,7 +5875,6 @@
         "StoryView"
       ],
       "source_methods_and_signals": [
-        "bool",
         "valid",
         "Story",
         "setPinnedToTop",
@@ -5990,9 +5960,7 @@
         "PeerSubscription",
         "SubscriptionEntry"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": "inherited/mahayana-messaging/src/message.rs",
@@ -6195,7 +6163,6 @@
         "AudioAlbumThumbCacheKey",
         "FromRaw",
         "empty",
-        "bool",
         "raw",
         "MTP_int",
         "scroll",
@@ -6310,7 +6277,6 @@
       ],
       "source_methods_and_signals": [
         "Session::processUsers",
-        "bool",
         "ensureForum",
         "is_flag_type",
         "setPhoto",

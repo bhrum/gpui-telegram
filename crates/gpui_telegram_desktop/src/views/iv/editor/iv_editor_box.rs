@@ -1,5 +1,4 @@
 //! Instant View Editor Box Dialog & Toolbar Host (`iv_editor_box.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

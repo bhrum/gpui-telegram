@@ -148,7 +148,7 @@ impl Render for TrayLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_tray_linux() {
         let mut tray = TrayLinuxLinux::new();
         assert!(tray.is_visible);

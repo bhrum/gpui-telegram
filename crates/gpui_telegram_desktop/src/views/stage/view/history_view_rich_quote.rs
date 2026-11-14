@@ -4,7 +4,7 @@
 use gpui::*;
 use serde::{Deserialize, Serialize};
 
-use crate::views::stage::rich_quote::{RichQuoteData, RichQuoteView};
+use crate::views::stage::rich_quote::RichQuoteData;
 
 /// Authentic GPUI View for HistoryView::RichQuote.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

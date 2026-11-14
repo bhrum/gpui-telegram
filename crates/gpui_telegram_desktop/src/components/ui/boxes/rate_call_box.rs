@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/rate_call_box.cpp:L25-L149
 //! Reference: Telegram/SourceFiles/ui/boxes/rate_call_box.h:L18-L51
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

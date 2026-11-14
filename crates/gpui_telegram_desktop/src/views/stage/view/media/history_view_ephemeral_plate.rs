@@ -3,11 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_ephemeral_plate.h:L20-L54`
 //! - `Telegram/SourceFiles/history/view/media/history_view_ephemeral_plate.cpp:L22-L58`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::location::{K_MAX_LINES, K_FIT_SLACK};
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewEphemeralPlateViewMedia {

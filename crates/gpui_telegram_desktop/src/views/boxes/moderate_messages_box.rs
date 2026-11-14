@@ -10,7 +10,6 @@
 //! - Moderation actions: report spam, delete all messages from user, delete reactions, ban/restrict
 //! - Ban across multiple common groups simultaneously
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

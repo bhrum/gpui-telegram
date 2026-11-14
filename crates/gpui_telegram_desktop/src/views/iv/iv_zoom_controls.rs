@@ -1,6 +1,5 @@
 //! Target Symbol: IvZoomControls
 //! Module 13: Instant View Zoom Controls & Menu Action Coordinator
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

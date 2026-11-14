@@ -8,7 +8,8 @@
 //! - Interactive Night Mode Toggle Switch
 //! - TON Wallet & Telegram Stars, Export Chat Data, Keyboard Shortcuts, About
 
-use crate::views::tdesktop_theme::tr_str;
+use crate::i18n::tr_str;
+use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_telegram_client::AccountSessionRecord;
@@ -24,6 +25,9 @@ pub enum MainMenuCommand {
     Contacts,
     Calls,
     SavedMessages,
+    TaskCenter,
+    McpTools,
+    RemoteComputer,
     Settings,
     ToggleNightMode,
     WalletAndStars,
@@ -41,20 +45,52 @@ pub struct MainMenuDrawer {
     pub is_night_mode: bool,
     pub language_id: String,
     pub pending_command: Option<MainMenuCommand>,
+    pub palette: TdesktopThemePalette,
 }
 
 impl MainMenuDrawer {
     pub fn new(accounts: Vec<AccountSessionRecord>, active_account_id: u32) -> Self {
+        let palette = TdesktopThemePalette::default();
         Self {
             is_open: false,
             accounts_expanded: false,
             emoji_status_picker_open: false,
             accounts,
             active_account_id,
-            is_night_mode: true,
-            language_id: "zh-CN".to_string(),
+            is_night_mode: palette.mode.is_dark(),
+            language_id: "en".to_string(),
             pending_command: None,
+            palette,
         }
+    }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) {
+        self.is_night_mode = palette.mode.is_dark();
+        self.palette = palette;
+    }
+
+    pub fn set_language(&mut self, lang_id: impl Into<String>) {
+        self.language_id = lang_id.into();
+    }
+
+    pub fn open(&mut self) {
+        self.is_open = true;
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.emoji_status_picker_open = false;
+    }
+
+    pub fn toggle(&mut self) {
+        self.is_open = !self.is_open;
+        if !self.is_open {
+            self.emoji_status_picker_open = false;
+        }
+    }
+
+    pub fn take_command(&mut self) -> Option<MainMenuCommand> {
+        self.pending_command.take()
     }
 
     pub fn active_account(&self) -> AccountSessionRecord {
@@ -62,20 +98,31 @@ impl MainMenuDrawer {
             .iter()
             .find(|a| a.account_id == self.active_account_id)
             .cloned()
+            .or_else(|| self.accounts.first().cloned())
             .unwrap_or_else(|| AccountSessionRecord {
                 account_id: 1,
                 display_name: "Telegram User".to_string(),
-                username: "user".to_string(),
-                phone: "+1 555 0100".to_string(),
+                username: String::new(),
+                phone: String::new(),
                 bio: String::new(),
-                emoji_status: "⭐".to_string(),
-                is_premium: true,
+                emoji_status: String::new(),
+                is_premium: false,
                 is_verified: false,
-                avatar_initials: "TU".to_string(),
+                avatar_initials: "TG".to_string(),
                 avatar_color: 0x2AABEE,
                 unread_chats: 0,
             })
     }
+}
+
+enum MenuRowEntry {
+    Action {
+        icon: IconName,
+        zh: &'static str,
+        en: &'static str,
+        cmd: MainMenuCommand,
+    },
+    Divider,
 }
 
 impl Render for MainMenuDrawer {
@@ -95,26 +142,116 @@ impl Render for MainMenuDrawer {
         let emoji_open = self.emoji_status_picker_open;
         let night = self.is_night_mode;
         let lang = self.language_id.clone();
+        let palette = self.palette;
 
-        let drawer_bg = if night { rgb(0x17212B) } else { rgb(0xFFFFFF) };
-        let header_bg = if night { rgb(0x202B36) } else { rgb(0x5288C1) };
-        let row_hover = if night { rgb(0x232E3C) } else { rgb(0xF1F3F4) };
-        let fg_primary = if night { rgb(0xFFFFFF) } else { rgb(0x1C242B) };
-        let fg_muted = if night { rgb(0x8A9AA8) } else { rgb(0x707579) };
-        let divider_col = if night { rgb(0x0E1621) } else { rgb(0xE0E0E0) };
+        let drawer_bg = rgb(palette.dialogs_bg);
+        let header_bg = if palette.mode.is_dark() {
+            rgb(palette.modal_bg)
+        } else {
+            rgb(palette.nav_rail_bg)
+        };
+        let row_hover = rgb(palette.dialogs_hover_bg);
+        let fg_primary = rgb(palette.text_primary);
+        let fg_muted = rgb(palette.text_secondary);
+        let icon_color = palette.icon_fg;
+        let divider_col = rgb(palette.border_fg);
+        let avatar_bg = rgb(if active.avatar_color != 0 {
+            active.avatar_color
+        } else {
+            palette.peer_avatar_color(active.account_id as i64)
+        });
+        let subtitle_line = match (!active.phone.is_empty(), !active.username.is_empty()) {
+            (true, true) => format!("{}  •  @{}", active.phone, active.username),
+            (true, false) => active.phone.clone(),
+            (false, true) => format!("@{}", active.username),
+            (false, false) => tr_str(&lang, "未绑定手机号", "Connected session").to_string(),
+        };
 
-        let menu_items: Vec<(&str, &str, &str, MainMenuCommand)> = vec![
-            ("👤", "我的个人资料", "My Profile", MainMenuCommand::MyProfile),
-            ("👥", "新建群组", "New Group", MainMenuCommand::NewGroup),
-            ("📢", "新建频道", "New Channel", MainMenuCommand::NewChannel),
-            ("📒", "联系人", "Contacts", MainMenuCommand::Contacts),
-            ("📞", "通话记录", "Calls", MainMenuCommand::Calls),
-            ("🔖", "收藏夹 (Saved Messages)", "Saved Messages", MainMenuCommand::SavedMessages),
-            ("💎", "TON 钱包与 Stars 星币", "TON Wallet & Stars", MainMenuCommand::WalletAndStars),
-            ("📤", "导出聊天数据", "Export Telegram Data", MainMenuCommand::ExportData),
-            ("⚙️", "设置 (Settings)", "Settings", MainMenuCommand::Settings),
-            ("⌨️", "键盘快捷键指南", "Keyboard Shortcuts", MainMenuCommand::ShortcutsLegend),
-            ("ℹ️", "关于 Telegram GPUI", "About Telegram Desktop", MainMenuCommand::AboutTelegram),
+        let menu_rows = vec![
+            MenuRowEntry::Action {
+                icon: IconName::ContactsUsers,
+                zh: "我的个人资料",
+                en: "My Profile",
+                cmd: MainMenuCommand::MyProfile,
+            },
+            MenuRowEntry::Divider,
+            MenuRowEntry::Action {
+                icon: IconName::GroupUsers,
+                zh: "新建群组",
+                en: "New Group",
+                cmd: MainMenuCommand::NewGroup,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::ChannelMegaphone,
+                zh: "新建频道",
+                en: "New Channel",
+                cmd: MainMenuCommand::NewChannel,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::ContactsUsers,
+                zh: "联系人",
+                en: "Contacts",
+                cmd: MainMenuCommand::Contacts,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::PhoneCall,
+                zh: "通话记录",
+                en: "Calls",
+                cmd: MainMenuCommand::Calls,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::SavedMessages,
+                zh: "收藏夹",
+                en: "Saved Messages",
+                cmd: MainMenuCommand::SavedMessages,
+            },
+            MenuRowEntry::Divider,
+            MenuRowEntry::Action {
+                icon: IconName::Poll,
+                zh: "任务中心",
+                en: "Task Center",
+                cmd: MainMenuCommand::TaskCenter,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::TerminalMcp,
+                zh: "MCP 工具",
+                en: "MCP Tools",
+                cmd: MainMenuCommand::McpTools,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::ComputerDesktop,
+                zh: "远程电脑",
+                en: "Remote Computer",
+                cmd: MainMenuCommand::RemoteComputer,
+            },
+            MenuRowEntry::Divider,
+            MenuRowEntry::Action {
+                icon: IconName::SettingsGear,
+                zh: "设置",
+                en: "Settings",
+                cmd: MainMenuCommand::Settings,
+            },
+        ];
+
+        let secondary_rows = vec![
+            MenuRowEntry::Action {
+                icon: IconName::WalletStars,
+                zh: "TON 钱包与 Stars",
+                en: "Wallet & Stars",
+                cmd: MainMenuCommand::WalletAndStars,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::FileDoc,
+                zh: "导出聊天数据",
+                en: "Export Telegram Data",
+                cmd: MainMenuCommand::ExportData,
+            },
+            MenuRowEntry::Action {
+                icon: IconName::SelectCheck,
+                zh: "键盘快捷键",
+                en: "Keyboard Shortcuts",
+                cmd: MainMenuCommand::ShortcutsLegend,
+            },
         ];
 
         div()
@@ -124,7 +261,7 @@ impl Render for MainMenuDrawer {
             .left_0()
             .size_full()
             .occlude()
-            .bg(rgba(0x00000088))
+            .bg(rgba(0x00000080))
             .flex()
             .on_mouse_down(
                 MouseButton::Left,
@@ -137,9 +274,11 @@ impl Render for MainMenuDrawer {
             .child(
                 div()
                     .id("window-main-menu-panel")
-                    .w(px(284.0))
+                    .w(px(276.0))
                     .h_full()
                     .bg(drawer_bg)
+                    .border_r_1()
+                    .border_color(divider_col)
                     .shadow_lg()
                     .flex()
                     .flex_col()
@@ -147,7 +286,7 @@ impl Render for MainMenuDrawer {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|_this, _event, _window, _cx| {
-                            // Consume click inside drawer so backdrop doesn't close it prematurely
+                            // Stop propagation so clicking inside drawer keeps it open
                         }),
                     )
                     .child(
@@ -158,15 +297,19 @@ impl Render for MainMenuDrawer {
                             .overflow_y_scroll()
                             .flex()
                             .flex_col()
-                            // 1. User Profile Card Header
+                            // 1. Top User Cover (Telegram Desktop window_main_menu.cpp)
                             .child(
                                 div()
                                     .w_full()
-                                    .p(px(16.0))
+                                    .px(px(18.0))
+                                    .pt(px(20.0))
+                                    .pb(px(14.0))
                                     .bg(header_bg)
+                                    .border_b_1()
+                                    .border_color(divider_col)
                                     .flex()
                                     .flex_col()
-                                    .gap(px(10.0))
+                                    .gap(px(12.0))
                                     .child(
                                         div()
                                             .w_full()
@@ -175,10 +318,10 @@ impl Render for MainMenuDrawer {
                                             .justify_between()
                                             .child(
                                                 div()
-                                                    .w(px(52.0))
-                                                    .h(px(52.0))
+                                                    .w(px(50.0))
+                                                    .h(px(50.0))
                                                     .rounded_full()
-                                                    .bg(rgb(active.avatar_color))
+                                                    .bg(avatar_bg)
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
@@ -192,16 +335,18 @@ impl Render for MainMenuDrawer {
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(8.0))
-                                                    // Emoji Status Pill
                                                     .child(
                                                         div()
                                                             .cursor_pointer()
                                                             .px(px(8.0))
                                                             .py(px(4.0))
                                                             .rounded_full()
-                                                            .bg(rgba(0x00000033))
-                                                            .hover(|s| s.bg(rgba(0x00000055)))
-                                                            .text_size(px(13.0))
+                                                            .bg(rgba(0xFFFFFF18))
+                                                            .hover(|s| s.bg(rgba(0xFFFFFF2E)))
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(4.0))
+                                                            .text_size(px(12.0))
                                                             .text_color(rgb(0xFFFFFF))
                                                             .on_mouse_down(
                                                                 MouseButton::Left,
@@ -211,33 +356,45 @@ impl Render for MainMenuDrawer {
                                                                     cx.notify();
                                                                 }),
                                                             )
-                                                            .child(format!("{} 状态", active.emoji_status)),
+                                                            .child(tg_icon(
+                                                                IconName::PremiumStar,
+                                                                13.0,
+                                                                0xFFFFFF,
+                                                            ))
+                                                            .child(if active.emoji_status.is_empty() {
+                                                                tr_str(&lang, "设置状态", "Status")
+                                                                    .to_string()
+                                                            } else {
+                                                                active.emoji_status.clone()
+                                                            }),
                                                     )
-                                                    // Close Drawer Button
                                                     .child(
                                                         div()
                                                             .cursor_pointer()
                                                             .w(px(28.0))
                                                             .h(px(28.0))
                                                             .rounded_full()
-                                                            .bg(rgba(0x00000033))
+                                                            .bg(rgba(0xFFFFFF18))
+                                                            .hover(|s| s.bg(rgba(0xFFFFFF2E)))
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
-                                                            .text_size(px(12.0))
-                                                            .text_color(rgb(0xFFFFFF))
                                                             .on_mouse_down(
                                                                 MouseButton::Left,
                                                                 cx.listener(|this, _e, _w, cx| {
                                                                     this.is_open = false;
+                                                                    this.emoji_status_picker_open = false;
                                                                     cx.notify();
                                                                 }),
                                                             )
-                                                            .child("✕"),
+                                                            .child(tg_icon(
+                                                                IconName::Close,
+                                                                13.0,
+                                                                0xFFFFFF,
+                                                            )),
                                                     ),
                                             ),
                                     )
-                                    // Emoji Status Picker Popover Strip
                                     .when(emoji_open, |el| {
                                         el.child(
                                             div()
@@ -249,7 +406,7 @@ impl Render for MainMenuDrawer {
                                                 .items_center()
                                                 .justify_between()
                                                 .children(
-                                                    ["🦀", "🚀", "💻", "☕", "🪷", "🔥", "🎧", "⭐"]
+                                                    ["✨", "🚀", "💻", "☕", "🎧", "🔥", "⭐", ""]
                                                         .into_iter()
                                                         .map(|em| {
                                                             let em_s = em.to_string();
@@ -258,11 +415,12 @@ impl Render for MainMenuDrawer {
                                                                 .w(px(28.0))
                                                                 .h(px(28.0))
                                                                 .rounded(px(6.0))
-                                                                .hover(|s| s.bg(rgb(0x2AABEE)))
+                                                                .hover(|s| s.bg(rgb(palette.accent)))
                                                                 .flex()
                                                                 .items_center()
                                                                 .justify_center()
-                                                                .text_size(px(15.0))
+                                                                .text_size(px(14.0))
+                                                                .text_color(rgb(0xFFFFFF))
                                                                 .on_mouse_down(
                                                                     MouseButton::Left,
                                                                     cx.listener(move |this, _e, _w, cx| {
@@ -275,12 +433,18 @@ impl Render for MainMenuDrawer {
                                                                         cx.notify();
                                                                     }),
                                                                 )
-                                                                .child(em)
+                                                                .when(!em.is_empty(), |c| c.child(em))
+                                                                .when(em.is_empty(), |c| {
+                                                                    c.child(tg_icon(
+                                                                        IconName::Close,
+                                                                        12.0,
+                                                                        0xFFFFFF,
+                                                                    ))
+                                                                })
                                                         }),
                                                 ),
                                         )
                                     })
-                                    // Name + Phone + Multi-Account Chevron
                                     .child(
                                         div()
                                             .cursor_pointer()
@@ -299,38 +463,60 @@ impl Render for MainMenuDrawer {
                                                 div()
                                                     .flex()
                                                     .flex_col()
+                                                    .gap(px(2.0))
                                                     .child(
                                                         div()
-                                                            .text_size(px(14.0))
-                                                            .font_weight(FontWeight::BOLD)
-                                                            .text_color(rgb(0xFFFFFF))
-                                                            .child(format!(
-                                                                "{} {} {}",
-                                                                active.display_name,
-                                                                active.emoji_status,
-                                                                if active.is_premium { "⭐" } else { "" }
-                                                            )),
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap(px(5.0))
+                                                            .child(
+                                                                div()
+                                                                    .text_size(px(14.0))
+                                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                                    .text_color(rgb(0xFFFFFF))
+                                                                    .child(active.display_name.clone()),
+                                                            )
+                                                            .when(active.is_verified, |el| {
+                                                                el.child(tg_icon(
+                                                                    IconName::Verified,
+                                                                    14.0,
+                                                                    0xFFFFFF,
+                                                                ))
+                                                            })
+                                                            .when(active.is_premium, |el| {
+                                                                el.child(tg_icon(
+                                                                    IconName::PremiumStar,
+                                                                    13.0,
+                                                                    0xFFFFFF,
+                                                                ))
+                                                            })
+                                                            .when(!active.emoji_status.is_empty(), |el| {
+                                                                el.child(
+                                                                    div()
+                                                                        .text_size(px(13.0))
+                                                                        .child(active.emoji_status.clone()),
+                                                                )
+                                                            }),
                                                     )
                                                     .child(
                                                         div()
                                                             .text_size(px(12.0))
-                                                            .text_color(rgb(0xB8C7D4))
-                                                            .child(format!(
-                                                                "{} • @{}",
-                                                                active.phone, active.username
-                                                            )),
+                                                            .text_color(rgb(0xC2D1E0))
+                                                            .child(subtitle_line),
                                                     ),
                                             )
-                                            .child(
-                                                div()
-                                                    .text_size(px(14.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child(if expanded { "▲" } else { "▼" }),
-                                            ),
+                                            .child(tg_icon(
+                                                if expanded {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                },
+                                                14.0,
+                                                0xFFFFFF,
+                                            )),
                                     ),
                             )
-                            // 2. Expandable Multi-Account Switcher (up to 6 Premium accounts)
+                            // 2. Expandable Multi-Account Switcher (+ Add Account)
                             .when(expanded, |el| {
                                 el.child(
                                     div()
@@ -343,10 +529,15 @@ impl Render for MainMenuDrawer {
                                         .children(accounts_list.into_iter().map(|acc| {
                                             let is_cur = acc.account_id == active.account_id;
                                             let acc_id = acc.account_id;
+                                            let acc_color = if acc.avatar_color != 0 {
+                                                acc.avatar_color
+                                            } else {
+                                                palette.peer_avatar_color(acc_id as i64)
+                                            };
                                             div()
                                                 .cursor_pointer()
-                                                .h(px(42.0))
-                                                .px(px(16.0))
+                                                .h(px(40.0))
+                                                .px(px(18.0))
                                                 .hover(move |s| s.bg(row_hover))
                                                 .flex()
                                                 .items_center()
@@ -364,58 +555,67 @@ impl Render for MainMenuDrawer {
                                                     div()
                                                         .flex()
                                                         .items_center()
-                                                        .gap(px(10.0))
+                                                        .gap(px(12.0))
                                                         .child(
                                                             div()
-                                                                .w(px(28.0))
-                                                                .h(px(28.0))
+                                                                .w(px(26.0))
+                                                                .h(px(26.0))
                                                                 .rounded_full()
-                                                                .bg(rgb(acc.avatar_color))
+                                                                .bg(rgb(acc_color))
                                                                 .flex()
                                                                 .items_center()
                                                                 .justify_center()
-                                                                .text_size(px(11.0))
+                                                                .text_size(px(10.5))
                                                                 .font_weight(FontWeight::BOLD)
                                                                 .text_color(rgb(0xFFFFFF))
                                                                 .child(acc.avatar_initials),
                                                         )
                                                         .child(
                                                             div()
-                                                                .text_size(px(13.0))
+                                                                .text_size(px(13.5))
                                                                 .font_weight(if is_cur {
-                                                                    FontWeight::BOLD
+                                                                    FontWeight::SEMIBOLD
                                                                 } else {
                                                                     FontWeight::NORMAL
                                                                 })
                                                                 .text_color(fg_primary)
-                                                                .child(format!(
-                                                                    "{} {}",
-                                                                    acc.display_name, acc.emoji_status
-                                                                )),
+                                                                .child(acc.display_name),
                                                         ),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.0))
-                                                        .text_color(rgb(0x2AABEE))
-                                                        .child(if is_cur {
-                                                            "✓".to_string()
-                                                        } else if acc.unread_chats > 0 {
-                                                            format!("{}", acc.unread_chats)
-                                                        } else {
-                                                            String::new()
-                                                        }),
-                                                )
+                                                .when(is_cur, |el| {
+                                                    el.child(tg_icon(
+                                                        IconName::SelectCheck,
+                                                        14.0,
+                                                        palette.accent,
+                                                    ))
+                                                })
+                                                .when(!is_cur && acc.unread_chats > 0, |el| {
+                                                    el.child(
+                                                        div()
+                                                            .min_w(px(18.0))
+                                                            .h(px(18.0))
+                                                            .px(px(5.0))
+                                                            .rounded_full()
+                                                            .bg(rgb(palette.unread_badge_bg))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .text_size(px(10.5))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(rgb(palette.unread_badge_fg))
+                                                            .child(format!("{}", acc.unread_chats)),
+                                                    )
+                                                })
                                         }))
                                         .child(
                                             div()
                                                 .cursor_pointer()
-                                                .h(px(38.0))
-                                                .px(px(16.0))
+                                                .h(px(40.0))
+                                                .px(px(18.0))
                                                 .hover(move |s| s.bg(row_hover))
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(10.0))
+                                                .gap(px(12.0))
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(|this, _e, _w, cx| {
@@ -425,68 +625,74 @@ impl Render for MainMenuDrawer {
                                                         cx.notify();
                                                     }),
                                                 )
+                                                .child(tg_icon(
+                                                    IconName::ContactsUsers,
+                                                    18.0,
+                                                    palette.accent,
+                                                ))
                                                 .child(
                                                     div()
-                                                        .text_size(px(15.0))
-                                                        .text_color(rgb(0x2AABEE))
-                                                        .child("＋"),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(13.0))
+                                                        .text_size(px(13.5))
                                                         .font_weight(FontWeight::MEDIUM)
-                                                        .text_color(rgb(0x2AABEE))
+                                                        .text_color(rgb(palette.accent))
                                                         .child(tr_str(
                                                             &lang,
-                                                            "添加账号 (最多支持 6 个)",
-                                                            "Add Account (Up to 6)",
+                                                            "+ 添加账号",
+                                                            "+ Add Account",
                                                         )),
                                                 ),
                                         ),
                                 )
                             })
-                            // 3. Main Menu Action Rows
+                            // 3. Native 40px Telegram Menu Rows
                             .child(
                                 div()
                                     .w_full()
                                     .py(px(6.0))
                                     .flex()
                                     .flex_col()
-                                    .children(menu_items.into_iter().map(|(icon, zh_l, en_l, cmd)| {
-                                        let label = tr_str(&lang, zh_l, en_l).to_string();
+                                    .children(menu_rows.into_iter().map(|entry| match entry {
+                                        MenuRowEntry::Divider => div()
+                                            .w_full()
+                                            .h(px(1.0))
+                                            .my(px(4.0))
+                                            .bg(divider_col)
+                                            .into_any_element(),
+                                        MenuRowEntry::Action { icon, zh, en, cmd } => {
+                                            let label = tr_str(&lang, zh, en).to_string();
+                                            div()
+                                                .cursor_pointer()
+                                                .h(px(40.0))
+                                                .px(px(18.0))
+                                                .hover(move |s| s.bg(row_hover))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(16.0))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _e, _w, cx| {
+                                                        this.pending_command = Some(cmd.clone());
+                                                        this.is_open = false;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(tg_icon(icon, 19.0, icon_color))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.5))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(fg_primary)
+                                                        .child(label),
+                                                )
+                                                .into_any_element()
+                                        }
+                                    }))
+                                    // Instant Night Mode Toggle Row (with native switch track)
+                                    .child(
                                         div()
                                             .cursor_pointer()
                                             .h(px(40.0))
                                             .px(px(18.0))
-                                            .hover(move |s| s.bg(row_hover))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(14.0))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(move |this, _e, _w, cx| {
-                                                    this.pending_command = Some(cmd.clone());
-                                                    this.is_open = false;
-                                                    cx.notify();
-                                                }),
-                                            )
-                                            .child(div().text_size(px(16.0)).child(icon))
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.5))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(fg_primary)
-                                                    .child(label),
-                                            )
-                                    }))
-                                    // Night Mode Toggle Row
-                                    .child(
-                                        div()
-                                            .cursor_pointer()
-                                            .h(px(42.0))
-                                            .px(px(18.0))
-                                            .border_t_1()
-                                            .border_color(divider_col)
                                             .hover(move |s| s.bg(row_hover))
                                             .flex()
                                             .items_center()
@@ -504,8 +710,12 @@ impl Render for MainMenuDrawer {
                                                 div()
                                                     .flex()
                                                     .items_center()
-                                                    .gap(px(14.0))
-                                                    .child(div().text_size(px(16.0)).child("🌙"))
+                                                    .gap(px(16.0))
+                                                    .child(tg_icon(
+                                                        IconName::NightMoon,
+                                                        19.0,
+                                                        icon_color,
+                                                    ))
                                                     .child(
                                                         div()
                                                             .text_size(px(13.5))
@@ -513,52 +723,100 @@ impl Render for MainMenuDrawer {
                                                             .text_color(fg_primary)
                                                             .child(tr_str(
                                                                 &lang,
-                                                                "夜间模式 (Night Mode)",
+                                                                "夜间模式",
                                                                 "Night Mode",
                                                             )),
                                                     ),
                                             )
                                             .child(
                                                 div()
-                                                    .px(px(8.0))
-                                                    .py(px(2.0))
+                                                    .w(px(34.0))
+                                                    .h(px(18.0))
                                                     .rounded_full()
+                                                    .p(px(2.0))
                                                     .bg(if night {
-                                                        rgb(0x2AABEE)
+                                                        rgb(palette.accent)
                                                     } else {
-                                                        rgb(0x9E9E9E)
+                                                        rgb(palette.muted_badge_bg)
                                                     })
-                                                    .text_size(px(11.0))
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child(if night { "ON" } else { "OFF" }),
+                                                    .flex()
+                                                    .items_center()
+                                                    .when(night, |el| el.justify_end())
+                                                    .when(!night, |el| el.justify_start())
+                                                    .child(
+                                                        div()
+                                                            .w(px(14.0))
+                                                            .h(px(14.0))
+                                                            .rounded_full()
+                                                            .bg(rgb(0xFFFFFF)),
+                                                    ),
                                             ),
-                                    ),
+                                    )
+                                    .child(div().w_full().h(px(1.0)).my(px(4.0)).bg(divider_col))
+                                    .children(secondary_rows.into_iter().map(|entry| match entry {
+                                        MenuRowEntry::Divider => div().into_any_element(),
+                                        MenuRowEntry::Action { icon, zh, en, cmd } => {
+                                            let label = tr_str(&lang, zh, en).to_string();
+                                            div()
+                                                .cursor_pointer()
+                                                .h(px(40.0))
+                                                .px(px(18.0))
+                                                .hover(move |s| s.bg(row_hover))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(16.0))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _e, _w, cx| {
+                                                        this.pending_command = Some(cmd.clone());
+                                                        this.is_open = false;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(tg_icon(icon, 19.0, icon_color))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.5))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(fg_primary)
+                                                        .child(label),
+                                                )
+                                                .into_any_element()
+                                        }
+                                    })),
                             ),
                     )
-                    // 4. Footer Version Stamp
+                    // 4. Footer Version Stamp (window_main_menu.cpp)
                     .child(
                         div()
+                            .cursor_pointer()
                             .w_full()
                             .px(px(18.0))
-                            .py(px(10.0))
-                            .border_t_1()
-                            .border_color(divider_col)
+                            .py(px(12.0))
+                            .hover(move |s| s.bg(row_hover))
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(fg_muted)
-                                    .child("Telegram Desktop GPUI"),
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _e, _w, cx| {
+                                    this.pending_command = Some(MainMenuCommand::AboutTelegram);
+                                    this.is_open = false;
+                                    cx.notify();
+                                }),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(palette.text_link))
+                                    .child("Telegram Desktop"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
                                     .text_color(fg_muted)
-                                    .child("Version 7.4.2 • Metal/Vulkan 120fps • MTProto 2.0"),
+                                    .child("Telegram Desktop GPUI v1.0.0"),
                             ),
                     ),
             )

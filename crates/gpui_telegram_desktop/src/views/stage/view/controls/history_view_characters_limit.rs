@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_characters_limit.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 /// Mathematical unicode minus sign
 /// Upstream: `constexpr auto kMinus = QChar(0x2212);` (`history_view_characters_limit.cpp:L15`)

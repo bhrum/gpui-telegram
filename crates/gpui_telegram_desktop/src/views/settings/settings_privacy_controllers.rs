@@ -2,7 +2,6 @@
 // Subsystem: settings | Feature ID: TCG-N33
 // Upstream: BlockPeerBoxController, lng_blocked_list_already_blocked, applySlice, unixtime::now
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::HashMap;

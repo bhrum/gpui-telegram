@@ -71,9 +71,9 @@ impl Render for WindowUnlockPasscodeBox {
                     .items_center()
                     .text_color(rgb(0xFFFFFF))
                     .child(if self.passcode_input.is_empty() {
-                        "● ● ● ●"
+                        "● ● ● ●".to_string()
                     } else {
-                        "●".repeat(self.passcode_input.len()).leak()
+                        "●".repeat(self.passcode_input.len())
                     })
             )
             .children(self.error_message.as_ref().map(|msg| {

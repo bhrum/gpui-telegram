@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/single_choice_box.cpp:L20-L55
 //! Reference: Telegram/SourceFiles/ui/boxes/single_choice_box.h:L15-L32
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

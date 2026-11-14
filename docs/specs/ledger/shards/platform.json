@@ -2332,9 +2332,7 @@
         "RectWithText",
         "Result"
       ],
-      "source_methods_and_signals": [
-        "bool"
-      ],
+      "source_methods_and_signals": [],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
       "inherited_rust_path": null,

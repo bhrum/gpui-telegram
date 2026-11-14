@@ -1,9 +1,13 @@
-//! Authentic GPUI Settings Active Sessions Section Component
-//! Source: Telegram/SourceFiles/settings/sections/settings_active_sessions.cpp, Telegram/SourceFiles/settings/sections/settings_active_sessions.h
-//! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
+//! Upstream Source: Telegram/SourceFiles/settings/sections/settings_active_sessions.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_empty_state,
+    settings_section_header, settings_subsection_title,
+};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub const K_SHORT_POLL_TIMEOUT_MS: u64 = 60_000;
@@ -26,6 +30,8 @@ pub struct SettingsActiveSessionsSections {
     pub poll_timeout_ms: u64,
     pub is_visible: bool,
     pub has_divider: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsActiveSessionsSections {
@@ -54,19 +60,22 @@ impl SettingsActiveSessionsSections {
             poll_timeout_ms: K_SHORT_POLL_TIMEOUT_MS,
             is_visible: true,
             has_divider: true,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn toggle_visibility(&mut self) {
-        self.is_visible = !self.is_visible;
+    pub fn new_live() -> Self {
+        let mut s = Self::new();
+        s.sessions.clear();
+        s
     }
 
-    /// Upstream method: `margins`
-    pub fn margins(&self) -> (f32, f32, f32, f32) {
-        (22.0, 10.0, 20.0, 5.0)
-    }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+    pub fn toggle_visibility(&mut self) { self.is_visible = !self.is_visible; }
+    pub fn margins(&self) -> (f32, f32, f32, f32) { (22.0, 10.0, 20.0, 5.0) }
 
-    /// Upstream method: `makeIcon`
     pub fn make_icon(&self, platform: &str) -> &'static str {
         match platform {
             "macOS" => "device_desktop_mac",
@@ -77,7 +86,6 @@ impl SettingsActiveSessionsSections {
         }
     }
 
-    /// Upstream method: `AddSessionInfoRow`
     pub fn add_session_info_row(&mut self, session: SessionRowData) {
         let mut truncated = session;
         if truncated.device_model.len() > K_MAX_DEVICE_MODEL_LENGTH {
@@ -86,90 +94,56 @@ impl SettingsActiveSessionsSections {
         self.sessions.push(truncated);
     }
 
-    /// Upstream method: `tr::lng_settings_rename_device_title`
-    pub fn lng_settings_rename_device_title(&self) -> &'static str {
-        "Rename Device"
+    pub fn terminate_session(&mut self, hash: u64) -> bool {
+        let before = self.sessions.len();
+        self.sessions.retain(|s| s.is_current || s.hash != hash);
+        self.sessions.len() < before
     }
 
-    /// Upstream method: `Ui::AddDivider`
-    pub fn add_divider(&mut self) {
-        self.has_divider = true;
+    pub fn terminate_all_other(&mut self) {
+        self.sessions.retain(|s| s.is_current);
     }
 
-    /// Upstream method: `tr::lng_settings_save`
-    pub fn lng_settings_save(&mut self) {
-        // Save current device configuration
-    }
+    pub fn lng_settings_rename_device_title(&self) -> &'static str { "Rename Device" }
+    pub fn add_divider(&mut self) { self.has_divider = true; }
+    pub fn lng_settings_save(&mut self) {}
 }
 
 impl Default for SettingsActiveSessionsSections {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsActiveSessionsSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let sessions = self.sessions.clone();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_visible { return div().into_any_element(); }
+        let pal = self.palette;
+        let lang = &self.language_id;
+        let has_others = self.sessions.iter().any(|s| !s.is_current);
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(16.0))
-            .gap(px(12.0))
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_lg()
-                    .child("Active Sessions"),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(0x8a909d))
-                    .child("Devices logged into your Telegram account."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .children(sessions.into_iter().map(|s| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .p(px(10.0))
-                            .rounded_md()
-                            .bg(rgb(0x282c34))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(format!("{} — {}", s.device_model, s.app_name)),
-                                    )
-                                    .child(
-                                        if s.is_current {
-                                            div()
-                                                .text_xs()
-                                                .text_color(rgb(0x4fae57))
-                                                .child("Active Now")
-                                        } else {
-                                            div().text_xs().text_color(rgb(0x8a909d)).child(s.location)
-                                        },
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x8a909d))
-                                    .child(format!("Platform: {} | IP: {}", s.platform, s.ip)),
-                            )
-                    })),
-            )
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::ComputerDesktop, tr_str(lang, "活跃设备与会话", "Active Sessions"), Some(tr_str(lang, "当前登录的设备列表", "Devices logged into your Telegram account")), pal))
+                .when(has_others, |el| {
+                    el.child(settings_action_row(IconName::DeleteTrash, tr_str(lang, "注销所有其他设备", "Terminate All Other Sessions"), "", pal, true, Self::terminate_all_other, cx))
+                }))
+            .child(settings_card(pal)
+                .child(settings_subsection_title(tr_str(lang, "设备清单", "Devices"), pal))
+                .map(|el| {
+                    if self.sessions.is_empty() {
+                        el.child(settings_empty_state(IconName::ComputerDesktop, tr_str(lang, "暂无活跃设备记录", "No active sessions synced"), pal))
+                    } else {
+                        el.children(self.sessions.clone().into_iter().map(|s| {
+                            let h = s.hash;
+                            let title = format!("{} — {}", s.device_model, s.app_name);
+                            let val = if s.is_current { tr_str(lang, "当前设备", "Current") } else { tr_str(lang, "注销", "Terminate") };
+                            settings_action_row(IconName::ComputerDesktop, &title, val, pal, !s.is_current, move |this| {
+                                if !s.is_current {
+                                    this.terminate_session(h);
+                                }
+                            }, cx)
+                        }))
+                    }
+                }))
+            .into_any_element()
     }
 }

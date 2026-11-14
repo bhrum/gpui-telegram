@@ -306,7 +306,11 @@ async fn test_stress_rapid_fire_message_sending_and_history_load_live_cloud() {
         .await
         .expect("Registration must succeed");
 
-    let chat_id = 4u64;
+    let chat_id = client
+        .provision_welcome_chat(&auth.token)
+        .await
+        .expect("provision_welcome_chat must succeed")
+        .chat_id as u64;
     let burst_count = 12;
 
     println!("[Message Sending Stress] Firing rapid burst of {} messages...", burst_count);
@@ -468,9 +472,14 @@ async fn test_stress_websocket_high_frequency_ping_pong_burst_live_cloud() {
     );
 
     // 4. Send a real-time message over WebSocket and await server acknowledgement
+    let target_chat_id = client
+        .provision_welcome_chat(&auth.token)
+        .await
+        .expect("provision_welcome_chat must succeed")
+        .chat_id;
     let ws_msg_nonce = base_nonce + 999;
     let ws_send_req = WsClientFrame::SendMessage(SendMessageRequest::new(
-        ChatId(4),
+        ChatId(target_chat_id),
         ws_msg_nonce,
         MessageContent::plain_text(format!("Adversarial WS stress message at {}", ts)),
     ));
@@ -485,7 +494,7 @@ async fn test_stress_websocket_high_frequency_ping_pong_burst_live_cloud() {
                     ack_received = true;
                     break;
                 }
-                WsServerFrame::PtsPush(update) if update.chat_id == ChatId(4) => {
+                WsServerFrame::PtsPush(update) if update.chat_id == ChatId(target_chat_id) => {
                     ack_received = true;
                     break;
                 }
@@ -900,7 +909,11 @@ async fn test_stress_live_cloud_ws_reconnect_catchup_integration() {
         .await
         .expect("Registration must succeed");
 
-    let chat_id = 4u64;
+    let chat_id = client
+        .provision_welcome_chat(&auth.token)
+        .await
+        .expect("provision_welcome_chat must succeed")
+        .chat_id as u64;
 
     // 1. Establish initial WebSocket connection
     let ws_channel = WsChannel::new();

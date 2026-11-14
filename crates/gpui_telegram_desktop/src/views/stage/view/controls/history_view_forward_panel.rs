@@ -3,11 +3,11 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_forward_panel.h`
 
 use crate::views::composer::controls::{
-    ForwardOptions, ForwardPanelModel, ForwardPanelView, ForwardedItem, NAME_NO_CAPTIONS_VERSION,
-    NAME_WITH_CAPTIONS_VERSION,
+    ForwardOptions,
+    ForwardPanelView,
+    ForwardedItem,
 };
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub struct HistoryViewForwardPanelViewControls {
     pub view: ForwardPanelView,

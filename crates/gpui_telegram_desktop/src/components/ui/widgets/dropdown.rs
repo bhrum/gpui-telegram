@@ -3,7 +3,6 @@
 //! Upstream: Telegram/SourceFiles/ui/widgets/multi_select.cpp:L24-L122
 //! Implements popup dropdown selection menu with item hovering, click selection, and keyboard navigation.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

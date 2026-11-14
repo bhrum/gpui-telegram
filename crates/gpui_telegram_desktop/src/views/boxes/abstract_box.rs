@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Abstract Box & Layering Container.
 //! Upstream reference: `Telegram/SourceFiles/boxes/abstract_box.h:L28-L51` and `abstract_box.cpp:L15-L48`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -1,6 +1,5 @@
 //! Target Symbol: IvRichPageQuote
 //! Module 13: Instant View Rich Page Quote Indexing & Range Model
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

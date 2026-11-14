@@ -4,13 +4,14 @@
 //! - `Telegram/SourceFiles/history/history_item_components.h:L86-L1029`
 //! - `Telegram/SourceFiles/history/history_item_components.cpp:L1-L1685`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::item_components::{
-    HistoryMessageFactcheck, HistoryMessageForwarded, HistoryMessageReply,
-    HistoryMessageSuggestion, HistoryMessageVia, HistoryMessageViews,
-    K_MAX_RECENT_REPLIERS,
+    HistoryMessageFactcheck,
+    HistoryMessageForwarded,
+    HistoryMessageReply,
+    HistoryMessageSuggestion,
+    HistoryMessageVia,
+    HistoryMessageViews,
 };
 
 /// Upstream `history_item_components.h:L86-L1029`: Dynamic Runtime Components Container

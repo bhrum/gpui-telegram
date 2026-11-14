@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_colors_editor.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_userpic_color_circle_button::InfoUserpicColorCircleButtonUserpic;
@@ -195,7 +194,7 @@ impl Render for InfoUserpicColorsEditorUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_colors_editor_add_remove_limits() {
         let mut editor = InfoUserpicColorsEditorUserpic::new(vec![0x111111ff]);
         assert_eq!(editor.colors.len(), 1);
@@ -213,7 +212,7 @@ mod tests {
         assert_eq!(editor.colors.len(), 3);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_colors_editor_positions_calculation() {
         let editor = InfoUserpicColorsEditorUserpic::new(vec![0x111111ff, 0x222222ff]);
         let positions = editor.calculate_positions();

@@ -256,7 +256,7 @@ impl Render for InfoProfileTabMembersProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_members_adapter_management() {
         let mut adapter = InfoProfileTabMembersProfileTabsAdapters::new(6006);
         assert_eq!(adapter.channel_id, 6006);

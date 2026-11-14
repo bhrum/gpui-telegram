@@ -14,7 +14,7 @@ pub struct ServerConfig {
 }
 
 fn default_agent_model() -> String {
-    "grok-3".into()
+    "deepseek-flash".into()
 }
 
 impl Default for ServerConfig {
@@ -27,7 +27,7 @@ impl Default for ServerConfig {
             session_timeout_secs: 30 * 24 * 3600, // 30 days
             ws_heartbeat_interval_secs: 30,
             ws_inactivity_timeout_secs: 60,
-            default_agent_model: "grok-3".into(),
+            default_agent_model: default_agent_model(),
         }
     }
 }

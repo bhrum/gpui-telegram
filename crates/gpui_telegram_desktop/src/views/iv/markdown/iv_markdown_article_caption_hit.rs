@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleCaptionHitMarkdown
 //! Module 13: Instant View Article Caption Hit Testing & Link Routing
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

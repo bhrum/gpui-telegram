@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder_layer.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -83,7 +82,7 @@ impl Render for InfoUserpicEmojiBuilderLayerUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_layer_centering_bounds() {
         let layer = InfoUserpicEmojiBuilderLayerUserpic::new();
         assert!(!layer.close_by_outside_click);

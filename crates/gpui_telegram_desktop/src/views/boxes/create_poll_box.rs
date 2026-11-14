@@ -11,7 +11,6 @@
 //! - Anonymous voting, multiple answers, quiz mode
 //! - Correct option selection & solution explanation for quiz mode
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

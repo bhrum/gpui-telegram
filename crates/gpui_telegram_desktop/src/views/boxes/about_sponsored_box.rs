@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's About Sponsored Messages Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/about_sponsored_box.h:L10-L17` and `about_sponsored_box.cpp:L20-L77`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

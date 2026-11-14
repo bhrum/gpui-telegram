@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/image/svg_preview.cpp:L1-L70` & `svg_preview.h:L1-L25`
 //! Authentic GPUI implementation of SVG vector preview validation and rendering rules.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels, Size};
 

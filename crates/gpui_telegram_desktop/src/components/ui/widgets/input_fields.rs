@@ -3,7 +3,6 @@
 //! Upstream: Telegram/SourceFiles/ui/widgets/sent_code_field.cpp:L21-L98
 //! Implements standard reactive GPUI single-line and multi-line text input fields.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

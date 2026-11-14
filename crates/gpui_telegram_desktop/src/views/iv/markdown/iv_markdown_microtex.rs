@@ -1,7 +1,6 @@
 //! Target Symbol: IvMarkdownMicrotexMarkdown
 //! Subsystem: iv, Feature: TCG-N42
 //! Upstream: Telegram/SourceFiles/iv/markdown/iv_markdown_microtex.h/.cpp
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 use std::sync::atomic::{AtomicBool, Ordering};

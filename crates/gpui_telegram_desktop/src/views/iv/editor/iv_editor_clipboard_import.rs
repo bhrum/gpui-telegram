@@ -1,5 +1,4 @@
 //! Instant View Clipboard Importer for Markdown & HTML (`iv_editor_clipboard_import.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

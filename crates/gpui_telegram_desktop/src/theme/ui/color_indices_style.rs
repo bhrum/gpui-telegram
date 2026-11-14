@@ -1,8 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/color_indices.style:L1-L16`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
-
-use gpui::{hsla, px, Hsla, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/color_indices.style:L1-L16`.
 #[derive(Debug, Clone, Copy)]

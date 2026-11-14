@@ -5,13 +5,12 @@
 //! - `Telegram/SourceFiles/history/history_item_reply_markup.cpp:L27-L50` (kButtonTypeIcons)
 //! - `Telegram/SourceFiles/history/history_item_reply_markup.cpp:L438-L442` (OnlyBuyButton)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::item_reply_markup::{
-    HistoryMessageMarkupButton, HistoryMessageMarkupButtonColor,
-    HistoryMessageMarkupButtonIcon, HistoryMessageMarkupButtonType,
-    HistoryMessageMarkupData, ReplyMarkupFlags,
+    HistoryMessageMarkupButton,
+    HistoryMessageMarkupButtonColor,
+    HistoryMessageMarkupButtonIcon,
+    HistoryMessageMarkupData,
 };
 
 /// Upstream `history_item_reply_markup.h:L181-L199`: Interactive Reply Markup Keyboard View

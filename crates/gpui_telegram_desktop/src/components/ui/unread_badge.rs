@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/unread_badge.cpp:L1-L280` & `unread_badge.h:L1-L120`
 //! Authentic GPUI implementation of unread counter badges and peer status verification flags.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

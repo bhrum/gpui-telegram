@@ -5,7 +5,6 @@
 //!
 //! Manages trackpad / touch gesture scroll routing, elastic scroll clamping,
 //! vertical fling physics, and fallback drag delegation.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -74,7 +73,7 @@ impl HistoryViewTouchScrollView {
     /// Internal scroll delegation applying vertical locking when elastic.
     /// Upstream: `history_view_touch_scroll.cpp:L47-L51`:
     /// `_elastic ? _scroll->touchScrollBy(QPoint(0, delta.y()), pressed) : _fallback(delta, pressed)`
-    pub fn scroll_by(&mut self, delta_x: f32, delta_y: f32, pressed: bool) -> bool {
+    pub fn scroll_by(&mut self, _delta_x: f32, delta_y: f32, pressed: bool) -> bool {
         self.is_pressed = pressed;
         if self.is_elastic {
             self.current_scroll_y = (self.current_scroll_y + delta_y).clamp(0.0, self.max_scroll_y);

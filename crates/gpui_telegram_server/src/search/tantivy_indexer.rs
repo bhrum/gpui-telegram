@@ -2,11 +2,32 @@ use crate::search::actor::{IndexCommand, TantivyWriterTask};
 use crate::search::schema::{MessageSearchFields, SearchDocument, SearchHit, SearchQueryParams};
 use gpui_telegram_core::error::{Result, TelegramError};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{IndexRecordOption, Value};
 use tantivy::{Index, IndexReader, ReloadPolicy, SnippetGenerator, TantivyDocument, Term};
 use tokio::sync::{mpsc, oneshot};
+
+struct TantivyWriterGuard {
+    tx: Mutex<Option<mpsc::Sender<IndexCommand>>>,
+    join: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Drop for TantivyWriterGuard {
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.tx.lock() {
+            let _ = g.take();
+        }
+        if let Ok(mut g) = self.join.lock() {
+            if let Some(handle) = g.take() {
+                if std::thread::current().id() != handle.thread().id() {
+                    let _ = handle.join();
+                }
+            }
+        }
+    }
+}
 
 /// High-throughput Tantivy full-text search engine.
 ///
@@ -17,7 +38,13 @@ pub struct TantivyIndexer {
     fields: MessageSearchFields,
     index: Index,
     reader: IndexReader,
-    writer_tx: mpsc::Sender<IndexCommand>,
+    writer_guard: Arc<TantivyWriterGuard>,
+}
+
+impl std::fmt::Debug for TantivyIndexer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TantivyIndexer").finish_non_exhaustive()
+    }
 }
 
 impl TantivyIndexer {
@@ -54,41 +81,115 @@ impl TantivyIndexer {
             .try_into()
             .map_err(|e| TelegramError::Internal(format!("Failed to create Tantivy reader: {e}")))?;
 
-        // Allocate 50MB for writer buffer
-        let writer = index
-            .writer(50_000_000)
-            .map_err(|e| TelegramError::Internal(format!("Failed to create Tantivy writer: {e}")))?;
+        // Allocate 50MB for writer buffer; retry briefly if a closing writer handle is still releasing its dir lock.
+        let mut last_err = None;
+        let mut writer_opt = None;
+        for attempt in 0..25 {
+            match index.writer(50_000_000) {
+                Ok(w) => {
+                    writer_opt = Some(w);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 24 {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            }
+        }
+        let writer = writer_opt.ok_or_else(|| {
+            TelegramError::Internal(format!(
+                "Failed to create Tantivy writer: {}",
+                last_err.map(|e| e.to_string()).unwrap_or_default()
+            ))
+        })?;
 
         let (tx, rx) = mpsc::channel(1000);
         let actor = TantivyWriterTask::new(fields.clone(), writer, reader.clone(), rx);
-        actor.spawn();
+        let join = actor.spawn();
 
         Ok(Self {
             fields,
             index,
             reader,
-            writer_tx: tx,
+            writer_guard: Arc::new(TantivyWriterGuard {
+                tx: Mutex::new(Some(tx)),
+                join: Mutex::new(join),
+            }),
         })
+    }
+
+    fn writer_sender(&self) -> Result<mpsc::Sender<IndexCommand>> {
+        self.writer_guard
+            .tx
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .ok_or_else(|| TelegramError::Internal("Tantivy writer actor closed".into()))
+    }
+
+    pub fn doc_count(&self) -> u64 {
+        self.reader.searcher().num_docs()
+    }
+
+    pub fn index_message_nonblocking(&self, doc: SearchDocument) {
+        if let Ok(tx) = self.writer_sender() {
+            let _ = tx.try_send(IndexCommand::IndexMessage(doc));
+        }
+    }
+
+    pub fn delete_message_nonblocking(&self, message_id: impl Into<String>) {
+        if let Ok(tx) = self.writer_sender() {
+            let _ = tx.try_send(IndexCommand::DeleteMessage {
+                message_id: message_id.into(),
+            });
+        }
+    }
+
+    pub fn commit_nonblocking(&self) {
+        if let Ok(tx) = self.writer_sender() {
+            let _ = tx.try_send(IndexCommand::Commit { reply: None });
+        }
     }
 
     /// Queues a message for background indexing.
     pub async fn index_message(&self, doc: SearchDocument) -> Result<()> {
-        self.writer_tx
+        self.writer_sender()?
             .send(IndexCommand::IndexMessage(doc))
             .await
             .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()))
     }
 
-    /// Synchronously queues a message for background indexing.
+    /// Synchronously queues a message for background indexing without panicking inside Tokio.
     pub fn index_message_sync(&self, doc: SearchDocument) -> Result<()> {
-        self.writer_tx
-            .blocking_send(IndexCommand::IndexMessage(doc))
-            .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()))
+        let tx = self.writer_sender()?;
+        if tokio::runtime::Handle::try_current().is_err() {
+            return tx
+                .blocking_send(IndexCommand::IndexMessage(doc))
+                .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()));
+        }
+        let mut cmd = IndexCommand::IndexMessage(doc);
+        for _ in 0..500 {
+            match tx.try_send(cmd) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Full(returned)) => {
+                    cmd = returned;
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(TelegramError::Internal("Tantivy writer actor channel closed".into()));
+                }
+            }
+        }
+        Err(TelegramError::Internal(
+            "Tantivy writer actor backpressure timeout".into(),
+        ))
     }
 
     /// Queues a message deletion.
     pub async fn delete_message(&self, message_id: impl Into<String>) -> Result<()> {
-        self.writer_tx
+        self.writer_sender()?
             .send(IndexCommand::DeleteMessage {
                 message_id: message_id.into(),
             })
@@ -99,7 +200,7 @@ impl TantivyIndexer {
     /// Triggers an immediate commit on the writer actor and waits for completion.
     pub async fn commit(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.writer_tx
+        self.writer_sender()?
             .send(IndexCommand::Commit { reply: Some(tx) })
             .await
             .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()))?;

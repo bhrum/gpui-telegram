@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/peer_bubble.cpp:L23-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/peer_bubble.h:L18-L26
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Target symbol for compact peer bubble displaying userpic and peer display name.
 #[derive(Debug, Clone)]

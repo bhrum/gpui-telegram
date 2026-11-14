@@ -1,5 +1,4 @@
 //! Instant View Article Markdown Style & Line Metrics (`iv_editor_article_style.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

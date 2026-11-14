@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Share & Forward Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/share_box.h:L63-L140` and `share_box.cpp:L74-L200`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

@@ -26,6 +26,15 @@ pub mod notifications_utilities;
 pub mod section_memento;
 pub mod section_widget;
 pub mod session;
+pub mod shell_actions;
+pub mod shell_calls_rtc;
+pub mod shell_composer_actions;
+pub mod shell_modals;
+pub mod shell_panels;
+pub mod shell_panels_sync;
+pub mod shell_stage_actions;
+pub mod shell_theme;
+pub mod shell_truth;
 pub mod support_autocomplete;
 pub mod support_common;
 pub mod support_helper;
@@ -87,6 +96,29 @@ pub use notifications_manager_default::NotificationsManagerDefault;
 pub use notifications_utilities::NotificationsUtilities;
 pub use section_memento::SectionMemento;
 pub use section_widget::SectionWidget;
+pub use shell_actions::{
+    build_account_record, build_chat_profile_facts, calls_to_modal_logs,
+    chat_dialogs_to_forward_targets, contacts_to_modal_rows, localize_call_state,
+    map_channel_stats_to_chart, map_chat_members_to_inspector, map_stage_media_to_gallery,
+    peer_avatar_color, resolve_active_target_chat_id, shell_mcp_to_entries,
+    shell_tasks_to_acp_entries,
+};
+pub use shell_panels::{
+    localized_panel_label, parse_acp_tasks, parse_mcp_servers, parse_mcp_tools,
+    render_empty_panel_notice, render_panel_header, ShellAcpTaskRow, ShellMcpServerRow,
+    ShellMcpToolRow, ShellPanelState,
+};
+pub use shell_theme::{
+    compute_shell_palette, propagate_theme_and_locale, resolve_mode_from_preferences,
+    tdesktop_mode_to_app_theme, toggle_desktop_theme_mode, ShellThemeTargets,
+};
+pub use shell_truth::{
+    apply_authoritative_chat_list, apply_fenced_chat_list_response,
+    apply_fenced_history_response, format_authoritative_timestamp, historical_message_to_model,
+    peer_subtitle_for_dialog, reset_account_conversation_views, select_authoritative_dialog,
+    try_consume_composer_for_send, validate_selected_send_target, SessionRequestFence,
+    VerifiedSendTarget,
+};
 pub use support_autocomplete::SupportAutocomplete;
 pub use support_common::SupportCommon;
 pub use support_helper::SupportHelper;

@@ -2,7 +2,6 @@
 //! Source: `Telegram/SourceFiles/info/downloads/info_downloads_widget.cpp:L1-L143`, `info_downloads_widget.h:L1-L76`
 //! Subsystem: info | Feature ID: TCG-N38 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

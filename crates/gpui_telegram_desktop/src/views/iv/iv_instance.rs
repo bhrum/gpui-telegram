@@ -1,6 +1,5 @@
 //! Target Symbol: IvInstance
 //! Module 13: Instant View Master Service Coordinator
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleMarkdown
 //! Module 13: Instant View Markdown Article Host & Layout Coordinator
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

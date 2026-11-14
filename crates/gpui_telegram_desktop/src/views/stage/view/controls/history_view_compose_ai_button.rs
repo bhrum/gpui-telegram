@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_compose_ai_button.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub const AI_ANIMATION_DURATION_MS: u64 = 640;
 

@@ -103,7 +103,7 @@ impl Render for WindowsDllsWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_windows_dlls_win_methods() {
         let mut dlls = WindowsDllsWin::new();
         assert!(dlls.current().is_ok());

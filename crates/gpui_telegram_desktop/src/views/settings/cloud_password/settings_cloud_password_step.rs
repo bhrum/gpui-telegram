@@ -2,7 +2,6 @@
 // Subsystem: settings | Feature ID: TCG-N02
 // Upstream: AbstractStep::showFinishes, AbstractStep::showFinished, AbstractStep::isPasswordInvalidError
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

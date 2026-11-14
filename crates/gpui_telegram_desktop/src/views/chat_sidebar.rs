@@ -26,12 +26,33 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::tr_str;
 use crate::theme::dialogs::DialogsStyleSheet;
+use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use crate::views::sidebar::dialogs_inner_widget::DialogsInnerWidget;
+use crate::views::sidebar::dialogs_overlays::{
+    render_dialog_context_menu, render_folder_tabs_strip, render_forum_topics_subtree,
+};
+use crate::views::sidebar::dialogs_renderer::{
+    render_archived_header_row, render_plus_dropdown, render_sidebar_header,
+    render_stories_strip, render_suggestion_bar,
+};
+use crate::views::sidebar::dialogs_row_view::{
+    render_dialog_row_item, SidebarContextAction, SidebarDialogMeta,
+};
+use crate::views::sidebar::dialogs_search_tags::DialogsSearchTags;
 use crate::views::sidebar::dialogs_widget::DialogsWidget;
-use crate::views::sidebar::suggestions::suggestion_manager::{SuggestionItem, SuggestionManager, SuggestionPriority};
+use crate::views::sidebar::sidebar_search_view::{
+    render_search_panel, render_search_results_list,
+};
+use crate::views::sidebar::suggestions::suggestion_manager::{
+    SuggestionItem, SuggestionManager, SuggestionPriority,
+};
+use crate::views::sidebar::ui::chat_search_in::ChatSearchInUi;
+use crate::views::sidebar::ui::dialogs_message_view::DialogMessageMediaBadge;
 use crate::views::sidebar::ui::dialogs_stories_list::{DialogsStoriesListUi, StoryElement};
 use crate::views::sidebar::ui::dialogs_suggestions::DialogsSuggestionsUi;
+use crate::views::sidebar::ui::dialogs_topics_view::DialogsTopicsViewUi;
 use crate::views::sidebar::ui::top_peers_strip::{TopPeerItem, TopPeersStripUi};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,19 +166,22 @@ pub const TELEGRAM_SEARCH_CATEGORIES: &[(&str, &str)] = &[
 
 pub const TELEGRAM_SEARCH_TAGS: &[(&str, &str)] = &[
     ("all", "全部"),
-    ("bot", "🤖 AI Bot"),
-    ("unread", "🔵 未读"),
-    ("pinned", "📌 置顶"),
-    ("media", "🖼️ 媒体"),
-    ("links", "🔗 链接"),
+    ("bot", "AI Bot"),
+    ("unread", "未读"),
+    ("pinned", "置顶"),
+    ("media", "媒体"),
+    ("links", "链接"),
 ];
 
 pub struct ChatSidebar {
     pub width: f32,
     pub is_resizing: bool,
+    pub resize_drag_start_x: Option<f32>,
+    pub resize_start_width: f32,
     pub search_query: String,
     pub active_folder: String,
     pub active_chat_id: Option<u64>,
+    pub selection_revision: u64,
     pub dialogs: Vec<DialogItemModel>,
     pub folders: Vec<(String, u32)>,
     pub search_focused: bool,
@@ -182,8 +206,10 @@ pub struct ChatSidebar {
     pub active_search_tag: String,
     pub remote_search_results: Vec<CategorizedSearchResult>,
     pub search_request_seq: u64,
+    pub search_in_ui: ChatSearchInUi,
+    pub search_tags_ui: DialogsSearchTags,
 
-    // Authentic submodules wired per Mandates #17 & #18
+    // Authentic submodules & visual parity state
     pub widget: DialogsWidget,
     pub inner_widget: DialogsInnerWidget,
     pub stories: DialogsStoriesListUi,
@@ -193,23 +219,93 @@ pub struct ChatSidebar {
     pub style: DialogsStyleSheet,
     pub drafts: std::collections::HashMap<u64, String>,
     pub archived_ids: Vec<u64>,
+    pub is_archived_expanded: bool,
+    pub unread_marked_ids: std::collections::HashSet<u64>,
+    pub verified_ids: std::collections::HashSet<u64>,
+    pub premium_ids: std::collections::HashSet<u64>,
+    pub bot_ids: std::collections::HashSet<u64>,
+    pub saved_messages_id: Option<u64>,
+    pub media_badges: std::collections::HashMap<u64, DialogMessageMediaBadge>,
+    pub forum_topics: std::collections::HashMap<u64, DialogsTopicsViewUi>,
+    pub expanded_forum_id: Option<u64>,
+    pub selected_topic_id: Option<(u64, u64)>,
+    pub context_menu: Option<(u64, Point<Pixels>)>,
+    pub pending_context_action: Option<SidebarContextAction>,
+    pub open_main_menu_requested: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl ChatSidebar {
-    pub fn new_demo() -> Self {
-        Self::new()
+    pub fn new() -> Self {
+        Self {
+            width: DEFAULT_WIDTH,
+            is_resizing: false,
+            resize_drag_start_x: None,
+            resize_start_width: DEFAULT_WIDTH,
+            search_query: String::new(),
+            active_folder: "All".to_string(),
+            active_chat_id: None,
+            selection_revision: 0,
+            dialogs: Vec::new(),
+            folders: vec![("All".to_string(), 0)],
+            search_focused: false,
+            story_clicked_peer: None,
+            is_plus_menu_open: false,
+            is_contacts_modal_open: false,
+            contacts_search_query: String::new(),
+            active_creation_modal: None,
+            contact_kind: AddContactKind::AiBot,
+            active_creation_field: CreationInputField::PrimaryName,
+            creation_primary_input: String::new(),
+            creation_secondary_input: String::new(),
+            creation_tertiary_input: String::new(),
+            pending_add_contact_request: None,
+            pending_create_group_request: None,
+            next_local_dialog_id: 8000,
+            active_search_category: "Chats".to_string(),
+            active_search_tag: "all".to_string(),
+            remote_search_results: Vec::new(),
+            search_request_seq: 0,
+            search_in_ui: ChatSearchInUi::new(),
+            search_tags_ui: DialogsSearchTags::new(),
+            widget: DialogsWidget::new(),
+            inner_widget: DialogsInnerWidget::new(),
+            stories: DialogsStoriesListUi::new(),
+            top_peers: TopPeersStripUi::new(),
+            suggestions: DialogsSuggestionsUi::new(),
+            suggestion_manager: SuggestionManager::new(),
+            style: DialogsStyleSheet::new(),
+            drafts: std::collections::HashMap::new(),
+            archived_ids: Vec::new(),
+            is_archived_expanded: false,
+            unread_marked_ids: std::collections::HashSet::new(),
+            verified_ids: std::collections::HashSet::new(),
+            premium_ids: std::collections::HashSet::new(),
+            bot_ids: std::collections::HashSet::new(),
+            saved_messages_id: None,
+            media_badges: std::collections::HashMap::new(),
+            forum_topics: std::collections::HashMap::new(),
+            expanded_forum_id: None,
+            selected_topic_id: None,
+            context_menu: None,
+            pending_context_action: None,
+            open_main_menu_requested: false,
+            palette: TdesktopThemePalette::default(),
+            language_id: "zh-CN".to_string(),
+        }
     }
 
-    pub fn new() -> Self {
-        let folders = vec![
+    pub fn new_demo() -> Self {
+        let mut sidebar = Self::new();
+        sidebar.folders = vec![
             ("All".to_string(), 8),
             ("Personal".to_string(), 3),
             ("Work".to_string(), 5),
             ("Bots".to_string(), 0),
             ("Unread".to_string(), 8),
         ];
-
-        let dialogs = vec![
+        sidebar.dialogs = vec![
             DialogItemModel {
                 id: 1,
                 peer_name: "Alice Smith".to_string(),
@@ -243,7 +339,7 @@ impl ChatSidebar {
             DialogItemModel {
                 id: 3,
                 peer_name: "Saved Messages".to_string(),
-                avatar_initials: "🔖".to_string(),
+                avatar_initials: "SM".to_string(),
                 avatar_color: 0x3498DB,
                 last_message: "Voice note backup and deployment notes".to_string(),
                 timestamp: "12:05".to_string(),
@@ -258,7 +354,7 @@ impl ChatSidebar {
             DialogItemModel {
                 id: 4,
                 peer_name: "Autonomous Agent Bot".to_string(),
-                avatar_initials: "🤖".to_string(),
+                avatar_initials: "AB".to_string(),
                 avatar_color: 0x1ABC9C,
                 last_message: "Task Center: Background build finished with status 0".to_string(),
                 timestamp: "10:48".to_string(),
@@ -273,7 +369,7 @@ impl ChatSidebar {
             DialogItemModel {
                 id: 5,
                 peer_name: "Telegram Announcements".to_string(),
-                avatar_initials: "📢".to_string(),
+                avatar_initials: "TA".to_string(),
                 avatar_color: 0xE67E22,
                 last_message: "Version 1.0 is here! Featuring Talk Mode and Remote Computer control.".to_string(),
                 timestamp: "Yesterday".to_string(),
@@ -286,10 +382,10 @@ impl ChatSidebar {
                 folder: "All".to_string(),
             },
         ];
-
-        // Initialize authentic stories carousel
-        let mut stories = DialogsStoriesListUi::new();
-        stories.set_elements(vec![
+        sidebar.saved_messages_id = Some(3);
+        sidebar.bot_ids.insert(4);
+        sidebar.verified_ids.insert(5);
+        sidebar.stories.set_elements(vec![
             StoryElement {
                 id: 1,
                 peer_name: "Alice Smith".to_string(),
@@ -311,17 +407,14 @@ impl ChatSidebar {
             StoryElement {
                 id: 4,
                 peer_name: "Autonomous Agent Bot".to_string(),
-                avatar_initials: "🤖".to_string(),
+                avatar_initials: "AB".to_string(),
                 avatar_color: 0x1ABC9C,
                 story_count: 3,
                 unread_count: 0,
                 has_video_stream: false,
             },
         ]);
-
-        // Initialize authentic top peers strip
-        let mut top_peers = TopPeersStripUi::new();
-        top_peers.set_entries(vec![
+        sidebar.top_peers.set_entries(vec![
             TopPeerItem {
                 id: 1,
                 name: "Alice".to_string(),
@@ -345,7 +438,7 @@ impl ChatSidebar {
             TopPeerItem {
                 id: 4,
                 name: "Agent Bot".to_string(),
-                avatar_initials: "🤖".to_string(),
+                avatar_initials: "AB".to_string(),
                 avatar_color: 0x1ABC9C,
                 badge: 1,
                 is_unread: true,
@@ -353,10 +446,7 @@ impl ChatSidebar {
                 is_online: true,
             },
         ]);
-
-        // Initialize suggestion manager with a sample priority notice
-        let mut suggestion_manager = SuggestionManager::new();
-        suggestion_manager.add_suggestion(SuggestionItem {
+        sidebar.suggestion_manager.add_suggestion(SuggestionItem {
             priority: SuggestionPriority::PremiumGrace,
             key: SuggestionManager::KEY_PREMIUM_GRACE.to_string(),
             title: "Premium Subscription Paused".to_string(),
@@ -365,49 +455,11 @@ impl ChatSidebar {
             action_url: Some("https://t.me/premiumbot?start=status".to_string()),
             can_close: true,
         });
-
-        let mut suggestions = DialogsSuggestionsUi::new();
-        suggestions.update_from_manager(&suggestion_manager);
-
-        let mut inner_widget = DialogsInnerWidget::new();
-        inner_widget.total_rows = dialogs.len();
-
-        Self {
-            width: DEFAULT_WIDTH,
-            is_resizing: false,
-            search_query: String::new(),
-            active_folder: "All".to_string(),
-            active_chat_id: Some(1),
-            dialogs,
-            folders,
-            search_focused: false,
-            story_clicked_peer: None,
-            is_plus_menu_open: false,
-            is_contacts_modal_open: false,
-            contacts_search_query: String::new(),
-            active_creation_modal: None,
-            contact_kind: AddContactKind::AiBot,
-            active_creation_field: CreationInputField::PrimaryName,
-            creation_primary_input: String::new(),
-            creation_secondary_input: String::new(),
-            creation_tertiary_input: String::new(),
-            pending_add_contact_request: None,
-            pending_create_group_request: None,
-            next_local_dialog_id: 8000,
-            active_search_category: "Chats".to_string(),
-            active_search_tag: "all".to_string(),
-            remote_search_results: Vec::new(),
-            search_request_seq: 0,
-            widget: DialogsWidget::new(),
-            inner_widget,
-            stories,
-            top_peers,
-            suggestions,
-            suggestion_manager,
-            style: DialogsStyleSheet::new(),
-            drafts: std::collections::HashMap::new(),
-            archived_ids: Vec::new(),
-        }
+        sidebar.suggestions.update_from_manager(&sidebar.suggestion_manager);
+        sidebar.inner_widget.total_rows = sidebar.dialogs.len();
+        sidebar.inner_widget.selected_index = Some(0);
+        sidebar.active_chat_id = Some(1);
+        sidebar
     }
 
     pub fn set_width(&mut self, width: f32) {
@@ -419,40 +471,67 @@ impl ChatSidebar {
     }
 
     pub fn configure_for_cloud_workspace(&mut self, _server_url: &str) {
+        self.is_resizing = false;
+        self.resize_drag_start_x = None;
         self.folders = vec![("All".to_string(), 0)];
         self.dialogs.clear();
-        self.stories.set_elements(vec![]);
-        self.top_peers.set_entries(vec![]);
-        self.suggestions.is_visible = false;
-        self.suggestions.current_item = None;
-        self.inner_widget.total_rows = 0;
+        self.search_query.clear();
+        self.search_focused = false;
+        self.story_clicked_peer = None;
+        self.is_plus_menu_open = false;
+        self.is_contacts_modal_open = false;
+        self.active_creation_modal = None;
+        self.remote_search_results.clear();
+        self.search_in_ui.clear_scope();
+        self.search_tags_ui.clear_selection();
+        self.widget = DialogsWidget::new();
+        self.inner_widget = DialogsInnerWidget::new();
+        self.stories = DialogsStoriesListUi::new();
+        self.top_peers = TopPeersStripUi::new();
+        self.suggestion_manager = SuggestionManager::new();
+        self.suggestions = DialogsSuggestionsUi::new();
+        self.drafts.clear();
+        self.archived_ids.clear();
+        self.is_archived_expanded = false;
+        self.unread_marked_ids.clear();
+        self.verified_ids.clear();
+        self.premium_ids.clear();
+        self.bot_ids.clear();
+        self.saved_messages_id = None;
+        self.media_badges.clear();
+        self.forum_topics.clear();
+        self.expanded_forum_id = None;
+        self.selected_topic_id = None;
+        self.context_menu = None;
+        self.pending_context_action = None;
         self.active_folder = "All".to_string();
         self.active_chat_id = None;
     }
 
     pub fn recompute_folder_badges(&mut self) {
         let mut all_unread = 0u32;
-        let mut personal_unread = 0u32;
-        let mut work_unread = 0u32;
-        let mut bots_unread = 0u32;
-
+        let mut folder_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
         for d in &self.dialogs {
             all_unread = all_unread.saturating_add(d.unread_count);
-            match d.folder.as_str() {
-                "Personal" => personal_unread = personal_unread.saturating_add(d.unread_count),
-                "Work" => work_unread = work_unread.saturating_add(d.unread_count),
-                "Bots" => bots_unread = bots_unread.saturating_add(d.unread_count),
-                _ => {}
+            if !d.folder.is_empty() && d.folder != "All" && d.folder != "Unread" {
+                let entry = folder_counts.entry(d.folder.clone()).or_insert(0);
+                *entry = entry.saturating_add(d.unread_count);
             }
         }
-
-        self.folders = vec![
-            ("All".to_string(), all_unread),
-            ("Personal".to_string(), personal_unread),
-            ("Work".to_string(), work_unread),
-            ("Bots".to_string(), bots_unread),
-            ("Unread".to_string(), all_unread),
-        ];
+        let mut next_folders = vec![("All".to_string(), all_unread)];
+        for (existing_name, _) in &self.folders {
+            if existing_name != "All" && existing_name != "Unread" {
+                let cnt = folder_counts.remove(existing_name).unwrap_or(0);
+                next_folders.push((existing_name.clone(), cnt));
+            }
+        }
+        let mut extra: Vec<(String, u32)> = folder_counts.into_iter().collect();
+        extra.sort_by(|a, b| a.0.cmp(&b.0));
+        next_folders.extend(extra);
+        if all_unread > 0 || self.folders.iter().any(|(n, _)| n == "Unread") {
+            next_folders.push(("Unread".to_string(), all_unread));
+        }
+        self.folders = next_folders;
         self.inner_widget.total_rows = self.dialogs.len();
     }
 
@@ -498,8 +577,10 @@ impl ChatSidebar {
         let t = tag.into();
         if self.active_search_tag == t {
             self.active_search_tag = "all".to_string();
+            self.search_tags_ui.clear_selection();
         } else {
-            self.active_search_tag = t;
+            self.active_search_tag = t.clone();
+            self.search_tags_ui.toggle_tag(&t);
         }
         self.search_request_seq = self.search_request_seq.wrapping_add(1);
     }
@@ -632,14 +713,22 @@ impl ChatSidebar {
                     }
                 };
 
+                let lang = self.language_id.as_str();
                 let (avatar_initials, avatar_color, preview_msg, folder) = if is_bot {
-                    let prompt_preview = tertiary
-                        .as_deref()
-                        .unwrap_or("通用智能助手，支持问答、代码与翻译");
+                    let default_prompt = tr_str(
+                        lang,
+                        "通用智能助手，支持问答、代码与翻译",
+                        "General assistant for Q&A, code, and translation",
+                    );
+                    let prompt_preview = tertiary.as_deref().unwrap_or(default_prompt);
+                    let mut initials: String = name.chars().take(2).collect::<String>().to_uppercase();
+                    if initials.is_empty() {
+                        initials = "BOT".to_string();
+                    }
                     (
-                        "🤖".to_string(),
+                        initials,
                         0x1ABC9C,
-                        format!("🤖 AI Bot (@{}) • {}", handle, prompt_preview),
+                        format!("AI Bot (@{}) • {}", handle, prompt_preview),
                         "Bots".to_string(),
                     )
                 } else {
@@ -651,7 +740,11 @@ impl ChatSidebar {
                     (
                         if initials.is_empty() { "FR".to_string() } else { initials },
                         0x2AABEE,
-                        format!("👋 已添加好友 @{}，开始聊天吧！", handle),
+                        if lang.eq_ignore_ascii_case("en") {
+                            format!("Added @{} to contacts", handle)
+                        } else {
+                            format!("已添加好友 @{}，开始聊天吧", handle)
+                        },
                         "Personal".to_string(),
                     )
                 };
@@ -675,7 +768,12 @@ impl ChatSidebar {
                     },
                 );
                 self.inner_widget.total_rows = self.dialogs.len();
+                self.inner_widget.selected_index = Some(0);
                 self.active_chat_id = Some(local_id);
+                self.selection_revision = self.selection_revision.wrapping_add(1);
+                if is_bot {
+                    self.bot_ids.insert(local_id);
+                }
 
                 self.pending_add_contact_request = Some(PendingAddContactRequest {
                     local_dialog_id: local_id,
@@ -688,8 +786,9 @@ impl ChatSidebar {
                 });
             }
             SidebarCreationModal::CreateGroup => {
+                let lang = self.language_id.as_str();
                 let title = if self.creation_primary_input.trim().is_empty() {
-                    "新建 Telegram 群组".to_string()
+                    tr_str(lang, "新建 Telegram 群组", "New Telegram Group").to_string()
                 } else {
                     self.creation_primary_input.trim().to_string()
                 };
@@ -732,9 +831,15 @@ impl ChatSidebar {
                     .to_uppercase();
 
                 let preview_msg = if let Some(ref desc) = about {
-                    format!("👥 群组「{}」• {}", title, desc)
+                    if lang.eq_ignore_ascii_case("en") {
+                        format!("Group \"{}\" • {}", title, desc)
+                    } else {
+                        format!("群组「{}」• {}", title, desc)
+                    }
+                } else if lang.eq_ignore_ascii_case("en") {
+                    format!("Group \"{}\" created", title)
                 } else {
-                    format!("👥 群组「{}」已创建", title)
+                    format!("群组「{}」已创建", title)
                 };
 
                 self.dialogs.insert(
@@ -742,7 +847,7 @@ impl ChatSidebar {
                     DialogItemModel {
                         id: local_id,
                         peer_name: title.clone(),
-                        avatar_initials: if initials.is_empty() { "👥".to_string() } else { initials },
+                        avatar_initials: if initials.is_empty() { "GR".to_string() } else { initials },
                         avatar_color: 0x9B59B6,
                         last_message: preview_msg,
                         timestamp: "Just now".to_string(),
@@ -756,7 +861,9 @@ impl ChatSidebar {
                     },
                 );
                 self.inner_widget.total_rows = self.dialogs.len();
+                self.inner_widget.selected_index = Some(0);
                 self.active_chat_id = Some(local_id);
+                self.selection_revision = self.selection_revision.wrapping_add(1);
 
                 self.pending_create_group_request = Some(PendingCreateGroupRequest {
                     local_dialog_id: local_id,
@@ -777,8 +884,24 @@ impl ChatSidebar {
     }
 
     pub fn select_dialog(&mut self, id: u64) {
-        self.active_chat_id = Some(id);
-        self.mark_as_read(id);
+        if let Some(idx) = self.dialogs.iter().position(|d| d.id == id) {
+            self.active_chat_id = Some(id);
+            self.inner_widget.selected_index = Some(idx);
+            self.unread_marked_ids.remove(&id);
+            self.mark_as_read(id);
+        }
+    }
+
+    pub fn select_dialog_from_user(&mut self, id: u64) {
+        self.select_dialog(id);
+        if self.active_chat_id == Some(id) {
+            self.selection_revision = self.selection_revision.wrapping_add(1);
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.active_chat_id = None;
+        self.inner_widget.selected_index = None;
     }
 
     pub fn set_typing(&mut self, id: u64, typing: Option<String>) {
@@ -949,16 +1072,17 @@ impl ChatSidebar {
                 continue;
             }
 
+            let lang = self.language_id.as_str();
             let subtitle = match cat.as_str() {
-                "media" => format!("🖼️ 共享照片与视频 • {}", d.last_message),
-                "downloads" => format!("⬇️ 已下载文件 • {}", d.last_message),
-                "links" => format!("🔗 共享链接 (https://t.me/{}) • {}", d.id, d.last_message),
-                "files" => format!("📄 共享文档与源码 • {}", d.last_message),
-                "music" => format!("🎵 音频播放列表 • {}", d.last_message),
-                "voice" => format!("🎤 语音消息记录 • {}", d.last_message),
-                "posts" => format!("📝 频道/群组帖子 • {}", d.last_message),
-                "apps" => format!("🤖 Telegram AI Bot / 小程序 • {}", d.last_message),
-                "channels" => format!("📢 频道与群组 • {}", d.last_message),
+                "media" => format!("{} • {}", tr_str(lang, "共享照片与视频", "Shared Photos & Videos"), d.last_message),
+                "downloads" => format!("{} • {}", tr_str(lang, "已下载文件", "Downloads"), d.last_message),
+                "links" => format!("{} (https://t.me/{}) • {}", tr_str(lang, "共享链接", "Shared Link"), d.id, d.last_message),
+                "files" => format!("{} • {}", tr_str(lang, "共享文档与源码", "Shared Files"), d.last_message),
+                "music" => format!("{} • {}", tr_str(lang, "音频播放列表", "Audio Playlist"), d.last_message),
+                "voice" => format!("{} • {}", tr_str(lang, "语音消息记录", "Voice Messages"), d.last_message),
+                "posts" => format!("{} • {}", tr_str(lang, "频道/群组帖子", "Public Posts"), d.last_message),
+                "apps" => format!("{} • {}", tr_str(lang, "Telegram AI Bot / 小程序", "Telegram AI Bot / Mini App"), d.last_message),
+                "channels" => format!("{} • {}", tr_str(lang, "频道与群组", "Channels & Groups"), d.last_message),
                 _ => d.last_message.clone(),
             };
 
@@ -1044,6 +1168,105 @@ impl ChatSidebar {
             d.is_pinned = !d.is_pinned;
         }
     }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) {
+        self.palette = palette;
+    }
+
+    pub fn set_language(&mut self, lang_id: impl Into<String>) {
+        self.language_id = lang_id.into();
+    }
+
+    pub fn take_open_main_menu_requested(&mut self) -> bool {
+        let was = self.open_main_menu_requested;
+        self.open_main_menu_requested = false;
+        was
+    }
+
+    pub fn take_pending_context_action(&mut self) -> Option<SidebarContextAction> {
+        self.pending_context_action.take()
+    }
+
+    pub fn set_forum_topics(&mut self, topics_ui: DialogsTopicsViewUi) {
+        self.forum_topics.insert(topics_ui.forum_id, topics_ui);
+    }
+
+    pub fn toggle_forum_topics(&mut self, forum_id: u64) {
+        if self.expanded_forum_id == Some(forum_id) {
+            self.expanded_forum_id = None;
+        } else if self.forum_topics.contains_key(&forum_id) {
+            self.expanded_forum_id = Some(forum_id);
+        }
+    }
+
+    pub fn toggle_unread_mark(&mut self, id: u64) {
+        if let Some(d) = self.dialogs.iter_mut().find(|d| d.id == id) {
+            if d.unread_count > 0 {
+                d.unread_count = 0;
+                self.unread_marked_ids.remove(&id);
+            } else if !self.unread_marked_ids.remove(&id) {
+                self.unread_marked_ids.insert(id);
+            }
+        }
+        self.recompute_folder_badges();
+    }
+
+    pub fn clear_history(&mut self, id: u64) {
+        if let Some(d) = self.dialogs.iter_mut().find(|d| d.id == id) {
+            d.last_message.clear();
+            d.unread_count = 0;
+            d.typing_indicator = None;
+        }
+        self.drafts.remove(&id);
+        self.unread_marked_ids.remove(&id);
+        self.recompute_folder_badges();
+    }
+
+    pub fn delete_dialog(&mut self, id: u64) {
+        self.dialogs.retain(|d| d.id != id);
+        self.archived_ids.retain(|&x| x != id);
+        self.drafts.remove(&id);
+        self.unread_marked_ids.remove(&id);
+        self.forum_topics.remove(&id);
+        if self.active_chat_id == Some(id) {
+            self.clear_selection();
+        } else if let Some(sel) = self.active_chat_id {
+            self.inner_widget.selected_index = self.dialogs.iter().position(|d| d.id == sel);
+        }
+        self.recompute_folder_badges();
+    }
+
+    pub fn apply_context_action(&mut self, action: SidebarContextAction) {
+        match action {
+            SidebarContextAction::TogglePin(id) => self.toggle_pin_dialog(id),
+            SidebarContextAction::ToggleMute(id) => self.toggle_mute_dialog(id),
+            SidebarContextAction::ToggleArchive(id) => self.toggle_archive_dialog(id),
+            SidebarContextAction::ToggleUnread(id) => self.toggle_unread_mark(id),
+            SidebarContextAction::ClearHistory(id) => self.clear_history(id),
+            SidebarContextAction::DeleteChat(id) => self.delete_dialog(id),
+        }
+        self.context_menu = None;
+        self.pending_context_action = Some(action);
+    }
+
+    pub fn dialog_meta(&self, item: &DialogItemModel) -> SidebarDialogMeta {
+        let lower = item.peer_name.to_lowercase();
+        let topics = self.forum_topics.get(&item.id).cloned();
+        SidebarDialogMeta {
+            is_verified: self.verified_ids.contains(&item.id),
+            is_premium: self.premium_ids.contains(&item.id),
+            is_bot: self.bot_ids.contains(&item.id) || item.folder == "Bots" || lower.ends_with("bot"),
+            is_saved_messages: self.saved_messages_id == Some(item.id)
+                || item.peer_name == "Saved Messages"
+                || item.peer_name == "已保存消息",
+            is_unread_marked: self.unread_marked_ids.contains(&item.id),
+            is_archived: self.archived_ids.contains(&item.id),
+            draft_text: self.drafts.get(&item.id).cloned(),
+            media_badge: self.media_badges.get(&item.id).copied().unwrap_or(DialogMessageMediaBadge::None),
+            is_topics_expanded: self.expanded_forum_id == Some(item.id),
+            topics,
+        }
+    }
 }
 
 impl Default for ChatSidebar {
@@ -1054,6 +1277,8 @@ impl Default for ChatSidebar {
 
 impl Render for ChatSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette.clone();
+        let lang_id = self.language_id.clone();
         let active_folder = self.active_folder.clone();
         let active_id = self.active_chat_id;
         let query = self.search_query.clone();
@@ -1067,325 +1292,392 @@ impl Render for ChatSidebar {
         let tertiary_val = self.creation_tertiary_input.clone();
         let active_search_cat = self.active_search_category.clone();
         let active_search_tag = self.active_search_tag.clone();
+        let is_narrow = self.width < 252.0;
+
         let categorized_results = if is_search_focused {
             self.categorized_search_results()
         } else {
             Vec::new()
         };
-        let dialog_list: Vec<DialogItemModel> = self.filtered_dialogs().into_iter().cloned().collect();
-        let folders_list = self.folders.clone();
-        let stories_list: Vec<StoryElement> = self.stories.elements.iter().take(3).cloned().collect();
-        let has_suggestion = self.suggestions.is_visible;
-        let suggestion_item = self.suggestions.current_item.clone();
-        let stories_count = self.stories.collapsed_preview_count();
-        let top_peers_list = if self.top_peers.entries.is_empty() {
-            self.dialogs
-                .iter()
-                .take(4)
-                .map(|d| TopPeerItem {
-                    id: d.id,
-                    name: d.peer_name.chars().take(8).collect(),
-                    avatar_initials: d.avatar_initials.clone(),
-                    avatar_color: d.avatar_color,
-                    badge: d.unread_count,
-                    is_unread: d.unread_count > 0,
-                    is_muted: d.is_muted,
-                    is_online: d.is_online,
-                })
-                .collect()
+
+        let header = render_sidebar_header(
+            &query,
+            is_search_focused,
+            is_plus_open,
+            creation_modal.is_some(),
+            &palette,
+            &lang_id,
+            cx,
+            |this, cx| {
+                if this.search_focused {
+                    this.select_folder("All");
+                    this.exit_search();
+                    this.close_creation_modal();
+                } else {
+                    this.open_main_menu_requested = true;
+                }
+                cx.notify();
+            },
+            |this, cx| {
+                this.focus_search();
+                cx.notify();
+            },
+            |this, cx| {
+                if !this.search_query.is_empty() {
+                    this.set_search_query("");
+                } else {
+                    this.exit_search();
+                }
+                cx.notify();
+            },
+            |this, cx| {
+                this.toggle_plus_menu();
+                cx.notify();
+            },
+        );
+
+        let plus_dropdown = if is_plus_open {
+            Some(render_plus_dropdown(
+                &palette,
+                &lang_id,
+                cx,
+                |this, kind, cx| {
+                    this.open_add_contact_modal(kind);
+                    cx.notify();
+                },
+                |this, cx| {
+                    this.open_create_group_modal();
+                    cx.notify();
+                },
+                |this, cx| {
+                    this.open_contacts_modal();
+                    cx.notify();
+                },
+            ))
         } else {
-            self.top_peers.entries.clone()
+            None
         };
 
+        let search_panel = if is_search_focused {
+            let peers_list = self.top_peers.entries.clone();
+            let scope_ui = self.search_in_ui.clone();
+            Some(render_search_panel(
+                &active_search_cat,
+                &active_search_tag,
+                &peers_list,
+                &scope_ui,
+                &palette,
+                &lang_id,
+                cx,
+                |this, cid, cx| {
+                    this.select_search_category(cid);
+                    cx.notify();
+                },
+                |this, tid, cx| {
+                    this.select_search_tag(tid);
+                    cx.notify();
+                },
+                |this, pid, cx| {
+                    this.search_focused = false;
+                    this.select_dialog_from_user(pid);
+                    cx.notify();
+                },
+                |this, cx| {
+                    this.search_in_ui.clear_scope();
+                    cx.notify();
+                },
+            ))
+        } else {
+            None
+        };
+
+        let suggestion_bar = {
+            let sug_ui = self.suggestions.clone();
+            render_suggestion_bar(&sug_ui, &palette, cx, |this, cx| {
+                this.suggestions.dismiss_current(&mut this.suggestion_manager);
+                cx.notify();
+            })
+        };
+
+        let stories_strip = {
+            let stories_ui = self.stories.clone();
+            render_stories_strip(
+                &stories_ui,
+                &palette,
+                &lang_id,
+                cx,
+                |this, cx| {
+                    this.stories.toggle_expanded();
+                    cx.notify();
+                },
+                |this, sid, peer, cx| {
+                    this.story_clicked_peer = Some(peer);
+                    this.stories.active_story_id = Some(sid);
+                    this.select_dialog_from_user(sid);
+                    cx.notify();
+                },
+            )
+        };
+
+        let folder_tabs = if !is_search_focused {
+            let folders_list = self.folders.clone();
+            Some(render_folder_tabs_strip(
+                &folders_list,
+                &active_folder,
+                &palette,
+                cx,
+                |this, fname, cx| {
+                    this.select_folder(fname);
+                    cx.notify();
+                },
+            ))
+        } else {
+            None
+        };
+
+        let scroll_children: Vec<AnyElement> = if is_search_focused {
+            render_search_results_list(
+                &query,
+                categorized_results,
+                &palette,
+                &lang_id,
+                cx,
+                |this, cid, cx| {
+                    this.search_focused = false;
+                    this.select_dialog_from_user(cid);
+                    cx.notify();
+                },
+            )
+        } else {
+            let is_default_all = active_folder == "All" && query.trim().is_empty();
+            let filtered: Vec<DialogItemModel> =
+                self.filtered_dialogs().into_iter().cloned().collect();
+            let mut archived: Vec<DialogItemModel> = Vec::new();
+            let mut pinned: Vec<DialogItemModel> = Vec::new();
+            let mut regular: Vec<DialogItemModel> = Vec::new();
+            for item in filtered {
+                if is_default_all && self.archived_ids.contains(&item.id) {
+                    archived.push(item);
+                } else if item.is_pinned {
+                    pinned.push(item);
+                } else {
+                    regular.push(item);
+                }
+            }
+            let archived_with_meta: Vec<(DialogItemModel, SidebarDialogMeta)> = archived
+                .iter()
+                .map(|d| (d.clone(), self.dialog_meta(d)))
+                .collect();
+            let main_with_meta: Vec<(DialogItemModel, SidebarDialogMeta)> = pinned
+                .into_iter()
+                .chain(regular.into_iter())
+                .map(|d| (d.clone(), self.dialog_meta(&d)))
+                .collect();
+
+            let mut list: Vec<AnyElement> = Vec::new();
+            if let Some(arch_header) = render_archived_header_row(
+                &archived,
+                self.is_archived_expanded,
+                &palette,
+                &lang_id,
+                cx,
+                |this, cx| {
+                    this.is_archived_expanded = !this.is_archived_expanded;
+                    cx.notify();
+                },
+            ) {
+                list.push(arch_header);
+            }
+            if self.is_archived_expanded {
+                for (idx, (item, meta)) in archived_with_meta.iter().enumerate() {
+                    let did = item.id;
+                    let is_sel = active_id == Some(did);
+                    list.push(render_dialog_row_item(
+                        item,
+                        idx,
+                        is_sel,
+                        is_narrow,
+                        meta,
+                        &palette,
+                        &lang_id,
+                        cx,
+                        move |this, cx| {
+                            this.context_menu = None;
+                            this.search_focused = false;
+                            this.select_dialog_from_user(did);
+                            cx.notify();
+                        },
+                        move |this, pos, cx| {
+                            this.context_menu = Some((did, pos));
+                            cx.notify();
+                        },
+                        move |this, cx| {
+                            this.toggle_forum_topics(did);
+                            cx.notify();
+                        },
+                    ));
+                }
+            }
+
+            let selected_topic = self.selected_topic_id;
+            for (idx, (item, meta)) in main_with_meta.iter().enumerate() {
+                let did = item.id;
+                let is_sel = active_id == Some(did);
+                list.push(render_dialog_row_item(
+                    item,
+                    idx,
+                    is_sel,
+                    is_narrow,
+                    meta,
+                    &palette,
+                    &lang_id,
+                    cx,
+                    move |this, cx| {
+                        this.context_menu = None;
+                        this.search_focused = false;
+                        this.select_dialog_from_user(did);
+                        cx.notify();
+                    },
+                    move |this, pos, cx| {
+                        this.context_menu = Some((did, pos));
+                        cx.notify();
+                    },
+                    move |this, cx| {
+                        this.toggle_forum_topics(did);
+                        cx.notify();
+                    },
+                ));
+                if meta.is_topics_expanded {
+                    if let Some(ref topics_ui) = meta.topics {
+                        list.push(render_forum_topics_subtree(
+                            topics_ui,
+                            selected_topic,
+                            &palette,
+                            cx,
+                            |this, fid, tid, cx| {
+                                this.selected_topic_id = Some((fid, tid));
+                                this.select_dialog_from_user(fid);
+                                cx.notify();
+                            },
+                        ));
+                    }
+                }
+            }
+
+            if list.is_empty() {
+                list.push(
+                    div()
+                        .id("sidebar-empty-dialogs-state")
+                        .w_full()
+                        .py(px(40.0))
+                        .px(px(16.0))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(10.0))
+                        .child(tg_icon(IconName::FolderChat, 32.0, palette.text_secondary))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(palette.text_primary))
+                                .child(tr_str(&lang_id, "暂无对话", "No chats yet")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(palette.text_secondary))
+                                .child(tr_str(
+                                    &lang_id,
+                                    "点击右上角图标添加联系人或创建群组",
+                                    "Start a chat or connect your workspace",
+                                )),
+                        )
+                        .into_any_element(),
+                );
+            }
+            list
+        };
+
+        let ctx_menu_overlay = if let Some((ctx_id, anchor)) = self.context_menu {
+            let (is_pinned, is_muted, has_unread) = self
+                .dialogs
+                .iter()
+                .find(|d| d.id == ctx_id)
+                .map(|d| (d.is_pinned, d.is_muted, d.unread_count > 0 || self.unread_marked_ids.contains(&ctx_id)))
+                .unwrap_or((false, false, false));
+            let is_archived = self.archived_ids.contains(&ctx_id);
+            Some(render_dialog_context_menu(
+                ctx_id,
+                anchor,
+                is_pinned,
+                is_muted,
+                is_archived,
+                has_unread,
+                &palette,
+                &lang_id,
+                cx,
+                |this, action, cx| {
+                    this.apply_context_action(action);
+                    cx.notify();
+                },
+                |this, cx| {
+                    this.context_menu = None;
+                    cx.notify();
+                },
+            ))
+        } else {
+            None
+        };
+
+        let accent = rgb(palette.accent);
         div()
             .relative()
             .w(px(self.width))
             .flex_shrink_0()
             .h_full()
             .overflow_hidden()
-            .bg(rgb(0x17212B))
+            .bg(rgb(palette.dialogs_bg))
             .border_r_1()
-            .border_color(rgb(0x0E1621))
+            .border_color(rgb(palette.border_fg))
             .flex()
             .flex_col()
-            // Resize drag handle (width 4px, absolute at right edge)
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+                if this.is_resizing {
+                    if let Some(start_x) = this.resize_drag_start_x {
+                        let dx = f32::from(ev.position.x) - start_x;
+                        this.set_width(this.resize_start_width + dx);
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
+                if this.is_resizing {
+                    this.is_resizing = false;
+                    this.resize_drag_start_x = None;
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
+                    .id("sidebar-resize-handle")
                     .absolute()
                     .top_0()
                     .right_0()
                     .w(px(4.0))
                     .h_full()
                     .cursor_col_resize()
-                    .hover(|s| s.bg(rgb(0x2AABEE))),
+                    .hover(move |s| s.bg(accent))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _w, cx| {
+                        this.is_resizing = true;
+                        this.resize_drag_start_x = Some(f32::from(ev.position.x));
+                        this.resize_start_width = this.width;
+                        cx.notify();
+                    })),
             )
-            // 1. Universal Search Header (Height 48px) with Search Input + `+` Button
-            .child(
-                div()
-                    .h(px(SEARCH_HEADER_HEIGHT))
-                    .flex_shrink_0()
-                    .w_full()
-                    .px(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    // Menu / Hamburger icon or Back arrow when in Search Mode
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .text_color(rgb(0x8A9AA8))
-                            .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                            .text_size(px(16.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.select_folder("All");
-                                this.exit_search();
-                                this.close_creation_modal();
-                                cx.notify();
-                            }))
-                            .child(if is_search_focused { "←" } else { "☰" }),
-                    )
-                    // Search Input field (height 35px, rounded 18px, background #242F3D)
-                    .child(
-                        div()
-                            .id("sidebar-search-box")
-                            .cursor_pointer()
-                            .flex_1()
-                            .h(px(SEARCH_HEIGHT))
-                            .bg(rgb(0x242F3D))
-                            .border_1()
-                            .border_color(if is_search_focused { rgb(0x2AABEE) } else { rgba(0x00000000) })
-                            .rounded(px(SEARCH_RADIUS))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.focus_search();
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .child(
-                                        div()
-                                            .text_color(if is_search_focused { rgb(0x2AABEE) } else { rgb(0x6B808D) })
-                                            .text_size(px(12.0))
-                                            .child("🔍"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(if query.is_empty() { rgb(0x6B808D) } else { rgb(0xFFFFFF) })
-                                            .text_size(px(12.5))
-                                            .child(if query.is_empty() {
-                                                if is_search_focused {
-                                                    "| 搜索".to_string()
-                                                } else {
-                                                    "搜索".to_string()
-                                                }
-                                            } else if is_search_focused {
-                                                format!("{}|", query)
-                                            } else {
-                                                query.clone()
-                                            }),
-                                    ),
-                            )
-                            .when(is_search_focused || !query.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .id("sidebar-search-clear-btn")
-                                        .cursor_pointer()
-                                        .px(px(4.0))
-                                        .text_size(px(12.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            cx.stop_propagation();
-                                            if !this.search_query.is_empty() {
-                                                this.set_search_query("");
-                                            } else {
-                                                this.exit_search();
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .child("✕"),
-                                )
-                            }),
-                    )
-                    // `+` Button right next to Search Box (Add Contact: AI Bot / Friend, Create Group)
-                    .child(
-                        div()
-                            .id("sidebar-plus-action-btn")
-                            .cursor_pointer()
-                            .w(px(SEARCH_HEIGHT))
-                            .h(px(SEARCH_HEIGHT))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(if is_plus_open || creation_modal.is_some() {
-                                rgb(0x2AABEE)
-                            } else {
-                                rgb(0x242F3D)
-                            })
-                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                this.toggle_plus_menu();
-                                cx.notify();
-                            }))
-                            .child("+"),
-                    ),
-            )
-            // 1b. `+` Creation Menu Dropdown (Add Contact -> AI Bot / Friend, Create Group, Contacts Modal)
-            .when(is_plus_open, |el| {
-                el.child(
-                    div()
-                        .w_full()
-                        .px(px(10.0))
-                        .py(px(8.0))
-                        .bg(rgb(0x202B36))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .child(
-                            div()
-                                .id("plus-menu-add-contact")
-                                .cursor_pointer()
-                                .px(px(10.0))
-                                .py(px(7.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(0x242F3D))
-                                .hover(|s| s.bg(rgb(0x2B5278)))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                    this.open_add_contact_modal(AddContactKind::AiBot);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(div().text_size(px(14.0)).child("👤"))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.5))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(rgb(0xFFFFFF))
-                                                        .child("添加联系人 (Add Contact)"),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.5))
-                                                        .text_color(rgb(0x8A9AA8))
-                                                        .child("支持创建专属 AI Bot 或添加好友"),
-                                                ),
-                                        ),
-                                )
-                                .child(div().text_size(px(11.0)).text_color(rgb(0x2AABEE)).child("→")),
-                        )
-                        .child(
-                            div()
-                                .id("plus-menu-create-group")
-                                .cursor_pointer()
-                                .px(px(10.0))
-                                .py(px(7.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(0x242F3D))
-                                .hover(|s| s.bg(rgb(0x2B5278)))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                    this.open_create_group_modal();
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(div().text_size(px(14.0)).child("👥"))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.5))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(rgb(0xFFFFFF))
-                                                        .child("创建群组 (Create Group)"),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.5))
-                                                        .text_color(rgb(0x8A9AA8))
-                                                        .child("创建多人或 AI 协同群聊"),
-                                                ),
-                                        ),
-                                )
-                                .child(div().text_size(px(11.0)).text_color(rgb(0x2AABEE)).child("→")),
-                        )
-                        .child(
-                            div()
-                                .id("plus-menu-contacts-modal")
-                                .cursor_pointer()
-                                .px(px(10.0))
-                                .py(px(7.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(0x242F3D))
-                                .hover(|s| s.bg(rgb(0x2B5278)))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                    this.open_contacts_modal();
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(div().text_size(px(14.0)).child("📒"))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_col()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.5))
-                                                        .font_weight(FontWeight::BOLD)
-                                                        .text_color(rgb(0xFFFFFF))
-                                                        .child("联系人列表 (Contacts)"),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.5))
-                                                        .text_color(rgb(0x8A9AA8))
-                                                        .child("打开 Telegram 联系人弹窗"),
-                                                ),
-                                        ),
-                                )
-                                .child(div().text_size(px(11.0)).text_color(rgb(0x2AABEE)).child("→")),
-                        ),
-                )
-            })
-            // 1c. Interactive Creation Modal Panel (Add Contact: Create AI Bot / Add Friend, or Create Group)
+            .child(header)
+            .when_some(plus_dropdown, |el, panel| el.child(panel))
             .when_some(creation_modal, |el, modal_kind| {
                 el.child(self.render_creation_modal_panel(
                     modal_kind,
@@ -1394,246 +1686,15 @@ impl Render for ChatSidebar {
                     &primary_val,
                     &secondary_val,
                     &tertiary_val,
+                    &palette,
+                    &lang_id,
                     cx,
                 ))
             })
-            // 1d. Telegram 1:1 Categorized Search Panel when Search Box is clicked (`is_search_focused`)
-            .when(is_search_focused, |el| {
-                el.child(self.render_categorized_search_header(
-                    &active_search_cat,
-                    &active_search_tag,
-                    &top_peers_list,
-                    cx,
-                ))
-            })
-            // 2. Suggestions Banner (Height 37px, dialogsImportantBarHeight: 37px)
-            .when(has_suggestion && suggestion_item.is_some(), |el| {
-                let item = suggestion_item.unwrap();
-                el.child(
-                    div()
-                        .h(px(37.0))
-                        .flex_shrink_0()
-                        .w_full()
-                        .px(px(10.0))
-                        .bg(rgb(0x242F3D))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .child(div().text_size(px(12.0)).child("⭐"))
-                                .child(
-                                    div()
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child(item.title),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .when(item.button_text.is_some(), |btn| {
-                                    btn.child(
-                                        div()
-                                            .cursor_pointer()
-                                            .px(px(6.0))
-                                            .py(px(2.0))
-                                            .rounded(px(4.0))
-                                            .bg(rgb(0x5288C1))
-                                            .hover(|s| s.bg(rgb(0x2AABEE)))
-                                            .text_size(px(11.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                                this.suggestions.is_visible = false;
-                                                cx.notify();
-                                            }))
-                                            .child(item.button_text.unwrap()),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .cursor_pointer()
-                                        .text_size(px(12.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
-                                            this.suggestions.is_visible = false;
-                                            cx.notify();
-                                        }))
-                                        .child("✕"),
-                                ),
-                        ),
-                )
-            })
-            // 3. Stories Horizontal Strip (preview thumbnails if available)
-            .when(stories_count > 0, |el| {
-                el.child(
-                    div()
-                        .h(px(44.0))
-                        .flex_shrink_0()
-                        .w_full()
-                        .px(px(10.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0x8A9AA8))
-                                .child("STORIES"),
-                        )
-                        .children(stories_list.into_iter().map(|s| {
-                            let story_id = s.id;
-                            let peer_name = s.peer_name.clone();
-                            div()
-                                .cursor_pointer()
-                                .w(px(28.0))
-                                .h(px(28.0))
-                                .rounded_full()
-                                .bg(rgb(s.avatar_color))
-                                .border_2()
-                                .border_color(if s.unread_count > 0 { rgb(0x5288C1) } else { rgb(0x6B808D) })
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(10.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xFFFFFF))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                    this.story_clicked_peer = Some(peer_name.clone());
-                                    this.select_dialog(story_id);
-                                    cx.notify();
-                                }))
-                                .child(s.avatar_initials.clone())
-                        })),
-                )
-            })
-            // 4. Top Frequently Contacted Peers Strip (if in search mode or at top)
-            .when(!query.is_empty() && !top_peers_list.is_empty(), |el| {
-                el.child(
-                    div()
-                        .h(px(52.0))
-                        .flex_shrink_0()
-                        .w_full()
-                        .px(px(10.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .children(top_peers_list.iter().map(|p| {
-                            let peer_id = p.id;
-                            div()
-                                .cursor_pointer()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .gap(px(2.0))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                    this.select_dialog(peer_id);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .w(px(32.0))
-                                        .h(px(32.0))
-                                        .rounded_full()
-                                        .bg(rgb(p.avatar_color))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0xFFFFFF))
-                                        .child(p.avatar_initials.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(rgb(0x8A9AA8))
-                                        .child(p.name.clone()),
-                                )
-                        })),
-                )
-            })
-            // 5. Folder Tabs Strip (Height 36px, hidden when Categorized Search Mode is active)
-            .when(!is_search_focused, |el| {
-                el.child(
-                    div()
-                        .h(px(36.0))
-                        .flex_shrink_0()
-                        .w_full()
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(12.0))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .children(folders_list.into_iter().map(|(folder, unread)| {
-                            let is_active = folder == active_folder;
-                            let folder_name = folder.clone();
-                            div()
-                                .cursor_pointer()
-                                .relative()
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(4.0))
-                                .px(px(6.0))
-                                .text_size(px(13.0))
-                                .font_weight(if is_active { FontWeight::BOLD } else { FontWeight::NORMAL })
-                                .text_color(if is_active { rgb(0x5288C1) } else { rgb(0x8A9AA8) })
-                                .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                    this.select_folder(folder_name.clone());
-                                    cx.notify();
-                                }))
-                                .child(folder)
-                                .when(unread > 0, |el| {
-                                    el.child(
-                                        div()
-                                            .h(px(16.0))
-                                            .min_w(px(16.0))
-                                            .px(px(4.0))
-                                            .rounded_full()
-                                            .bg(if is_active { rgb(0x5288C1) } else { rgb(0x242F3D) })
-                                            .text_color(rgb(0xFFFFFF))
-                                            .text_size(px(10.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(format!("{}", unread)),
-                                    )
-                                })
-                                // Active Tab 2px Underline Indicator
-                                .when(is_active, |el| {
-                                    el.child(
-                                        div()
-                                            .absolute()
-                                            .bottom_0()
-                                            .left_0()
-                                            .right_0()
-                                            .h(px(2.0))
-                                            .bg(rgb(0x5288C1)),
-                                    )
-                                })
-                        })),
-                )
-            })
-            // 6. Categorized Search Results OR Virtualized Dialog Rows
+            .when_some(search_panel, |el, panel| el.child(panel))
+            .when_some(suggestion_bar, |el, bar| el.child(bar))
+            .when_some(stories_strip, |el, strip| el.child(strip))
+            .when_some(folder_tabs, |el, tabs| el.child(tabs))
             .child(
                 div()
                     .id("sidebar-dialogs-scroll")
@@ -1643,302 +1704,9 @@ impl Render for ChatSidebar {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .when(is_search_focused, |scroll| {
-                        let show_recent_hint = query.is_empty() || categorized_results.is_empty();
-                        scroll
-                            .when(show_recent_hint, |s| {
-                                s.child(
-                                    div()
-                                        .id("sidebar-search-empty-state")
-                                        .w_full()
-                                        .py(px(28.0))
-                                        .px(px(16.0))
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap(px(10.0))
-                                        .border_b_1()
-                                        .border_color(rgb(0x0E1621))
-                                        .child(
-                                            div()
-                                                .text_size(px(36.0))
-                                                .text_color(rgb(0x54687A))
-                                                .child("🔍"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.5))
-                                                .text_color(rgb(0x6B808D))
-                                                .child("最近搜索结果"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.5))
-                                                .text_color(rgb(0x6B808D))
-                                                .child("将显示在此处。"),
-                                        ),
-                                )
-                            })
-                            .children(categorized_results.into_iter().map(|item| {
-                            let chat_id = item.chat_id;
-                            div()
-                                .cursor_pointer()
-                                .h(px(ROW_HEIGHT))
-                                .flex_shrink_0()
-                                .w_full()
-                                .px(px(10.0))
-                                .py(px(8.0))
-                                .bg(rgb(0x17212B))
-                                .hover(|s| s.bg(rgb(0x202B36)))
-                                .border_b_1()
-                                .border_color(rgb(0x0E1621))
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                    this.search_focused = false;
-                                    this.select_dialog(chat_id);
-                                    cx.notify();
-                                }))
-                                .child(
-                                    div()
-                                        .w(px(42.0))
-                                        .h(px(42.0))
-                                        .rounded_full()
-                                        .bg(rgb(item.avatar_color))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_color(rgb(0xFFFFFF))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_size(px(14.0))
-                                        .child(item.avatar_initials),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .h_full()
-                                        .flex()
-                                        .flex_col()
-                                        .justify_between()
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .flex()
-                                                .items_center()
-                                                .justify_between()
-                                                .child(
-                                                    div()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap(px(6.0))
-                                                        .child(
-                                                            div()
-                                                                .text_size(px(13.5))
-                                                                .font_weight(FontWeight::BOLD)
-                                                                .text_color(rgb(0xFFFFFF))
-                                                                .child(item.title),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .px(px(5.0))
-                                                                .py(px(1.0))
-                                                                .rounded(px(4.0))
-                                                                .bg(rgb(0x242F3D))
-                                                                .text_size(px(10.0))
-                                                                .text_color(rgb(0x2AABEE))
-                                                                .child(item.category),
-                                                        ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(11.0))
-                                                        .text_color(rgb(0x8A9AA8))
-                                                        .child(item.timestamp),
-                                                ),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(rgb(0x8A9AA8))
-                                                .child(item.subtitle),
-                                        ),
-                                )
-                        }))
-                    })
-                    .when(!is_search_focused, |scroll| {
-                        scroll.children(dialog_list.into_iter().map(|d| {
-                            let dialog_id = d.id;
-                            let is_selected = active_id == Some(dialog_id);
-                            let bg_color = if is_selected {
-                                rgb(0x2B5278) // Upstream Night active selection
-                            } else {
-                                rgb(0x17212B) // Upstream Night row bg
-                            };
-
-                            div()
-                            .cursor_pointer()
-                            .h(px(ROW_HEIGHT)) // Upstream exact metric: dialogsRowHeight: 62px
-                            .flex_shrink_0()
-                            .w_full()
-                            .px(px(10.0))
-                            .py(px(8.0)) // dialogsRowPadding: margins(10, 8, 10, 8)
-                            .bg(bg_color)
-                            .hover(move |s| if is_selected { s } else { s.bg(rgb(0x202B36)) })
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                this.search_focused = false;
-                                this.select_dialog(dialog_id);
-                                cx.notify();
-                            }))
-                            // Avatar (46px diameter)
-                            .child(
-                                div()
-                                    .relative()
-                                    .w(px(AVATAR_SIZE)) // dialogsPhotoSize: 46px
-                                    .h(px(AVATAR_SIZE))
-                                    .rounded_full()
-                                    .bg(rgb(d.avatar_color))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_color(rgb(0xFFFFFF))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_size(px(15.0))
-                                    .child(d.avatar_initials.clone())
-                                    .when(d.is_online, |el| {
-                                        el.child(
-                                            div()
-                                                .absolute()
-                                                .bottom_0()
-                                                .right_0()
-                                                .w(px(11.0))
-                                                .h(px(11.0))
-                                                .rounded_full()
-                                                .bg(rgb(0x4CAF50))
-                                                .border_2()
-                                                .border_color(bg_color),
-                                        )
-                                    }),
-                            )
-                            // Content (Name, Timestamp, Preview, Badges)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .h_full()
-                                    .flex()
-                                    .flex_col()
-                                    .justify_between()
-                                    // Row 1: Name and Timestamp
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .child(
-                                                div()
-                                                    .text_size(px(14.0)) // nameFont
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child(d.peer_name.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.0)) // dialogsDateFont
-                                                    .text_color(rgb(0x8A9AA8))
-                                                    .child(d.timestamp.clone()),
-                                            ),
-                                    )
-                                    // Row 2: Preview snippet or typing indicator & badges
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .child(
-                                                if let Some(ref typing) = d.typing_indicator {
-                                                    div()
-                                                        .text_size(px(13.0))
-                                                        .text_color(rgb(0x5288C1)) // Typing indicator accent
-                                                        .child(typing.clone())
-                                                } else {
-                                                    div()
-                                                        .text_size(px(13.0)) // dialogsTextFont
-                                                        .text_color(rgb(0x8A9AA8))
-                                                        .child(d.last_message.clone())
-                                                },
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(4.0))
-                                                    // Pin Icon
-                                                    .when(d.is_pinned, |el| {
-                                                        el.child(
-                                                            div()
-                                                                .text_size(px(12.0))
-                                                                .text_color(rgb(0x6B808D))
-                                                                .child("📌"),
-                                                        )
-                                                    })
-                                                    // Mute Icon
-                                                    .when(d.is_muted, |el| {
-                                                        el.child(
-                                                            div()
-                                                                .text_size(px(12.0))
-                                                                .text_color(rgb(0x6B808D))
-                                                                .child("🔕"),
-                                                        )
-                                                    })
-                                                    // Unread Count Pill Badge (Height 19px)
-                                                    .when(d.unread_count > 0, |el| {
-                                                        let badge_bg = if d.is_muted {
-                                                            rgb(0x6B808D) // Upstream muted badge
-                                                        } else {
-                                                            rgb(0x5288C1) // Upstream active badge
-                                                        };
-                                                        el.child(
-                                                            div()
-                                                                .h(px(UNREAD_HEIGHT)) // dialogsUnreadHeight: 19px
-                                                                .min_w(px(UNREAD_HEIGHT))
-                                                                .px(px(DIALOG_UNREAD_PADDING)) // dialogsUnreadPadding: 5px
-                                                                .rounded_full()
-                                                                .bg(badge_bg)
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .text_size(px(11.0))
-                                                                .font_weight(FontWeight::BOLD)
-                                                                .text_color(rgb(0xFFFFFF))
-                                                                .child(format!("{}", d.unread_count)),
-                                                        )
-                                                    })
-                                                    // Delivery Checkmarks when no unread badge
-                                                    .when(d.unread_count == 0, |el| {
-                                                        let check = match d.delivery_status {
-                                                            DialogDeliveryStatus::Sending => "⏱️",
-                                                            DialogDeliveryStatus::Sent => "✓",
-                                                            DialogDeliveryStatus::Read => "✓✓",
-                                                        };
-                                                        el.child(
-                                                            div()
-                                                                .text_size(px(12.0))
-                                                                .text_color(rgb(0x5288C1))
-                                                                .child(check),
-                                                        )
-                                                    }),
-                                            ),
-                                    ),
-                            )
-                        }))
-                    }),
+                    .children(scroll_children),
             )
+            .when_some(ctx_menu_overlay, |el, overlay| el.child(overlay))
     }
 }
 
@@ -1951,39 +1719,61 @@ impl ChatSidebar {
         primary_val: &str,
         secondary_val: &str,
         tertiary_val: &str,
+        palette: &TdesktopThemePalette,
+        lang_id: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_add_contact = modal_kind == SidebarCreationModal::AddContact;
         let is_ai_bot = contact_kind == AddContactKind::AiBot;
 
         let primary_label = if is_add_contact {
-            if is_ai_bot { "AI Bot 名称" } else { "好友昵称 / 姓名" }
+            if is_ai_bot { tr_str(lang_id, "AI Bot 名称", "Bot Name") } else { tr_str(lang_id, "好友昵称 / 姓名", "Friend Name") }
         } else {
-            "群组名称 (Group Title)"
+            tr_str(lang_id, "群组名称 (Group Title)", "Group Title")
         };
         let secondary_label = if is_add_contact {
-            if is_ai_bot { "Bot 用户名 (@bot)" } else { "手机号 / @用户名" }
+            if is_ai_bot { tr_str(lang_id, "Bot 用户名 (@bot)", "Bot Handle (@bot)") } else { tr_str(lang_id, "手机号 / @用户名", "Phone or @username") }
         } else {
-            "群成员 (@username 逗号分隔)"
+            tr_str(lang_id, "群成员 (@username 逗号分隔)", "Members (@username, comma separated)")
         };
         let tertiary_label = if is_add_contact {
-            if is_ai_bot { "AI 系统提示词 (Prompt)" } else { "备注信息" }
+            if is_ai_bot { tr_str(lang_id, "AI 系统提示词 (Prompt)", "System Prompt") } else { tr_str(lang_id, "备注信息", "Bio / Notes") }
         } else {
-            "群组简介 (Description)"
+            tr_str(lang_id, "群组简介 (Description)", "Description")
         };
 
+        let field_box = |label: &'static str, val: &str, is_active: bool| {
+            div()
+                .cursor_pointer()
+                .w_full()
+                .px(px(8.0))
+                .py(px(5.0))
+                .rounded(px(6.0))
+                .bg(rgb(palette.input_bg))
+                .border_1()
+                .border_color(if is_active { rgb(palette.accent) } else { rgb(palette.border_fg) })
+                .child(div().text_size(px(10.0)).text_color(rgb(palette.text_secondary)).child(label))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(palette.text_primary))
+                        .child(if is_active { format!("{}|", val) } else { val.to_string() }),
+                )
+        };
+
+        let hover_text = rgb(palette.text_primary);
+        let accent_hover = rgb(palette.accent_hover);
         div()
             .id("sidebar-creation-modal-panel")
             .w_full()
             .px(px(10.0))
             .py(px(10.0))
-            .bg(rgb(0x202B36))
+            .bg(rgb(palette.menu_bg))
             .border_b_1()
-            .border_color(rgb(0x0E1621))
+            .border_color(rgb(palette.border_fg))
             .flex()
             .flex_col()
             .gap(px(8.0))
-            // Header row with title & close button
             .child(
                 div()
                     .w_full()
@@ -1994,27 +1784,24 @@ impl ChatSidebar {
                         div()
                             .text_size(px(13.0))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
+                            .text_color(rgb(palette.text_primary))
                             .child(if is_add_contact {
-                                "添加联系人 (Add Contact)"
+                                tr_str(lang_id, "添加联系人", "Add Contact")
                             } else {
-                                "创建群组 (New Group)"
+                                tr_str(lang_id, "创建群组", "New Group")
                             }),
                     )
                     .child(
                         div()
                             .cursor_pointer()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                            .hover(move |s| s.text_color(hover_text))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                                 this.close_creation_modal();
                                 cx.notify();
                             }))
-                            .child("✕"),
+                            .child(tg_icon(IconName::Close, 13.0, palette.icon_fg)),
                     ),
             )
-            // Sub-mode switcher when in Add Contact mode: [创建 AI Bot] vs [添加好友]
             .when(is_add_contact, |el| {
                 el.child(
                     div()
@@ -2029,18 +1816,20 @@ impl ChatSidebar {
                                 .flex_1()
                                 .py(px(5.0))
                                 .rounded(px(6.0))
-                                .bg(if is_ai_bot { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                .bg(if is_ai_bot { rgb(palette.accent) } else { rgb(palette.composer_bg) })
                                 .flex()
                                 .items_center()
                                 .justify_center()
+                                .gap(px(4.0))
                                 .text_size(px(11.5))
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xFFFFFF))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                .text_color(if is_ai_bot { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) })
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                                     this.contact_kind = AddContactKind::AiBot;
                                     cx.notify();
                                 }))
-                                .child("🤖 创建 AI Bot"),
+                                .child(tg_icon(IconName::BotRobot, 13.0, if is_ai_bot { palette.active_button_fg } else { palette.icon_fg }))
+                                .child(tr_str(lang_id, "创建 AI Bot", "AI Bot")),
                         )
                         .child(
                             div()
@@ -2049,130 +1838,44 @@ impl ChatSidebar {
                                 .flex_1()
                                 .py(px(5.0))
                                 .rounded(px(6.0))
-                                .bg(if !is_ai_bot { rgb(0x2AABEE) } else { rgb(0x242F3D) })
+                                .bg(if !is_ai_bot { rgb(palette.accent) } else { rgb(palette.composer_bg) })
                                 .flex()
                                 .items_center()
                                 .justify_center()
+                                .gap(px(4.0))
                                 .text_size(px(11.5))
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xFFFFFF))
-                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                                .text_color(if !is_ai_bot { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) })
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                                     this.contact_kind = AddContactKind::Friend;
                                     cx.notify();
                                 }))
-                                .child("👤 添加好友"),
+                                .child(tg_icon(IconName::ContactsUsers, 13.0, if !is_ai_bot { palette.active_button_fg } else { palette.icon_fg }))
+                                .child(tr_str(lang_id, "添加好友", "Friend")),
                         ),
                 )
             })
-            // Primary Input Field
             .child(
-                div()
-                    .cursor_pointer()
-                    .w_full()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .bg(rgb(0x17212B))
-                    .border_1()
-                    .border_color(if active_field == CreationInputField::PrimaryName {
-                        rgb(0x2AABEE)
-                    } else {
-                        rgb(0x242F3D)
-                    })
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                field_box(primary_label, primary_val, active_field == CreationInputField::PrimaryName)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                         this.active_creation_field = CreationInputField::PrimaryName;
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .child(primary_label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if active_field == CreationInputField::PrimaryName {
-                                format!("{}|", primary_val)
-                            } else {
-                                primary_val.to_string()
-                            }),
-                    ),
+                    })),
             )
-            // Secondary Input Field
             .child(
-                div()
-                    .cursor_pointer()
-                    .w_full()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .bg(rgb(0x17212B))
-                    .border_1()
-                    .border_color(if active_field == CreationInputField::SecondaryHandle {
-                        rgb(0x2AABEE)
-                    } else {
-                        rgb(0x242F3D)
-                    })
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                field_box(secondary_label, secondary_val, active_field == CreationInputField::SecondaryHandle)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                         this.active_creation_field = CreationInputField::SecondaryHandle;
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .child(secondary_label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if active_field == CreationInputField::SecondaryHandle {
-                                format!("{}|", secondary_val)
-                            } else {
-                                secondary_val.to_string()
-                            }),
-                    ),
+                    })),
             )
-            // Tertiary Input Field
             .child(
-                div()
-                    .cursor_pointer()
-                    .w_full()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(6.0))
-                    .bg(rgb(0x17212B))
-                    .border_1()
-                    .border_color(if active_field == CreationInputField::TertiaryPromptOrPhone {
-                        rgb(0x2AABEE)
-                    } else {
-                        rgb(0x242F3D)
-                    })
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                field_box(tertiary_label, tertiary_val, active_field == CreationInputField::TertiaryPromptOrPhone)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                         this.active_creation_field = CreationInputField::TertiaryPromptOrPhone;
                         cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(10.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .child(tertiary_label),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(0xFFFFFF))
-                            .child(if active_field == CreationInputField::TertiaryPromptOrPhone {
-                                format!("{}|", tertiary_val)
-                            } else {
-                                tertiary_val.to_string()
-                            }),
-                    ),
+                    })),
             )
-            // Submit & Cancel action buttons
             .child(
                 div()
                     .w_full()
@@ -2186,14 +1889,14 @@ impl ChatSidebar {
                             .px(px(10.0))
                             .py(px(5.0))
                             .rounded(px(6.0))
-                            .bg(rgb(0x242F3D))
+                            .bg(rgb(palette.composer_bg))
                             .text_size(px(11.5))
-                            .text_color(rgb(0x8A9AA8))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                            .text_color(rgb(palette.text_secondary))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                                 this.close_creation_modal();
                                 cx.notify();
                             }))
-                            .child("取消"),
+                            .child(tr_str(lang_id, "取消", "Cancel")),
                     )
                     .child(
                         div()
@@ -2202,177 +1905,67 @@ impl ChatSidebar {
                             .px(px(12.0))
                             .py(px(5.0))
                             .rounded(px(6.0))
-                            .bg(rgb(0x2AABEE))
-                            .hover(|s| s.bg(rgb(0x5288C1)))
+                            .bg(rgb(palette.accent))
+                            .hover(move |s| s.bg(accent_hover))
                             .text_size(px(11.5))
                             .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _event, _window, cx| {
+                            .text_color(rgb(palette.active_button_fg))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev, _w, cx| {
                                 this.submit_creation_modal();
                                 cx.notify();
                             }))
                             .child(if is_add_contact {
-                                if is_ai_bot { "立即创建 AI Bot" } else { "立即添加好友" }
+                                if is_ai_bot { tr_str(lang_id, "创建 AI Bot", "Create Bot") } else { tr_str(lang_id, "添加好友", "Add Contact") }
                             } else {
-                                "立即创建群组"
+                                tr_str(lang_id, "创建群组", "Create Group")
                             }),
                     ),
             )
     }
+}
 
-    fn render_categorized_search_header(
-        &self,
-        active_search_cat: &str,
-        active_search_tag: &str,
-        top_peers_list: &[TopPeerItem],
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        div()
-            .id("sidebar-categorized-search-header")
-            .w_full()
-            .bg(rgb(0x17212B))
-            .border_b_1()
-            .border_color(rgb(0x0E1621))
-            .flex()
-            .flex_col()
-            // 1. Horizontal Category Tab Bar directly under Search Box (`聊天 | 频道 | 应用 | 贴文 | 图片 | 视频 | 链接 | 文件 | 音乐 | 语音`)
-            // Matches Telegram Desktop screenshot `media_1794178867127_7a80469d.jpg` with active blue bottom underline
-            .child(
-                div()
-                    .id("sidebar-search-category-tabs")
-                    .w_full()
-                    .px(px(6.0))
-                    .border_b_1()
-                    .border_color(rgb(0x0E1621))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(2.0))
-                    .children(TELEGRAM_SEARCH_CATEGORIES.iter().map(|(cat_id, cat_label)| {
-                        let is_active = active_search_cat == *cat_id;
-                        let cid = (*cat_id).to_string();
-                        div()
-                            .cursor_pointer()
-                            .relative()
-                            .px(px(6.0))
-                            .py(px(7.0))
-                            .text_size(px(12.0))
-                            .font_weight(if is_active { FontWeight::BOLD } else { FontWeight::NORMAL })
-                            .text_color(if is_active { rgb(0x2AABEE) } else { rgb(0x8A9AA8) })
-                            .hover(|s| s.text_color(rgb(0xFFFFFF)))
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                this.select_search_category(cid.clone());
-                                cx.notify();
-                            }))
-                            .child(*cat_label)
-                            .when(is_active, |el| {
-                                el.child(
-                                    div()
-                                        .absolute()
-                                        .bottom_0()
-                                        .left_0()
-                                        .right_0()
-                                        .h(px(2.0))
-                                        .bg(rgb(0x2AABEE)),
-                                )
-                            })
-                    })),
-            )
-            // 2. "常用联系人" Section Header + Horizontal Circular Peer Avatars + Names
-            .when(!top_peers_list.is_empty(), |el| {
-                el.child(
-                    div()
-                        .w_full()
-                        .px(px(12.0))
-                        .pt(px(8.0))
-                        .pb(px(8.0))
-                        .border_b_1()
-                        .border_color(rgb(0x0E1621))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0x8A9AA8))
-                                .child("常用联系人"),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .children(top_peers_list.iter().map(|p| {
-                                    let peer_id = p.id;
-                                    let name = p.name.clone();
-                                    let initials = p.avatar_initials.clone();
-                                    let color = p.avatar_color;
-                                    div()
-                                        .cursor_pointer()
-                                        .flex()
-                                        .flex_col()
-                                        .items_center()
-                                        .gap(px(4.0))
-                                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                            this.search_focused = false;
-                                            this.select_dialog(peer_id);
-                                            cx.notify();
-                                        }))
-                                        .child(
-                                            div()
-                                                .w(px(40.0))
-                                                .h(px(40.0))
-                                                .rounded_full()
-                                                .bg(rgb(color))
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0xFFFFFF))
-                                                .child(initials),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(11.0))
-                                                .text_color(rgb(0xFFFFFF))
-                                                .child(name),
-                                        )
-                                })),
-                        ),
-                )
-            })
-            // 3. Search Filter Tags Row (`DialogsSearchTags`)
-            .child(
-                div()
-                    .w_full()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(5.0))
-                    .children(TELEGRAM_SEARCH_TAGS.iter().map(|(tag_id, tag_label)| {
-                        let is_tag_active = active_search_tag == *tag_id;
-                        let tag_str = (*tag_id).to_string();
-                        div()
-                            .cursor_pointer()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded_full()
-                            .bg(if is_tag_active { rgb(0x5288C1) } else { rgb(0x202B36) })
-                            .border_1()
-                            .border_color(if is_tag_active { rgb(0x2AABEE) } else { rgb(0x242F3D) })
-                            .text_size(px(10.5))
-                            .text_color(if is_tag_active { rgb(0xFFFFFF) } else { rgb(0x8A9AA8) })
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _event, _window, cx| {
-                                this.select_search_tag(tag_str.clone());
-                                cx.notify();
-                            }))
-                            .child(*tag_label)
-                    })),
-            )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[std::prelude::v1::test]
+    fn selection_revision_increments_only_on_user_selection() {
+        let mut sb = ChatSidebar::new();
+        assert_eq!(sb.selection_revision, 0);
+
+        sb.dialogs.push(DialogItemModel {
+            id: 42,
+            peer_name: "Alice".to_string(),
+            avatar_initials: "AL".to_string(),
+            avatar_color: 0x2AABEE,
+            last_message: String::new(),
+            timestamp: String::new(),
+            unread_count: 1,
+            is_muted: false,
+            is_pinned: false,
+            is_online: false,
+            typing_indicator: None,
+            delivery_status: DialogDeliveryStatus::Read,
+            folder: "All".to_string(),
+        });
+
+        // Programmatic/sync selection and non-selection mutations must not bump revision
+        sb.select_dialog(42);
+        sb.set_search_query("al");
+        sb.select_folder("All");
+        sb.set_typing(42, Some("typing".to_string()));
+        sb.set_unread(42, 3);
+        sb.recompute_folder_badges();
+        assert_eq!(sb.selection_revision, 0);
+
+        // Selecting an unknown dialog does not bump revision
+        sb.select_dialog_from_user(999);
+        assert_eq!(sb.selection_revision, 0);
+
+        // Explicit user click increments revision even when re-clicking active dialog
+        sb.select_dialog_from_user(42);
+        assert_eq!(sb.selection_revision, 1);
+        sb.select_dialog_from_user(42);
+        assert_eq!(sb.selection_revision, 2);
     }
 }

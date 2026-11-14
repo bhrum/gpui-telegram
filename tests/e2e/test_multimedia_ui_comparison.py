@@ -22,7 +22,7 @@ import sys
 import unittest
 from typing import Any, Dict, List
 
-REPO_ROOT = "/Users/bhrum/teamwork_projects/gpui_telegram"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 ARTIFACTS_DIR = os.path.join(REPO_ROOT, "artifacts", "multimedia_e2e")
 REPORT_PATH = os.path.join(REPO_ROOT, "docs", "verification", "MULTIMEDIA_E2E_VERIFICATION.md")
 COMPARE_SCRIPT = os.path.join(REPO_ROOT, "scripts", "compare_images.swift")

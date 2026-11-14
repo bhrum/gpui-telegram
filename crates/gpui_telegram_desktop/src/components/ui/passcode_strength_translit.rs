@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/passcode_strength_translit.cpp:L1-L52` & `passcode_strength_translit.h:L1-L23`
 //! Authentic GPUI implementation of Cyrillic case folding and Latin transliteration.
-#![allow(dead_code)]
 
 const K_BASIC_LOWER_FIRST: u32 = 0x0430;
 const K_BASIC_LOWER: [&str; 48] = [

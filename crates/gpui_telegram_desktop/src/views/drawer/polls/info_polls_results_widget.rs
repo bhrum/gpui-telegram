@@ -2,7 +2,6 @@
 //! Source: `Telegram/SourceFiles/info/polls/info_polls_results_widget.cpp:L1-L115`, `info_polls_results_widget.h:L1-L70`
 //! Subsystem: info | Feature ID: TCG-N38 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

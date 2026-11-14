@@ -1,9 +1,13 @@
-// Source: Telegram/SourceFiles/settings/sections/settings_notifications_type.cpp, Telegram/SourceFiles/settings/sections/settings_notifications_type.h
-// Subsystem: settings | Feature ID: TCG-N31
-// Upstream: ExceptionsController::session, ExceptionsController::prepare, rpl::NotificationsEnabledForTypeValue
+// Source: Telegram/SourceFiles/settings/sections/settings_notifications_type.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_empty_state,
+    settings_section_header, settings_subsection_title, settings_toggle_row,
+};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +25,8 @@ pub struct SettingsNotificationsTypeSections {
     pub message_preview: bool,
     pub sound_enabled: bool,
     pub exceptions: Vec<PeerNotificationException>,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsNotificationsTypeSections {
@@ -31,35 +37,20 @@ impl SettingsNotificationsTypeSections {
             message_preview: true,
             sound_enabled: true,
             exceptions: Vec::new(),
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn toggle_alerts(&mut self) {
-        self.alerts_enabled = !self.alerts_enabled;
-    }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+    pub fn toggle_alerts(&mut self) { self.alerts_enabled = !self.alerts_enabled; }
+    pub fn toggle_preview(&mut self) { self.message_preview = !self.message_preview; }
+    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; }
 
-    pub fn toggle_preview(&mut self) {
-        self.message_preview = !self.message_preview;
-    }
-
-    pub fn toggle_sound(&mut self) {
-        self.sound_enabled = !self.sound_enabled;
-    }
-
-    pub fn add_exception(
-        &mut self,
-        peer_id: u64,
-        name: impl Into<String>,
-        is_muted: bool,
-        custom_sound: Option<String>,
-    ) {
+    pub fn add_exception(&mut self, peer_id: u64, name: impl Into<String>, is_muted: bool, custom_sound: Option<String>) {
         self.exceptions.retain(|e| e.peer_id != peer_id);
-        self.exceptions.push(PeerNotificationException {
-            peer_id,
-            name: name.into(),
-            is_muted,
-            custom_sound,
-        });
+        self.exceptions.push(PeerNotificationException { peer_id, name: name.into(), is_muted, custom_sound });
     }
 
     pub fn remove_exception(&mut self, peer_id: u64) -> bool {
@@ -71,93 +62,36 @@ impl SettingsNotificationsTypeSections {
 
 impl Default for SettingsNotificationsTypeSections {
     fn default() -> Self {
-        let mut s = Self::new("Private Chats");
-        s.add_exception(2001, "Alice", true, None);
-        s.add_exception(2002, "Bob", false, Some("Chime".into()));
-        s
+        Self::new("Private Chats")
     }
 }
 
 impl Render for SettingsNotificationsTypeSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.exceptions.len();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette;
+        let lang = &self.language_id;
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(20.0))
-            .gap(px(16.0))
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_xl()
-                    .child(format!("Notifications for {}", self.chat_type_name))
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .bg(rgb(0xf4f4f5))
-                    .rounded(px(8.0))
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Show Notifications"))
-                            .child(div().text_color(if self.alerts_enabled { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.alerts_enabled { "On" } else { "Off" }))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Message Preview"))
-                            .child(div().text_color(if self.message_preview { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.message_preview { "On" } else { "Off" }))
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .child(div().child("Sound"))
-                            .child(div().text_color(if self.sound_enabled { rgb(0x4caf50) } else { rgb(0x707579) }).child(if self.sound_enabled { "On" } else { "Off" }))
-                    )
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Exceptions"))
-                    .child(div().text_xs().text_color(rgb(0x2481cc)).child("+ Add Exception"))
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .children(self.exceptions.iter().map(|exc| {
-                        div()
-                            .flex()
-                            .justify_between()
-                            .p(px(10.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0xfafafa))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(exc.name.clone()))
-                                    .child(div().text_xs().text_color(rgb(0x8e8e93)).child(if exc.is_muted { "Muted" } else { "Always unmuted" }))
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0xcc2424))
-                                    .child("Delete")
-                            )
-                    }))
-            )
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::Speaker, &self.chat_type_name, Some(tr_str(lang, "对话类型通知设置", "Chat type notifications")), pal))
+                .child(settings_toggle_row(IconName::Speaker, tr_str(lang, "弹出通知提醒", "Show Notifications"), None, self.alerts_enabled, pal, Self::toggle_alerts, cx))
+                .child(settings_toggle_row(IconName::FileDoc, tr_str(lang, "显示消息预览", "Message Preview"), None, self.message_preview, pal, Self::toggle_preview, cx))
+                .child(settings_toggle_row(IconName::Speaker, tr_str(lang, "播放提示音", "Play Sound"), None, self.sound_enabled, pal, Self::toggle_sound, cx)))
+            .child(settings_card(pal)
+                .child(settings_subsection_title(&format!("{} ({})", tr_str(lang, "例外列表", "Exceptions"), self.exceptions.len()), pal))
+                .map(|el| {
+                    if self.exceptions.is_empty() {
+                        el.child(settings_empty_state(IconName::Mute, tr_str(lang, "暂无例外对话", "No notification exceptions"), pal))
+                    } else {
+                        el.children(self.exceptions.clone().into_iter().map(|ex| {
+                            let pid = ex.peer_id;
+                            let status = if ex.is_muted { "Muted" } else { "Custom" };
+                            settings_action_row(IconName::ContactsUsers, &ex.name, status, pal, false, move |this| {
+                                this.remove_exception(pid);
+                            }, cx)
+                        }))
+                    }
+                }))
+            .into_any_element()
     }
 }

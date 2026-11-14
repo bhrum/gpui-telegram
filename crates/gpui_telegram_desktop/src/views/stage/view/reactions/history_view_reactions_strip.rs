@@ -4,7 +4,7 @@
 
 use gpui::*;
 use crate::views::stage::reactions::button::ReactionKey;
-use crate::views::stage::reactions::strip::{ReactionsStrip, K_HOVER_SCALE, K_HOVER_SCALE_DURATION_MS};
+use crate::views::stage::reactions::strip::ReactionsStrip;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewReactionsStripViewReactions {

@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/confirm_phone_box.cpp:L30-L187
 //! Reference: Telegram/SourceFiles/ui/boxes/confirm_phone_box.h:L20-L70
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

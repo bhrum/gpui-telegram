@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/bot/earn/info_bot_earn_list.h, info_bot_earn_list.cpp
 //! Exact Stars revenue overview, currency decimal formatter, withdrawal triggers, and sliding tabs.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -160,7 +159,7 @@ impl Render for InfoBotEarnListBotEarn {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_bot_earn_list_usd_conversion_and_withdrawal() {
         let mut earn = InfoBotEarnListBotEarn::new(1001);
         earn.update_state(1000, 200, 1200, 0.013, 1700000000, true);

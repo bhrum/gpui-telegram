@@ -145,7 +145,7 @@ impl Render for FileBookmarkMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_file_bookmark_mac() {
         let mut bookmark = FileBookmarkMacMac::with_file("/Users/user/Downloads/archive.zip", vec![1, 2, 3, 4]);
         assert_eq!(bookmark.name(), "archive.zip");

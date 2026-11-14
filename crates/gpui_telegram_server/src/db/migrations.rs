@@ -14,6 +14,44 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     )
     .map_err(|e| TelegramError::Database(format!("Failed to create _schema_migrations: {}", e)))?;
 
+    let essential_already_expected: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM _schema_migrations WHERE version = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    if essential_already_expected {
+        const CORE_TABLES: &[&str] = &[
+            "users",
+            "sessions",
+            "chats",
+            "chat_members",
+            "forum_topics",
+            "messages",
+            "pts_sequences",
+            "pts_updates",
+            "message_dedup",
+            "read_states",
+        ];
+        for table in CORE_TABLES {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .map_err(|e| TelegramError::Database(format!("Schema check failed: {}", e)))?;
+            if !exists {
+                return Err(TelegramError::Database(format!(
+                    "Critical table '{}' is missing from existing database",
+                    table
+                )));
+            }
+        }
+    }
+
     for (idx, &migration_sql) in ALL_MIGRATIONS.iter().enumerate() {
         let version = (idx + 1) as i64;
         let already_applied: bool = conn
@@ -38,8 +76,6 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 (version, now_ms),
             )
             .map_err(|e| TelegramError::Database(format!("Failed to record migration v{}: {}", version, e)))?;
-        } else if migration_sql.contains("CREATE TABLE IF NOT EXISTS") {
-            let _ = conn.execute_batch(migration_sql);
         }
     }
 

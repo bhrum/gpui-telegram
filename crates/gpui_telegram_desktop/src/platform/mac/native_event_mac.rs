@@ -162,7 +162,7 @@ impl Render for NativeEventMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_typing_event_detection() {
         let mut analyzer = NativeEventMacMac::new();
 

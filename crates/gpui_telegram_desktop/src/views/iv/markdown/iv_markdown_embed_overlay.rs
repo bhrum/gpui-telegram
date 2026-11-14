@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownEmbedOverlayMarkdown
 //! Module 13: Instant View Embedded Iframe & Webview Overlay Coordinator
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

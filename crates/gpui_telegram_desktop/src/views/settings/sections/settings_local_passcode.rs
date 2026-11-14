@@ -1,9 +1,14 @@
-//! Authentic GPUI Settings Local Passcode Section Component
-//! Source: Telegram/SourceFiles/settings/sections/settings_local_passcode.cpp, Telegram/SourceFiles/settings/sections/settings_local_passcode.h
-//! Subsystem: settings | Feature ID: TCG-N02 | Disposition: rust_domain_or_server_1to1
+//! Upstream Source: Telegram/SourceFiles/settings/sections/settings_local_passcode.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::boxes::passcode_box::PasscodeBox;
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_info_row,
+    settings_section_header, settings_subsection_title,
+};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub const K_PASSCODE_SECTION_TIMEOUT_MS: u64 = 60_000;
@@ -47,33 +52,15 @@ pub struct PasscodeCountdown {
 }
 
 impl PasscodeCountdown {
-    pub fn new() -> Self {
-        Self {
-            remaining_seconds: K_PASSCODE_SECTION_TIMEOUT_MS / 1000,
-            paused: false,
-        }
-    }
-
-    pub fn restart(&mut self) {
-        self.remaining_seconds = K_PASSCODE_SECTION_TIMEOUT_MS / 1000;
-        self.paused = false;
-    }
-
-    pub fn pause(&mut self) {
-        self.paused = true;
-    }
-
+    pub fn new() -> Self { Self { remaining_seconds: K_PASSCODE_SECTION_TIMEOUT_MS / 1000, paused: false } }
+    pub fn restart(&mut self) { self.remaining_seconds = K_PASSCODE_SECTION_TIMEOUT_MS / 1000; self.paused = false; }
+    pub fn pause(&mut self) { self.paused = true; }
     pub fn tick(&mut self) -> bool {
-        if self.paused || self.remaining_seconds == 0 {
-            return false;
-        }
+        if self.paused || self.remaining_seconds == 0 { return false; }
         self.remaining_seconds = self.remaining_seconds.saturating_sub(1);
         self.remaining_seconds == 0
     }
-
-    pub fn formatted_text(&self) -> String {
-        format!("{}:{:02}", self.remaining_seconds / 60, self.remaining_seconds % 60)
-    }
+    pub fn formatted_text(&self) -> String { format!("{}:{:02}", self.remaining_seconds / 60, self.remaining_seconds % 60) }
 }
 
 #[derive(Debug, Clone)]
@@ -85,38 +72,46 @@ pub struct SettingsLocalPasscodeSections {
     pub bad_tries: u32,
     pub is_locked: bool,
     pub is_visible: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsLocalPasscodeSections {
+    fn hash_passcode_digest(pass: &str) -> String {
+        let digest = PasscodeBox::hash_passcode(pass, b"tg-local-pass-salt-1", b"tg-local-pass-salt-2");
+        digest.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
     pub fn new() -> Self {
         Self {
             has_passcode: true,
-            passcode_hash: Some("mock_pbkdf2_hash_secret".into()),
+            passcode_hash: Some(Self::hash_passcode_digest("correct")),
             auto_lock: AutoLockTimeout::In1Hour,
             countdown: PasscodeCountdown::new(),
             bad_tries: 0,
             is_locked: false,
             is_visible: true,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn local_passcode_create_id(&self) -> &'static str {
-        "settings_local_passcode_create"
+    pub fn new_live() -> Self {
+        let mut s = Self::new();
+        s.has_passcode = false;
+        s.passcode_hash = None;
+        s
     }
 
-    pub fn local_passcode_check_id(&self) -> &'static str {
-        "settings_local_passcode_check"
-    }
-
-    pub fn local_passcode_manage_id(&self) -> &'static str {
-        "settings_local_passcode_manage"
-    }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+    pub fn local_passcode_create_id(&self) -> &'static str { "settings_local_passcode_create" }
+    pub fn local_passcode_check_id(&self) -> &'static str { "settings_local_passcode_check" }
+    pub fn local_passcode_manage_id(&self) -> &'static str { "settings_local_passcode_manage" }
 
     pub fn set_passcode(&mut self, new_pass: &str) -> bool {
-        if new_pass.trim().is_empty() {
-            return false;
-        }
-        self.passcode_hash = Some(format!("hash_{}", new_pass));
+        if new_pass.trim().is_empty() { return false; }
+        self.passcode_hash = Some(Self::hash_passcode_digest(new_pass));
         self.has_passcode = true;
         self.bad_tries = 0;
         self.countdown.restart();
@@ -125,7 +120,7 @@ impl SettingsLocalPasscodeSections {
 
     pub fn verify_passcode(&mut self, pass: &str) -> bool {
         if let Some(ref current) = self.passcode_hash {
-            if current == &format!("hash_{}", pass) || pass == "correct" {
+            if current == &Self::hash_passcode_digest(pass) {
                 self.bad_tries = 0;
                 self.is_locked = false;
                 self.countdown.restart();
@@ -142,71 +137,42 @@ impl SettingsLocalPasscodeSections {
             self.passcode_hash = None;
             self.countdown.pause();
             true
-        } else {
-            false
-        }
+        } else { false }
     }
 
-    pub fn set_auto_lock(&mut self, timeout: AutoLockTimeout) {
-        self.auto_lock = timeout;
-    }
-
-    pub fn toggle_visibility(&mut self) {
-        self.is_visible = !self.is_visible;
-    }
+    pub fn set_auto_lock(&mut self, timeout: AutoLockTimeout) { self.auto_lock = timeout; }
+    pub fn toggle_visibility(&mut self) { self.is_visible = !self.is_visible; }
 }
 
 impl Default for SettingsLocalPasscodeSections {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsLocalPasscodeSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let status = if self.has_passcode { "Turned On" } else { "Turned Off" };
-        let timer = self.countdown.formatted_text();
-        let autolock_name = self.auto_lock.display_name();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_visible { return div().into_any_element(); }
+        let pal = self.palette;
+        let lang = &self.language_id;
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(16.0))
-            .gap(px(12.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .child(div().font_weight(FontWeight::BOLD).text_lg().child("Local Passcode"))
-                    .child(div().text_xs().text_color(rgb(0x8a909d)).child(format!("Timeout: {}", timer))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .rounded_md()
-                    .bg(rgb(0x282c34))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .justify_between()
-                            .child(div().text_sm().child("Passcode Lock"))
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(status)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .justify_between()
-                            .child(div().text_xs().text_color(rgb(0x8a909d)).child("Auto-lock if away for"))
-                            .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(autolock_name)),
-                    ),
-            )
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::Lock, tr_str(lang, "本地锁定密码", "Passcode Lock"), None, pal))
+                .child(settings_info_row(tr_str(lang, "密码状态", "Status"), if self.has_passcode { "Enabled" } else { "Disabled" }, pal))
+                .child(settings_action_row(IconName::ClockSending, tr_str(lang, "自动锁定超时", "Auto-Lock"), self.auto_lock.display_name(), pal, false, |this| {
+                    this.auto_lock = match this.auto_lock {
+                        AutoLockTimeout::Disabled => AutoLockTimeout::In1Min,
+                        AutoLockTimeout::In1Min => AutoLockTimeout::In5Mins,
+                        AutoLockTimeout::In5Mins => AutoLockTimeout::In1Hour,
+                        AutoLockTimeout::In1Hour => AutoLockTimeout::In5Hours,
+                        AutoLockTimeout::In5Hours => AutoLockTimeout::Disabled,
+                    };
+                }, cx))
+                .when(self.has_passcode, |el| {
+                    el.child(settings_subsection_title(tr_str(lang, "锁屏控制", "Controls"), pal))
+                        .child(settings_action_row(IconName::Lock, tr_str(lang, "立即锁定", "Lock Telegram"), &self.countdown.formatted_text(), pal, false, |this| {
+                            this.is_locked = !this.is_locked;
+                        }, cx))
+                }))
+            .into_any_element()
     }
 }

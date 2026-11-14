@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_gift_box_pack.h:L22-L60`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_gift_box_pack.cpp:L20-L75`
-#![allow(dead_code)]
 
 use gpui::*;
 

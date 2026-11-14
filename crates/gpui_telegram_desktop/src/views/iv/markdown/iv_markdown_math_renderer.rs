@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownMathRendererMarkdown
 //! Module 13: Instant View LaTeX Formula Rasterization Cache & Metrics
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

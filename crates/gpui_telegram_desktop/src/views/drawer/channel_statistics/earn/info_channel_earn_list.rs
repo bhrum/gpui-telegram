@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/channel_statistics/earn/info_channel_earn_list.h:L1-L73`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::earn_format::{major_part, minor_part, to_usd};

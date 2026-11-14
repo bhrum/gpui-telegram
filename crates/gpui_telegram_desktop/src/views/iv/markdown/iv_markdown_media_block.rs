@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownMediaBlockMarkdown
 //! Module 13: Instant View Structured Media Block Presentation (Channel, Document, Collage)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

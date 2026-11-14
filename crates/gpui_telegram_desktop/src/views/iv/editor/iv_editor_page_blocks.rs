@@ -1,5 +1,4 @@
 //! Instant View Article Page Blocks & Factory Engine (`iv_editor_page_blocks.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/color_int_conversion.cpp:L1-L33` & `color_int_conversion.h:L1-L17`
 //! Authentic GPUI implementation of 24-bit and 32-bit serialized color conversions.
-#![allow(dead_code)]
 
 use gpui::{rgba, Rgba};
 

@@ -118,7 +118,7 @@ impl Render for MacTouchbarManagerMacTouchbar {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_root_touchbar_dispatch_logic() {
         let mut mgr = MacTouchbarManagerMacTouchbar::new();
         assert_eq!(mgr.evaluate_state(), RootTouchBarTarget::MainChat);

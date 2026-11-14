@@ -1,7 +1,6 @@
 //! Upstream C++ style sheet mapping: `Telegram/SourceFiles/media/player/media_player.style:L1-L352`
 //! Target Symbol: `MediaPlayerPlayerStyleSheet`
 //! Subsystem: `media` | Feature: `TCG-N08`
-#![allow(dead_code)]
 
 use gpui::{px, rgb, Pixels, Rgba};
 

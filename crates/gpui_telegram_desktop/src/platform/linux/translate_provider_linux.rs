@@ -134,7 +134,7 @@ impl Render for TranslateProviderLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_translate_provider_linux() {
         let mut provider = TranslateProviderLinuxLinux::new();
         assert!(provider.is_translate_provider_available());

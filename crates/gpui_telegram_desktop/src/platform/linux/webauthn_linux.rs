@@ -119,7 +119,7 @@ impl Render for WebauthnLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_webauthn_linux() {
         let mut webauthn = WebauthnLinuxLinux::new();
         assert!(webauthn.is_supported());

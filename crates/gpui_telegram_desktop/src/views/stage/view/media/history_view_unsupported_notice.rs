@@ -5,7 +5,6 @@
 //!
 //! Renders notice card for messages containing unsupported media or future protocol formats,
 //! offering an interactive "Update Telegram" button.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -1,5 +1,4 @@
 //! Instant View Editor State Machine & Mutation Engine (`iv_editor_state.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

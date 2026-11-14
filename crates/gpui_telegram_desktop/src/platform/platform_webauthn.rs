@@ -123,7 +123,7 @@ impl Render for PlatformWebauthn {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_webauthn_register_and_login() {
         let mut webauthn = PlatformWebauthn::new();
         assert!(webauthn.is_available());

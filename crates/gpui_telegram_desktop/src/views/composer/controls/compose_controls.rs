@@ -3,9 +3,9 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_compose_controls.h`
 
 use super::ai_button::ComposeAiButton;
-use super::draft_options::{DraftOptionsFsm, DraftSection};
-use super::forward_panel::{ForwardPanelModel, ForwardedItem};
-use super::voice_record_bar::{VoiceRecordBar, VoiceRecordState};
+use super::draft_options::DraftOptionsFsm;
+use super::forward_panel::ForwardPanelModel;
+use super::voice_record_bar::VoiceRecordBar;
 use gpui::*;
 use serde::{Deserialize, Serialize};
 

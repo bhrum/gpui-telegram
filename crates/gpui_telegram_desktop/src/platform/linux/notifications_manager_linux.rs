@@ -157,7 +157,7 @@ impl Render for NotificationsManagerLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_notifications_manager_linux() {
         let mut mgr = NotificationsManagerLinuxLinux::new();
         assert!(mgr.is_supported);

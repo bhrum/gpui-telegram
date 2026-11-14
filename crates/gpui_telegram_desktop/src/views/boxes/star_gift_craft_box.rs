@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Star Gift Craft Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/star_gift_craft_box.h:L24-L51`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/star_gift_craft_box.cpp:L66-L100`, `L340-L420`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

@@ -108,6 +108,12 @@ pub struct PersistedClientState {
 
 impl Default for PersistedClientState {
     fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl PersistedClientState {
+    pub fn new_demo() -> Self {
         Self {
             active_account_id: 1,
             accounts: vec![
@@ -245,6 +251,37 @@ impl Default for PersistedClientState {
     }
 }
 
+impl PersistedClientState {
+    pub fn empty() -> Self {
+        Self {
+            active_account_id: 0,
+            accounts: Vec::new(),
+            custom_folders: Vec::new(),
+            drafts_by_chat: HashMap::new(),
+            archived_chat_ids: Vec::new(),
+            blocked_peers: Vec::new(),
+            local_passcode_pin: None,
+            two_factor_password_hint: None,
+            auto_delete_ttl_label: "Off".to_string(),
+            theme_name: "Night".to_string(),
+            accent_color: 0x2AABEE,
+            font_size_px: 14,
+            bubble_radius_px: 14,
+            send_with_enter: true,
+            language_id: "en".to_string(),
+            show_translate_bar: false,
+            proxies: Vec::new(),
+            active_devices: Vec::new(),
+            ton_balance: 0.0,
+            stars_balance: 0,
+            wallet_transactions: Vec::new(),
+            pts_counter: 0,
+            cache_media_mb: 0.0,
+            cache_files_mb: 0.0,
+        }
+    }
+}
+
 pub struct SessionPersistenceBridge {
     pub client: TelegramClient,
     pub state: PersistedClientState,
@@ -254,10 +291,19 @@ pub struct SessionPersistenceBridge {
 impl SessionPersistenceBridge {
     pub fn new(server_url: impl Into<String>) -> Self {
         let storage_path = Self::resolve_storage_path();
-        let state = Self::load_from_disk(&storage_path).unwrap_or_default();
+        let state = Self::load_from_disk(&storage_path).unwrap_or_else(PersistedClientState::empty);
         Self {
             client: TelegramClient::new_with_url(server_url.into()),
             state,
+            storage_path,
+        }
+    }
+
+    pub fn new_demo() -> Self {
+        let storage_path = Self::resolve_storage_path();
+        Self {
+            client: TelegramClient::new_with_url("http://127.0.0.1:8080".to_string()),
+            state: PersistedClientState::new_demo(),
             storage_path,
         }
     }
@@ -298,13 +344,13 @@ impl SessionPersistenceBridge {
         self.save_to_disk();
     }
 
-    pub fn active_account(&self) -> AccountSessionRecord {
+    pub fn active_account(&self) -> Option<AccountSessionRecord> {
         self.state
             .accounts
             .iter()
             .find(|a| a.account_id == self.state.active_account_id)
             .cloned()
-            .unwrap_or_else(|| self.state.accounts[0].clone())
+            .or_else(|| self.state.accounts.first().cloned())
     }
 
     pub fn export_chat_archive(

@@ -1,5 +1,4 @@
 //! Layout cache for Instant View
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use std::collections::HashMap;
 

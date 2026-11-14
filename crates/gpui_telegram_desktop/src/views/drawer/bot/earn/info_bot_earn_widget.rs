@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/bot/earn/info_bot_earn_widget.h, info_bot_earn_widget.cpp
 //! Exact container widget, title provider (`lng_bot_earn_title`), and shadow visibility.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_bot_earn_list::InfoBotEarnListBotEarn;
@@ -91,7 +90,7 @@ impl Render for InfoBotEarnWidgetBotEarn {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_bot_earn_widget_lifecycle() {
         let mut widget = InfoBotEarnWidgetBotEarn::new(2002);
         assert_eq!(widget.peer_id, 2002);

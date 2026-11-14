@@ -3,10 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_contact.h:L25-L99`
 //! - `Telegram/SourceFiles/history/view/media/history_view_contact.cpp:L39-L100`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::location::RichContactCard;
 
 #[derive(Debug, Clone)]

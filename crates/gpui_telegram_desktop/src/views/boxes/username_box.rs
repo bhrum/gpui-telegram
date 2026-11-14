@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's UsernameBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/username_box.h:L14-L37`
 //! and `Telegram/SourceFiles/boxes/username_box.cpp:L40-L120`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

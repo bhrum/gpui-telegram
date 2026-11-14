@@ -152,7 +152,7 @@ impl Render for OverlayWidgetMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_traffic_light_hit_test_and_movable_state() {
         let mut overlay = OverlayWidgetMacMac::new();
         assert!(overlay.skip_title_hit_test(14.0, 14.0));

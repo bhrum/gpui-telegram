@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/fields/special_fields.cpp:L18-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/fields/special_fields.h:L20-L147
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Maximum allowed length of a Telegram public @username: 32 chars.
 /// Reference: `fields/special_fields.cpp:L19`

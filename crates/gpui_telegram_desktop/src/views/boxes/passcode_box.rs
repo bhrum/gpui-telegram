@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Passcode & Cloud Password Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/passcode_box.h:L33-L200` and `passcode_box.cpp:L344-L443`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

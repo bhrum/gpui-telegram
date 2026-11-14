@@ -5,7 +5,10 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::views::stage::bottom_info::{
-    format_views_count, schedule_period_text, BottomInfoData, BottomInfoFlags, BottomInfoView,
+    format_views_count,
+    schedule_period_text,
+    BottomInfoData,
+    BottomInfoFlags,
 };
 
 /// Authentic GPUI View for HistoryView::BottomInfo.

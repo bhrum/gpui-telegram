@@ -2,10 +2,6 @@
 //! Subsystem: settings | Feature ID: TCG-N02 | Disposition: rust_domain_or_server_1to1
 //! Inherited Rust Path: inherited/node-agent-coordinator/src/tdrp/settings_cloud_passkeys.rs
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
-use gpui::*;
-
 #[derive(Debug, Clone)]
 pub struct SettingsActiveSessionsSectionsStyleSheet {
     pub is_active: bool,

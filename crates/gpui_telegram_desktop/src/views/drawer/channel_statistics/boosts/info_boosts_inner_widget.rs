@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/channel_statistics/boosts/info_boosts_inner_widget.h:L1-L63`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

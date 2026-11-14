@@ -1,5 +1,6 @@
 use gpui::*;
 use gpui_telegram_client::{ClientConfig, TelegramClient};
+use gpui_telegram_desktop::theme::TelegramAssetSource;
 use gpui_telegram_desktop::views::AppShell;
 use std::sync::Arc;
 
@@ -33,7 +34,9 @@ fn main() {
     let client = Arc::new(TelegramClient::new(config));
     let _tokio_guard = client.runtime().enter();
 
-    Application::new().run(move |cx: &mut App| {
+    Application::new()
+        .with_assets(TelegramAssetSource::new())
+        .run(move |cx: &mut App| {
         cx.activate(true);
         let bounds = Bounds::centered(None, size(px(1280.0), px(820.0)), cx);
         let app_client = client.clone();

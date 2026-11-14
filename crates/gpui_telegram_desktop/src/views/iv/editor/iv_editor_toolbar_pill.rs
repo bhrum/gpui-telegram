@@ -1,6 +1,5 @@
 //! Target Symbol: IvEditorToolbarPillEditor
 //! Module 13: Instant View Floating Editor Toolbar Pill
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -183,7 +183,7 @@ impl Render for InfoProfileTabSavedProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_saved_adapter_filtering_and_tags() {
         let mut adapter = InfoProfileTabSavedProfileTabsAdapters::new(3003);
         assert_eq!(adapter.peer_id, 3003);

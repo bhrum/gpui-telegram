@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_ttl_button.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 /// Format tiny TTL badge text (e.g. "1d", "1w", "1m")
 /// Upstream: `Ui::FormatTTLTiny` (`history_view_ttl_button.cpp:L40`)

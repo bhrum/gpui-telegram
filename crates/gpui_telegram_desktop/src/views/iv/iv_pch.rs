@@ -1,6 +1,5 @@
 //! Target Symbol: IvPch
 //! Module 13: Instant View Precompiled Header Prelude & Subsystem Info
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/level_meter.cpp:L15-L48
 //! Reference: Telegram/SourceFiles/ui/widgets/level_meter.h:L15-L33
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Target symbol for segmented microphone input volume / audio playback level meter.
 #[derive(Debug, Clone)]

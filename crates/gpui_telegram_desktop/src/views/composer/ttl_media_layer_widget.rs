@@ -6,8 +6,6 @@
 //!
 //! Subsystem: chat_helpers, Feature: TCG-N11
 
-use std::time::Duration;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TtlMediaType {
     Photo,

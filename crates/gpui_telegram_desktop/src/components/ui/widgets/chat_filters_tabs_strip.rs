@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_strip.cpp:L45-L120
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_strip.h:L18-L37
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use super::chat_filters_tabs_slider::{ChatFiltersTabsSliderWidgets, FilterTabSection};
 use super::chat_filters_tabs_slider_reorder::ChatFiltersTabsSliderReorderWidgets;

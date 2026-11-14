@@ -329,8 +329,8 @@ fn test_adversarial_intro_code_input_bounds_and_overflow() {
     assert!(standard.is_complete());
 
     // 5. Overflow handling: pushing beyond length
-    // When focused_index is at end (digits_count - 1), pushing replaces the slot
-    assert!(standard.push_digit('9'));
+    // When full, pushing replaces the last slot while returning false
+    assert!(!standard.push_digit('9'));
     assert_eq!(standard.code(), "12349");
     assert!(standard.is_complete());
 }

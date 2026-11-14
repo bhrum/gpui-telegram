@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/boost_box.cpp:L45-L996
 //! Reference: Telegram/SourceFiles/ui/boxes/boost_box.h:L20-L154
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::BTreeMap;

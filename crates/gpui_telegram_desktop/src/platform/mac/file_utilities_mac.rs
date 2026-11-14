@@ -134,7 +134,7 @@ impl Render for FileUtilitiesMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_file_utilities_mac() {
         let mut utils = FileUtilitiesMacMac::new();
         assert!(utils.is_supported);

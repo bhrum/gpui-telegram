@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_invite_link.cpp:L35-L474
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_invite_link.h:L20-L51
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

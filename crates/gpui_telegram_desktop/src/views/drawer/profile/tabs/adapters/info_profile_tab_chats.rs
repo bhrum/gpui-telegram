@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/profile/tabs/adapters/info_profile_tab_chats.h:L1-L23`
 //! Subsystem: info | Feature ID: TCG-N22 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use serde::{Deserialize, Serialize};
 

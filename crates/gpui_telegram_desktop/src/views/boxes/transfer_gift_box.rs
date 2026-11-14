@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's TransferGiftBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/transfer_gift_box.h:L30-L98`
 //! and `Telegram/SourceFiles/boxes/transfer_gift_box.cpp:L60-L150`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

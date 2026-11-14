@@ -4,12 +4,10 @@
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_inner.h:L61-L100`
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_inner.cpp:L89-L103` (Pagination and grouping constants)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::admin_log::{
-    AdminLogDeleteGroup, K_DELETE_GROUP_TIME_WINDOW_SECS, K_EVENTS_FIRST_PAGE,
-    K_EVENTS_PER_PAGE, K_MAX_CHANNEL_ADMINS, K_PRELOAD_UP_DISPLAY_ITEMS_BUFFER,
+    AdminLogDeleteGroup,
+    K_EVENTS_PER_PAGE,
 };
 
 /// Upstream `history_admin_log_inner.h:L61-L100`: Inner Administrative Log Virtualized List

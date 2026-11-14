@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/continuous_sliders.cpp:L18-L160
 //! Reference: Telegram/SourceFiles/ui/widgets/continuous_sliders.h:L24-L200
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Inactivity timeout before finishing wheel scrolling adjustments.
 /// Reference: `continuous_sliders.cpp:L20`

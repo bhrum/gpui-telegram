@@ -58,7 +58,7 @@ impl InfoSectionWidget {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_info_section_widget_geometry() {
         let mut widget = InfoSectionWidget::new(InfoSectionType::CommonGroups);
         assert_eq!(widget.section_type, InfoSectionType::CommonGroups);

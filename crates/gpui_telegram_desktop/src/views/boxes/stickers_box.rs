@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's StickersBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/stickers_box.h:L30-L75`
 //! and `Telegram/SourceFiles/boxes/stickers_box.cpp:L50-L150`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

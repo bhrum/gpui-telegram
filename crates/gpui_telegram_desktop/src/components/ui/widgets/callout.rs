@@ -3,7 +3,6 @@
 //! Upstream: Telegram/SourceFiles/ui/widgets/peer_bubble.cpp:L23-L60
 //! Implements inline callout notification cards with severity status and action buttons.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

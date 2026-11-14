@@ -1,6 +1,5 @@
 //! Target Symbol: IvSearchBar
 //! Module 13: Instant View Search Bar Overlay Component
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

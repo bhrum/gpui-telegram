@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleLayoutStructureMarkdown
 //! Module 13: Instant View Structural Width Constraints & Column Distribution
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

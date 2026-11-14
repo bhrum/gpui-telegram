@@ -127,7 +127,7 @@ impl Render for IntegrationLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_integration_linux() {
         let mut integ = IntegrationLinuxLinux::new();
         assert!(integ.is_supported);

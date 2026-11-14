@@ -1,0 +1,272 @@
+use gpui_telegram_core::error::{Result, TelegramError};
+use gpui_telegram_core::types::{ChatId, MessageId};
+use gpui_telegram_proto::contracts::{ChatDetailDto, DraftDto};
+use gpui_telegram_proto::message::MessageItem;
+use parking_lot::Mutex;
+use rusqlite::{params, Connection};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct CachedMediaEntry {
+    pub file_id: String,
+    pub sha256: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: u64,
+    pub local_path: PathBuf,
+}
+
+pub(crate) struct SqliteClientCache {
+    conn: Mutex<Connection>,
+    media_dir: PathBuf,
+}
+
+impl std::fmt::Debug for SqliteClientCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteClientCache")
+            .field("media_dir", &self.media_dir)
+            .finish()
+    }
+}
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        let _ = write!(&mut out, "{:02x}", b);
+    }
+    out
+}
+
+fn db_err(err: rusqlite::Error) -> TelegramError {
+    TelegramError::Database(err.to_string())
+}
+
+impl SqliteClientCache {
+    pub(crate) fn open(base_dir: &Path) -> Result<Self> {
+        let media_dir = base_dir.join("media");
+        std::fs::create_dir_all(&media_dir)?;
+        let db_path = base_dir.join("client_cache.db");
+        let conn = Connection::open(&db_path).map_err(db_err)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS messages (
+                 chat_id INTEGER NOT NULL,
+                 msg_id INTEGER NOT NULL,
+                 date_ms INTEGER NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 PRIMARY KEY (chat_id, msg_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages(chat_id, date_ms, msg_id);
+             CREATE TABLE IF NOT EXISTS chats (
+                 chat_id INTEGER PRIMARY KEY,
+                 payload_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS drafts (
+                 chat_id INTEGER PRIMARY KEY,
+                 payload_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS read_states (
+                 chat_id INTEGER PRIMARY KEY,
+                 read_inbox_max INTEGER NOT NULL DEFAULT 0,
+                 read_outbox_max INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS media_cas (
+                 file_id TEXT PRIMARY KEY,
+                 sha256 TEXT NOT NULL,
+                 mime_type TEXT,
+                 size_bytes INTEGER NOT NULL,
+                 local_path TEXT NOT NULL
+             );",
+        )
+        .map_err(db_err)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            media_dir,
+        })
+    }
+
+    pub(crate) fn load_messages(&self) -> Result<HashMap<ChatId, Vec<MessageItem>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT payload_json FROM messages ORDER BY date_ms ASC, msg_id ASC")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out: HashMap<ChatId, Vec<MessageItem>> = HashMap::new();
+        for row in rows {
+            let json = row.map_err(db_err)?;
+            if let Ok(item) = serde_json::from_str::<MessageItem>(&json) {
+                out.entry(item.chat_id).or_default().push(item);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn load_chats(&self) -> Result<HashMap<ChatId, ChatDetailDto>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT payload_json FROM chats").map_err(db_err)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let json = row.map_err(db_err)?;
+            if let Ok(chat) = serde_json::from_str::<ChatDetailDto>(&json) {
+                out.insert(ChatId(chat.chat_id), chat);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn load_drafts(&self) -> Result<HashMap<ChatId, DraftDto>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT payload_json FROM drafts").map_err(db_err)?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let json = row.map_err(db_err)?;
+            if let Ok(draft) = serde_json::from_str::<DraftDto>(&json) {
+                out.insert(ChatId(draft.chat_id), draft);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn load_read_states(&self) -> Result<(HashMap<ChatId, MessageId>, HashMap<ChatId, MessageId>)> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT chat_id, read_inbox_max, read_outbox_max FROM read_states")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .map_err(db_err)?;
+        let (mut inbox, mut outbox) = (HashMap::new(), HashMap::new());
+        for row in rows {
+            let (cid, r_in, r_out) = row.map_err(db_err)?;
+            if r_in > 0 {
+                inbox.insert(ChatId(cid), MessageId(r_in));
+            }
+            if r_out > 0 {
+                outbox.insert(ChatId(cid), MessageId(r_out));
+            }
+        }
+        Ok((inbox, outbox))
+    }
+
+    pub(crate) fn load_media_index(&self) -> Result<HashMap<String, CachedMediaEntry>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT file_id, sha256, mime_type, size_bytes, local_path FROM media_cas")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(CachedMediaEntry {
+                    file_id: r.get(0)?,
+                    sha256: r.get(1)?,
+                    mime_type: r.get(2)?,
+                    size_bytes: r.get::<_, i64>(3)?.max(0) as u64,
+                    local_path: PathBuf::from(r.get::<_, String>(4)?),
+                })
+            })
+            .map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let entry = row.map_err(db_err)?;
+            out.insert(entry.file_id.clone(), entry);
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn upsert_message(&self, msg: &MessageItem) {
+        if let Ok(json) = serde_json::to_string(msg) {
+            let conn = self.conn.lock();
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO messages (chat_id, msg_id, date_ms, payload_json) VALUES (?1, ?2, ?3, ?4)",
+                params![msg.chat_id.0, msg.id.0, msg.date.timestamp_millis(), json],
+            );
+        }
+    }
+
+    pub(crate) fn delete_message(&self, chat_id: ChatId, msg_id: MessageId) {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "DELETE FROM messages WHERE chat_id = ?1 AND msg_id = ?2",
+            params![chat_id.0, msg_id.0],
+        );
+    }
+
+    pub(crate) fn upsert_chat(&self, chat: &ChatDetailDto) {
+        if let Ok(json) = serde_json::to_string(chat) {
+            let conn = self.conn.lock();
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO chats (chat_id, payload_json) VALUES (?1, ?2)",
+                params![chat.chat_id, json],
+            );
+        }
+    }
+
+    pub(crate) fn set_draft(&self, chat_id: ChatId, draft: Option<&DraftDto>) {
+        let conn = self.conn.lock();
+        if let Some(d) = draft {
+            if let Ok(json) = serde_json::to_string(d) {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO drafts (chat_id, payload_json) VALUES (?1, ?2)",
+                    params![chat_id.0, json],
+                );
+            }
+        } else {
+            let _ = conn.execute("DELETE FROM drafts WHERE chat_id = ?1", params![chat_id.0]);
+        }
+    }
+
+    pub(crate) fn upsert_read_state(&self, chat_id: ChatId, inbox: i64, outbox: i64) {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO read_states (chat_id, read_inbox_max, read_outbox_max) VALUES (?1, ?2, ?3)",
+            params![chat_id.0, inbox, outbox],
+        );
+    }
+
+    pub(crate) fn write_media_cas(
+        &self,
+        file_id: &str,
+        bytes: &[u8],
+        mime_type: Option<&str>,
+    ) -> Result<CachedMediaEntry> {
+        let sha = sha256_hex(bytes);
+        let final_path = self.media_dir.join(format!("{}.bin", sha));
+        if !final_path.exists() {
+            let tmp_path = self
+                .media_dir
+                .join(format!(".tmp-{}-{}", sha, std::process::id()));
+            std::fs::write(&tmp_path, bytes)?;
+            if let Err(err) = std::fs::rename(&tmp_path, &final_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(err.into());
+            }
+        }
+        let entry = CachedMediaEntry {
+            file_id: file_id.to_string(),
+            sha256: sha.clone(),
+            mime_type: mime_type.map(|m| m.to_string()),
+            size_bytes: bytes.len() as u64,
+            local_path: final_path.clone(),
+        };
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT OR REPLACE INTO media_cas (file_id, sha256, mime_type, size_bytes, local_path) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                entry.file_id,
+                entry.sha256,
+                entry.mime_type,
+                entry.size_bytes as i64,
+                final_path.to_string_lossy().as_ref()
+            ],
+        )
+        .map_err(db_err)?;
+        Ok(entry)
+    }
+}

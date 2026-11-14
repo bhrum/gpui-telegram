@@ -1,6 +1,8 @@
 //! Upstream Source: Telegram/SourceFiles/settings/settings_type.h
 //! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
 
+use crate::theme::assets::{IconName, tg_icon};
+use crate::theme::palette::TdesktopThemePalette;
 use gpui::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -151,6 +153,31 @@ impl SettingsSectionType {
         }
     }
 
+    pub fn icon_name(&self) -> IconName {
+        match self {
+            Self::Main | Self::Advanced => IconName::SettingsGear,
+            Self::Information => IconName::ContactsUsers,
+            Self::Notifications | Self::NotificationsType => IconName::Speaker,
+            Self::NotificationsReactions => IconName::HeartReaction,
+            Self::PrivacySecurity | Self::LocalPasscode | Self::Passkeys => IconName::Lock,
+            Self::BlockedPeers => IconName::Close,
+            Self::ActiveSessions => IconName::ComputerDesktop,
+            Self::GlobalTtl => IconName::ClockSending,
+            Self::Chat => IconName::FolderChat,
+            Self::Folders => IconName::FolderAll,
+            Self::LocalStorage => IconName::FileDoc,
+            Self::PowerSaving => IconName::SunDay,
+            Self::Calls => IconName::PhoneCall,
+            Self::Credits => IconName::WalletStars,
+            Self::Premium => IconName::PremiumStar,
+            Self::Shortcuts => IconName::TerminalMcp,
+            Self::Websites => IconName::BotRobot,
+            Self::Business => IconName::ChannelMegaphone,
+            Self::Language => IconName::Translate,
+            Self::Search => IconName::Search,
+        }
+    }
+
     pub fn is_root(&self) -> bool {
         matches!(self, Self::Main)
     }
@@ -194,6 +221,7 @@ pub struct SettingsType {
     pub current_section: SettingsSectionType,
     pub title: String,
     pub is_visible: bool,
+    pub palette: TdesktopThemePalette,
 }
 
 impl SettingsType {
@@ -202,6 +230,7 @@ impl SettingsType {
             current_section: SettingsSectionType::Main,
             title: SettingsSectionType::Main.display_title().into(),
             is_visible: true,
+            palette: TdesktopThemePalette::default(),
         }
     }
 
@@ -210,7 +239,13 @@ impl SettingsType {
             current_section: section,
             title: section.display_title().into(),
             is_visible: true,
+            palette: TdesktopThemePalette::default(),
         }
+    }
+
+    pub fn with_palette(mut self, palette: TdesktopThemePalette) -> Self {
+        self.palette = palette;
+        self
     }
 
     pub fn set_section(&mut self, section: SettingsSectionType) {
@@ -234,6 +269,7 @@ impl Render for SettingsType {
         if !self.is_visible {
             return div().into_any_element();
         }
+        let pal = self.palette;
 
         div()
             .flex()
@@ -243,20 +279,21 @@ impl Render for SettingsType {
             .w_full()
             .px(px(16.0))
             .py(px(8.0))
-            .bg(rgb(0x18222d))
+            .bg(rgb(pal.top_bar_bg))
             .border_b_1()
-            .border_color(rgb(0x0f161e))
+            .border_color(rgb(pal.border_fg))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(8.0))
+                    .child(tg_icon(self.current_section.icon_name(), 16.0, pal.accent))
                     .child(
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(0xffffff))
+                            .text_color(rgb(pal.text_primary))
                             .child(self.title.clone()),
                     )
                     .child(
@@ -265,8 +302,8 @@ impl Render for SettingsType {
                             .px(px(6.0))
                             .py(px(2.0))
                             .rounded(px(4.0))
-                            .bg(rgb(0x2b3846))
-                            .text_color(rgb(0x8292a1))
+                            .bg(rgb(pal.input_bg))
+                            .text_color(rgb(pal.text_secondary))
                             .child(format!("#{}", self.current_section.id_str())),
                     ),
             )

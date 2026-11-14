@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/countryinput.cpp:L1-L201` & `countryinput.h:L1-L67`
 //! Authentic GPUI implementation of country code selector and phone dial prefix input.
-#![allow(dead_code)]
 
 /// Country metadata entry for telephone onboarding.
 #[derive(Debug, Clone, PartialEq, Eq)]

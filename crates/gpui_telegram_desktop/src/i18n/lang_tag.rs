@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_tag.h`, `lang_tag.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 pub const K_TEXT_COMMAND: u8 = 0x10;
 pub const K_TEXT_COMMAND_LANG_TAG: u8 = 0x20;
@@ -130,7 +129,7 @@ impl LangTag {
         }
     }
 
-    fn choose_plural_shift(lang_code: &str, count: f64, i: i64, is_int: bool) -> usize {
+    fn choose_plural_shift(lang_code: &str, _count: f64, i: i64, is_int: bool) -> usize {
         let base = lang_code.split('-').next().unwrap_or(lang_code).to_ascii_lowercase();
         match base.as_str() {
             // Russian, Ukrainian, Belarusian

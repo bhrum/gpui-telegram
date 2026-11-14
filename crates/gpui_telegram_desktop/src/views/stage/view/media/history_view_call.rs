@@ -3,10 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_call.h:L20-L59`
 //! - `Telegram/SourceFiles/history/view/media/history_view_call.cpp:L33-L125`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::invoice::{RichCallCard, CallState, compute_call_duration};
 
 #[derive(Debug, Clone)]

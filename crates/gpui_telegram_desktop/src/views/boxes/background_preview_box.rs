@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Background Preview Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/background_preview_box.h:L41-L150`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/background_preview_box.cpp:L58-L60`, `L400-L560`, and `background_preview_box.style:L10-L57`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

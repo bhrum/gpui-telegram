@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/middle_click_autoscroll.cpp:L17-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/middle_click_autoscroll.h:L18-L57
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Timer tick delay in milliseconds: 15ms.
 /// Reference: `middle_click_autoscroll.cpp:L17`

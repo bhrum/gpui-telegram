@@ -8,7 +8,7 @@
 //! - `kStoryWidth = 720`, `kStoryHeight = 1280` (9:16 aspect ratio) (`history_view_photo.cpp:L53-L54`)
 //! - Photo thumbnail aspect bounding: min size 100px, max size 420px (`history_view_photo.cpp:L343-L352`)
 
-use crate::views::stage::media::{PhotoAspectRatio, PhotoMediaState, STORY_HEIGHT, STORY_WIDTH};
+use crate::views::stage::media::{PhotoMediaState, STORY_HEIGHT, STORY_WIDTH};
 
 pub const K_STORY_WIDTH: u32 = 720;
 pub const K_STORY_HEIGHT: u32 = 1280;

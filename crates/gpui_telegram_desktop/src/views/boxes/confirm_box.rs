@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Confirm & Inform Boxes.
 //! Upstream reference: `Telegram/SourceFiles/ui/boxes/confirm_box.h:L13-L71` and `confirm_box.cpp:L17-L160`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

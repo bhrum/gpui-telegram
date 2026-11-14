@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/share_message_phrase_factory.h:L20-L37`
 //! - `Telegram/SourceFiles/chat_helpers/share_message_phrase_factory.cpp:L20-L82`
-#![allow(dead_code)]
 
 use gpui::*;
 

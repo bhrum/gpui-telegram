@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/search_field_controller.cpp:L1-L117` & `search_field_controller.h:L1-L45`
 //! Authentic GPUI implementation of search input field controller and query lifecycle.
-#![allow(dead_code)]
 
 /// Controller managing query state, clear triggers, and active search filters.
 /// C++ companion: `Ui::SearchFieldController` (`search_field_controller.cpp:L20-L117`).

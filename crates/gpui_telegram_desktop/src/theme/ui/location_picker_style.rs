@@ -1,8 +1,7 @@
 //! Upstream C++ style sheet mapping: `ui/controls/location_picker.style:L1-L67`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{px, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/controls/location_picker.style:L1-L67`.
 #[derive(Debug, Clone, Copy)]

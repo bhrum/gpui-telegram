@@ -3,16 +3,8 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_gram_transfer.h:L17-L41`
 //! - `Telegram/SourceFiles/history/view/media/history_view_gram_transfer.cpp:L53-L125`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::transfer::{
-    RichTonTransferCard, format_ton_address_groups, format_nano_ton,
-    BumpCurve, K_SETTLE_BUMP, K_READ_PRESS,
-    K_ADDRESS_GROUP_SIZE, K_ADDRESS_GROUPS_PER_LINE, K_GLARE_DURATION_MS,
-    K_GLARE_TIMEOUT_MS, K_BUMP_AMPLITUDE, K_BURST_STARS_PER_SIDE,
-};
+use crate::views::stage::media::transfer::RichTonTransferCard;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewGramTransferViewMedia {

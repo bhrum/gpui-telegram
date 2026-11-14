@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Choose Filter Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/choose_filter_box.h:L25-L73`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/choose_filter_box.cpp:L41-L60`, `L200-L310`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

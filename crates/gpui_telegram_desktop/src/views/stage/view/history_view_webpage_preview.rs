@@ -5,7 +5,6 @@
 //!
 //! Extracts title, description, and preview imagery from web page metadata for rich URL cards
 //! in chat history, enforcing upstream Telegram hierarchy and square-center crop heuristics.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

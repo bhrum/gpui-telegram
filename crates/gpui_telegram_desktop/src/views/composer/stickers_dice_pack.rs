@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_dice_pack.h:L22-L60`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_dice_pack.cpp:L23-L90`
-#![allow(dead_code)]
 
 use gpui::*;
 use std::collections::HashMap;

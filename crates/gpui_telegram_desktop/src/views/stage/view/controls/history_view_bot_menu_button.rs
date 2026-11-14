@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_bot_menu_button.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 /// Authentic bot menu button model and GPUI component
 pub struct HistoryViewBotMenuButtonViewControls {

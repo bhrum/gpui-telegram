@@ -160,7 +160,7 @@ impl Render for WindowTitleMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_window_title_colors_and_metrics() {
         let mut title = WindowTitleMacMac::new();
         assert_eq!(title.preview_title_height(), 22);

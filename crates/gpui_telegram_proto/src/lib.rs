@@ -1,4 +1,5 @@
 pub mod cards;
+pub mod contracts;
 pub mod message;
 pub mod sync;
 pub mod tdrp;
@@ -8,10 +9,11 @@ pub use cards::{
     CardActionButton, CardActionType, InvoiceCard, PaymentStatus, PollAnswer, PollCard,
     PollOption, PriceLine, TodoCard, TodoItem,
 };
+pub use contracts::*;
 pub use message::{
-    DeleteTombstone, ForwardInfo, MediaItem, MediaThumbnail, MessageContent, MessageEntity,
-    MessageEntityKind, MessageEntityType, MessageItem, ReactionCount, ReplyHeader, VideoNoteItem,
-    VoiceItem,
+    DeleteTombstone, ForwardInfo, InlineKeyboardButton, MediaItem, MediaThumbnail, MessageContent,
+    MessageEntity, MessageEntityKind, MessageEntityType, MessageItem, ReactionCount, ReplyHeader,
+    VideoNoteItem, VoiceItem,
 };
 pub use sync::{
     ChatActionEvent, PtsUpdate, ReadHistoryEvent, ReactionEvent, SyncFilter,

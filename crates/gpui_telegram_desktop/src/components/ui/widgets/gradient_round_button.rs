@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/gradient_round_button.cpp:L17-L70
 //! Reference: Telegram/SourceFiles/ui/widgets/gradient_round_button.h:L17-L41
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::{hsla, rgba, Hsla, Rgba};
 

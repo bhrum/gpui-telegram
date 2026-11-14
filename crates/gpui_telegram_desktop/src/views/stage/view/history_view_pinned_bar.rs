@@ -4,8 +4,9 @@
 //! Reconstructs upstream: `Telegram/SourceFiles/history/view/history_view_pinned_bar.cpp` (L1-L409)
 
 use crate::views::stage::pinned_bar::{
-    format_pinned_title, HistoryViewPinnedBarState, K_FULL_LOADED, K_NOT_LOADED,
-    K_SOME_LOADED,
+    format_pinned_title,
+    HistoryViewPinnedBarState,
+    K_FULL_LOADED,
 };
 
 /// GPUI view component for pinned message banner

@@ -122,7 +122,7 @@ impl Render for MacIconvHelperMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_mac_iconv_helper() {
         let mut helper = MacIconvHelperMac::new();
         assert!(!helper.is_open);

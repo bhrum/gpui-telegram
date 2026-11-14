@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_recent_message.h:L1-L73`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -137,7 +136,7 @@ impl Render for InfoStatisticsRecentMessageStatistics {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_format_metric_count() {
         assert_eq!(format_metric_count(500), "500");
         assert_eq!(format_metric_count(1500), "1.5K");

@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/history_item_text.h:L19-L46`
 //! - `Telegram/SourceFiles/history/history_item_text.cpp:L30-L120` (kSelectedCopyReplyPreviewLimit = 64)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::selection::K_SELECTED_COPY_REPLY_PREVIEW_LIMIT;
 

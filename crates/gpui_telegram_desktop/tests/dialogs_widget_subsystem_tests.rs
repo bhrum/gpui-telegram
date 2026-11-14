@@ -321,7 +321,7 @@ fn test_stories_expansion_ratios() {
 
 #[test]
 fn test_chat_sidebar_wiring() {
-    let mut sidebar = ChatSidebar::new();
+    let mut sidebar = ChatSidebar::new_demo();
     assert_eq!(sidebar.dialogs.len(), 5);
     assert_eq!(sidebar.folders.len(), 5);
 

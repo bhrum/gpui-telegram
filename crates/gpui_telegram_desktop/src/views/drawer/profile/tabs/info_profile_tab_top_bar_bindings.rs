@@ -181,7 +181,7 @@ impl Render for InfoProfileTabTopBarBindingsProfileTabs {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_top_bar_bindings_state() {
         let mut bindings = InfoProfileTabTopBarBindingsProfileTabs::new("Photos");
         assert_eq!(bindings.current_tab_title, "Photos");

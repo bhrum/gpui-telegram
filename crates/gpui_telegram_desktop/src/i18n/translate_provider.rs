@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/translate_provider.h`, `translate_provider.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use crate::i18n::lang_text_entity::TextWithEntities;
 

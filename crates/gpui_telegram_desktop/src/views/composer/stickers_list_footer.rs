@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_list_footer.h:L48-L100`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_list_footer.cpp:L37-L120`
-#![allow(dead_code)]
 
 use gpui::*;
 

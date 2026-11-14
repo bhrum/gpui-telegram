@@ -1,6 +1,5 @@
 //! Target Symbol: IvSearchController
 //! Module 13: Instant View Search Indexer & Circular Navigation Controller
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

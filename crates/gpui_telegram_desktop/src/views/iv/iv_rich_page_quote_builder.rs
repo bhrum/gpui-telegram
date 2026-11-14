@@ -1,6 +1,5 @@
 //! Target Symbol: IvRichPageQuoteBuilder
 //! Module 13: Instant View Reply Quote Fragment Synthesis & Cutter Pipeline
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

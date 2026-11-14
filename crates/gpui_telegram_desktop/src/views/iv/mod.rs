@@ -42,3 +42,5 @@ pub mod iv_search_controller;
 pub use iv_search_controller::IvSearchController;
 pub mod iv_zoom_controls;
 pub use iv_zoom_controls::IvZoomControls;
+pub mod iv_viewer;
+pub use iv_viewer::IvViewer;

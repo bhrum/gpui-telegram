@@ -2191,8 +2191,7 @@
         "SendFilesWay::setSendLargePhotos",
         "SendFilesWay::setHasCompressedStickers",
         "SendFilesWay::serialize",
-        "SendFilesWay::FromSerialized",
-        "int32"
+        "SendFilesWay::FromSerialized"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
@@ -2435,7 +2434,6 @@
       ],
       "source_methods_and_signals": [
         "gsl::finally",
-        "bool",
         "translate",
         "ChatStyle",
         "apply",
@@ -2581,7 +2579,6 @@
         "CacheBackgroundResult"
       ],
       "source_methods_and_signals": [
-        "bool",
         "ChatTheme",
         "setBackground",
         "updateBackgroundImageFrom",
@@ -3849,7 +3846,6 @@
         "raise",
         "lower",
         "valid",
-        "bool",
         "init",
         "refreshIcons",
         "refreshGradients"
@@ -6774,8 +6770,7 @@
         "FireworksAnimation::initParticle",
         "PrepareBrushes",
         "_animation",
-        "hq",
-        "int"
+        "hq"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "gpui_ui_1to1",
@@ -8987,7 +8982,6 @@
         "width",
         "widthNoMargins",
         "paint",
-        "bool",
         "PaintSpeakingIdle"
       ],
       "style_tokens_and_metrics": [],
@@ -11107,7 +11101,6 @@
         "setText",
         "textBaseline",
         "paintEvent",
-        "bool",
         "PeerBadge",
         "drawGetWidth",
         "paintEmojiStatusFrame",

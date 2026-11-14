@@ -3,7 +3,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/collectible_info_box.h:L15-L37
 //! Reference: Telegram/SourceFiles/ui/boxes/collectible_info_box.style:L1-L28
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

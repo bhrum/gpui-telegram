@@ -1,7 +1,6 @@
 //! Target Symbol: ExportViewStyleSheet
 //! Telegram Desktop 1:1 Theme Specification: `Telegram/SourceFiles/export/view/export.style`
 //! Subsystem: `export`, Feature ID: `TCG-N43`
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::{px, rgb, Pixels, Rgba, Size};
 

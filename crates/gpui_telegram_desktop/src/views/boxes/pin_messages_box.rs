@@ -10,7 +10,6 @@
 //! - Private 1-on-1 chat mutual pin toggle ("Also pin for [user]")
 //! - Silent pin dispatch options
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

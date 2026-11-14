@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/cached_round_corners.cpp:L1-L285` & `cached_round_corners.h:L1-L82`
 //! Authentic GPUI implementation of cached corner mask curves and round radii.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels};
 

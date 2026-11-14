@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleLayoutBlocksMarkdown
 //! Module 13: Instant View Article Layout Blocks Metrics & Table Cell Geometry
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

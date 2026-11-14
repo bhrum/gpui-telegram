@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's GiftCreditsBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/gift_credits_box.h:L14-L20`
 //! and `Telegram/SourceFiles/boxes/gift_credits_box.cpp:L40-L183`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

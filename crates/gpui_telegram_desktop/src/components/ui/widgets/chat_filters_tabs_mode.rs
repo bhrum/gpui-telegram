@@ -1,7 +1,6 @@
 //! Chat Filters Tabs Mode definitions and mode resolvers.
 //! Reference: Telegram/SourceFiles/ui/widgets/chat_filters_tabs_mode.h:L13-L33
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use serde::{Deserialize, Serialize};
 

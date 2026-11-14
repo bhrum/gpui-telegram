@@ -103,7 +103,7 @@ impl Render for WindowsAppUserModelIdWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_app_user_model_id_win_lifecycle() {
         let mut aumid = WindowsAppUserModelIdWin::new();
         assert!(aumid.check_pinned().is_ok());

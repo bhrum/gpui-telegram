@@ -1,5 +1,4 @@
 //! Instant View Table 2D Grid Layout & Slot Occupancy (`iv_editor_page_table_grid.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

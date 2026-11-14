@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/sent_code_field.cpp:L20-L65
 //! Reference: Telegram/SourceFiles/ui/widgets/sent_code_field.h:L18-L74
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Target symbol for verification code input field with digit sanitization and auto-submit.
 #[derive(Debug, Clone)]

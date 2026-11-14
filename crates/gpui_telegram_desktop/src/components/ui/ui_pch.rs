@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/ui_pch.h:L1-L45`
 //! Authentic GPUI implementation of common UI precompiled headers and layout aliases.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels, Point, Size};
 

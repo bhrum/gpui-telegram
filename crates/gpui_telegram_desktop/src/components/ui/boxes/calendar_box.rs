@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/calendar_box.cpp:L45-L1591
 //! Reference: Telegram/SourceFiles/ui/boxes/calendar_box.h:L35-L131
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

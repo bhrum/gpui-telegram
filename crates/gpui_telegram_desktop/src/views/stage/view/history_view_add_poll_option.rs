@@ -5,7 +5,6 @@
 //!
 //! Handles in-history inline poll option adding overlay with emoji selector, attach media,
 //! character limit clamping (100 chars), and submission event streams.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

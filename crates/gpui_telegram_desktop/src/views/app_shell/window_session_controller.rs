@@ -218,7 +218,11 @@ impl Render for WindowSessionController {
                     .flex_1()
                     .p(px(16.0))
                     .text_color(rgb(0x82868A))
-                    .child(format!("Session: {}", self.session_id))
+                    .child(
+                        self.active_folder_id
+                            .map(|fid| format!("Folder #{} active", fid))
+                            .unwrap_or_else(|| "Select a chat to start messaging".to_string()),
+                    ),
             )
     }
 }

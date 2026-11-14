@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/peer/video_userpic_player.cpp:L1-L187` & `video_userpic_player.h:L1-L75`
 //! Authentic GPUI implementation of animated video avatar playback and looping.
-#![allow(dead_code)]
 
 use std::time::Duration;
 

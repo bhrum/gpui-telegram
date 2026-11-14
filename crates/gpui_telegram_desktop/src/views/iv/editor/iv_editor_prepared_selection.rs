@@ -1,5 +1,4 @@
 //! Instant View Multi-Block Selection Geometry (`iv_editor_prepared_selection.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

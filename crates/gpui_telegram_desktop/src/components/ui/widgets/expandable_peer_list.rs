@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/expandable_peer_list.cpp:L30-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/expandable_peer_list.h:L20-L43
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpandablePeerItem {

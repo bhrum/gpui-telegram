@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/cross_fade_label.cpp:L15-L50
 //! Reference: Telegram/SourceFiles/ui/widgets/cross_fade_label.h:L18-L44
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Cross-fade transition animation duration: 200ms.
 /// Reference: `cross_fade_label.cpp:L15`

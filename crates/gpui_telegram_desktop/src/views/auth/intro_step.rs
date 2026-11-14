@@ -156,10 +156,11 @@ impl IntroStep {
 
 impl Render for IntroStep {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::TdesktopThemePalette::default();
         let err_el = self.data.error_text.as_ref().map(|err| {
             div()
                 .text_sm()
-                .text_color(rgb(0xee5655))
+                .text_color(rgb(palette.danger))
                 .py(px(4.0))
                 .child(err.clone())
         });
@@ -174,13 +175,13 @@ impl Render for IntroStep {
                 div()
                     .text_xl()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0xffffff))
+                    .text_color(rgb(palette.text_primary))
                     .child(self.title.clone()),
             )
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0x8292a1))
+                    .text_color(rgb(palette.text_secondary))
                     .py(px(8.0))
                     .text_center()
                     .child(self.description.clone()),

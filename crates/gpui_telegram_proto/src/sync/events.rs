@@ -1,3 +1,5 @@
+use crate::cards::{PollCard, TodoCard};
+use crate::contracts::{CallSignalRequest, DraftDto, FolderDto, ForumTopicDto, StoryDto};
 use crate::message::{DeleteTombstone, MessageItem, ReactionCount};
 use gpui_telegram_core::types::{ChatId, MessageId, UserId, UserStatus};
 use serde::{Deserialize, Serialize};
@@ -105,4 +107,38 @@ pub enum UpdateEvent {
     PinnedMessageChanged { message_id: Option<MessageId> },
     ReadHistoryOut { max_id: MessageId },
     ReadHistoryIn { max_id: MessageId },
+    PollUpdated {
+        chat_id: ChatId,
+        message_id: MessageId,
+        poll: PollCard,
+    },
+    TodoUpdated {
+        chat_id: ChatId,
+        message_id: MessageId,
+        todo: TodoCard,
+    },
+    PinnedMessagesChanged {
+        chat_id: ChatId,
+        pinned_ids: Vec<MessageId>,
+    },
+    DraftUpdated {
+        chat_id: ChatId,
+        topic_id: Option<i64>,
+        draft: Option<DraftDto>,
+    },
+    ForumTopicChanged {
+        chat_id: ChatId,
+        topic: ForumTopicDto,
+    },
+    FolderChanged {
+        folder: FolderDto,
+    },
+    CallUpdated {
+        call_id: String,
+        state: String,
+        signal: Option<CallSignalRequest>,
+    },
+    StoryUpdated {
+        story: StoryDto,
+    },
 }

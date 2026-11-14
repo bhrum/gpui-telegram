@@ -1,5 +1,10 @@
 use gpui::{rgb, Rgba};
 
+pub use super::palette_schemes::{
+    AccentSwatch, TdesktopThemeMode, WallpaperPreset, ACCENT_SWATCHES, WALLPAPER_PRESETS,
+};
+pub use super::tdesktop_palette::TdesktopThemePalette;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaletteTokens {
     pub window_bg: Rgba,
@@ -23,18 +28,18 @@ impl ThemePalette {
     // ------------------------------------------------------------------------
     // Exact Upstream Light (Day Blue) Tokens
     // ------------------------------------------------------------------------
-    pub const DAY_BLUE_WINDOW_BG: u32 = 0xFFFFFF;      // #ffffff
-    pub const DAY_BLUE_WINDOW_FG: u32 = 0x000000;      // #000000
-    pub const DAY_BLUE_ACTIVE: u32 = 0x40A7E3;         // #40a7e3
-    pub const DAY_BLUE_MSG_OUT_BG: u32 = 0xDEF1FD;     // #def1fd
-    pub const DAY_BLUE_MSG_IN_BG: u32 = 0xFFFFFF;      // #ffffff
-    pub const DAY_BLUE_SIDEBAR_BG: u32 = 0xF1F1F1;     // #f1f1f1
-    pub const DAY_BLUE_SIDEBAR_ACTIVE: u32 = 0x40A7E3; // #40a7e3
-    pub const DAY_BLUE_SIDEBAR_HOVER: u32 = 0xF4F4F5;  // #f4f4f5
-    pub const DAY_BLUE_UNREAD_BG: u32 = 0x40A7E3;      // #40a7e3
-    pub const DAY_BLUE_UNREAD_MUTED: u32 = 0xB0B0B0;   // #b0b0b0
+    pub const DAY_BLUE_WINDOW_BG: u32 = 0xFFFFFF;
+    pub const DAY_BLUE_WINDOW_FG: u32 = 0x000000;
+    pub const DAY_BLUE_ACTIVE: u32 = 0x40A7E3;
+    pub const DAY_BLUE_MSG_OUT_BG: u32 = 0xDEF1FD;
+    pub const DAY_BLUE_MSG_IN_BG: u32 = 0xFFFFFF;
+    pub const DAY_BLUE_SIDEBAR_BG: u32 = 0xF1F1F1;
+    pub const DAY_BLUE_SIDEBAR_ACTIVE: u32 = 0x40A7E3;
+    pub const DAY_BLUE_SIDEBAR_HOVER: u32 = 0xF4F4F5;
+    pub const DAY_BLUE_UNREAD_BG: u32 = 0x40A7E3;
+    pub const DAY_BLUE_UNREAD_MUTED: u32 = 0xB0B0B0;
 
-    // Backward-compatible aliases
+    // Backwards-compatible aliases
     pub const DAY_BLUE_PRIMARY: u32 = Self::DAY_BLUE_ACTIVE;
     pub const DAY_BLUE_BG: u32 = Self::DAY_BLUE_WINDOW_BG;
     pub const DAY_BLUE_SIDEBAR: u32 = Self::DAY_BLUE_SIDEBAR_BG;
@@ -44,20 +49,20 @@ impl ThemePalette {
     // ------------------------------------------------------------------------
     // Exact Upstream Dark (Night) Tokens
     // ------------------------------------------------------------------------
-    pub const NIGHT_WINDOW_BG: u32 = 0x17212B;         // #17212b
-    pub const NIGHT_WINDOW_FG: u32 = 0xF5F5F5;         // #f5f5f5
-    pub const NIGHT_ACTIVE: u32 = 0x40A7E3;            // #40a7e3
-    pub const NIGHT_ACCENT: u32 = 0x5288C1;            // #5288c1
-    pub const NIGHT_MSG_OUT_BG: u32 = 0x2B5278;        // #2b5278
-    pub const NIGHT_MSG_IN_BG: u32 = 0x182533;         // #182533
-    pub const NIGHT_SIDEBAR_BG: u32 = 0x0E1621;        // #0e1621
-    pub const NIGHT_SIDEBAR_ACTIVE: u32 = 0x2B5278;    // #2b5278
-    pub const NIGHT_SIDEBAR_HOVER: u32 = 0x17212B;     // #17212b
-    pub const NIGHT_UNREAD_BG: u32 = 0x5288C1;         // #5288c1
-    pub const NIGHT_UNREAD_MUTED: u32 = 0x6B808D;      // #6b808d
+    pub const NIGHT_WINDOW_BG: u32 = 0x17212B;
+    pub const NIGHT_WINDOW_FG: u32 = 0xF5F5F5;
+    pub const NIGHT_ACTIVE: u32 = 0x40A7E3;
+    pub const NIGHT_ACCENT: u32 = 0x5288C1;
+    pub const NIGHT_MSG_OUT_BG: u32 = 0x2B5278;
+    pub const NIGHT_MSG_IN_BG: u32 = 0x182533;
+    pub const NIGHT_SIDEBAR_BG: u32 = 0x0E1621;
+    pub const NIGHT_SIDEBAR_ACTIVE: u32 = 0x2B5278;
+    pub const NIGHT_SIDEBAR_HOVER: u32 = 0x17212B;
+    pub const NIGHT_UNREAD_BG: u32 = 0x5288C1;
+    pub const NIGHT_UNREAD_MUTED: u32 = 0x6B808D;
 
-    // Backward-compatible aliases
-    pub const NIGHT_PRIMARY: u32 = Self::NIGHT_ACCENT;
+    // Backwards-compatible aliases
+    pub const NIGHT_PRIMARY: u32 = Self::NIGHT_ACTIVE;
     pub const NIGHT_BG: u32 = Self::NIGHT_WINDOW_BG;
     pub const NIGHT_SIDEBAR: u32 = Self::NIGHT_SIDEBAR_BG;
     pub const NIGHT_BUBBLE_OUT: u32 = Self::NIGHT_MSG_OUT_BG;

@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/color_editor.cpp:L20-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/color_editor.h:L20-L106
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::{rgba, Rgba};
 

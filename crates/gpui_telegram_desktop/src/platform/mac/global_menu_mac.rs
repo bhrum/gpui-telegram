@@ -140,7 +140,7 @@ impl Render for GlobalMenuMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_global_menu_mac() {
         let mut menu = GlobalMenuMacMac::new();
         assert!(menu.is_app_launched());

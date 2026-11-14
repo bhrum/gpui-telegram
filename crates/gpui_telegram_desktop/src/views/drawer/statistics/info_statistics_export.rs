@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_export.h:L1-L35`
 //! Subsystem: info | Feature ID: TCG-N43 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -149,7 +148,7 @@ impl Render for InfoStatisticsExportStatistics {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_suggested_filename() {
         let name = suggested_filename("Telegram News Channel", None, None, "2026-11-07");
         assert_eq!(name, "Telegram News Channel_2026-11-07.xlsx");

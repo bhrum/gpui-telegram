@@ -3,16 +3,12 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_poll.h:L25-L140`
 //! - `Telegram/SourceFiles/history/view/media/history_view_poll.cpp:L144-L210`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::poll::{
-    count_nice_percent, adjust_percent_count, hash_poll_shuffle_value,
-    PollType, RichPollCard,
-    K_SHOW_RECENT_VOTERS_COUNT, K_ROTATE_SEGMENTS, K_ROTATE_AMPLITUDE,
-    K_SCALE_SEGMENTS, K_SCALE_AMPLITUDE, K_ROLL_DURATION_MS,
-    K_EXPIRING_VOTE_RESTRICTION_DURATION_MS, K_VOTE_RESTRICTION_TOAST_DURATION_MS,
+    count_nice_percent,
+    PollType,
+    RichPollCard,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

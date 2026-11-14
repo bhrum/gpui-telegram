@@ -2,7 +2,6 @@
 //! Upstream: `Telegram/SourceFiles/info/common_groups/info_common_groups_inner_widget.h`
 //! Upstream: `Telegram/SourceFiles/info/common_groups/info_common_groups_inner_widget.cpp`
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -90,7 +89,7 @@ impl InfoCommonGroupsInnerWidgetCommonGroups {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_common_groups_inner_widget_filter() {
         let mut inner = InfoCommonGroupsInnerWidgetCommonGroups::new(1001);
         inner.add_group(CommonGroupRow {

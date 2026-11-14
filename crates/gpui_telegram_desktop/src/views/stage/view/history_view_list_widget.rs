@@ -4,9 +4,14 @@
 //! Reconstructs upstream: `Telegram/SourceFiles/history/view/history_view_list_widget.cpp` (L1-L6833)
 
 use crate::views::stage::list_widget::{
-    hides_dates, supports_read_metrics, HistoryListContext, HistoryViewListWidgetState,
-    VirtualListGeometry, VirtualMessageItem, K_CLEAR_USERPICS_AFTER,
-    K_PRELOADED_SCREENS_COUNT, K_PRELOAD_IF_LESS_THAN_SCREENS,
+    hides_dates,
+    supports_read_metrics,
+    HistoryListContext,
+    HistoryViewListWidgetState,
+    VirtualMessageItem,
+    K_CLEAR_USERPICS_AFTER,
+    K_PRELOADED_SCREENS_COUNT,
+    K_PRELOAD_IF_LESS_THAN_SCREENS,
 };
 
 /// GPUI view component for primary chat message list

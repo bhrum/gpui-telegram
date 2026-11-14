@@ -1,10 +1,6 @@
 //! Upstream Source: Telegram/SourceFiles/settings/sections/settings_premium.style
 //! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
-use gpui::*;
-
 #[derive(Debug, Clone)]
 pub struct SettingsPremiumSectionsStyleSheet {
     pub is_active: bool,

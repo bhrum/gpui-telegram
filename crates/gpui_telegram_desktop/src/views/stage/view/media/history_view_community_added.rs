@@ -3,10 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_community_added.h:L15-L25`
 //! - `Telegram/SourceFiles/history/view/media/history_view_community_added.cpp:L34-L60`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewCommunityAddedViewMedia {

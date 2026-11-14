@@ -1,7 +1,11 @@
-//! Inspector Drawer Tabs: Profile, Members, Shared Media, Settings (`SPEC-02-GPUI-COMPONENT-HIERARCHY` § 2.5).
+//! Inspector Drawer Tabs models and Profile/Members GPUI renderers (`info/`).
 
-use gpui::*;
+use crate::i18n::tr_str;
+use crate::theme::assets::{IconName, tg_icon};
+use crate::theme::palette::TdesktopThemePalette;
+use crate::views::ContextInspector;
 use gpui::prelude::FluentBuilder;
+use gpui::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +22,7 @@ pub enum SharedMediaSubTab {
     Files,
     Voice,
     Links,
+    Music,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,8 +31,18 @@ pub struct MemberItem {
     pub name: String,
     pub initials: String,
     pub color: u32,
-    pub role: String, // "Owner", "Admin", "Member"
+    pub role: String,
     pub is_online: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedMediaItem {
+    pub id: u64,
+    pub url: String,
+    pub local_path: Option<String>,
+    pub caption: String,
+    pub is_video: bool,
+    pub duration_sec: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,26 +60,56 @@ pub struct SharedLinkItem {
     pub domain: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedVoiceItem {
+    pub id: u64,
+    pub title: String,
+    pub duration_sec: u32,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InspectorAction {
+    StartVoiceCall(String),
+    StartVideoCall(String),
+    CopyText(String),
+    OpenAddMember,
+    CycleMemberRole(u64),
+    RevokeInviteLink,
+    ToggleNotifications(bool),
+    ChangeAutoDelete(String),
+    OpenMedia { url: String, is_video: bool },
+    OpenEditPeer,
+}
+
 pub struct ProfileTabModel {
     pub name: String,
     pub username: String,
     pub phone: String,
     pub bio: String,
+    pub status: String,
     pub avatar_initials: String,
     pub avatar_color: u32,
+    pub avatar_path: Option<String>,
+    pub facts: Vec<(String, String)>,
     pub is_notifications_enabled: bool,
 }
 
 pub struct MembersTabModel {
     pub members: Vec<MemberItem>,
     pub search_query: String,
+    pub invite_link: String,
+    pub is_group_or_channel: bool,
 }
 
 pub struct SharedMediaTabModel {
     pub active_subtab: SharedMediaSubTab,
     pub media_count: u32,
+    pub media_items: Vec<SharedMediaItem>,
     pub files: Vec<SharedFileItem>,
     pub links: Vec<SharedLinkItem>,
+    pub voice_notes: Vec<SharedVoiceItem>,
+    pub music_items: Vec<SharedFileItem>,
 }
 
 pub struct SettingsTabModel {
@@ -73,8 +118,6 @@ pub struct SettingsTabModel {
     pub notification_sound: String,
 }
 
-use crate::views::ContextInspector;
-
 pub struct InspectorTabsView;
 
 impl InspectorTabsView {
@@ -82,619 +125,124 @@ impl InspectorTabsView {
         model: &ProfileTabModel,
         is_secret_chat_active: bool,
         is_contact_blocked: bool,
+        copied_feedback: Option<&String>,
+        pal: TdesktopThemePalette,
+        lang: &str,
         cx: &mut Context<ContextInspector>,
-    ) -> impl IntoElement {
-        let notif_on = model.is_notifications_enabled;
+    ) -> AnyElement {
+        let peer_name = model.name.clone();
+        let peer_for_vid = model.name.clone();
+        let avatar_color = if model.avatar_color != 0 { model.avatar_color } else { pal.accent };
 
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.0))
-            // 1. Avatar + Name + Username Header
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(8.0))
-                    .py(px(12.0))
-                    // 80px Large Avatar
-                    .child(
-                        div()
-                            .w(px(80.0))
-                            .h(px(80.0))
-                            .rounded_full()
-                            .bg(rgb(model.avatar_color))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(28.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(model.avatar_initials.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xFFFFFF))
-                            .child(model.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(rgb(0x2AABEE))
-                            .child(model.username.clone()),
-                    ),
-            )
-            // 2. Info Items (Phone, Bio)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .p(px(12.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x1B2836))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(11.0)).text_color(rgb(0x8A9AA8)).child("Phone"))
-                            .child(div().text_size(px(14.0)).text_color(rgb(0xFFFFFF)).child(model.phone.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(11.0)).text_color(rgb(0x8A9AA8)).child("Bio"))
-                            .child(div().text_size(px(13.0)).text_color(rgb(0xFFFFFF)).child(model.bio.clone())),
-                    ),
-            )
-            // 3. Notifications switch (Clickable)
-            .child(
-                div()
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .p(px(12.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x1B2836))
-                    .hover(|s| s.bg(rgb(0x243447)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.profile.is_notifications_enabled = !this.profile.is_notifications_enabled;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(div().text_size(px(16.0)).child("🔔"))
-                            .child(div().text_size(px(14.0)).text_color(rgb(0xFFFFFF)).child("Notifications")),
-                    )
-                    .child(
-                        div()
-                            .w(px(36.0))
-                            .h(px(20.0))
-                            .rounded_full()
-                            .bg(if notif_on { rgb(0x2AABEE) } else { rgb(0x6B808D) })
-                            .p(px(2.0))
-                            .flex()
-                            .when(notif_on, |s| s.justify_end())
-                            .when(!notif_on, |s| s.justify_start())
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .rounded_full()
-                                    .bg(rgb(0xFFFFFF)),
-                            ),
-                    ),
-            )
-            // 4. Quick Actions (Clickable)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .h(px(36.0))
-                            .rounded(px(8.0))
-                            .bg(if is_secret_chat_active { rgba(0x4CAF5033) } else { rgba(0x2AABEE22) })
-                            .hover(|s| s.bg(rgba(0x2AABEE44)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(if is_secret_chat_active { rgb(0x4CAF50) } else { rgb(0x2AABEE) })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_secret_chat_active = !this.is_secret_chat_active;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if is_secret_chat_active {
-                                "🔒 Secret Chat Active (E2EE)"
-                            } else {
-                                "Start Secret Chat"
-                            }),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .h(px(36.0))
-                            .rounded(px(8.0))
-                            .bg(if is_contact_blocked { rgba(0xE5393555) } else { rgba(0xE5393522) })
-                            .hover(|s| s.bg(rgba(0xE5393544)))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xE53935))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.is_contact_blocked = !this.is_contact_blocked;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(if is_contact_blocked {
-                                "🚫 Unblock Contact"
-                            } else {
-                                "Block Contact"
-                            }),
-                    ),
-            )
+        let fallback_initials = {
+            let trimmed_init = model.avatar_initials.trim();
+            if !trimmed_init.is_empty() && trimmed_init != "?" {
+                trimmed_init.to_string()
+            } else {
+                let derived = crate::views::app_shell::shell_truth::derive_initials(&model.name);
+                if derived.is_empty() {
+                    "?".to_string()
+                } else {
+                    derived
+                }
+            }
+        };
+
+        let avatar = if let Some(ref path) = model.avatar_path {
+            div().w(px(80.0)).h(px(80.0)).rounded_full().overflow_hidden()
+                .child(img(path.clone()).w(px(80.0)).h(px(80.0)).object_fit(ObjectFit::Cover))
+                .into_any_element()
+        } else {
+            div().w(px(80.0)).h(px(80.0)).rounded_full().bg(rgb(avatar_color)).flex().items_center().justify_center()
+                .text_size(px(26.0)).font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg))
+                .child(fallback_initials)
+                .into_any_element()
+        };
+
+        let mut rows: Vec<(String, String)> = Vec::new();
+        if !model.phone.is_empty() {
+            rows.push((tr_str(lang, "手机号", "Mobile").into(), model.phone.clone()));
+        }
+        if !model.username.is_empty() {
+            rows.push((tr_str(lang, "用户名", "Username").into(), model.username.clone()));
+        }
+        if !model.bio.is_empty() {
+            rows.push((tr_str(lang, "简介", "Bio").into(), model.bio.clone()));
+        }
+        rows.extend(model.facts.iter().cloned());
+
+        div().flex().flex_col().gap(px(12.0))
+            .child(div().flex().flex_col().items_center().gap(px(6.0)).py(px(8.0)).child(avatar)
+                .child(div().text_size(px(16.0)).font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary))
+                    .child(if model.name.is_empty() { tr_str(lang, "未选择对话", "No chat selected").to_string() } else { model.name.clone() }))
+                .child(div().text_size(px(12.0)).text_color(rgb(pal.text_secondary)).child(model.status.clone())))
+            .child(div().flex().items_center().justify_around().gap(px(6.0))
+                .child(Self::action_pill(IconName::PhoneCall, tr_str(lang, "语音", "Call"), pal, move |this| {
+                    this.pending_action = Some(InspectorAction::StartVoiceCall(peer_name.clone()));
+                }, cx))
+                .child(Self::action_pill(IconName::VideoCall, tr_str(lang, "视频", "Video"), pal, move |this| {
+                    this.pending_action = Some(InspectorAction::StartVideoCall(peer_for_vid.clone()));
+                }, cx))
+                .child(Self::action_pill(IconName::Mute, tr_str(lang, "静音", "Mute"), pal, move |this| {
+                    this.profile.is_notifications_enabled = !this.profile.is_notifications_enabled;
+                    this.pending_action = Some(InspectorAction::ToggleNotifications(this.profile.is_notifications_enabled));
+                }, cx))
+                .child(Self::action_pill(IconName::Edit, tr_str(lang, "编辑", "More"), pal, |this| {
+                    this.pending_action = Some(InspectorAction::OpenEditPeer);
+                }, cx)))
+            .children(rows.into_iter().map(|(label, val)| {
+                let cp = val.clone();
+                let copied_prefix = tr_str(lang, "已复制", "Copied").to_string();
+                div().cursor_pointer().p(px(10.0)).rounded(px(8.0)).bg(rgb(pal.card_bg)).hover(move |s| s.bg(rgb(pal.dialogs_hover_bg)))
+                    .flex().items_center().justify_between()
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
+                        this.copied_feedback = Some(format!("{}: {}", copied_prefix, cp));
+                        this.pending_action = Some(InspectorAction::CopyText(cp.clone()));
+                        cx.notify();
+                    }))
+                    .child(div().flex().flex_col().gap(px(2.0))
+                        .child(div().text_size(px(12.5)).text_color(rgb(pal.text_primary)).child(val))
+                        .child(div().text_size(px(11.0)).text_color(rgb(pal.text_secondary)).child(label)))
+                    .child(tg_icon(IconName::Copy, 14.0, pal.icon_fg))
+            }))
+            .when_some(copied_feedback.cloned(), |el, hint| {
+                el.child(div().text_size(px(11.0)).text_color(rgb(pal.success)).child(hint))
+            })
+            .child(div().flex().gap(px(6.0))
+                .child(Self::action_pill(
+                    IconName::Lock,
+                    if is_secret_chat_active {
+                        tr_str(lang, "已加密", "E2EE")
+                    } else {
+                        tr_str(lang, "加密聊天", "Secret")
+                    },
+                    pal,
+                    |this| {
+                        this.is_secret_chat_active = !this.is_secret_chat_active;
+                    },
+                    cx,
+                ))
+                .child(Self::action_pill(
+                    IconName::Close,
+                    if is_contact_blocked {
+                        tr_str(lang, "取消屏蔽", "Unblock")
+                    } else {
+                        tr_str(lang, "屏蔽", "Block")
+                    },
+                    pal,
+                    |this| {
+                        this.is_contact_blocked = !this.is_contact_blocked;
+                    },
+                    cx,
+                )))
+            .into_any_element()
     }
 
-    pub fn render_members(model: &MembersTabModel, cx: &mut Context<ContextInspector>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.0))
-            // Search / Add header
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x8A9AA8))
-                            .child(format!("{} MEMBERS", model.members.len())),
-                    )
-                    .child(
-                        div()
-                            .cursor_pointer()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .hover(|s| s.bg(rgb(0x243447)))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x2AABEE))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    let next_id = (this.members.members.len() + 1) as u64;
-                                    this.members.members.push(MemberItem {
-                                        id: next_id,
-                                        name: format!("Contributor #{}", next_id),
-                                        initials: format!("C{}", next_id),
-                                        color: 0x3498DB,
-                                        role: "Member".to_string(),
-                                        is_online: true,
-                                    });
-                                    cx.notify();
-                                }),
-                            )
-                            .child("+ Add Member"),
-                    ),
-            )
-            // Members list
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.0))
-                    .children(model.members.iter().map(|m| {
-                        let member_id = m.id;
-                        div()
-                            .cursor_pointer()
-                            .h(px(48.0))
-                            .px(px(8.0))
-                            .rounded(px(8.0))
-                            .bg(rgb(0x1B2836))
-                            .hover(|s| s.bg(rgb(0x243447)))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    if let Some(mem) = this.members.members.iter_mut().find(|item| item.id == member_id) {
-                                        mem.is_online = !mem.is_online;
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(10.0))
-                                    // Avatar
-                                    .child(
-                                        div()
-                                            .w(px(32.0))
-                                            .h(px(32.0))
-                                            .rounded_full()
-                                            .bg(rgb(m.color))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_size(px(12.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child(m.initials.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.0))
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(rgb(0xFFFFFF))
-                                                    .child(m.name.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(if m.is_online { rgb(0x4CAF50) } else { rgb(0x8A9AA8) })
-                                                    .child(if m.is_online { "online" } else { "last seen recently" }),
-                                            ),
-                                    ),
-                            )
-                            // Role badge (Owner, Admin)
-                            .when(!m.role.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(4.0))
-                                        .bg(rgba(0x2AABEE22))
-                                        .text_size(px(10.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(0x2AABEE))
-                                        .child(m.role.clone()),
-                                )
-                            })
-                    })),
-            )
-    }
-
-    pub fn render_shared_media(model: &SharedMediaTabModel, cx: &mut Context<ContextInspector>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            // Subtabs chips (Clickable)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(Self::render_subtab_chip(
-                        "Media",
-                        SharedMediaSubTab::Media,
-                        model.active_subtab == SharedMediaSubTab::Media,
-                        cx,
-                    ))
-                    .child(Self::render_subtab_chip(
-                        "Files",
-                        SharedMediaSubTab::Files,
-                        model.active_subtab == SharedMediaSubTab::Files,
-                        cx,
-                    ))
-                    .child(Self::render_subtab_chip(
-                        "Voice",
-                        SharedMediaSubTab::Voice,
-                        model.active_subtab == SharedMediaSubTab::Voice,
-                        cx,
-                    ))
-                    .child(Self::render_subtab_chip(
-                        "Links",
-                        SharedMediaSubTab::Links,
-                        model.active_subtab == SharedMediaSubTab::Links,
-                        cx,
-                    )),
-            )
-            // Content according to subtab
-            .child(
-                match model.active_subtab {
-                    SharedMediaSubTab::Media => {
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(4.0))
-                            .children((0..6).map(|i| {
-                                let url = format!("https://example.com/shared_photo_{}.jpg", i + 1);
-                                div()
-                                    .cursor_pointer()
-                                    .w(px(90.0))
-                                    .h(px(90.0))
-                                    .rounded(px(6.0))
-                                    .bg(rgb(0x243447 + i * 0x050505))
-                                    .hover(|s| s.border_2().border_color(rgb(0x2AABEE)))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_size(px(20.0))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            this.pending_media_open = Some((url.clone(), false));
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child("🖼️")
-                            }))
-                            .into_any_element()
-                    }
-                    SharedMediaSubTab::Files => {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .children(model.files.iter().map(|f| {
-                                let fname = f.name.clone();
-                                div()
-                                    .cursor_pointer()
-                                    .h(px(44.0))
-                                    .px(px(8.0))
-                                    .rounded(px(6.0))
-                                    .bg(rgb(0x1B2836))
-                                    .hover(|s| s.bg(rgb(0x243447)))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            this.pending_media_open = Some((fname.clone(), false));
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(30.0))
-                                            .h(px(30.0))
-                                            .rounded(px(4.0))
-                                            .bg(rgb(0x2AABEE))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_size(px(10.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(0xFFFFFF))
-                                            .child(f.extension.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(div().text_size(px(12.0)).text_color(rgb(0xFFFFFF)).child(f.name.clone()))
-                                            .child(div().text_size(px(10.0)).text_color(rgb(0x8A9AA8)).child(format!("{} • {}", f.size_text, f.date))),
-                                    )
-                            }))
-                            .into_any_element()
-                    }
-                    SharedMediaSubTab::Links => {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .children(model.links.iter().map(|l| {
-                                let link_url = l.url.clone();
-                                div()
-                                    .cursor_pointer()
-                                    .p(px(8.0))
-                                    .rounded(px(6.0))
-                                    .bg(rgb(0x1B2836))
-                                    .hover(|s| s.bg(rgb(0x243447)))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            this.pending_media_open = Some((link_url.clone(), false));
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child(div().text_size(px(12.0)).font_weight(FontWeight::BOLD).text_color(rgb(0x2AABEE)).child(l.title.clone()))
-                                    .child(div().text_size(px(11.0)).text_color(rgb(0x8A9AA8)).child(l.url.clone()))
-                            }))
-                            .into_any_element()
-                    }
-                    SharedMediaSubTab::Voice => {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .child(
-                                div()
-                                    .cursor_pointer()
-                                    .p(px(10.0))
-                                    .rounded(px(8.0))
-                                    .bg(rgb(0x1B2836))
-                                    .hover(|s| s.bg(rgb(0x243447)))
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(0xFFFFFF))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.pending_media_open = Some(("voice_note_1.ogg".to_string(), true));
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child("🎙️ Voice Note (00:42) — Today at 14:30"),
-                            )
-                            .into_any_element()
-                    }
-                },
-            )
-    }
-
-    pub fn render_settings(model: &SettingsTabModel, cx: &mut Context<ContextInspector>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.0))
-            // E2EE Encryption fingerprint card
-            .child(
-                div()
-                    .p(px(12.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x1B2836))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x4CAF50))
-                            .child("🔒 Encryption Key Fingerprint"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(20.0))
-                            .child(model.e2ee_fingerprint.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(rgb(0x8A9AA8))
-                            .child("Compare with peer to verify end-to-end encryption."),
-                    ),
-            )
-            // Auto-delete timer (Clickable)
-            .child(
-                div()
-                    .cursor_pointer()
-                    .p(px(12.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x1B2836))
-                    .hover(|s| s.bg(rgb(0x243447)))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            let next = match this.settings.auto_delete_period.as_str() {
-                                "Off" => "24 Hours",
-                                "24 Hours" => "7 Days",
-                                "7 Days" => "30 Days",
-                                _ => "Off",
-                            };
-                            this.set_auto_delete_period(next);
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(13.0)).text_color(rgb(0xFFFFFF)).child("Auto-Delete Messages"))
-                            .child(div().text_size(px(11.0)).text_color(rgb(0x8A9AA8)).child("Click to cycle self-destruct timer")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0x2AABEE))
-                            .child(model.auto_delete_period.clone()),
-                    ),
-            )
-            // Notification sound (Clickable)
-            .child(
-                div()
-                    .cursor_pointer()
-                    .p(px(12.0))
-                    .rounded(px(10.0))
-                    .bg(rgb(0x1B2836))
-                    .hover(|s| s.bg(rgb(0x243447)))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            let next = match this.settings.notification_sound.as_str() {
-                                "Default (Aurora)" => "Note",
-                                "Note" => "Chime",
-                                "Chime" => "Silent",
-                                _ => "Default (Aurora)",
-                            };
-                            this.settings.notification_sound = next.to_string();
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(13.0)).text_color(rgb(0xFFFFFF)).child("Notification Sound"))
-                            .child(div().text_size(px(11.0)).text_color(rgb(0x8A9AA8)).child("Click to change chat tone")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(rgb(0x2AABEE))
-                            .child(model.notification_sound.clone()),
-                    ),
-            )
-    }
-
-    fn render_subtab_chip(
-        label: &str,
-        subtab: SharedMediaSubTab,
-        is_active: bool,
-        cx: &mut Context<ContextInspector>,
-    ) -> impl IntoElement {
-        div()
-            .cursor_pointer()
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(6.0))
-            .bg(if is_active { rgb(0x2AABEE) } else { rgb(0x1B2836) })
-            .hover(|s| s.bg(rgb(0x2B5278)))
-            .text_size(px(12.0))
-            .font_weight(FontWeight::BOLD)
-            .text_color(if is_active { rgb(0xFFFFFF) } else { rgb(0x8A9AA8) })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event, _window, cx| {
-                    this.shared_media.active_subtab = subtab;
-                    cx.notify();
-                }),
-            )
-            .child(label.to_string())
+    fn action_pill(icon: IconName, label: &str, pal: TdesktopThemePalette, on_tap: impl Fn(&mut ContextInspector) + 'static, cx: &mut Context<ContextInspector>) -> impl IntoElement {
+        div().cursor_pointer().flex_1().py(px(8.0)).rounded(px(8.0)).bg(rgb(pal.card_bg)).hover(move |s| s.bg(rgb(pal.dialogs_hover_bg)))
+            .flex().flex_col().items_center().gap(px(4.0))
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| { on_tap(this); cx.notify(); }))
+            .child(tg_icon(icon, 16.0, pal.accent))
+            .child(div().text_size(px(11.0)).text_color(rgb(pal.text_link)).child(label.to_string()))
     }
 }

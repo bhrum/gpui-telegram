@@ -1786,7 +1786,6 @@
         "NoPaidTokenImportCallbacks"
       ],
       "source_methods_and_signals": [
-        "bool",
         "Premium",
         "reload",
         "updateGiftCode",

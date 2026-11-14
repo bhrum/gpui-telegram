@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/fields/time_part_input_with_placeholder.cpp:L15-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/fields/time_part_input_with_placeholder.h:L18-L40
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimePartKind {

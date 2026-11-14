@@ -1,5 +1,4 @@
 //! Font and typography manager for Instant View
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IvFontFamily {

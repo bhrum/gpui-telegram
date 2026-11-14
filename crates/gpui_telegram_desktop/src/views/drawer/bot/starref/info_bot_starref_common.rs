@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/bot/starref/info_bot_starref_common.h, info_bot_starref_common.cpp
 //! Exact affiliate program commission formatting, duration calculation, and connected bot cards.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -116,7 +115,7 @@ impl Render for InfoBotStarrefCommonBotStarref {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_format_commission_and_duration() {
         assert_eq!(InfoBotStarrefCommonBotStarref::format_commission(200), "2%");
         assert_eq!(InfoBotStarrefCommonBotStarref::format_commission(250), "2.5%");
@@ -130,7 +129,7 @@ mod tests {
         assert_eq!(InfoBotStarrefCommonBotStarref::format_program_duration(24), "2 years");
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_add_connected_bot() {
         let mut common = InfoBotStarrefCommonBotStarref::new();
         let state = ConnectedBotState {

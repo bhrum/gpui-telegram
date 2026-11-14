@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/passcode_strength_meter.cpp:L18-L58
 //! Reference: Telegram/SourceFiles/ui/widgets/passcode_strength_meter.h:L18-L44
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Total number of strength segments (4 bands: VeryWeak to Strong).
 /// Reference: `passcode_strength_meter.cpp:L20`

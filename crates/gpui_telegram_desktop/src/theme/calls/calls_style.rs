@@ -1,7 +1,6 @@
 //! Calls Theme Style Sheet
 //! Upstream: Telegram/SourceFiles/calls/calls.style:L17-L200
 //! Exact metrics and tokens for 1-on-1 and group call UI panels and windows.
-#![allow(dead_code)]
 
 use gpui::{px, rgb, rgba, Pixels, Rgba};
 

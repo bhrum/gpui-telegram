@@ -84,7 +84,7 @@ impl Render for PlatformTranslateProvider {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_translate_provider_logic() {
         let mut provider = PlatformTranslateProvider::new();
         assert!(provider.is_available());

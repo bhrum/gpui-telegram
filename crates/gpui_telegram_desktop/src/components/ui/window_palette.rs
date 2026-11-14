@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/window_palette.cpp:L1-L89` & `window_palette.h:L1-L30`
 //! Authentic GPUI implementation of desktop window frame and titlebar palette colors.
-#![allow(dead_code)]
 
 use gpui::{hsla, Hsla};
 

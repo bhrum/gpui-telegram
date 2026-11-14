@@ -1,6 +1,5 @@
 //! Target Symbol: IvDelegate
 //! Module 13: Instant View Host Delegate Interface & Geometry Persistence
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

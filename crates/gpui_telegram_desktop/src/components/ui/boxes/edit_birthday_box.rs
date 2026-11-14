@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_birthday_box.cpp:L30-L221
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_birthday_box.h:L18-L30
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

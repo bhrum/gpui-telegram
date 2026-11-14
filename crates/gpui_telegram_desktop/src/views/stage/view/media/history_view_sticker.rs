@@ -11,7 +11,7 @@
 //! - `kEmojiMultiplier = 3`
 //! - `kMessageEffectMultiplier = 2`
 
-use crate::views::stage::media::{StickerFormat, StickerPlaybackState, MAX_SIZE_FIXED, PREMIUM_MULTIPLIER};
+use crate::views::stage::media::{StickerFormat, StickerPlaybackState};
 
 pub const K_MAX_SIZE_FIXED: u32 = 512;
 pub const K_MAX_EMOJI_SIZE_FIXED: u32 = 256;

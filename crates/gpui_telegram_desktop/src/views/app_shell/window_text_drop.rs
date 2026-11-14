@@ -46,9 +46,22 @@ impl Default for WindowTextDrop {
 
 impl Render for WindowTextDrop {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_drag_active {
+            return div().into_any_element();
+        }
         div()
-            .text_xs()
-            .text_color(rgb(0x82868A))
-            .child(format!("TextDrop: drag_active={}", self.is_drag_active))
+            .absolute()
+            .inset(px(12.0))
+            .rounded(px(12.0))
+            .border_2()
+            .border_color(rgb(0x5288C1))
+            .bg(rgba(0x17212BE0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_sm()
+            .text_color(rgb(0xFFFFFF))
+            .child("Drop files or text here to attach")
+            .into_any_element()
     }
 }

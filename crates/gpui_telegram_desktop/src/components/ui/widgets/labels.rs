@@ -4,7 +4,6 @@
 //! Upstream: Telegram/SourceFiles/ui/vertical_list.cpp:L36-L81
 //! Implements flat labels with text styling, link click callbacks, and text selection support.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

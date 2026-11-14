@@ -121,7 +121,6 @@
         "ConnectionPointer",
         "New",
         "reset",
-        "bool",
         "AbstractConnection",
         "sendData",
         "disconnectFromServer",
@@ -961,8 +960,7 @@
         "SerializedRequest::needAck",
         "SerializedRequest::sizeInBytes",
         "SerializedRequest::dataInBytes",
-        "CountPaddingPrimesCount",
-        "bool"
+        "CountPaddingPrimesCount"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "self_hosted_protocol_equivalent",
@@ -990,7 +988,6 @@
         "Prepare",
         "Serialize",
         "write",
-        "bool",
         "setMsgId",
         "setSeqNo",
         "addPadding",

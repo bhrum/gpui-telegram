@@ -7,13 +7,11 @@
 //! - `Telegram/SourceFiles/history/history_item.cpp:L3374-L3386` (allowsEdit)
 //! - `Telegram/SourceFiles/history/history_item.cpp:L3490-L3524` (canDeleteForEveryone)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::item::{
-    HistoryItem as ClientHistoryItem, MessageFlags, PaidPostType,
-    DEFAULT_EDIT_TIME_LIMIT_SECS, DEFAULT_REVOKE_TIME_LIMIT_SECS,
-    K_NOTIFICATION_TEXT_LIMIT, K_PINNED_MESSAGE_TEXT_LIMIT,
+    HistoryItem as ClientHistoryItem,
+    MessageFlags,
+    DEFAULT_REVOKE_TIME_LIMIT_SECS,
 };
 
 /// Upstream `history_item.h:L121-L845`: GPUI Visual Model for a History Item in the Chat Stage

@@ -1,6 +1,5 @@
 //! Target Symbol: IvEditorTextEntitiesEditor
 //! Module 13: Instant View Rich Text Entity Translation Subsystem
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

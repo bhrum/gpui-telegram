@@ -10,7 +10,6 @@
 //! - Spoiler overlay toggle on media
 //! - Media replacement & photo editor triggering
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

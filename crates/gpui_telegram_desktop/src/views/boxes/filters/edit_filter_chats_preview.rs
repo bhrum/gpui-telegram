@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Filter Chats Preview.
 //! Upstream reference: `Telegram/SourceFiles/boxes/filters/edit_filter_chats_preview.h:L20-L65`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/filters/edit_filter_chats_preview.cpp:L20-L60`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

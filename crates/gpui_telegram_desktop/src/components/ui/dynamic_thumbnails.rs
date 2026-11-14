@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/dynamic_thumbnails.cpp:L1-L1202` & `dynamic_thumbnails.h:L1-L73`
 //! Authentic GPUI implementation of dynamic thumbnail image generators for media and peers.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels, Size};
 

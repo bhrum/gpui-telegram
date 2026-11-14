@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/vertical_drum_picker.cpp:L18-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/vertical_drum_picker.h:L20-L116
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Boundary snap threshold close to integer index: 0.99.
 /// Reference: `vertical_drum_picker.cpp:L18`

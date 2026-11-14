@@ -3,9 +3,8 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_text_entity.h`, `lang_text_entity.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
-use crate::i18n::lang_tag::{LangTag, K_TAG_REPLACEMENT_SIZE};
+use crate::i18n::lang_tag::LangTag;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntityType {

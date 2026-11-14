@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/power_saving.cpp:L1-L56` & `power_saving.h:L1-L40`
 //! Authentic GPUI implementation of battery-conscious performance throttles and power modes.
-#![allow(dead_code)]
 
 /// Power saving feature flags from `power_saving.h:L16-L24`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/userpic_view.cpp:L1-L196` & `userpic_view.h:L1-L67`
 //! Authentic GPUI implementation of peer userpic cache views and forum mask geometry.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels};
 

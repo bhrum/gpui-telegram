@@ -113,7 +113,7 @@ impl Render for PlatformLauncher {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_launcher_arg_parsing() {
         let args = vec![
             "gpui_telegram_desktop".into(),

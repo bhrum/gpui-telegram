@@ -1,6 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/boxes/choose_date_time.style:L1-L58`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

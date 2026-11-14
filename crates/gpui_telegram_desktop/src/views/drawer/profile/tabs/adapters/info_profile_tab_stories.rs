@@ -204,7 +204,7 @@ impl Render for InfoProfileTabStoriesProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_stories_adapter_archive_and_views() {
         let mut adapter = InfoProfileTabStoriesProfileTabsAdapters::new(4004, false);
         assert_eq!(adapter.peer_id, 4004);

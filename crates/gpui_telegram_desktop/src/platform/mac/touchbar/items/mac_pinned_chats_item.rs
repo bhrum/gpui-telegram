@@ -153,7 +153,7 @@ impl Render for MacPinnedChatsItemMacTouchbarItems {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_pinned_chats_strip() {
         let mut strip = MacPinnedChatsItemMacTouchbarItems::new();
         assert_eq!(strip.circle_diameter, 30);

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/grouped_layout_geometry.cpp:L1-L28` & `grouped_layout_geometry.h:L1-L20`
 //! Authentic GPUI implementation of grouped album layout geometry and bounding boxes.
-#![allow(dead_code)]
 
 use gpui::{Bounds, Pixels, Point, Size};
 

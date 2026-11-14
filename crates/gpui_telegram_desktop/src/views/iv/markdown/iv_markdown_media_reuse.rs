@@ -1,12 +1,10 @@
 //! Target Symbol: IvMarkdownMediaReuseMarkdown
 //! Subsystem: iv, Feature: TCG-N42
 //! Upstream: Telegram/SourceFiles/iv/markdown/iv_markdown_media_reuse.h/.cpp
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PreparedMediaItemKind {

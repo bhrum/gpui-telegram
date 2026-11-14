@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's StarGiftCoverBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/star_gift_cover_box.h:L65-L146`
 //! and `Telegram/SourceFiles/boxes/star_gift_cover_box.cpp:L50-L130`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -124,7 +124,7 @@ impl Render for IntegrationWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_integration_win_lifecycle() {
         let mut int_win = IntegrationWinWin::new();
         assert!(int_win.instance().is_ok());

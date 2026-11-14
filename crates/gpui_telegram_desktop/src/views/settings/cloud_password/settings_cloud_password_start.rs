@@ -2,7 +2,6 @@
 // Subsystem: settings | Feature ID: TCG-N02
 // Upstream: Start::title, tr::lng_settings_cloud_password_start_title, tr::lng_settings_cloud_password_password_subtitle
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

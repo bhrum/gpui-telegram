@@ -109,7 +109,7 @@ impl Render for PlatformTray {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_tray_icon_and_unread_counter() {
         let mut tray = PlatformTray::new();
         assert!(tray.is_visible);

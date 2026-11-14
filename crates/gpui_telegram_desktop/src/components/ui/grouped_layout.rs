@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/grouped_layout.cpp:L1-L620` & `grouped_layout.h:L1-L35`
 //! Authentic GPUI implementation of Telegram grouped media album layout engine.
-#![allow(dead_code)]
 
 use super::grouped_layout_geometry::GroupedLayoutGeometry;
 use gpui::{px, Pixels, Size};

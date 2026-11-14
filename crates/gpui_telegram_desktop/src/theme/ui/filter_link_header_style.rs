@@ -1,8 +1,7 @@
 //! Upstream C++ style sheet mapping: `ui/controls/filter_link_header.style:L1-L37`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{px, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/controls/filter_link_header.style:L1-L37`.
 #[derive(Debug, Clone, Copy)]

@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_widget.h:L1-L69`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_statistics_inner_widget::InfoStatisticsInnerWidgetStatistics;

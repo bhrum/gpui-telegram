@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/resize_area.h:L1-L78`
 //! Authentic GPUI implementation of panel and drawer edge resizing handles.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels};
 

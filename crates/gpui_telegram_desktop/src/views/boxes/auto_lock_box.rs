@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Auto-Lock Configuration Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/auto_lock_box.h:L16-L29` and `auto_lock_box.cpp:L21-L151`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

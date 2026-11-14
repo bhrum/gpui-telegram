@@ -113,7 +113,7 @@ impl Render for FileUtilitiesWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_file_utilities_win_conversions() {
         let mut utils = FileUtilitiesWinWin::new();
         assert!(utils.from_wchar_array().is_ok());

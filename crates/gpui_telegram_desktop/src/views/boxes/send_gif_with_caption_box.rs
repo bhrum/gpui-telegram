@@ -10,7 +10,6 @@
 //! - SendMenu options (silent send, schedule send)
 //! - Done and cancelled dispatch hooks
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

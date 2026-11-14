@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's Connection & Proxy Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/connection_box.h:L37-L108` and `connection_box.cpp:L70-L195`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

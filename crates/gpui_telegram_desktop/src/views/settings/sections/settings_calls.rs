@@ -1,24 +1,29 @@
-//! Authentic GPUI Settings Calls Section Component
-//! Source: Telegram/SourceFiles/settings/sections/settings_calls.cpp, Telegram/SourceFiles/settings/sections/settings_calls.h
-//! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
-
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
+use crate::i18n::tr_str;
+use crate::theme::assets::{tg_icon, IconName};
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_card, settings_container, settings_section_header, settings_subsection_title,
+    settings_toggle_row,
+};
 
 pub const K_MIC_TEST_UPDATE_INTERVAL_MS: u64 = 100;
 pub const K_MIC_TEST_ANIMATION_DURATION_MS: u64 = 200;
 
-#[derive(Debug, Clone)]
 pub struct SettingsCallsSections {
     pub input_device: String,
     pub output_device: String,
     pub camera_device: String,
+    pub available_inputs: Vec<String>,
+    pub available_outputs: Vec<String>,
+    pub available_cameras: Vec<String>,
     pub mic_level: f32,
     pub mic_test_active: bool,
     pub p2p_mode: String,
     pub accept_calls: bool,
     pub is_visible: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsCallsSections {
@@ -26,184 +31,110 @@ impl SettingsCallsSections {
         Self {
             input_device: "Default Microphone".into(),
             output_device: "Default Output Device".into(),
-            camera_device: "FaceTime HD Camera".into(),
+            camera_device: "Default Camera".into(),
+            available_inputs: vec!["Default Microphone".into(), "Built-in Mic".into()],
+            available_outputs: vec!["Default Output Device".into(), "Speakers".into()],
+            available_cameras: vec!["Default Camera".into(), "FaceTime HD Camera".into()],
             mic_level: 0.0,
             mic_test_active: false,
-            p2p_mode: "My Contacts".into(),
+            p2p_mode: "Contacts".into(),
             accept_calls: true,
-            is_visible: true,
+            is_visible: false,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x3390ec, 14, 12),
+            language_id: "en".into(),
         }
     }
 
-    pub fn calls_id(&self) -> &'static str {
-        "settings_calls"
+    pub fn new_live(palette: TdesktopThemePalette, language_id: &str) -> Self {
+        let mut s = Self::new();
+        s.palette = palette;
+        s.language_id = language_id.into();
+        s.is_visible = true;
+        s
     }
 
-    pub fn toggle_visibility(&mut self) {
-        self.is_visible = !self.is_visible;
+    pub fn sync_devices(&mut self, inputs: Vec<String>, outputs: Vec<String>, cameras: Vec<String>) {
+        if !inputs.is_empty() { self.available_inputs = inputs; }
+        if !outputs.is_empty() { self.available_outputs = outputs; }
+        if !cameras.is_empty() { self.available_cameras = cameras; }
     }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, language_id: impl Into<String>) { self.language_id = language_id.into(); }
+    pub fn calls_id(&self) -> &'static str { "settings_calls" }
+    pub fn toggle_visibility(&mut self) { self.is_visible = !self.is_visible; }
 
     pub fn calculate_normalized_level(&self, rms: f32, min_rms: f32, max_rms: f32) -> f32 {
-        if max_rms <= min_rms {
-            return 0.0;
-        }
+        if max_rms <= min_rms { return 0.0; }
         ((rms - min_rms) / (max_rms - min_rms)).clamp(0.0, 1.0)
     }
 
     pub fn toggle_mic_test(&mut self) {
         self.mic_test_active = !self.mic_test_active;
+        if !self.mic_test_active { self.mic_level = 0.0; }
     }
 
-    pub fn update_mic_level(&mut self, rms: f32) {
-        self.mic_level = self.calculate_normalized_level(rms, -60.0, 0.0);
-    }
+    pub fn update_mic_level(&mut self, rms: f32) { self.mic_level = self.calculate_normalized_level(rms, -60.0, 0.0); }
+    pub fn set_p2p_mode(&mut self, mode: &str) { self.p2p_mode = mode.into(); }
+    pub fn choose_playback_device(&mut self, device: &str) { self.output_device = device.into(); }
+    pub fn choose_capture_device(&mut self, device: &str) { self.input_device = device.into(); }
+    pub fn choose_camera_device(&mut self, device: &str) { self.camera_device = device.into(); }
+    pub fn lng_group_call_speakers(&self) -> &'static str { "Speakers" }
+    pub fn lng_settings_call_accept_calls(&self) -> bool { self.accept_calls }
+    pub fn lng_settings_call_section_output(&self) -> &'static str { "Speakers and Headphones" }
+    pub fn lng_settings_call_output_device(&self) -> &str { &self.output_device }
+    pub fn lng_settings_call_camera(&self) -> &str { &self.camera_device }
+    pub fn playback_device_name_value(&self) -> String { self.output_device.clone() }
+    pub fn capture_device_name_value(&self) -> String { self.input_device.clone() }
+    pub fn camera_device_name_value(&self) -> String { self.camera_device.clone() }
 
-    pub fn set_p2p_mode(&mut self, mode: &str) {
-        self.p2p_mode = mode.to_string();
-    }
-
-    pub fn choose_playback_device(&mut self, device: &str) {
-        self.output_device = device.to_string();
-    }
-
-    pub fn choose_capture_device(&mut self, device: &str) {
-        self.input_device = device.to_string();
-    }
-
-    pub fn choose_camera_device(&mut self, device: &str) {
-        self.camera_device = device.to_string();
-    }
-
-    pub fn lng_group_call_speakers(&self) -> &'static str {
-        "Speakers"
-    }
-
-    pub fn lng_settings_call_accept_calls(&self) -> bool {
-        self.accept_calls
-    }
-
-    pub fn lng_settings_call_section_output(&self) -> &'static str {
-        "Audio Output"
-    }
-
-    pub fn lng_settings_call_output_device(&self) -> &str {
-        &self.output_device
-    }
-
-    pub fn lng_settings_call_camera(&self) -> &str {
-        &self.camera_device
-    }
-
-    pub fn playback_device_name_value(&self) -> String {
-        self.output_device.clone()
-    }
-
-    pub fn capture_device_name_value(&self) -> String {
-        self.input_device.clone()
-    }
-
-    pub fn camera_device_name_value(&self) -> String {
-        self.camera_device.clone()
+    fn cycle(list: &[String], current: &str) -> String {
+        let idx = list.iter().position(|x| x == current).map(|i| (i + 1) % list.len()).unwrap_or(0);
+        list.get(idx).cloned().unwrap_or_else(|| current.to_string())
     }
 }
 
 impl Default for SettingsCallsSections {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsCallsSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let mic_pct = if self.mic_test_active {
-            (self.mic_level * 100.0).clamp(0.0, 100.0)
-        } else {
-            0.0
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(16.0))
-            .gap(px(12.0))
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette.clone();
+        let lang = self.language_id.clone();
+        let mic_pct = (self.mic_level * 120.0).clamp(0.0, 120.0);
+        settings_container(pal.clone())
+            .child(settings_section_header(IconName::PhoneCall, tr_str(&lang, "通话设置", "Call Settings"), Some("Audio input/output devices, camera, and peer-to-peer preference"), pal.clone()))
+            .child(settings_subsection_title(tr_str(&lang, "音频设备", "Audio Devices"), pal.clone()))
             .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_lg()
-                    .child("Voice and Video Calls"),
+                settings_card(pal.clone())
+                    .child(div().flex().flex_row().justify_between().items_center().py(px(6.0)).cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.input_device = Self::cycle(&this.available_inputs, &this.input_device); cx.notify(); }))
+                        .child(div().flex().flex_row().items_center().gap(px(8.0)).child(tg_icon(IconName::Mic, 16.0, pal.icon_fg)).child(div().text_sm().text_color(rgb(pal.text_primary)).child("Microphone")))
+                        .child(div().text_xs().text_color(rgb(pal.text_link)).child(self.input_device.clone())))
+                    .child(div().flex().flex_row().justify_between().items_center().py(px(6.0)).cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.output_device = Self::cycle(&this.available_outputs, &this.output_device); cx.notify(); }))
+                        .child(div().flex().flex_row().items_center().gap(px(8.0)).child(tg_icon(IconName::Speaker, 16.0, pal.icon_fg)).child(div().text_sm().text_color(rgb(pal.text_primary)).child(self.lng_settings_call_section_output())))
+                        .child(div().text_xs().text_color(rgb(pal.text_link)).child(self.output_device.clone())))
+                    .child(div().pt(px(4.0)).flex().flex_row().justify_between().items_center()
+                        .child(div().px(px(10.0)).py(px(5.0)).rounded(px(6.0)).bg(rgb(if self.mic_test_active { pal.danger } else { pal.accent })).text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.active_button_fg)).cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.toggle_mic_test(); cx.notify(); }))
+                            .child(if self.mic_test_active { "Stop Mic Test" } else { "Test Microphone" }))
+                        .child(div().w(px(120.0)).h(px(6.0)).rounded_full().bg(rgb(pal.input_bg)).child(div().w(px(mic_pct)).h_full().rounded_full().bg(rgb(pal.accent))))),
             )
+            .child(settings_subsection_title(tr_str(&lang, "视频与端到端设置", "Video & Peer-to-Peer"), pal.clone()))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .rounded_md()
-                    .bg(rgb(0x282c34))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Audio Devices"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("Input device: {}", self.input_device)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("Output device: {}", self.output_device)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(div().text_xs().child("Mic Level:"))
-                            .child(
-                                div()
-                                    .w(px(100.0))
-                                    .h(px(6.0))
-                                    .rounded_full()
-                                    .bg(rgb(0x3e4451))
-                                    .child(
-                                        div()
-                                            .w(px(mic_pct))
-                                            .h_full()
-                                            .rounded_full()
-                                            .bg(rgb(0x4fa6ff)),
-                                    ),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .p(px(12.0))
-                    .rounded_md()
-                    .bg(rgb(0x282c34))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Privacy & Video"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("Camera: {}", self.camera_device)),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("Peer-to-Peer Calls: {}", self.p2p_mode)),
-                    ),
+                settings_card(pal.clone())
+                    .child(div().flex().flex_row().justify_between().items_center().py(px(6.0)).cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.camera_device = Self::cycle(&this.available_cameras, &this.camera_device); cx.notify(); }))
+                        .child(div().flex().flex_row().items_center().gap(px(8.0)).child(tg_icon(IconName::VideoCall, 16.0, pal.icon_fg)).child(div().text_sm().text_color(rgb(pal.text_primary)).child("Camera")))
+                        .child(div().text_xs().text_color(rgb(pal.text_link)).child(self.camera_device.clone())))
+                    .child(div().pt(px(4.0)).flex().flex_row().gap(px(6.0)).children(["Everybody", "Contacts", "Nobody"].into_iter().map(|mode| {
+                        let active = self.p2p_mode == mode;
+                        div().flex_1().py(px(6.0)).rounded(px(6.0)).flex().items_center().justify_center().bg(rgb(if active { pal.accent } else { pal.input_bg })).text_xs().text_color(rgb(if active { pal.active_button_fg } else { pal.text_primary })).cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.set_p2p_mode(mode); cx.notify(); })).child(format!("P2P: {}", mode))
+                    })))
+                    .child(settings_toggle_row(IconName::PhoneCall, tr_str(&lang, "允许在此设备接听通话", "Accept Calls on This Device"), None, self.accept_calls, pal, |this| this.accept_calls = !this.accept_calls, cx)),
             )
     }
 }

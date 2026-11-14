@@ -1,4 +1,3 @@
-use crate::auth::passkey_service::{PasskeyChallenge, PasskeyService, PasskeyVerifyRequest};
 use crate::auth::session_manager::{AuthError, SessionManager};
 use crate::config::ServerConfig;
 use crate::ws::{handle_ws_socket, GatewayHub};
@@ -7,20 +6,18 @@ use axum::{
     extract::{FromRequestParts, Path, Query, State, WebSocketUpgrade},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use gpui_telegram_core::auth::SessionToken;
 use gpui_telegram_core::types::{ChatId, MsgId, PeerId, TopicId, UserId};
-use gpui_telegram_proto::message::{MessageContent, MessageItem, ReplyHeader};
-use gpui_telegram_proto::sync::UpdateEvent;
-use gpui_telegram_proto::ws::WsServerFrame;
+use gpui_telegram_proto::message::{MessageContent, MessageItem};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -37,6 +34,8 @@ pub struct AppState {
     pub message_pipeline: Arc<crate::messaging::pipeline::MessagePipeline>,
     pub session_manager: Arc<SessionManager>,
     pub gateway_hub: Arc<GatewayHub>,
+    pub search_indexer: Arc<crate::search::tantivy_indexer::TantivyIndexer>,
+    pub signaling_hub: Arc<crate::webrtc::signaling_hub::SignalingHub>,
     pub pairing_requests: Arc<RwLock<HashMap<String, (UserId, i64)>>>,
     pub passkey_challenges: Arc<RwLock<HashMap<String, i64>>>,
     pub alipay_upstream_attempts: Arc<RwLock<HashMap<String, String>>>,
@@ -45,6 +44,7 @@ pub struct AppState {
     pub computer_lease_broker: Arc<RwLock<gpui_telegram_agent::ComputerLeaseBroker>>,
     pub talk_coordinator: Arc<RwLock<gpui_telegram_agent::TalkCoordinator>>,
     pub acp_runner: Arc<gpui_telegram_agent::acp::AcpRunner>,
+    pub hermes: Arc<gpui_telegram_agent::hermes::HermesEngine>,
     pub task_registry: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::TaskFsm>>>,
     pub approval_gates: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::ApprovalGate>>>,
 }
@@ -62,13 +62,22 @@ impl AppState {
     }
 
     pub fn try_new(config: ServerConfig) -> Result<Self, String> {
-        let path = config.resolve_db_path();
-        let db = if path == ":memory:" || path.is_empty() {
+        let db = if config.is_in_memory() {
             crate::db::ServerDatabase::open_in_memory().map_err(|e| e.to_string())?
         } else {
-            crate::db::ServerDatabase::open(path).map_err(|e| e.to_string())?
+            let path = config.resolve_db_path();
+            if path.trim().is_empty() {
+                return Err("Empty SQLite database path is not permitted in file-backed mode".into());
+            }
+            crate::db::ServerDatabase::open(&path)
+                .map_err(|e| format!("Failed to open SQLite database at '{}': {}", path, e))?
         };
         Ok(Self::with_db(config, Arc::new(db)))
+    }
+
+    pub fn with_acp_runner(mut self, runner: gpui_telegram_agent::acp::AcpRunner) -> Self {
+        self.acp_runner = Arc::new(runner);
+        self
     }
 
     pub fn with_db(config: ServerConfig, db: Arc<crate::db::ServerDatabase>) -> Self {
@@ -86,13 +95,133 @@ impl AppState {
             hub_clone.disconnect_user(user_id);
         }));
 
-        let acp_runner = Arc::new(gpui_telegram_agent::acp::AcpRunner::new(
-            &config.default_agent_model,
-        ));
-        let task_registry = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
-        let approval_gates = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let workspace_root = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let hermes_data_dir = if config.is_in_memory() {
+            None
+        } else {
+            let db_path = std::path::PathBuf::from(config.resolve_db_path());
+            let parent = db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            Some(parent.join("hermes"))
+        };
+        let hermes_cfg = gpui_telegram_agent::hermes::HermesEngineConfig {
+            workspace_root,
+            data_dir: hermes_data_dir,
+            default_model: config.default_agent_model.clone(),
+            ..Default::default()
+        };
+        let hermes = Arc::new(
+            gpui_telegram_agent::hermes::HermesEngine::new(hermes_cfg).unwrap_or_else(|err| {
+                tracing::warn!("Falling back to in-memory HermesEngine: {}", err);
+                gpui_telegram_agent::hermes::HermesEngine::in_memory()
+                    .expect("Failed to initialize in-memory HermesEngine")
+            }),
+        );
 
-        let cas = Arc::new(crate::media::cas_store::CasStore::new(&config.media_storage_path));
+        let acp_runner = Arc::new(
+            gpui_telegram_agent::acp::AcpRunner::new(&config.default_agent_model)
+                .with_hermes_engine(hermes.clone()),
+        );
+
+        let mut hydrated_tasks = HashMap::new();
+        if let Ok(rows) = db.load_acp_tasks() {
+            for (task_id, val) in rows {
+                if let Ok(task) = serde_json::from_value::<gpui_telegram_agent::tasks::TaskFsm>(val) {
+                    hydrated_tasks.insert(task_id, task);
+                }
+            }
+        }
+        let mut hydrated_gates = HashMap::new();
+        if let Ok(rows) = db.load_approval_gates() {
+            for (gate_id, val) in rows {
+                if let Ok(gate) = serde_json::from_value::<gpui_telegram_agent::tasks::ApprovalGate>(val) {
+                    hydrated_gates.insert(gate_id, gate);
+                }
+            }
+        }
+        let task_registry = Arc::new(tokio::sync::RwLock::new(hydrated_tasks));
+        let approval_gates = Arc::new(tokio::sync::RwLock::new(hydrated_gates));
+
+        let mut hydrated_mcp = gpui_telegram_agent::McpRegistry::new();
+        if let Ok(rows) = db.load_mcp_servers() {
+            for (_sid, _name, _ep, _st, tools_val) in rows {
+                if let Ok(defs) = serde_json::from_value::<Vec<gpui_telegram_agent::McpToolDefinition>>(tools_val) {
+                    for def in defs {
+                        hydrated_mcp.register(def);
+                    }
+                }
+            }
+        }
+
+        let cas = if config.is_in_memory() && config.media_storage_path == "data/media" {
+            Arc::new(
+                crate::media::cas_store::CasStore::temp("inmem")
+                    .expect("Failed to initialize isolated temporary CAS directory"),
+            )
+        } else {
+            Arc::new(crate::media::cas_store::CasStore::new(&config.media_storage_path))
+        };
+
+        let search_indexer = if config.is_in_memory() {
+            Arc::new(
+                crate::search::tantivy_indexer::TantivyIndexer::in_ram()
+                    .expect("Failed to initialize in-memory Tantivy index"),
+            )
+        } else {
+            let idx_path = std::path::PathBuf::from(config.resolve_db_path()).with_extension("tantivy");
+            Arc::new(
+                crate::search::tantivy_indexer::TantivyIndexer::open_or_create(&idx_path)
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to open Tantivy search index at '{}': {}", idx_path.display(), e)
+                    }),
+            )
+        };
+        if search_indexer.doc_count() == 0 {
+            if let Ok(recent) = db.list_recent_messages_for_search(2000) {
+                if !recent.is_empty() {
+                    let docs: Vec<crate::search::schema::SearchDocument> = recent
+                        .into_iter()
+                        .map(|(mid, cid, sid, date_ms, text, media_type)| {
+                            crate::search::schema::SearchDocument::new(
+                                mid.to_string(),
+                                cid.to_string(),
+                                sid.to_string(),
+                                date_ms,
+                                text,
+                                media_type,
+                            )
+                        })
+                        .collect();
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        let indexer_weak = Arc::downgrade(&search_indexer);
+                        handle.spawn(async move {
+                            for doc in docs {
+                                let Some(idx) = indexer_weak.upgrade() else {
+                                    return;
+                                };
+                                if idx.index_message(doc).await.is_err() {
+                                    return;
+                                }
+                            }
+                            if let Some(idx) = indexer_weak.upgrade() {
+                                let _ = idx.commit().await;
+                            }
+                        });
+                    } else {
+                        for doc in docs {
+                            let _ = search_indexer.index_message_sync(doc);
+                        }
+                        search_indexer.commit_nonblocking();
+                    }
+                }
+            }
+        }
+        let _ = db.seed_default_catalog_if_empty();
+
+        let signaling_hub = Arc::new(crate::webrtc::signaling_hub::SignalingHub::new());
         let pts_engine = Arc::new(crate::sync::pts_engine::PtsEngine::new(db.clone()));
         let dedup = crate::messaging::dedup::MessageNonceDedup::default();
         let message_pipeline = Arc::new(crate::messaging::pipeline::MessagePipeline::new(
@@ -100,6 +229,66 @@ impl AppState {
             (*pts_engine).clone(),
         ));
         gateway_hub.set_pipeline(message_pipeline.clone(), db.clone());
+        gateway_hub.set_search_indexer(search_indexer.clone());
+        gateway_hub.set_signaling_hub(signaling_hub.clone());
+
+        if let Ok(rt_handle) = tokio::runtime::Handle::try_current() {
+            let hermes_weak = Arc::downgrade(&hermes);
+            let db_weak = Arc::downgrade(&db);
+            let pipeline_weak = Arc::downgrade(&message_pipeline);
+            let hub_weak = Arc::downgrade(&gateway_hub);
+            rt_handle.spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    let Some(hermes) = hermes_weak.upgrade() else { return; };
+                    let Some(db) = db_weak.upgrade() else { return; };
+                    let Some(pipeline) = pipeline_weak.upgrade() else { return; };
+                    let Some(hub) = hub_weak.upgrade() else { return; };
+
+                    if let Ok(outcomes) = hermes.run_due_cron_jobs().await {
+                        for out in outcomes {
+                            if out.status == "completed" {
+                                if let Some(cid) = out.target_chat_id {
+                                    let bot_hint = hermes
+                                        .store()
+                                        .get_cron_job(&out.job_id)
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|j| j.deliver_to);
+                                    deliver_proactive_message_raw(
+                                        &db,
+                                        &pipeline,
+                                        &hub,
+                                        ChatId(cid),
+                                        bot_hint.as_deref(),
+                                        &out.response_text,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if let Ok(Some(hb)) = hermes.tick_heartbeat_if_due().await {
+                        if !hb.suppressed {
+                            if let Some(cid) = hb.target_chat_id {
+                                let bot_hint = hermes.store().kv_get("heartbeat", "bot_id").ok().flatten();
+                                deliver_proactive_message_raw(
+                                    &db,
+                                    &pipeline,
+                                    &hub,
+                                    ChatId(cid),
+                                    bot_hint.as_deref(),
+                                    &hb.response_text,
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         Self {
             config,
@@ -109,27 +298,33 @@ impl AppState {
             message_pipeline,
             session_manager,
             gateway_hub,
+            search_indexer,
+            signaling_hub,
             pairing_requests: Arc::new(RwLock::new(HashMap::new())),
             passkey_challenges: Arc::new(RwLock::new(HashMap::new())),
             alipay_upstream_attempts: Arc::new(RwLock::new(HashMap::new())),
-            mcp_registry: Arc::new(RwLock::new(gpui_telegram_agent::McpRegistry::new())),
+            mcp_registry: Arc::new(RwLock::new(hydrated_mcp)),
             permission_dock: Arc::new(RwLock::new(gpui_telegram_agent::ToolPermissionDock::new())),
             computer_lease_broker: Arc::new(RwLock::new(gpui_telegram_agent::ComputerLeaseBroker::new())),
             talk_coordinator: Arc::new(RwLock::new(gpui_telegram_agent::TalkCoordinator::new())),
             acp_runner,
+            hermes,
             task_registry,
             approval_gates,
         }
     }
 
     fn open_database(config: &ServerConfig) -> crate::db::ServerDatabase {
-        let path = config.resolve_db_path();
-        if path == ":memory:" || path.is_empty() {
+        if config.is_in_memory() {
             crate::db::ServerDatabase::open_in_memory().expect("Failed to initialize in-memory SQLite")
         } else {
-            crate::db::ServerDatabase::open(path).unwrap_or_else(|e| {
-                tracing::warn!("Failed to open SQLite database at '{}': {}. Falling back to in-memory", path, e);
-                crate::db::ServerDatabase::open_in_memory().expect("In-memory SQLite fallback failed")
+            let path = config.resolve_db_path();
+            assert!(
+                !path.trim().is_empty(),
+                "SQLite database path cannot be empty in file-backed mode"
+            );
+            crate::db::ServerDatabase::open(&path).unwrap_or_else(|e| {
+                panic!("Failed to open SQLite database at '{}': {}", path, e);
             })
         }
     }
@@ -213,8 +408,39 @@ impl FromRequestParts<Arc<AppState>> for AuthBearer {
         };
 
         let user_id = session.user_id;
+        if let Ok(None) = state.db.get_user(user_id) {
+            let _ = sync_mem_user_to_db(state, user_id);
+        }
         Ok(AuthBearer { session, user_id })
     }
+}
+
+pub(crate) fn sync_mem_user_to_db(
+    state: &AppState,
+    user_id: UserId,
+) -> Option<crate::db::schema::UserRecord> {
+    let mem_u = state.session_manager.get_user(user_id)?;
+    let ts_ms = mem_u.created_at.timestamp_millis();
+    let rec = crate::db::schema::UserRecord {
+        user_id,
+        username: Some(mem_u.username),
+        phone: None,
+        first_name: mem_u.first_name,
+        last_name: mem_u.last_name,
+        bio: None,
+        password_hash: Some(mem_u.password_hash),
+        is_bot: false,
+        is_verified: false,
+        is_support: false,
+        is_scam: false,
+        is_fake: false,
+        profile_photo_file_id: None,
+        account_generation: 1,
+        created_at_ms: ts_ms,
+        updated_at_ms: ts_ms,
+    };
+    let _ = state.db.create_user(&rec);
+    state.db.get_user(user_id).ok().flatten().or(Some(rec))
 }
 
 /// Extract token from Authorization header or ?token= query parameter
@@ -254,13 +480,21 @@ pub fn build_router() -> Router {
 
 /// Build the production Axum router mounting all public, protected, and WebSocket routes
 pub fn build_router_with_state(state: Arc<AppState>) -> Router {
+    use crate::routes;
+
     Router::new()
         // --- Public Routes ---
         .route("/health", get(health_check))
         .route("/api/v1/status", get(server_status))
         .route("/api/v1/auth/register", post(auth_register))
         .route("/api/v1/auth/login", post(auth_login))
-        // --- Milestone 2 Auth Extension Routes (Alipay & Email) ---
+        .route("/api/v1/auth/phone/send-code", post(routes::auth_factors::phone_send_code))
+        .route("/api/v1/auth/phone/verify", post(routes::auth_factors::phone_verify))
+        .route("/api/v1/auth/2fa/status", get(routes::auth_factors::two_factor_status))
+        .route("/api/v1/auth/2fa/set", post(routes::auth_factors::two_factor_set))
+        .route("/api/v1/auth/2fa/disable", post(routes::auth_factors::two_factor_disable))
+        .route("/api/v1/auth/2fa/verify", post(routes::auth_factors::two_factor_verify))
+        // --- Auth Extension Routes (Email & Alipay) ---
         .route("/api/v1/auth/email/send-code", post(auth_email_send_code))
         .route("/api/v1/auth/email/register", post(auth_email_register))
         .route("/api/v1/auth/alipay/start", post(auth_alipay_start))
@@ -272,7 +506,7 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/alipay/sdk-login", post(auth_alipay_direct_login))
         .route("/api/v1/auth/alipay/register", post(auth_alipay_register))
         .route("/api/v1/auth/alipay/auth-string", get(auth_alipay_auth_string))
-        // --- Migrated Legacy & CLI Alipay Auth Routes on Google Cloud Server ---
+        // --- Migrated Legacy & CLI Alipay Auth Routes ---
         .route("/api/auth/alipay/login-url", get(auth_alipay_login_url))
         .route("/api/auth/alipay/cli-session", get(auth_alipay_cli_session))
         .route("/api/auth/alipay/callback", post(auth_alipay_callback).get(auth_alipay_callback))
@@ -282,44 +516,64 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/auth/alipay/sdk-login", post(auth_alipay_direct_login))
         .route("/api/auth/alipay/register", post(auth_alipay_register))
         .route("/api/auth/alipay/auth-string", get(auth_alipay_auth_string))
-        .route("/api/v1/auth/passkey/challenge", post(auth_passkey_challenge))
-        .route("/api/v1/auth/passkey/verify", post(auth_passkey_verify))
-        .route("/api/v1/auth/pair/init", post(auth_pair_init))
-        .route("/api/v1/auth/pair/verify", post(auth_pair_verify))
-        // --- Protected Auth Routes ---
-        .route("/api/v1/auth/me", get(auth_me))
-        .route("/api/v1/auth/profile", put(auth_update_profile))
-        .route("/api/v1/auth/sessions", get(auth_sessions))
-        .route("/api/v1/auth/sessions/{session_id}", delete(auth_revoke_session))
-        // --- Protected Messaging Routes ---
-        .route("/api/v1/messages/history", get(messages_history))
-        .route("/api/v1/messages/send", post(messages_send))
-        .route("/api/v1/messages/edit", post(messages_edit))
-        .route("/api/v1/messages/delete", post(messages_delete))
-        .route("/api/v1/messages/reaction", post(messages_reaction))
-        .route("/api/v1/messages/read", post(messages_read))
-        // --- Protected Chat & Contacts Routes ---
-        .route("/api/v1/contacts", get(contacts_list).post(contacts_add))
-        .route("/api/v1/contacts/add", post(contacts_add))
-        .route("/api/v1/chats", get(chats_list).post(chats_create))
-        .route("/api/v1/chats/create", post(chats_create))
-        .route("/api/v1/chats/{chat_id}", get(chats_get).put(chats_update))
-        .route(
-            "/api/v1/chats/{chat_id}/members",
-            get(chats_members_list).post(chats_members_add),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/members/{user_id}",
-            put(chats_members_update).delete(chats_members_delete),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/topics",
-            get(chats_topics).post(chats_topics_create),
-        )
-        .route(
-            "/api/v1/chats/{chat_id}/topics/{topic_id}",
-            put(chats_topics_update).delete(chats_topics_delete),
-        )
+        // --- Passkey & QR Pair Routes ---
+        .route("/api/v1/auth/passkey/challenge", post(routes::auth_advanced::passkey_challenge))
+        .route("/api/v1/auth/passkey/register", post(routes::auth_advanced::passkey_register))
+        .route("/api/v1/auth/passkey/verify", post(routes::auth_advanced::passkey_verify))
+        .route("/api/v1/auth/passkey/list", get(routes::auth_advanced::passkey_list))
+        .route("/api/v1/auth/pair/init", post(routes::auth_advanced::pair_init))
+        .route("/api/v1/auth/pair/accept", post(routes::auth_advanced::pair_accept))
+        .route("/api/v1/auth/pair/poll/{token}", get(routes::auth_advanced::pair_poll))
+        .route("/api/v1/auth/pair/verify", post(routes::auth_advanced::pair_verify))
+        // --- Protected Profile, Peer Resolve & Sessions ---
+        .route("/api/v1/auth/me", get(routes::users::get_me_profile))
+        .route("/api/v1/auth/profile", put(routes::users::update_me_profile))
+        .route("/api/v1/users/me", get(routes::users::get_me_profile).put(routes::users::update_me_profile))
+        .route("/api/v1/users/{user_id}", get(routes::users::get_user_by_id))
+        .route("/api/v1/peers/resolve", get(routes::users::resolve_peer))
+        .route("/api/v1/auth/sessions", get(routes::auth_advanced::auth_sessions_list))
+        .route("/api/v1/auth/sessions/others", delete(routes::auth_advanced::auth_revoke_other_sessions))
+        .route("/api/v1/auth/sessions/{session_id}", delete(routes::auth_advanced::auth_delete_session))
+        // --- Protected Messaging, Reactions, Polls & Read Cursors ---
+        .route("/api/v1/messages/history", get(routes::messages::messages_history_clean))
+        .route("/api/v1/messages/send", post(routes::messages::messages_send_clean))
+        .route("/api/v1/messages/edit", post(routes::sync_polls::messages_edit_legacy))
+        .route("/api/v1/messages/delete", post(routes::sync_polls::messages_delete_legacy))
+        .route("/api/v1/messages/reaction", post(routes::sync_polls::messages_reaction_legacy))
+        .route("/api/v1/messages/read", post(routes::sync_polls::messages_read_legacy))
+        .route("/api/v1/chats/{chat_id}/messages", get(routes::messages::chats_messages_history).post(routes::messages::chats_messages_send))
+        .route("/api/v1/chats/{chat_id}/messages/{msg_id}", put(routes::sync_polls::messages_edit_path).delete(routes::sync_polls::messages_delete_path))
+        .route("/api/v1/chats/{chat_id}/messages/{msg_id}/reactions", post(routes::sync_polls::messages_reaction_path))
+        .route("/api/v1/chats/{chat_id}/read", post(routes::sync_polls::chats_read_path))
+        .route("/api/v1/chats/{chat_id}/polls", post(routes::sync_polls::polls_create))
+        .route("/api/v1/polls/{poll_id}", get(routes::sync_polls::polls_get))
+        .route("/api/v1/polls/{poll_id}/vote", post(routes::sync_polls::polls_vote))
+        .route("/api/v1/polls/{poll_id}/close", post(routes::sync_polls::polls_close))
+        // --- Protected Contacts, Chats, Topics, Folders, Pins, Drafts ---
+        .route("/api/v1/contacts", get(routes::users::contacts_list_all).post(routes::users::contacts_add_or_upsert))
+        .route("/api/v1/contacts/add", post(routes::users::contacts_add_or_upsert))
+        .route("/api/v1/contacts/{user_id}", delete(routes::users::contacts_delete_user))
+        .route("/api/v1/chats", get(routes::chat_lifecycle::chats_list_clean).post(routes::chat_lifecycle::chats_create_strict))
+        .route("/api/v1/chats/create", post(routes::chat_lifecycle::chats_create_strict))
+        .route("/api/v1/chats/welcome", post(routes::chat_extras::chats_welcome))
+        .route("/api/v1/chats/join", post(routes::chat_extras::invites_join))
+        .route("/api/v1/invites/join", post(routes::chat_extras::invites_join))
+        .route("/api/v1/chats/{chat_id}", get(routes::chat_lifecycle::chats_get_scoped).put(chats_update).delete(routes::chat_lifecycle::chats_delete_chat))
+        .route("/api/v1/chats/{chat_id}/members", get(chats_members_list).post(chats_members_add))
+        .route("/api/v1/chats/{chat_id}/members/{user_id}", put(chats_members_update).delete(chats_members_delete))
+        .route("/api/v1/chats/{chat_id}/topics", get(chats_topics).post(chats_topics_create))
+        .route("/api/v1/chats/{chat_id}/topics/{topic_id}", put(chats_topics_update).delete(chats_topics_delete))
+        .route("/api/v1/chats/{chat_id}/invites", get(routes::chat_extras::invites_list).post(routes::chat_extras::invites_create))
+        .route("/api/v1/chats/{chat_id}/invites/{invite_id}", delete(routes::chat_extras::invites_revoke))
+        .route("/api/v1/chats/{chat_id}/archive", post(routes::chat_extras::chat_archive))
+        .route("/api/v1/chats/{chat_id}/pin", post(routes::chat_extras::chat_pin_dialog))
+        .route("/api/v1/chats/{chat_id}/mute", post(routes::chat_extras::chat_mute))
+        .route("/api/v1/chats/{chat_id}/pins", get(routes::chat_extras::pins_list).post(routes::chat_extras::pins_pin).delete(routes::chat_extras::pins_unpin))
+        .route("/api/v1/chats/{chat_id}/draft", get(routes::chat_extras::draft_get).put(routes::chat_extras::draft_put).delete(routes::chat_extras::draft_delete))
+        .route("/api/v1/chats/{chat_id}/statistics", get(routes::analytics_wallet::chat_statistics))
+        .route("/api/v1/chats/{chat_id}/export", get(routes::analytics_wallet::chat_export))
+        .route("/api/v1/folders", get(routes::chat_extras::folders_list).post(routes::chat_extras::folders_create))
+        .route("/api/v1/folders/{folder_id}", put(routes::chat_extras::folders_update).delete(routes::chat_extras::folders_delete))
         // --- Monetization & Membership Routes ---
         .route("/api/alipay/create-order", post(alipay_create_order))
         .route("/api/alipay/query-order", get(alipay_query_order))
@@ -328,44 +582,91 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/admin/use-redeem-code", post(admin_use_redeem_code))
         .route("/api/admin/create-redeem-code", post(admin_create_redeem_code))
         // --- Protected Sync Routes ---
-        .route("/api/v1/sync/difference", get(sync_difference).post(sync_difference_post))
-        // --- Protected Media Routes ---
-        .route("/api/v1/media/upload/init", post(media_upload_init))
-        .route(
-            "/api/v1/media/upload/{upload_id}/part/{part_index}",
-            put(media_upload_part),
-        )
-        .route(
-            "/api/v1/media/upload/{upload_id}/complete",
-            post(media_upload_complete),
-        )
-        .route("/api/v1/media/stream/{file_id}", get(media_stream))
-        // --- Protected Search Routes ---
-        .route("/api/v1/search/messages", get(search_messages))
-        // --- Protected WebRTC Routes ---
-        .route("/api/v1/webrtc/call/invite", post(webrtc_call_invite))
-        .route("/api/v1/webrtc/call/signal", post(webrtc_call_signal))
-        .route(
-            "/api/v1/webrtc/turn_credentials",
-            get(webrtc_turn_credentials),
-        )
+        .route("/api/v1/sync/difference", get(sync_difference).post(routes::sync_polls::sync_get_difference_clean))
+        .route("/api/v1/sync/get_difference", post(routes::sync_polls::sync_get_difference_clean))
+        // --- Protected Media CAS & Streaming Routes ---
+        .route("/api/v1/media/upload", post(routes::media::media_upload_direct))
+        .route("/api/v1/media/upload/init", post(routes::media::media_upload_init_clean))
+        .route("/api/v1/media/upload/{upload_id}/part/{part_index}", put(routes::media::media_upload_part_clean).post(routes::media::media_upload_part_clean))
+        .route("/api/v1/media/upload/{upload_id}/complete", post(routes::media::media_upload_complete_clean))
+        .route("/api/v1/media/stream/{file_id}", get(routes::media::media_stream_clean))
+        .route("/api/v1/media/{file_id}", get(routes::media::media_stream_clean))
+        .route("/api/v1/media/{file_id}/meta", get(routes::media::media_metadata_get))
+        // --- Stickers, GIFs, Stories, Calls, Search & Wallet ---
+        .route("/api/v1/stickers/sets", get(routes::social::stickers_sets))
+        .route("/api/v1/stickers/sets/{set_id}/install", post(routes::social::stickers_install))
+        .route("/api/v1/gifs/search", get(routes::social::gifs_search))
+        .route("/api/v1/stories", get(routes::social::stories_list).post(routes::social::stories_create))
+        .route("/api/v1/stories/{story_id}/view", post(routes::social::stories_view))
+        .route("/api/v1/stories/{story_id}", delete(routes::social::stories_delete))
+        .route("/api/v1/calls", get(routes::social::calls_list))
+        .route("/api/v1/calls/invite", post(routes::social::calls_invite))
+        .route("/api/v1/calls/signal", post(routes::social::calls_signal))
+        .route("/api/v1/calls/{call_id}/rate", post(routes::social::calls_rate))
+        .route("/api/v1/search", get(routes::analytics_wallet::search_unified))
+        .route("/api/v1/search/messages", get(routes::analytics_wallet::search_unified))
+        .route("/api/v1/wallet/balance", get(routes::analytics_wallet::wallet_balance))
+        .route("/api/v1/wallet/transactions", get(routes::analytics_wallet::wallet_transactions))
+        .route("/api/v1/wallet/topup", post(routes::analytics_wallet::wallet_topup))
+        .route("/api/v1/wallet/send_stars", post(routes::analytics_wallet::wallet_send_stars))
+        .route("/api/v1/wallet/gift", post(routes::analytics_wallet::wallet_send_stars))
+        // --- Protected WebRTC Legacy Aliases ---
+        .route("/api/v1/webrtc/call/invite", post(routes::social::calls_invite))
+        .route("/api/v1/webrtc/call/signal", post(routes::social::calls_signal))
+        .route("/api/v1/webrtc/turn_credentials", get(routes::social::webrtc_turn_credentials_clean))
         // --- Agent & Capability Routes ---
         .route("/api/v1/agent/runs", post(agent_runs))
         .route("/api/v1/agent/turn", post(agent_turn))
-        .route("/api/v1/tasks", get(tasks_list).post(tasks_create))
-        .route("/api/v1/tasks/{task_id}/approve", post(tasks_approve))
-        .route("/api/v1/mcp/servers", get(mcp_servers_list).post(mcp_servers_register))
+        .route("/api/v1/chats/{chat_id}/agent-runs", post(chats_agent_runs))
+        .route("/api/v1/hermes/status", get(routes::hermes::hermes_status))
+        .route("/api/v1/hermes/turns", post(routes::hermes::hermes_turns_create))
+        .route("/api/v1/hermes/turns/{id}/events", get(routes::hermes::hermes_turn_events))
+        .route("/api/v1/hermes/command", post(routes::hermes::hermes_command_run))
+        .route("/api/v1/hermes/commands", get(routes::hermes::hermes_commands_list))
+        .route("/api/v1/hermes/sessions", get(routes::hermes::hermes_sessions_list))
+        .route("/api/v1/hermes/sessions/search", post(routes::hermes::hermes_sessions_search))
+        .route("/api/v1/hermes/sessions/{id}", get(routes::hermes::hermes_session_get))
+        .route("/api/v1/hermes/sessions/{id}/branch", post(routes::hermes::hermes_session_branch))
+        .route("/api/v1/hermes/sessions/{id}/compress", post(routes::hermes::hermes_session_compress))
+        .route("/api/v1/hermes/sessions/{id}/undo", post(routes::hermes::hermes_session_undo))
+        .route("/api/v1/hermes/sessions/{id}/export", post(routes::hermes::hermes_session_export))
+        .route("/api/v1/hermes/memory", get(routes::hermes::hermes_memory_get).put(routes::hermes::hermes_memory_put))
+        .route("/api/v1/hermes/memory/action", post(routes::hermes::hermes_memory_action))
+        .route("/api/v1/hermes/soul", get(routes::hermes::hermes_soul_get).put(routes::hermes::hermes_soul_put))
+        .route("/api/v1/hermes/honcho", get(routes::hermes::hermes_honcho_get).post(routes::hermes::hermes_honcho_post))
+        .route("/api/v1/hermes/skills", get(routes::hermes::hermes_skills_list).post(routes::hermes::hermes_skills_create))
+        .route("/api/v1/hermes/skills/{name}", get(routes::hermes::hermes_skill_get).patch(routes::hermes::hermes_skill_patch).delete(routes::hermes::hermes_skill_delete))
+        .route("/api/v1/hermes/skills/{name}/approve", post(routes::hermes::hermes_skill_approve))
+        .route("/api/v1/hermes/toolsets", get(routes::hermes::hermes_toolsets_get).put(routes::hermes::hermes_toolsets_put))
+        .route("/api/v1/hermes/approvals", get(routes::hermes::hermes_approvals_list))
+        .route("/api/v1/hermes/approvals/{id}/decide", post(routes::hermes::hermes_approval_decide))
+        .route("/api/v1/hermes/cron", get(routes::hermes::hermes_cron_list).post(routes::hermes::hermes_cron_create))
+        .route("/api/v1/hermes/cron/{id}", patch(routes::hermes::hermes_cron_patch).delete(routes::hermes::hermes_cron_delete))
+        .route("/api/v1/hermes/cron/{id}/run", post(routes::hermes::hermes_cron_run))
+        .route("/api/v1/hermes/heartbeat", get(routes::hermes::hermes_heartbeat_get).post(routes::hermes::hermes_heartbeat_post))
+        .route("/api/v1/hermes/kanban/boards", get(routes::hermes::hermes_kanban_boards_list).post(routes::hermes::hermes_kanban_boards_create))
+        .route("/api/v1/hermes/kanban/boards/{id}", get(routes::hermes::hermes_kanban_board_get))
+        .route("/api/v1/hermes/kanban/cards", post(routes::hermes::hermes_kanban_cards_create))
+        .route("/api/v1/hermes/kanban/cards/{id}", patch(routes::hermes::hermes_kanban_cards_patch).delete(routes::hermes::hermes_kanban_cards_delete))
+        .route("/api/v1/hermes/providers", get(routes::hermes::hermes_providers_get).put(routes::hermes::hermes_providers_put))
+        .route("/api/v1/hermes/usage", get(routes::hermes::hermes_usage_get))
+        .route("/api/v1/hermes/rollback", post(routes::hermes::hermes_rollback_post))
+        .route("/api/v1/hermes/terminal/processes", get(routes::hermes::hermes_terminal_processes_get))
+        .route("/api/v1/hermes/talk/turn", post(routes::hermes::hermes_talk_turn))
+        .route("/api/v1/hermes/acp", post(routes::hermes::hermes_acp_rpc))
+        .route("/v1/chat/completions", post(routes::hermes::openai_chat_completions))
+        .route("/v1/models", get(routes::hermes::openai_models_list))
+        .route("/api/v1/tasks", get(routes::acp::tasks_list).post(routes::acp::tasks_create))
+        .route("/api/v1/tasks/{task_id}/approve", post(routes::acp::tasks_approve))
+        .route("/api/v1/mcp/servers", get(routes::acp::mcp_servers_list).post(routes::acp::mcp_servers_register))
         .route("/api/v1/mcp/tools", get(mcp_tools_list))
         .route("/api/v1/mcp/call", post(mcp_tool_call))
         .route("/api/v1/mcp/permission/approve", post(mcp_permission_approve))
-        .route("/api/v1/computer/lease", post(computer_lease_acquire))
-        .route("/api/v1/computer/lease/acquire", post(computer_lease_acquire))
-        .route(
-            "/api/v1/computer/lease/emergency_takeover",
-            post(computer_lease_emergency_takeover),
-        )
+        .route("/api/v1/computer/lease", post(routes::acp::computer_lease_acquire))
+        .route("/api/v1/computer/lease/acquire", post(routes::acp::computer_lease_acquire))
+        .route("/api/v1/computer/lease/emergency_takeover", post(routes::acp::computer_lease_emergency_takeover))
         .route("/api/v1/computer/action", post(computer_action_execute))
-        .route("/api/v1/talk/session", post(talk_session_create))
+        .route("/api/v1/talk/session", post(routes::acp::talk_session_create))
         .route("/api/v1/talk/barge_in", post(talk_barge_in))
         .route("/api/v1/talk/audio", post(talk_audio_enqueue))
         // --- WebSocket Upgrade Route ---
@@ -389,7 +690,15 @@ async fn server_status() -> Json<Value> {
     Json(json!({
         "server": "gpui_telegram_server",
         "status": "healthy",
-        "version": "0.1.0"
+        "version": env!("CARGO_PKG_VERSION"),
+        "capabilities": [
+            "auth", "phone_otp", "email_otp", "2fa", "qr_pair", "passkey",
+            "chats", "topics", "folders", "drafts", "invites", "pins",
+            "messaging_pts", "reactions", "polls", "media_cas_206",
+            "stickers", "gifs", "stories", "calls_webrtc", "tantivy_search",
+            "statistics", "export", "wallet_stars", "acp_durable",
+            "hermes_agent", "hermes_gateway", "openai_compat", "acp_json_rpc"
+        ]
     }))
 }
 
@@ -402,6 +711,8 @@ pub struct RegisterRequest {
     pub last_name: Option<String>,
     #[serde(default = "default_device_name")]
     pub device_name: String,
+    #[serde(default)]
+    pub auto_welcome: bool,
 }
 
 fn default_first_name() -> String {
@@ -424,10 +735,10 @@ async fn auth_register(
         )
             .into_response();
     }
-    if username_clean.chars().count() > 64 {
+    if username_clean.chars().count() > crate::auth::MAX_USERNAME_CHARS {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid_credentials", "message": "Username cannot exceed 64 characters" })),
+            Json(json!({ "error": "invalid_credentials", "message": "username must be 1..=128 characters" })),
         )
             .into_response();
     }
@@ -438,10 +749,10 @@ async fn auth_register(
         )
             .into_response();
     }
-    if req.password.as_bytes().len() > 256 {
+    if req.password.as_bytes().len() > crate::auth::MAX_PASSWORD_BYTES {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid_credentials", "message": "Password cannot exceed 256 bytes" })),
+            Json(json!({ "error": "invalid_credentials", "message": "password must not exceed 1024 bytes" })),
         )
             .into_response();
     }
@@ -524,7 +835,9 @@ async fn auth_register(
                 revoked_at_ms: None,
             };
             let _ = state.db.create_session(&db_session);
-            let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
+            if req.auto_welcome {
+                let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
+            }
 
             (
                 StatusCode::CREATED,
@@ -561,7 +874,9 @@ pub struct LoginRequest {
 }
 
 async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginRequest>) -> Response {
-    if req.username.chars().count() > 64 || req.password.as_bytes().len() > 256 {
+    if req.username.trim().chars().count() > crate::auth::MAX_USERNAME_CHARS
+        || req.password.as_bytes().len() > crate::auth::MAX_PASSWORD_BYTES
+    {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "invalid_credentials", "message": "Invalid username or password" })),
@@ -575,12 +890,30 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
         .login(&req.username, &req.password, &req.device_name)
     {
         Ok((user, session, token)) => {
+            if let Ok(tfa) = state.db.get_two_factor_status(user.user_id) {
+                if tfa.has_password {
+                    state.session_manager.revoke_session(&session.session_id);
+                    let challenge_token = format!("tfa_{}", Uuid::new_v4().simple());
+                    let exp = Utc::now().timestamp_millis() + 600_000;
+                    let _ = state.db.create_two_factor_challenge(&challenge_token, user.user_id, exp);
+                    return (
+                        StatusCode::OK,
+                        Json(json!({
+                            "requires_2fa": true,
+                            "challenge_token": challenge_token,
+                            "hint": tfa.hint,
+                            "user_id": user.user_id.raw(),
+                        })),
+                    )
+                        .into_response();
+                }
+            }
             let db_session = crate::db::schema::SessionRecord {
                 session_id: session.session_id.clone(),
                 user_id: user.user_id,
                 device_id: req.device_name.clone(),
                 client_type: "gpui_desktop".into(),
-                app_version: "0.1.0".into(),
+                app_version: env!("CARGO_PKG_VERSION").into(),
                 ip_address: None,
                 location_desc: None,
                 account_generation: 1,
@@ -591,7 +924,6 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                 revoked_at_ms: None,
             };
             let _ = state.db.create_session(&db_session);
-            let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
 
             (
                 StatusCode::OK,
@@ -610,6 +942,23 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
             if let Ok(Some(db_user)) = state.db.get_user_by_username(&req.username) {
                 if let Some(ref hash) = db_user.password_hash {
                     if crate::auth::verify_password(&req.password, hash) {
+                        if let Ok(tfa) = state.db.get_two_factor_status(db_user.user_id) {
+                            if tfa.has_password {
+                                let challenge_token = format!("tfa_{}", Uuid::new_v4().simple());
+                                let exp = Utc::now().timestamp_millis() + 600_000;
+                                let _ = state.db.create_two_factor_challenge(&challenge_token, db_user.user_id, exp);
+                                return (
+                                    StatusCode::OK,
+                                    Json(json!({
+                                        "requires_2fa": true,
+                                        "challenge_token": challenge_token,
+                                        "hint": tfa.hint,
+                                        "user_id": db_user.user_id.raw(),
+                                    })),
+                                )
+                                    .into_response();
+                            }
+                        }
                         // Password matches! Restore user record into SessionManager
                         let created_at = chrono::DateTime::from_timestamp_millis(db_user.created_at_ms)
                             .unwrap_or_else(Utc::now);
@@ -636,7 +985,7 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                             user_id: db_user.user_id,
                             device_id: req.device_name.clone(),
                             client_type: "gpui_desktop".into(),
-                            app_version: "0.1.0".into(),
+                            app_version: env!("CARGO_PKG_VERSION").into(),
                             ip_address: None,
                             location_desc: None,
                             account_generation: 1,
@@ -647,7 +996,6 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                             revoked_at_ms: None,
                         };
                         let _ = state.db.create_session(&db_session);
-                        let _ = ensure_user_welcome_bot(&state, db_user.user_id, Some(&db_user.first_name));
 
                         return (
                             StatusCode::OK,
@@ -1046,7 +1394,6 @@ async fn auth_email_register(
                 revoked_at_ms: None,
             };
             let _ = state.db.create_session(&db_session);
-            let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
 
             (
                 StatusCode::CREATED,
@@ -1145,7 +1492,6 @@ fn persist_alipay_user_and_session(
         revoked_at_ms: None,
     };
     let _ = state.db.create_session(&db_session);
-    let _ = ensure_user_welcome_bot(state, user.user_id, Some(&user.first_name));
 
     (user, session, token)
 }
@@ -1984,357 +2330,8 @@ async fn auth_alipay_portal() -> Response {
         .into_response()
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct PasskeyChallengeReq {
-    pub user_id: Option<UserId>,
-    pub username: Option<String>,
-}
-
-async fn auth_passkey_challenge(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<PasskeyChallengeReq>,
-) -> Json<PasskeyChallenge> {
-    let challenge = PasskeyService::generate_challenge(req.user_id);
-    state
-        .passkey_challenges
-        .write()
-        .insert(challenge.challenge.clone(), Utc::now().timestamp_millis());
-    Json(challenge)
-}
-
-async fn auth_passkey_verify(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<PasskeyVerifyRequest>,
-) -> Response {
-    let challenge_valid = state
-        .passkey_challenges
-        .write()
-        .remove(&req.challenge)
-        .is_some();
-
-    if !challenge_valid {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid_challenge", "message": "Unknown or expired challenge" })),
-        )
-            .into_response();
-    }
-
-    match PasskeyService::verify_assertion(&req) {
-        Ok(true) => {
-            let user_id = req.user_id.unwrap_or(UserId(100_001));
-            let (session, token) = state.session_manager.create_session(
-                user_id,
-                "Passkey Authenticator",
-                chrono::Duration::days(30),
-            );
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "verified": true,
-                    "user_id": user_id.raw(),
-                    "session_id": session.session_id,
-                    "token": token,
-                    "expires_at": session.expires_at,
-                })),
-            )
-                .into_response()
-        }
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "verification_failed", "message": "Passkey assertion failed" })),
-        )
-            .into_response(),
-    }
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct PairInitReq {
-    pub device_name: Option<String>,
-}
-
-async fn auth_pair_init(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<PairInitReq>,
-) -> Json<Value> {
-    let pair_token = format!("pair_{}", Uuid::new_v4().simple());
-    let expires_at_ms = Utc::now().timestamp_millis() + 300_000; // 5 minutes
-    let placeholder_user = UserId(100_001);
-
-    state
-        .pairing_requests
-        .write()
-        .insert(pair_token.clone(), (placeholder_user, expires_at_ms));
-
-    Json(json!({
-        "pair_token": pair_token,
-        "qr_payload": format!("tg://login?token={}", pair_token),
-        "device_name": req.device_name.unwrap_or_else(|| "GPUI Companion".into()),
-        "expires_at_ms": expires_at_ms,
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PairVerifyReq {
-    pub pair_token: String,
-    pub device_name: Option<String>,
-}
-
-async fn auth_pair_verify(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<PairVerifyReq>,
-) -> Response {
-    let pair_entry = state.pairing_requests.write().remove(&req.pair_token);
-    let (user_id, expires_at_ms) = match pair_entry {
-        Some(entry) => entry,
-        None => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "invalid_pair_token", "message": "Pair token not found or expired" })),
-            )
-                .into_response()
-        }
-    };
-
-    if Utc::now().timestamp_millis() > expires_at_ms {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "pair_token_expired", "message": "Pair token has expired" })),
-        )
-            .into_response();
-    }
-
-    let device_name = req.device_name.unwrap_or_else(|| "Paired Device".into());
-    let (session, token) = state
-        .session_manager
-        .create_session(user_id, &device_name, chrono::Duration::days(30));
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "verified": true,
-            "user_id": user_id.raw(),
-            "session_id": session.session_id,
-            "token": token,
-            "expires_at": session.expires_at,
-        })),
-    )
-        .into_response()
-}
-
-// ============================================================================
-// Protected Route Handlers (AuthBearer Enforced)
-// ============================================================================
-
-async fn auth_me(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Json<Value> {
-    let fence = state.session_manager.get_or_create_fence(auth.user_id);
-    let mut user_record = state.session_manager.get_user(auth.user_id);
-    let db_user = state.db.get_user(auth.user_id).ok().flatten();
-
-    if user_record.is_none() {
-        if let Some(db_u) = &db_user {
-            let created_at = chrono::DateTime::from_timestamp_millis(db_u.created_at_ms)
-                .unwrap_or_else(Utc::now);
-            let mem_user = crate::auth::session_manager::UserRecord {
-                user_id: db_u.user_id,
-                username: db_u
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| format!("user_{}", db_u.user_id.0)),
-                first_name: db_u.first_name.clone(),
-                last_name: db_u.last_name.clone(),
-                password_hash: db_u.password_hash.clone().unwrap_or_default(),
-                created_at,
-            };
-            state.session_manager.insert_user(mem_user.clone());
-            user_record = Some(mem_user);
-        }
-    }
-
-    let username = db_user.as_ref().and_then(|u| u.username.clone())
-        .or_else(|| user_record.as_ref().map(|u| u.username.clone()));
-    let first_name = db_user.as_ref().map(|u| u.first_name.clone())
-        .or_else(|| user_record.as_ref().map(|u| u.first_name.clone()));
-    let last_name = db_user.as_ref().and_then(|u| u.last_name.clone())
-        .or_else(|| user_record.as_ref().and_then(|u| u.last_name.clone()));
-    let bio = db_user.as_ref().and_then(|u| u.bio.clone());
-    let phone = db_user.as_ref().and_then(|u| u.phone.clone());
-    let photo = db_user.as_ref().and_then(|u| u.profile_photo_file_id.clone());
-
-    Json(json!({
-        "user_id": auth.user_id.raw(),
-        "username": username,
-        "first_name": first_name,
-        "last_name": last_name,
-        "bio": bio,
-        "phone": phone,
-        "profile_photo_file_id": photo,
-        "session_id": auth.session.session_id,
-        "device_name": auth.session.device_name,
-        "created_at": auth.session.created_at,
-        "expires_at": auth.session.expires_at,
-        "account_generation": fence.current(),
-    }))
-}
-
-async fn auth_update_profile(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let first_name = payload.get("first_name").and_then(|v| v.as_str());
-    let last_name = payload.get("last_name").and_then(|v| v.as_str());
-    let bio = payload.get("bio").and_then(|v| v.as_str());
-    let username = payload.get("username").and_then(|v| v.as_str());
-    let photo_file_id = payload.get("profile_photo_file_id").and_then(|v| v.as_str());
-
-    match state.db.update_user_profile(auth.user_id, first_name, last_name, bio, username, photo_file_id) {
-        Ok(user) => {
-            // Update session_manager cache
-            if let Some(mut mem_user) = state.session_manager.get_user(auth.user_id) {
-                mem_user.first_name = user.first_name.clone();
-                mem_user.last_name = user.last_name.clone();
-                if let Some(un) = &user.username {
-                    mem_user.username = un.clone();
-                }
-                state.session_manager.insert_user(mem_user);
-            }
-            let fence = state.session_manager.get_or_create_fence(auth.user_id);
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "success": true,
-                    "user_id": user.user_id.raw(),
-                    "username": user.username,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                    "bio": user.bio,
-                    "phone": user.phone,
-                    "profile_photo_file_id": user.profile_photo_file_id,
-                    "session_id": auth.session.session_id,
-                    "device_name": auth.session.device_name,
-                    "created_at": auth.session.created_at,
-                    "expires_at": auth.session.expires_at,
-                    "account_generation": fence.current(),
-                })),
-            ).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "database_error", "message": e.to_string() })),
-        ).into_response(),
-    }
-}
-
-async fn auth_sessions(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Json<Value> {
-    let sessions = state.session_manager.list_user_sessions(auth.user_id);
-    Json(json!({
-        "user_id": auth.user_id.raw(),
-        "sessions": sessions,
-    }))
-}
-
-async fn auth_revoke_session(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-) -> Response {
-    // Only allow revoking sessions owned by user
-    if let Some(target) = state.session_manager.get(&session_id) {
-        if target.user_id != auth.user_id {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "forbidden", "message": "Cannot revoke other user's session" })),
-            )
-                .into_response();
-        }
-    }
-
-    let revoked = state.session_manager.revoke_session(&session_id);
-    let _ = state.db.revoke_session(&session_id);
-    let fence = state.session_manager.get_or_create_fence(auth.user_id);
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "revoked": revoked.is_some(),
-            "session_id": session_id,
-            "account_generation": fence.current(),
-        })),
-    )
-        .into_response()
-}
-
-async fn messages_history(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Response {
-    let chat_id = match params.get("chat_id").and_then(|v| v.parse::<i64>().ok()) {
-        Some(id) if id > 0 => ChatId(id),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "invalid_chat_id", "message": "chat_id must be provided and greater than zero"})),
-            ).into_response();
-        }
-    };
-
-    let offset_id = params
-        .get("offset_id")
-        .or_else(|| params.get("before_id"))
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|&id| id > 0);
-
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(50)
-        .clamp(1, 100);
-
-    let topic_id = params
-        .get("topic_id")
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|&id| id > 0)
-        .map(TopicId);
-
-    match state.db.list_messages_with_topic(chat_id, topic_id, offset_id, limit) {
-        Ok(records) => {
-            let messages: Vec<Value> = records
-                .into_iter()
-                .filter_map(|r| {
-                    let mut val = serde_json::to_value(
-                        crate::messaging::pipeline::MessagePipeline::record_to_item(&r).ok()?,
-                    ).ok()?;
-                    if let Some(map) = val.as_object_mut() {
-                        map.insert("pts".to_string(), json!(r.pts));
-                        map.insert("message_id".to_string(), json!(r.message_id.0));
-                    }
-                    Some(val)
-                })
-                .collect();
-            let current_pts = state.db.get_current_pts(chat_id).unwrap_or(0);
-            let has_more = messages.len() >= limit as usize;
-
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "chat_id": chat_id.0,
-                    "messages": messages,
-                    "has_more": has_more,
-                    "current_pts": current_pts,
-                })),
-            ).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "database_error", "message": e.to_string() })),
-        ).into_response(),
-    }
-}
-
 /// Ensures a well-known AI Bot user exists in SQLite to satisfy foreign key constraints
-fn ensure_default_ai_bot(db: &crate::db::ServerDatabase) -> UserId {
+pub(crate) fn ensure_default_ai_bot(db: &crate::db::ServerDatabase) -> UserId {
     let bot_id = UserId(777_000);
     if let Ok(None) = db.get_user(bot_id) {
         let now_ms = Utc::now().timestamp_millis();
@@ -2367,12 +2364,21 @@ fn ensure_default_ai_bot(db: &crate::db::ServerDatabase) -> UserId {
 /// 2. 1:1 chat where `chat_id` represents a Bot user.
 /// 3. Chat title/username contains "bot" or "ai".
 /// 4. Message text starts with slash command (`/`) or mentions `@bot`.
-fn detect_bot_in_chat(
+pub(crate) fn detect_bot_in_chat(
     db: &crate::db::ServerDatabase,
     chat_id: ChatId,
     sender_id: UserId,
     text: &str,
 ) -> Option<UserId> {
+    if db
+        .get_user(sender_id)
+        .ok()
+        .flatten()
+        .is_some_and(|u| u.is_bot)
+    {
+        return None;
+    }
+
     // 1. Check chat members for an explicit bot user
     if let Ok(members) = db.get_chat_members(chat_id) {
         for member_id in members {
@@ -2395,10 +2401,18 @@ fn detect_bot_in_chat(
         }
     }
 
-    // 3. Check chat title / username
+    // 3. Check chat_type == 4 (Bot DM), welcome bot chat, or chat title / username
+    if is_welcome_bot_chat(chat_id) {
+        return Some(ensure_default_ai_bot(db));
+    }
     if let Ok(Some(chat)) = db.get_chat(chat_id) {
-        let is_bot_chat = chat.title.to_lowercase().contains("bot")
-            || chat.title.to_lowercase().contains("ai assistant")
+        if chat.chat_type == 4 {
+            return Some(ensure_default_ai_bot(db));
+        }
+        let title_lower = chat.title.to_lowercase();
+        let is_bot_chat = title_lower.contains("bot")
+            || title_lower.contains("ai assistant")
+            || title_lower.contains("hermes")
             || chat
                 .username
                 .as_ref()
@@ -2409,7 +2423,7 @@ fn detect_bot_in_chat(
         }
     }
 
-    // 4. Check slash command or bot tag
+    // 4. Check slash command or explicit bot tag
     let trimmed = text.trim();
     if trimmed.starts_with('/') || trimmed.contains("@bot") {
         return Some(ensure_default_ai_bot(db));
@@ -2418,398 +2432,133 @@ fn detect_bot_in_chat(
     None
 }
 
-async fn messages_send(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let chat_id = match payload.get("chat_id").and_then(|v| {
-        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-    }) {
-        Some(id) if id > 0 => ChatId(id),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "invalid_chat_id", "message": "chat_id must be greater than zero"})),
-            ).into_response();
-        }
-    };
-
-    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or_default();
-    if text.len() > 65_536 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "payload_too_large", "message": "Message text exceeds maximum allowed size of 65536 bytes"})),
-        ).into_response();
+fn deliver_proactive_message_raw(
+    db: &crate::db::ServerDatabase,
+    pipeline: &crate::messaging::pipeline::MessagePipeline,
+    gateway_hub: &GatewayHub,
+    chat_id: ChatId,
+    bot_id_hint: Option<&str>,
+    text: &str,
+) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || db.get_chat(chat_id).ok().flatten().is_none() {
+        return;
     }
-    let content = if let Some(content_val) = payload.get("content") {
-        if let Some(content_text) = content_val.get("text").and_then(|v| v.as_str()) {
-            if content_text.len() > 65_536 {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "payload_too_large", "message": "Message text exceeds maximum allowed size of 65536 bytes"})),
-                ).into_response();
-            }
-        }
-        serde_json::from_value::<MessageContent>(content_val.clone())
-            .unwrap_or_else(|_| MessageContent::plain_text(text))
-    } else {
-        MessageContent::plain_text(text)
-    };
+    let bot_user_id = bot_id_hint
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(UserId)
+        .filter(|uid| db.get_user(*uid).ok().flatten().is_some_and(|u| u.is_bot))
+        .or_else(|| {
+            db.get_chat_members(chat_id).ok().and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|uid| db.get_user(*uid).ok().flatten().is_some_and(|u| u.is_bot))
+            })
+        })
+        .unwrap_or_else(|| ensure_default_ai_bot(db));
 
-    let client_nonce = payload
-        .get("client_nonce")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
-        .map(|n| n as u64);
-
-    let reply_to_id = payload
-        .get("reply_to")
-        .or_else(|| payload.get("reply_to_id"))
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
-        .filter(|&id| id > 0);
-
-    let topic_id = payload
-        .get("topic_id")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
-        .filter(|&id| id > 0)
-        .map(TopicId);
-
-    // Ensure sender is in SQLite users table to satisfy foreign key constraints
-    if let Ok(None) = state.db.get_user(auth.user_id) {
-        let now_ms = Utc::now().timestamp_millis();
-        let db_user = if let Some(mem_user) = state.session_manager.get_user(auth.user_id) {
-            crate::db::schema::UserRecord {
-                user_id: mem_user.user_id,
-                username: Some(mem_user.username.clone()),
-                phone: None,
-                first_name: mem_user.first_name.clone(),
-                last_name: mem_user.last_name.clone(),
-                bio: None,
-                password_hash: Some(mem_user.password_hash.clone()),
-                is_bot: false,
-                is_verified: false,
-                is_support: false,
-                is_scam: false,
-                is_fake: false,
-                profile_photo_file_id: None,
-                account_generation: 1,
-                created_at_ms: mem_user.created_at.timestamp_millis(),
-                updated_at_ms: mem_user.created_at.timestamp_millis(),
-            }
-        } else {
-            crate::db::schema::UserRecord {
-                user_id: auth.user_id,
-                username: None,
-                phone: None,
-                first_name: "User".into(),
-                last_name: None,
-                bio: None,
-                password_hash: None,
-                is_bot: false,
-                is_verified: false,
-                is_support: false,
-                is_scam: false,
-                is_fake: false,
-                profile_photo_file_id: None,
-                account_generation: 1,
-                created_at_ms: now_ms,
-                updated_at_ms: now_ms,
-            }
-        };
-        let _ = state.db.create_user(&db_user);
-    }
-
-    // Ensure chat exists in SQLite chats table to satisfy foreign key constraints
-    if let Ok(None) = state.db.get_chat(chat_id) {
-        let now_ms = Utc::now().timestamp_millis();
-        let is_direct = chat_id.0 > 0 && state.db.get_user(UserId(chat_id.0 as u64)).is_ok();
-        let chat_type = if is_direct { 0 } else { 1 };
-        let default_chat = crate::db::schema::ChatRecord {
-            chat_id,
-            chat_type,
-            peer_type: if is_direct { 1 } else { 2 },
-            title: format!("Chat {}", chat_id.0),
-            username: None,
-            about: None,
-            creator_id: auth.user_id,
-            is_forum: false,
-            flags: 0,
-            photo_file_id: None,
-            slowmode_seconds: 0,
-            linked_chat_id: None,
-            pinned_message_id: None,
-            pts: 0,
-            last_message_id: MsgId(0),
-            last_message_date_ms: 0,
-            unread_count: 0,
-            account_generation: 1,
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-        };
-        let _ = state.db.create_chat(&default_chat);
-        let _ = state.db.add_chat_member(&crate::db::schema::ChatMemberRecord {
-            chat_id,
-            user_id: auth.user_id,
-            role: "creator".into(),
-            permissions_bitmask: 0xFFFF,
-            admin_title: Some("Owner".into()),
-            admin_rights: 0xFFFFFFFF,
-            banned_rights: 0,
-            until_date_ms: None,
-            joined_at_ms: now_ms,
-            invited_by: None,
-            updated_at_ms: now_ms,
-        });
-        if is_direct {
-            let peer_user_id = UserId(chat_id.0 as u64);
-            let _ = state.db.add_chat_member(&crate::db::schema::ChatMemberRecord {
-                chat_id,
-                user_id: peer_user_id,
-                role: "member".into(),
-                permissions_bitmask: 0xFFFF,
-                admin_title: None,
-                admin_rights: 0,
-                banned_rights: 0,
-                until_date_ms: None,
-                joined_at_ms: now_ms,
-                invited_by: Some(auth.user_id),
-                updated_at_ms: now_ms,
-            });
-        }
-    }
-
-    let mut msg_item = MessageItem::new(
+    let mut bot_msg = MessageItem::new(
         MsgId(0),
         chat_id,
-        auth.user_id,
+        bot_user_id,
         PeerId::Chat(chat_id),
-        content,
+        MessageContent::plain_text(trimmed),
     );
-    msg_item.flags.is_out = true;
-    msg_item.client_nonce = client_nonce;
-    msg_item.topic_id = topic_id;
-    msg_item.reply_to = reply_to_id.map(|id| ReplyHeader::new(MsgId(id)));
-
-    match state.message_pipeline.process_incoming_message(msg_item) {
-        Ok(pts_update) => {
-            let (msg_id, pts) = match &pts_update.event {
-                UpdateEvent::NewMessage(item) => (item.id.0, pts_update.pts),
-                _ => (0, pts_update.pts),
-            };
-
-            // Broadcast real-time PtsPush to all unique chat members, subscribers, and sender
-            let mut recipients = HashSet::new();
-            recipients.insert(auth.user_id);
-            if let Ok(members) = state.db.get_chat_members(chat_id) {
-                for m in members {
-                    recipients.insert(m);
-                }
-            }
-            for sub in state.gateway_hub.get_chat_subscribers(chat_id.0) {
-                recipients.insert(sub);
-            }
-
-            let push_frame = WsServerFrame::PtsPush(pts_update.clone());
-            for user in &recipients {
-                state.gateway_hub.broadcast_to_user(*user, push_frame.clone());
-            }
-
-            // Check if this chat belongs to or triggers an AI Bot
-            if let Some(bot_user_id) = detect_bot_in_chat(&state.db, chat_id, auth.user_id, text) {
-                if auth.user_id != bot_user_id {
-                    let now_ms = Utc::now().timestamp_millis();
-                    let bot_member = crate::db::schema::ChatMemberRecord {
-                        chat_id,
-                        user_id: bot_user_id,
-                        role: "member".into(),
-                        permissions_bitmask: 0,
-                        admin_title: None,
-                        admin_rights: 0,
-                        banned_rights: 0,
-                        until_date_ms: None,
-                        joined_at_ms: now_ms,
-                        invited_by: Some(auth.user_id),
-                        updated_at_ms: now_ms,
-                    };
-                    let _ = state.db.add_chat_member(&bot_member);
-
-                    let state_clone = state.clone();
-                    let custom_system_prompt = state
-                        .db
-                        .get_chat(chat_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|c| c.about)
-                        .or_else(|| {
-                            state
-                                .db
-                                .get_user(bot_user_id)
-                                .ok()
-                                .flatten()
-                                .and_then(|u| u.bio)
-                        })
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| {
-                            !s.is_empty()
-                                && s != "Official Telegram Desktop Welcome & AI Assistant Bot"
-                                && s != "Official AI Agent Assistant"
-                        });
-                    let prompt_text = match custom_system_prompt {
-                        Some(sp) => format!("[System Instruction: {}]\n\n{}", sp, text),
-                        None => text.to_string(),
-                    };
-                    let user_msg_id = msg_id;
-                    let sender_id = auth.user_id;
-
-                    tokio::spawn(async move {
-                        let turn_input = gpui_telegram_agent::AgentTurnInput {
-                            session_id: format!("chat_{}_{}", chat_id.0, sender_id.raw()),
-                            prompt: prompt_text,
-                            parent_turn_id: Some(user_msg_id.to_string()),
-                            model_id: None,
-                            thinking_budget_tokens: None,
-                        };
-
-                        match state_clone.acp_runner.execute_turn_stream(turn_input).await {
-                            Ok(mut rx) => {
-                                let mut bot_text = String::new();
-                                while let Some(output) = rx.recv().await {
-                                    match output {
-                                        gpui_telegram_agent::AgentTurnOutput::FinalResponse { text } => {
-                                            bot_text = text;
-                                        }
-                                        gpui_telegram_agent::AgentTurnOutput::Error { code, message } => {
-                                            tracing::warn!("Bot execution error [{}]: {}", code, message);
-                                            bot_text = format!("⚠️ Bot response unavailable: {}", message);
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                if !bot_text.is_empty() {
-                                    let mut bot_msg = MessageItem::new(
-                                        MsgId(0),
-                                        chat_id,
-                                        bot_user_id,
-                                        PeerId::Chat(chat_id),
-                                        MessageContent::plain_text(&bot_text),
-                                    );
-                                    bot_msg.flags.is_out = false;
-                                    bot_msg.reply_to = Some(ReplyHeader::new(MsgId(user_msg_id)));
-
-                                    match state_clone.message_pipeline.process_incoming_message(bot_msg) {
-                                        Ok(bot_pts_update) => {
-                                            let mut bot_recipients = HashSet::new();
-                                            bot_recipients.insert(sender_id);
-                                            if let Ok(members) = state_clone.db.get_chat_members(chat_id) {
-                                                for m in members {
-                                                    bot_recipients.insert(m);
-                                                }
-                                            }
-                                            for sub in state_clone.gateway_hub.get_chat_subscribers(chat_id.0) {
-                                                bot_recipients.insert(sub);
-                                            }
-
-                                            let bot_push_frame = WsServerFrame::PtsPush(bot_pts_update);
-                                            for uid in bot_recipients {
-                                                state_clone.gateway_hub.broadcast_to_user(uid, bot_push_frame.clone());
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Failed to persist and advance PTS for Bot reply: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to dispatch bot turn: {}", e);
-                            }
-                        }
-                    });
-                }
-            }
-
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "message_id": msg_id,
-                    "id": msg_id,
-                    "pts": pts,
-                    "date_ms": pts_update.timestamp_ms,
-                    "sender_id": auth.user_id.raw(),
-                    "chat_id": chat_id.0,
-                    "status": "sent",
-                })),
-            ).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "pipeline_error", "message": e.to_string() })),
-        ).into_response(),
+    bot_msg.flags.is_out = false;
+    if let Ok(pts_update) = pipeline.process_incoming_message(bot_msg) {
+        gateway_hub.broadcast_to_chat_and_members(
+            chat_id,
+            None,
+            gpui_telegram_proto::ws::WsServerFrame::PtsPush(pts_update),
+        );
     }
 }
 
-async fn messages_edit(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(_payload): Json<Value>,
-) -> Json<Value> {
-    let pts = state.gateway_hub.next_pts();
-    Json(json!({
-        "success": true,
-        "pts": pts,
-        "status": "edited",
-    }))
-}
+pub(crate) async fn maybe_trigger_bot_reply(
+    state: &Arc<AppState>,
+    chat_id: ChatId,
+    sender_id: UserId,
+    text: &str,
+) {
+    let Some(bot_user_id) = detect_bot_in_chat(&state.db, chat_id, sender_id, text) else {
+        return;
+    };
 
-async fn messages_delete(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(_payload): Json<Value>,
-) -> Json<Value> {
-    let pts = state.gateway_hub.next_pts();
-    Json(json!({
-        "success": true,
-        "pts": pts,
-        "deleted_count": 1,
-    }))
-}
+    crate::routes::broadcast_chat_event(
+        state,
+        chat_id,
+        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
+            gpui_telegram_proto::sync::TypingEvent::new(
+                chat_id,
+                bot_user_id,
+                gpui_telegram_proto::sync::TypingAction::Typing,
+            ),
+        ),
+    );
 
-async fn messages_reaction(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(_payload): Json<Value>,
-) -> Json<Value> {
-    let pts = state.gateway_hub.next_pts();
-    Json(json!({
-        "success": true,
-        "pts": pts,
-        "status": "reaction_updated",
-    }))
-}
+    let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(state, bot_user_id);
+    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(text)
+        .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
+    req.user_id = Some(sender_id.0.to_string());
+    req.source = "telegram_bot".to_string();
+    req.model = bot_model;
+    req.system_prompt = bot_sp;
 
-async fn messages_read(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(_payload): Json<Value>,
-) -> Json<Value> {
-    let pts = state.gateway_hub.next_pts();
-    Json(json!({
-        "success": true,
-        "pts": pts,
-        "status": "history_read",
-    }))
+    let turn_res = state.hermes.run_turn(req).await;
+
+    crate::routes::broadcast_chat_event(
+        state,
+        chat_id,
+        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
+            gpui_telegram_proto::sync::TypingEvent::new(
+                chat_id,
+                bot_user_id,
+                gpui_telegram_proto::sync::TypingAction::Cancel,
+            ),
+        ),
+    );
+
+    let Ok(res) = turn_res else {
+        return;
+    };
+    let trimmed = res.response_text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let kb_rows = crate::routes::hermes::build_default_bot_quick_actions(&res, text);
+    let mut bot_msg = MessageItem::new(
+        MsgId(0),
+        chat_id,
+        bot_user_id,
+        PeerId::Chat(chat_id),
+        MessageContent::plain_text(trimmed),
+    );
+    bot_msg.flags.is_out = false;
+
+    if let Ok(pts_update) = state.message_pipeline.process_incoming_message(bot_msg) {
+        if let gpui_telegram_proto::sync::UpdateEvent::NewMessage(saved) = &pts_update.event {
+            if !kb_rows.is_empty() {
+                if let Ok(kb_json) = serde_json::to_string(&kb_rows) {
+                    let _ = state
+                        .db
+                        .save_message_extras(chat_id, saved.id, Some(&kb_json), None);
+                }
+            }
+        }
+        crate::routes::broadcast_chat_pts(state, chat_id, pts_update);
+    }
 }
 
 /// Returns true if `chat_id` is in the reserved `700_000_000..750_000_000` range for per-user
 /// `Telegram Official Bot` welcome chats (keeping `750_000_000+` human contact direct chats separate).
-fn is_welcome_bot_chat(chat_id: ChatId) -> bool {
+pub(crate) fn is_welcome_bot_chat(chat_id: ChatId) -> bool {
     (700_000_000..750_000_000).contains(&chat_id.0)
 }
 
 /// Provisions the Official Telegram Welcome Bot (`Telegram Official Bot`, `user_id: 777000`,
 /// `chat_id: 700_000_000 + user_id`) and seeds welcome messages if not yet present.
-fn ensure_user_welcome_bot(
+pub(crate) fn ensure_user_welcome_bot(
     state: &AppState,
     user_id: UserId,
     first_name_hint: Option<&str>,
@@ -2865,7 +2614,7 @@ fn ensure_user_welcome_bot(
             chat_type: 0,
             peer_type: 1,
             title: "Telegram Official Bot".to_string(),
-            username: Some(format!("telegram_official_bot_{}", user_id.0)),
+            username: None,
             about: Some("Official Telegram Desktop Welcome & AI Assistant Bot".to_string()),
             creator_id: bot_id,
             is_forum: false,
@@ -2960,7 +2709,7 @@ fn ensure_user_welcome_bot(
     welcome_chat_id
 }
 
-fn extract_message_content_text(content: &MessageContent) -> String {
+pub(crate) fn extract_message_content_text(content: &MessageContent) -> String {
     match content {
         MessageContent::Text { text, .. } => text.clone(),
         MessageContent::Photo { caption, .. } => {
@@ -2979,546 +2728,6 @@ fn extract_message_content_text(content: &MessageContent) -> String {
         MessageContent::Poll(p) => format!("[Poll: {}]", p.question),
         MessageContent::Todo(t) => format!("[Todo: {}]", t.title),
         MessageContent::Invoice(i) => format!("[Invoice: {}]", i.title),
-    }
-}
-
-async fn chats_list(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
-    let _ = ensure_user_welcome_bot(&state, auth.user_id, None);
-
-    match state.db.list_user_chats(auth.user_id) {
-        Ok(chats) => {
-            let summaries: Vec<Value> = chats
-                .into_iter()
-                .map(|c| {
-                    let latest_msg = state
-                        .db
-                        .list_messages_with_topic(c.chat_id, None, None, 1)
-                        .ok()
-                        .and_then(|mut list| list.pop())
-                        .and_then(|rec| {
-                            crate::messaging::pipeline::MessagePipeline::record_to_item(&rec)
-                                .ok()
-                                .map(|item| extract_message_content_text(&item.content))
-                        })
-                        .filter(|s| !s.is_empty());
-
-                    let is_bot_chat = is_welcome_bot_chat(c.chat_id)
-                        || c.title.to_lowercase().contains("bot")
-                        || c.username
-                            .as_deref()
-                            .map(|u| u.to_lowercase().ends_with("bot"))
-                            .unwrap_or(false)
-                        || (c.chat_type == 0
-                            && state
-                                .db
-                                .get_chat_members(c.chat_id)
-                                .unwrap_or_default()
-                                .into_iter()
-                                .filter(|&m| m != auth.user_id)
-                                .any(|m| {
-                                    state
-                                        .db
-                                        .get_user(m)
-                                        .ok()
-                                        .flatten()
-                                        .map(|u| u.is_bot)
-                                        .unwrap_or(false)
-                                }));
-
-                    let avatar_color: u32 = if is_bot_chat {
-                        0x2AABEE
-                    } else if c.chat_type != 0 {
-                        0x9B59B6
-                    } else {
-                        0x27AE60
-                    };
-
-                    let public_username = if is_welcome_bot_chat(c.chat_id) {
-                        Some("telegram_official_bot".to_string())
-                    } else if c.username.as_deref().map(|u| u.starts_with("dm_")).unwrap_or(false) {
-                        state
-                            .db
-                            .get_chat_members(c.chat_id)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .find(|&m| m != auth.user_id)
-                            .and_then(|m| state.db.get_user(m).ok().flatten())
-                            .and_then(|u| u.username)
-                            .or_else(|| c.username.clone())
-                    } else {
-                        c.username.clone()
-                    };
-
-                    json!({
-                        "chat_id": c.chat_id.0,
-                        "id": c.chat_id.0,
-                        "title": c.title,
-                        "username": public_username,
-                        "about": c.about,
-                        "chat_type": c.chat_type,
-                        "kind": if c.chat_type == 0 { "direct" } else { "group" },
-                        "is_group": c.chat_type != 0,
-                        "is_bot": is_bot_chat,
-                        "avatar_color": avatar_color,
-                        "creator_id": c.creator_id.0,
-                        "pts": c.pts,
-                        "current_pts": c.pts,
-                        "unread_count": c.unread_count,
-                        "last_message_id": c.last_message_id.0,
-                        "last_message": latest_msg.unwrap_or_else(|| {
-                            if is_bot_chat {
-                                "👋 欢迎使用 Telegram 官方机器人".to_string()
-                            } else if c.chat_type != 0 {
-                                "群组已创建".to_string()
-                            } else {
-                                "已添加联系人".to_string()
-                            }
-                        }),
-                        "updated_at_ms": c.updated_at_ms,
-                        "updated_at": c.updated_at_ms,
-                        "timestamp": if c.last_message_date_ms > 0 { c.last_message_date_ms } else { c.created_at_ms },
-                    })
-                })
-                .collect();
-            let total = summaries.len() as u32;
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "chats": summaries,
-                    "total": total,
-                })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "database_error", "message": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn contacts_list(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
-    let chats = state.db.list_user_chats(auth.user_id).unwrap_or_default();
-    let mut contacts = Vec::new();
-    let mut seen_users = HashSet::new();
-
-    for c in chats {
-        if c.chat_type == 0 {
-            if let Ok(members) = state.db.get_chat_members(c.chat_id) {
-                for m in members {
-                    if m != auth.user_id && seen_users.insert(m) {
-                        if let Ok(Some(u)) = state.db.get_user(m) {
-                            contacts.push(json!({
-                                "user_id": u.user_id.0,
-                                "chat_id": c.chat_id.0,
-                                "first_name": u.first_name,
-                                "last_name": u.last_name,
-                                "username": u.username,
-                                "phone": u.phone,
-                                "bio": u.bio,
-                                "is_bot": u.is_bot,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "contacts": contacts,
-            "total": contacts.len(),
-        })),
-    )
-        .into_response()
-}
-
-async fn contacts_add(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let first_name = payload
-        .get("first_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("New Contact");
-    let last_name = payload
-        .get("last_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let is_bot = payload.get("is_bot").and_then(|v| v.as_bool()).unwrap_or(false);
-    let phone = payload
-        .get("phone")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let bot_system_prompt = payload
-        .get("bot_system_prompt")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let raw_username = payload
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().trim_start_matches('@').to_string())
-        .filter(|s| !s.is_empty());
-
-    let now_ms = Utc::now().timestamp_millis();
-    let clean_username = raw_username.unwrap_or_else(|| {
-        let base: String = first_name
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect::<String>()
-            .to_lowercase();
-        let slug = if base.is_empty() {
-            format!("peer_{}", (now_ms.unsigned_abs() % 100_000))
-        } else {
-            base
-        };
-        if is_bot && !slug.ends_with("bot") {
-            format!("{}_bot", slug)
-        } else {
-            slug
-        }
-    });
-
-    let _ = ensure_user_welcome_bot(&state, auth.user_id, None);
-
-    let (contact_user_id, db_username) = if let Ok(Some(existing)) = state.db.get_user_by_username(&clean_username) {
-        if existing.user_id != auth.user_id {
-            (existing.user_id, clean_username.clone())
-        } else {
-            let uid = UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000));
-            (uid, format!("{}_{}", clean_username, uid.0))
-        }
-    } else {
-        (
-            UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000)),
-            clean_username.clone(),
-        )
-    };
-
-    let full_title = match &last_name {
-        Some(ln) if !ln.is_empty() => format!("{} {}", first_name, ln),
-        _ => first_name.to_string(),
-    };
-
-    if let Ok(None) = state.db.get_user(contact_user_id) {
-        let mut new_user = crate::db::schema::UserRecord {
-            user_id: contact_user_id,
-            username: Some(db_username),
-            phone: phone.clone(),
-            first_name: first_name.to_string(),
-            last_name: last_name.clone(),
-            bio: bot_system_prompt.clone(),
-            password_hash: None,
-            is_bot,
-            is_verified: is_bot,
-            is_support: false,
-            is_scam: false,
-            is_fake: false,
-            profile_photo_file_id: None,
-            account_generation: 1,
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-        };
-        if state.db.create_user(&new_user).is_err() {
-            new_user.phone = None;
-            new_user.username = Some(format!("{}_{}", clean_username, contact_user_id.0));
-            let _ = state.db.create_user(&new_user);
-        }
-    }
-
-    let direct_chat_id = ChatId(
-        750_000_000
-            + ((auth.user_id.0 as i64 % 100_000) * 1_000_000)
-            + (contact_user_id.0 as i64 % 1_000_000),
-    );
-    if let Ok(None) = state.db.get_chat(direct_chat_id) {
-        let chat = crate::db::schema::ChatRecord {
-            chat_id: direct_chat_id,
-            chat_type: 0,
-            peer_type: 1,
-            title: full_title.clone(),
-            username: Some(format!("dm_{}_{}", auth.user_id.0, contact_user_id.0)),
-            about: bot_system_prompt.clone(),
-            creator_id: auth.user_id,
-            is_forum: false,
-            flags: 0,
-            photo_file_id: None,
-            slowmode_seconds: 0,
-            linked_chat_id: None,
-            pinned_message_id: None,
-            pts: 0,
-            last_message_id: MsgId(0),
-            last_message_date_ms: now_ms,
-            unread_count: 1,
-            account_generation: 1,
-            created_at_ms: now_ms,
-            updated_at_ms: now_ms,
-        };
-        let _ = state.db.create_chat(&chat);
-    }
-
-    let _ = state.db.add_chat_member(&crate::db::schema::ChatMemberRecord {
-        chat_id: direct_chat_id,
-        user_id: auth.user_id,
-        role: "creator".into(),
-        permissions_bitmask: 0xFFFF,
-        admin_title: None,
-        admin_rights: 0xFFFFFFFF,
-        banned_rights: 0,
-        until_date_ms: None,
-        joined_at_ms: now_ms,
-        invited_by: None,
-        updated_at_ms: now_ms,
-    });
-    let _ = state.db.add_chat_member(&crate::db::schema::ChatMemberRecord {
-        chat_id: direct_chat_id,
-        user_id: contact_user_id,
-        role: "member".into(),
-        permissions_bitmask: 0xFFFF,
-        admin_title: None,
-        admin_rights: 0,
-        banned_rights: 0,
-        until_date_ms: None,
-        joined_at_ms: now_ms,
-        invited_by: Some(auth.user_id),
-        updated_at_ms: now_ms,
-    });
-
-    state.gateway_hub.subscribe_chat(direct_chat_id.0, auth.user_id);
-    state.gateway_hub.subscribe_chat(direct_chat_id.0, contact_user_id);
-
-    let has_msgs = state
-        .db
-        .list_messages_with_topic(direct_chat_id, None, None, 1)
-        .map(|m| !m.is_empty())
-        .unwrap_or(false);
-    if !has_msgs {
-        let initial_text = if is_bot {
-            let prompt_note = bot_system_prompt
-                .as_deref()
-                .map(|p| format!("（系统设定：{}）", p))
-                .unwrap_or_default();
-            format!(
-                "🤖 您好！我是 AI Bot 「{}」(@{}) {}。您可以直接向我发送任何指令或问题！",
-                full_title, clean_username, prompt_note
-            )
-        } else {
-            format!(
-                "👋 已成功添加联系人「{}」(@{})，现在可以开始聊天了！",
-                full_title, clean_username
-            )
-        };
-        let mut msg_item = MessageItem::new(
-            MsgId(0),
-            direct_chat_id,
-            contact_user_id,
-            PeerId::Chat(direct_chat_id),
-            MessageContent::plain_text(&initial_text),
-        );
-        msg_item.flags.is_out = false;
-        let _ = state.message_pipeline.process_incoming_message(msg_item);
-    }
-
-    let avatar_color: u32 = if is_bot { 0x2AABEE } else { 0x27AE60 };
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "user_id": contact_user_id.0,
-            "chat_id": direct_chat_id.0,
-            "title": full_title,
-            "username": clean_username,
-            "phone": phone,
-            "is_bot": is_bot,
-            "avatar_color": avatar_color,
-        })),
-    )
-        .into_response()
-}
-
-async fn chats_create(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    if !payload.is_object() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "invalid_payload", "message": "Expected JSON object"})),
-        )
-            .into_response();
-    }
-    let title = payload
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("New Group");
-
-    let about = payload
-        .get("about")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let mut member_ids: Vec<UserId> = payload
-        .get("member_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-                        .map(UserId)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let now_ms = Utc::now().timestamp_millis();
-
-    if let Some(usernames) = payload.get("member_usernames").and_then(|v| v.as_array()) {
-        for uname_val in usernames {
-            if let Some(uname_raw) = uname_val.as_str() {
-                let uname = uname_raw.trim().trim_start_matches('@');
-                if uname.is_empty() {
-                    continue;
-                }
-                if let Ok(Some(u)) = state.db.get_user_by_username(uname) {
-                    if !member_ids.contains(&u.user_id) {
-                        member_ids.push(u.user_id);
-                    }
-                } else {
-                    let uid = UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000));
-                    let is_bot_member = uname.to_lowercase().ends_with("bot");
-                    let new_u = crate::db::schema::UserRecord {
-                        user_id: uid,
-                        username: Some(uname.to_string()),
-                        phone: None,
-                        first_name: uname.to_string(),
-                        last_name: None,
-                        bio: None,
-                        password_hash: None,
-                        is_bot: is_bot_member,
-                        is_verified: is_bot_member,
-                        is_support: false,
-                        is_scam: false,
-                        is_fake: false,
-                        profile_photo_file_id: None,
-                        account_generation: 1,
-                        created_at_ms: now_ms,
-                        updated_at_ms: now_ms,
-                    };
-                    if state.db.create_user(&new_u).is_ok() && !member_ids.contains(&uid) {
-                        member_ids.push(uid);
-                    }
-                }
-            }
-        }
-    }
-
-    // Ensure creator is in SQLite users table to satisfy foreign key constraints
-    if let Ok(None) = state.db.get_user(auth.user_id) {
-        if let Some(mem_user) = state.session_manager.get_user(auth.user_id) {
-            let user_created_ms = mem_user.created_at.timestamp_millis();
-            let db_user = crate::db::schema::UserRecord {
-                user_id: mem_user.user_id,
-                username: Some(mem_user.username.clone()),
-                phone: None,
-                first_name: mem_user.first_name.clone(),
-                last_name: mem_user.last_name.clone(),
-                bio: None,
-                password_hash: Some(mem_user.password_hash.clone()),
-                is_bot: false,
-                is_verified: false,
-                is_support: false,
-                is_scam: false,
-                is_fake: false,
-                profile_photo_file_id: None,
-                account_generation: 1,
-                created_at_ms: user_created_ms,
-                updated_at_ms: user_created_ms,
-            };
-            let _ = state.db.create_user(&db_user);
-        }
-    }
-
-    match state.db.create_chat_with_creator(auth.user_id, title, &member_ids, now_ms) {
-        Ok(chat) => {
-            if let Some(ref about_str) = about {
-                let _ = state
-                    .db
-                    .update_chat_info(chat.chat_id, None, Some(about_str), None, None);
-            }
-            state.gateway_hub.subscribe_chat(chat.chat_id.0, auth.user_id);
-            for &m in &member_ids {
-                state.gateway_hub.subscribe_chat(chat.chat_id.0, m);
-            }
-
-            (
-                StatusCode::CREATED,
-                Json(json!({
-                    "chat_id": chat.chat_id.0,
-                    "id": chat.chat_id.0,
-                    "title": chat.title,
-                    "about": about,
-                    "chat_type": chat.chat_type,
-                    "creator_id": chat.creator_id.0,
-                    "is_group": true,
-                    "created_at_ms": chat.created_at_ms,
-                })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "database_error", "message": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn chats_get(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(chat_id): Path<i64>,
-) -> Response {
-    match state.db.get_chat(ChatId(chat_id)) {
-        Ok(Some(chat)) => {
-            let member_count = state.db.get_chat_members(ChatId(chat_id)).map(|m| m.len()).unwrap_or(1);
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "chat_id": chat.chat_id.0,
-                    "title": chat.title,
-                    "about": chat.about,
-                    "chat_type": chat.chat_type,
-                    "creator_id": chat.creator_id.0,
-                    "is_forum": chat.is_forum,
-                    "photo_file_id": chat.photo_file_id,
-                    "members_count": member_count,
-                    "is_group": chat.chat_type != 0,
-                    "pts": chat.pts,
-                })),
-            ).into_response()
-        }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not_found", "message": "Chat not found" })),
-        ).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "database_error", "message": e.to_string() })),
-        ).into_response(),
     }
 }
 
@@ -4510,14 +3719,6 @@ async fn alipay_check_membership(
     ).into_response()
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct SyncDifferencePayload {
-    pub chat_id: Option<i64>,
-    pub pts: Option<u64>,
-    pub limit: Option<u32>,
-    pub filter: Option<String>,
-}
-
 async fn sync_difference(
     auth: AuthBearer,
     State(state): State<Arc<AppState>>,
@@ -4562,374 +3763,6 @@ async fn sync_difference(
     }
 }
 
-async fn sync_difference_post(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<SyncDifferencePayload>,
-) -> Response {
-    let chat_id = payload
-        .chat_id
-        .filter(|&id| id > 0)
-        .map(ChatId)
-        .unwrap_or(ChatId(auth.user_id.0 as i64));
-
-    let pts = payload.pts.unwrap_or(0);
-    let limit = payload.limit.unwrap_or(100).clamp(1, 100);
-
-    let req = gpui_telegram_proto::sync::SyncGetDifferenceRequest::new(chat_id, pts, limit);
-    match state.pts_engine.get_difference(&req) {
-        Ok(resp) => (
-            StatusCode::OK,
-            Json(json!({
-                "chat_id": resp.chat_id.0,
-                "new_pts": resp.pts,
-                "pts": resp.pts,
-                "current_pts": resp.current_pts,
-                "has_more": resp.has_more,
-                "messages": resp.new_messages,
-                "other_updates": resp.other_updates,
-                "updates": resp.updates,
-                "snapshot_required": resp.snapshot_required,
-            })),
-        ).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "sync_error", "message": e.to_string() })),
-        ).into_response(),
-    }
-}
-
-async fn media_upload_init(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> (StatusCode, Json<Value>) {
-    let size_bytes = payload.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-    let part_size = payload
-        .get("chunk_size")
-        .and_then(|v| v.as_u64())
-        .map(|s| s as u32)
-        .unwrap_or_else(|| gpui_telegram_media::chunked_upload::recommend_part_size(size_bytes));
-    let expected_sha256 = payload
-        .get("expected_sha256")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let filename = payload
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .unwrap_or("file.bin");
-
-    let upload_id = format!("upl_{}", Uuid::new_v4().simple());
-    match state
-        .cas
-        .init_chunked_upload(&upload_id, size_bytes, part_size, expected_sha256)
-        .await
-    {
-        Ok(session) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "upload_id": upload_id,
-                "chunk_size": session.part_size,
-                "total_parts": session.total_parts,
-                "filename": filename,
-                "size_bytes": session.total_size,
-                "status": "initialized",
-            })),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
-        ),
-    }
-}
-
-async fn media_upload_part(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path((upload_id, part_index)): Path<(String, u32)>,
-    body: Bytes,
-) -> (StatusCode, Json<Value>) {
-    match state.cas.write_chunk(&upload_id, part_index, &body).await {
-        Ok(is_complete) => (
-            StatusCode::OK,
-            Json(json!({
-                "upload_id": upload_id,
-                "part_index": part_index,
-                "bytes_received": body.len(),
-                "is_complete": is_complete,
-                "status": "accepted",
-            })),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
-        ),
-    }
-}
-
-async fn media_upload_complete(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(upload_id): Path<String>,
-) -> (StatusCode, Json<Value>) {
-    match state.cas.complete_chunked_upload(&upload_id).await {
-        Ok(sha256_hash) => (
-            StatusCode::OK,
-            Json(json!({
-                "upload_id": upload_id,
-                "file_id": sha256_hash,
-                "sha256": sha256_hash,
-                "status": "completed",
-            })),
-        ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
-        ),
-    }
-}
-
-async fn media_stream(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(file_id): Path<String>,
-    headers: header::HeaderMap,
-) -> Response {
-    let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-    let mime_type = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok());
-
-    crate::media::streaming::stream_blob(&state.cas, &file_id, range_header, mime_type).await
-}
-
-async fn search_messages(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Json<Value> {
-    let q = params
-        .get("q")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let category = params
-        .get("category")
-        .map(|s| s.trim().to_lowercase())
-        .unwrap_or_else(|| "chats".to_string());
-    let uid = auth.user_id.raw();
-
-    let _ = ensure_user_welcome_bot(&state, auth.user_id, None);
-
-    let mut results = Vec::new();
-    let q_lower = q.to_lowercase();
-
-    if let Ok(chats) = state.db.list_user_chats(auth.user_id) {
-        for c in chats {
-            let is_bot = is_welcome_bot_chat(c.chat_id)
-                || c.title.to_lowercase().contains("bot")
-                || c.username
-                    .as_deref()
-                    .map(|u| u.to_lowercase().ends_with("bot"))
-                    .unwrap_or(false)
-                || (c.chat_type == 0
-                    && state
-                        .db
-                        .get_chat_members(c.chat_id)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|&m| m != auth.user_id)
-                        .any(|m| {
-                            state
-                                .db
-                                .get_user(m)
-                                .ok()
-                                .flatten()
-                                .map(|u| u.is_bot)
-                                .unwrap_or(false)
-                        }));
-
-            let ctype_str = if is_bot {
-                "bot"
-            } else if c.chat_type == 0 {
-                "private"
-            } else if c.chat_type == 2 {
-                "channel"
-            } else {
-                "group"
-            };
-
-            let messages = state
-                .db
-                .list_messages_with_topic(c.chat_id, None, None, 50)
-                .unwrap_or_default();
-
-            let preview = messages
-                .last()
-                .and_then(|rec| {
-                    crate::messaging::pipeline::MessagePipeline::record_to_item(rec)
-                        .ok()
-                        .map(|item| extract_message_content_text(&item.content))
-                })
-                .unwrap_or_else(|| {
-                    c.about
-                        .clone()
-                        .unwrap_or_else(|| "No messages yet".to_string())
-                });
-
-            let latest_ts = messages
-                .last()
-                .map(|r| (r.date_ms / 1000).max(0) as u64)
-                .unwrap_or((c.updated_at_ms / 1000).max(0) as u64);
-
-            // 1. Include dialog row when category is chats, channels, apps/bots, or all
-            if matches!(
-                category.as_str(),
-                "chats" | "channels" | "apps" | "bots" | "all" | ""
-            ) {
-                let cat_dialog_ok = if category == "apps" || category == "bots" {
-                    is_bot
-                } else if category == "channels" {
-                    ctype_str == "group" || ctype_str == "channel"
-                } else {
-                    true
-                };
-                let query_dialog_ok = q_lower.is_empty()
-                    || c.title.to_lowercase().contains(&q_lower)
-                    || preview.to_lowercase().contains(&q_lower);
-
-                if cat_dialog_ok && query_dialog_ok {
-                    results.push(json!({
-                        "chat_id": c.chat_id.0,
-                        "message_id": 0,
-                        "title": c.title,
-                        "snippet": preview,
-                        "category": if is_bot { "apps" } else { ctype_str },
-                        "timestamp": latest_ts,
-                        "sender_id": if is_bot { 777000 } else { uid },
-                        "is_bot": is_bot,
-                    }));
-                }
-            }
-
-            // 2. Search individual messages across this chat filtered by category/content
-            for rec in messages.iter().rev() {
-                let text = crate::messaging::pipeline::MessagePipeline::record_to_item(rec)
-                    .ok()
-                    .map(|item| extract_message_content_text(&item.content))
-                    .unwrap_or_default();
-                if text.is_empty() {
-                    continue;
-                }
-                let text_lower = text.to_lowercase();
-                if !q_lower.is_empty()
-                    && !text_lower.contains(&q_lower)
-                    && !c.title.to_lowercase().contains(&q_lower)
-                {
-                    continue;
-                }
-                let cat_match = match category.as_str() {
-                    "links" => {
-                        text_lower.contains("http://")
-                            || text_lower.contains("https://")
-                            || text_lower.contains("t.me/")
-                    }
-                    "media" => {
-                        text_lower.contains(".jpg")
-                            || text_lower.contains(".png")
-                            || text_lower.contains(".mp4")
-                            || text_lower.contains("[media]")
-                            || text_lower.contains("[photo]")
-                            || text_lower.contains("[video]")
-                            || text_lower.contains("photo")
-                            || text_lower.contains("video")
-                    }
-                    "files" | "downloads" => {
-                        text_lower.contains(".pdf")
-                            || text_lower.contains(".zip")
-                            || text_lower.contains(".rs")
-                            || text_lower.contains(".json")
-                            || text_lower.contains("[file:")
-                            || text_lower.contains("file:")
-                    }
-                    "music" => {
-                        text_lower.contains(".mp3")
-                            || text_lower.contains(".flac")
-                            || text_lower.contains("[audio]")
-                            || text_lower.contains("audio:")
-                    }
-                    "voice" => {
-                        text_lower.contains("voice")
-                            || text_lower.contains(".ogg")
-                            || text_lower.contains("[voice")
-                    }
-                    "posts" => {
-                        ctype_str == "channel" || ctype_str == "group" || !q_lower.is_empty()
-                    }
-                    "apps" | "bots" => is_bot || rec.sender_id.0 == 777000,
-                    _ => !q_lower.is_empty(),
-                };
-                if !cat_match {
-                    continue;
-                }
-                results.push(json!({
-                    "chat_id": c.chat_id.0,
-                    "message_id": rec.message_id.0,
-                    "title": c.title,
-                    "snippet": text,
-                    "category": category,
-                    "timestamp": (rec.date_ms / 1000).max(0) as u64,
-                    "sender_id": rec.sender_id.0,
-                    "is_bot": is_bot || rec.sender_id.0 == 777000,
-                }));
-            }
-        }
-    }
-
-    let total = results.len();
-    Json(json!({
-        "query": q,
-        "category": category,
-        "results": results,
-        "total": total,
-    }))
-}
-
-async fn webrtc_call_invite(
-    auth: AuthBearer,
-    State(_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
-    let call_id = format!("call_{}", Uuid::new_v4().simple());
-    Json(json!({
-        "call_id": call_id,
-        "caller_id": auth.user_id.raw(),
-        "callee_id": payload.get("callee_id"),
-        "status": "invited",
-    }))
-}
-
-async fn webrtc_call_signal(
-    auth: AuthBearer,
-    State(_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
-    Json(json!({
-        "user_id": auth.user_id.raw(),
-        "signal": payload,
-        "status": "relayed",
-    }))
-}
-
-async fn webrtc_turn_credentials(
-    _auth: AuthBearer,
-    State(_state): State<Arc<AppState>>,
-) -> Json<Value> {
-    Json(json!({
-        "urls": ["stun:stun.l.google.com:19302"],
-        "username": "ephemeral_gpui_user",
-        "credential": "ephemeral_gpui_credential",
-        "ttl_seconds": 86400,
-    }))
-}
-
 // ============================================================================
 // WebSocket Upgrade Handler
 // ============================================================================
@@ -4950,6 +3783,29 @@ async fn ws_upgrade_handler(
 // ============================================================================
 // Agent & Capability Route Handlers
 // ============================================================================
+
+fn summarize_agent_outputs(
+    outputs: &[gpui_telegram_agent::AgentTurnOutput],
+) -> (String, Option<String>) {
+    let final_response = outputs
+        .iter()
+        .find_map(|o| match o {
+            gpui_telegram_agent::AgentTurnOutput::FinalResponse { text } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let err_msg = if final_response.trim().is_empty() {
+        outputs.iter().find_map(|o| match o {
+            gpui_telegram_agent::AgentTurnOutput::Error { code, message } => {
+                Some(format!("{}: {}", code, message))
+            }
+            _ => None,
+        })
+    } else {
+        None
+    };
+    (final_response, err_msg)
+}
 
 async fn agent_runs(
     auth: AuthBearer,
@@ -5007,13 +3863,8 @@ async fn agent_runs(
         outputs.push(out);
     }
 
-    let final_response = outputs
-        .iter()
-        .find_map(|o| match o {
-            gpui_telegram_agent::AgentTurnOutput::FinalResponse { text } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let (final_response, error_msg) = summarize_agent_outputs(&outputs);
+    let status = if error_msg.is_some() { "error" } else { "completed" };
 
     (
         StatusCode::OK,
@@ -5021,13 +3872,192 @@ async fn agent_runs(
             "run_id": run_id,
             "session_id": session_id,
             "user_id": auth.user_id.raw(),
-            "status": "completed",
+            "status": status,
             "prompt": prompt,
             "response": final_response,
+            "error": error_msg,
             "outputs": outputs
         })),
     )
         .into_response()
+}
+
+async fn chats_agent_runs(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(chat_id_raw): Path<i64>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let chat_id = ChatId(chat_id_raw);
+    if let Err(resp) = crate::routes::check_active_membership(&state, chat_id, auth.user_id) {
+        return resp;
+    }
+
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            payload
+                .get("idempotency_key")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+        });
+    let scoped_idem_key = idempotency_key
+        .as_ref()
+        .map(|k| format!("{}:{}:{}", auth.user_id.0, chat_id.0, k));
+    if let Some(ref key) = scoped_idem_key {
+        if let Ok(Some(cached)) = state.hermes.store().kv_get("chat_agent_run_idem", key) {
+            if let Ok(val) = serde_json::from_str::<Value>(&cached) {
+                return (StatusCode::OK, Json(val)).into_response();
+            }
+        }
+    }
+
+    let prompt = payload
+        .get("prompt")
+        .or_else(|| payload.get("text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if prompt.is_empty() {
+        return crate::routes::err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_prompt",
+            "prompt is required",
+        );
+    }
+
+    let bot_user_id = payload
+        .get("bot_id")
+        .and_then(|v| v.as_u64())
+        .map(UserId)
+        .filter(|uid| {
+            state
+                .db
+                .get_user(*uid)
+                .ok()
+                .flatten()
+                .is_some_and(|u| u.is_bot)
+        })
+        .or_else(|| detect_bot_in_chat(&state.db, chat_id, auth.user_id, &prompt))
+        .unwrap_or_else(|| ensure_default_ai_bot(&state.db));
+
+    crate::routes::broadcast_chat_event(
+        &state,
+        chat_id,
+        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
+            gpui_telegram_proto::sync::TypingEvent::new(
+                chat_id,
+                bot_user_id,
+                gpui_telegram_proto::sync::TypingAction::Typing,
+            ),
+        ),
+    );
+
+    let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(&state, bot_user_id);
+    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&prompt)
+        .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
+    if let Some(sid) = payload
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        req.session_id = Some(sid.to_string());
+    }
+    req.user_id = Some(auth.user_id.0.to_string());
+    req.source = "chat_agent_run".to_string();
+    req.model = payload
+        .get("model")
+        .or_else(|| payload.get("model_id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .or(bot_model);
+    req.system_prompt = payload
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .or(bot_sp);
+
+    let turn_res = state.hermes.run_turn(req).await;
+
+    crate::routes::broadcast_chat_event(
+        &state,
+        chat_id,
+        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
+            gpui_telegram_proto::sync::TypingEvent::new(
+                chat_id,
+                bot_user_id,
+                gpui_telegram_proto::sync::TypingAction::Cancel,
+            ),
+        ),
+    );
+
+    let res = match turn_res {
+        Ok(r) => r,
+        Err(e) => return crate::routes::map_telegram_err(e),
+    };
+
+    let deliver = payload
+        .get("deliver_to_chat")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let kb_rows = crate::routes::hermes::build_default_bot_quick_actions(&res, &prompt);
+    let mut committed_message_id: Option<i64> = None;
+    if deliver && !res.response_text.trim().is_empty() {
+        let kb_opt = if kb_rows.is_empty() {
+            None
+        } else {
+            Some(kb_rows.clone())
+        };
+        if let Some(saved) = crate::routes::hermes::deliver_hermes_proactive_message(
+            &state,
+            chat_id,
+            Some(&bot_user_id.0.to_string()),
+            &res.response_text,
+            kb_opt,
+        )
+        .await
+        {
+            committed_message_id = Some(saved.id.0);
+        }
+    }
+
+    let resp_json = json!({
+        "run_id": format!("run_{}", Uuid::new_v4().simple()),
+        "turn_id": res.turn_id,
+        "chat_id": chat_id.0,
+        "session_id": res.session_id,
+        "bot_id": bot_user_id.0,
+        "message_id": committed_message_id,
+        "status": "completed",
+        "prompt": prompt,
+        "response": res.response_text,
+        "model": res.model,
+        "provider": res.provider,
+        "inline_keyboard": kb_rows,
+        "tool_calls_count": res.tool_calls.len(),
+        "usage": res.usage,
+    });
+
+    if let Some(ref key) = scoped_idem_key {
+        if let Ok(raw) = serde_json::to_string(&resp_json) {
+            let _ = state.hermes.store().kv_set("chat_agent_run_idem", key, &raw);
+        }
+    }
+
+    (StatusCode::OK, Json(resp_json)).into_response()
 }
 
 async fn agent_turn(
@@ -5086,13 +4116,8 @@ async fn agent_turn(
         outputs.push(out);
     }
 
-    let final_response = outputs
-        .iter()
-        .find_map(|o| match o {
-            gpui_telegram_agent::AgentTurnOutput::FinalResponse { text } => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let (final_response, error_msg) = summarize_agent_outputs(&outputs);
+    let status = if error_msg.is_some() { "error" } else { "executed" };
 
     (
         StatusCode::OK,
@@ -5100,225 +4125,11 @@ async fn agent_turn(
             "turn_id": turn_id,
             "session_id": session_id,
             "caller_id": auth.user_id.raw(),
-            "status": "executed",
+            "status": status,
             "prompt": prompt,
             "response": final_response,
+            "error": error_msg,
             "outputs": outputs
-        })),
-    )
-        .into_response()
-}
-
-async fn tasks_list(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-) -> Json<Value> {
-    let registry = state.task_registry.read().await;
-    let mut tasks: Vec<Value> = registry
-        .values()
-        .map(|task| {
-            json!({
-                "task_id": task.task_id,
-                "state": task.state.as_str(),
-                "state_history": task.state_history,
-                "abort_reason": task.abort_reason,
-                "is_active": task.is_active(),
-                "is_terminal": task.is_terminal(),
-            })
-        })
-        .collect();
-    tasks.sort_by(|a, b| {
-        a["task_id"].as_str().cmp(&b["task_id"].as_str())
-    });
-    let total = tasks.len();
-    Json(json!({
-        "tasks": tasks,
-        "columns": ["inbox", "active", "review", "completed", "failed", "cancelled"],
-        "total": total
-    }))
-}
-
-async fn tasks_create(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let task_id = payload
-        .get("task_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or_else(|| format!("task_{}", Uuid::new_v4().simple()));
-
-    let mut task = gpui_telegram_agent::tasks::TaskFsm::new(task_id.clone());
-    if let Some(target_state_str) = payload.get("initial_state").and_then(|v| v.as_str()) {
-        if let Some(target_state) = gpui_telegram_agent::tasks::TaskState::from_str(target_state_str) {
-            if target_state != gpui_telegram_agent::tasks::TaskState::Pending {
-                let _ = task.transition_to(target_state);
-            }
-        }
-    }
-
-    state.task_registry.write().await.insert(task_id.clone(), task.clone());
-
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "task_id": task_id,
-            "state": task.state.as_str(),
-            "created": true
-        })),
-    )
-        .into_response()
-}
-
-async fn tasks_approve(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(task_id): Path<String>,
-    body_bytes: Bytes,
-) -> Response {
-    let payload: Value = if body_bytes.is_empty() {
-        json!({})
-    } else {
-        serde_json::from_slice(&body_bytes).unwrap_or_else(|_| json!({}))
-    };
-
-    let is_approved = payload
-        .get("approved")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let decision_str = payload
-        .get("decision")
-        .and_then(|v| v.as_str())
-        .unwrap_or(if is_approved { "approve" } else { "deny" });
-
-    let decision = if decision_str == "deny" || !is_approved {
-        let reason = payload.get("reason").and_then(|v| v.as_str()).map(String::from);
-        gpui_telegram_agent::ApprovalDecision::Deny { reason }
-    } else if decision_str == "always_allow" {
-        gpui_telegram_agent::ApprovalDecision::AlwaysAllow
-    } else {
-        gpui_telegram_agent::ApprovalDecision::ApproveOnce
-    };
-
-    // 1. Resolve gate in state.approval_gates
-    let mut gates = state.approval_gates.write().await;
-    let gate_key = if gates.contains_key(&task_id) {
-        Some(task_id.clone())
-    } else {
-        gates.iter().find_map(|(k, g)| if g.task_id == task_id { Some(k.clone()) } else { None })
-    };
-
-    let resolved_gate_id = if let Some(key) = gate_key {
-        if let Some(gate) = gates.get_mut(&key) {
-            let _ = gate.decide(decision.clone());
-            gate.gate_id.clone()
-        } else {
-            format!("gate_{}", task_id)
-        }
-    } else {
-        let gate_id = format!("gate_{}", task_id);
-        let mut new_gate = gpui_telegram_agent::ApprovalGate::new(
-            gate_id.clone(),
-            task_id.clone(),
-            "task_approval".into(),
-            "API triggered task approval".into(),
-        );
-        let _ = new_gate.decide(decision.clone());
-        gates.insert(gate_id.clone(), new_gate);
-        gate_id
-    };
-    drop(gates);
-
-    // 2. Transition task in state.task_registry
-    let mut tasks = state.task_registry.write().await;
-    let (current_state, transition_success) = if let Some(task) = tasks.get_mut(&task_id) {
-        let target_state = match decision {
-            gpui_telegram_agent::ApprovalDecision::Deny { .. } => {
-                gpui_telegram_agent::tasks::TaskState::Cancelled
-            }
-            _ => {
-                if task.state == gpui_telegram_agent::tasks::TaskState::WaitingAuth
-                    || task.state == gpui_telegram_agent::tasks::TaskState::Pending
-                {
-                    gpui_telegram_agent::tasks::TaskState::Running
-                } else {
-                    task.state
-                }
-            }
-        };
-
-        if target_state != task.state {
-            match task.transition_to(target_state) {
-                Ok(()) => (task.state.as_str().to_string(), true),
-                Err(_) => (task.state.as_str().to_string(), false),
-            }
-        } else {
-            (task.state.as_str().to_string(), true)
-        }
-    } else {
-        ("unknown".to_string(), true)
-    };
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "task_id": task_id,
-            "approved": is_approved,
-            "decision": format!("{:?}", decision),
-            "current_state": current_state,
-            "transition_success": transition_success,
-            "gate_id": resolved_gate_id,
-            "resolved_at": Utc::now()
-        })),
-    )
-        .into_response()
-}
-
-async fn mcp_servers_list(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-) -> Json<Value> {
-    let registry = state.mcp_registry.read();
-    let tools = registry.list_tools();
-    Json(json!({
-        "servers": [],
-        "registered_tools_count": tools.len()
-    }))
-}
-
-async fn mcp_servers_register(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let server_id = payload
-        .get("server_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
-    if let Some(tool_name) = payload.get("tool_name").and_then(|v| v.as_str()) {
-        let desc = payload
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let schema = payload
-            .get("schema")
-            .and_then(|v| v.as_str())
-            .unwrap_or("{}");
-        let def = gpui_telegram_agent::McpToolDefinition::new(
-            tool_name,
-            desc,
-            schema,
-            gpui_telegram_agent::ToolRiskLevel::Low,
-        )
-        .with_server_id(server_id);
-        state.mcp_registry.write().register(def);
-    }
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "status": "registered",
-            "server_id": server_id
         })),
     )
         .into_response()
@@ -5440,59 +4251,6 @@ async fn mcp_permission_approve(
     }
 }
 
-async fn computer_lease_acquire(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let device_id = payload
-        .get("device_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("desktop_local");
-    let agent_id = format!("agent_{}", auth.user_id.raw());
-
-    let lease_opt = state
-        .computer_lease_broker
-        .write()
-        .acquire_lease(&agent_id, device_id);
-
-    match lease_opt {
-        Some(lease) => (
-            StatusCode::OK,
-            Json(json!({
-                "lease_id": lease.lease_id,
-                "target_device_id": lease.target_device_id,
-                "generation": lease.generation,
-                "state": lease.state,
-                "expires_at": lease.expires_at,
-                "is_valid": lease.is_valid()
-            })),
-        )
-            .into_response(),
-        None => (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "lease_unavailable",
-                "message": "Computer control lease could not be acquired"
-            })),
-        )
-            .into_response(),
-    }
-}
-
-async fn computer_lease_emergency_takeover(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-) -> Json<Value> {
-    let new_gen = state.computer_lease_broker.write().emergency_takeover();
-    Json(json!({
-        "status": "emergency_takeover_executed",
-        "action": "preempt_and_fence",
-        "new_generation": new_gen,
-        "latency_sub_10ms": true
-    }))
-}
-
 async fn computer_action_execute(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
@@ -5536,25 +4294,6 @@ async fn computer_action_execute(
         )
             .into_response(),
     }
-}
-
-async fn talk_session_create(
-    _auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Json(_payload): Json<Value>,
-) -> Response {
-    let mut coord = state.talk_coordinator.write();
-    coord.state = gpui_telegram_agent::TalkSessionState::Listening;
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "session_id": coord.session_id,
-            "state": coord.state,
-            "generation": coord.generation,
-            "signal_seq": coord.signal_seq
-        })),
-    )
-        .into_response()
 }
 
 async fn talk_barge_in(

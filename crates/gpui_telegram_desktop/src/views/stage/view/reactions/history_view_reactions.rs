@@ -5,8 +5,11 @@
 
 use gpui::*;
 use crate::views::stage::reactions::button::{
-    sort_reaction_pills, ReactionKey, ReactionPill,
-    K_IN_NON_CHOSEN_OPACITY, K_OUT_NON_CHOSEN_OPACITY, K_MAX_RECENT_USERPICS, K_MAX_NICE_PER_ROW,
+    sort_reaction_pills,
+    ReactionKey,
+    ReactionPill,
+    K_IN_NON_CHOSEN_OPACITY,
+    K_OUT_NON_CHOSEN_OPACITY,
 };
 
 #[derive(Debug, Clone)]

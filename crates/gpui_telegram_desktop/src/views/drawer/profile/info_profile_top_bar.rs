@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/profile/info_profile_top_bar.h:L1-L397`
 //! Subsystem: info | Feature ID: TCG-N22 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

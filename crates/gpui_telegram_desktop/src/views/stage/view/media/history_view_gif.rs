@@ -11,7 +11,7 @@
 //! - `kMaxInstantViewInlineArea = 1920 * 1920` (3,686,400 px) (`history_view_gif.cpp:L78`)
 //! - `kSeekPreviewInterval = 100ms` (`history_view_gif.cpp:L79`)
 
-use crate::views::stage::media::{GifMediaState, VideoCornerStatusInfo};
+use crate::views::stage::media::GifMediaState;
 
 pub const K_MAX_INLINE_AREA: u64 = 1920 * 1080;
 pub const K_MAX_INSTANT_VIEW_INLINE_AREA: u64 = 1920 * 1920;

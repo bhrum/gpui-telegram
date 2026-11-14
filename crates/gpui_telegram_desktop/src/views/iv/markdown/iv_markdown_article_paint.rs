@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticlePaintMarkdown
 //! Module 13: Instant View Article Painting Pipeline & Shimmer Animation
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

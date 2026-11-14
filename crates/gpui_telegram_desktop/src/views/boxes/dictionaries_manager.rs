@@ -10,7 +10,6 @@
 //! - Dictionary state: `Active`, `Ready`, `Available` (with download progress)
 //! - Multi-select search filtering
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

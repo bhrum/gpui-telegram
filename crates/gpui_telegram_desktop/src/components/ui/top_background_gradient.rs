@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/top_background_gradient.cpp:L1-L283` & `top_background_gradient.h:L1-L79`
 //! Authentic GPUI implementation of top header background gradient and pattern points.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels, Point};
 

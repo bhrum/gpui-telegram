@@ -107,7 +107,7 @@ impl Render for WalletProtectionWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_wallet_protection_win_flow() {
         let mut prot = WalletProtectionWinWin::new();
         assert!(prot.load_method().is_ok());

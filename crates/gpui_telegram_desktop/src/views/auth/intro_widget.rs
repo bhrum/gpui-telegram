@@ -1,7 +1,7 @@
 //! Upstream Source: Telegram/SourceFiles/intro/intro_widget.cpp, intro_widget.h
 //! Subsystem: intro | Feature ID: TCG-N01 | Disposition: rust_domain_or_server_1to1
 
-use gpui::*;
+use super::intro_chrome::IntroAction;
 use super::intro_code::IntroCode;
 use super::intro_email::IntroEmail;
 use super::intro_password_check::IntroPasswordCheck;
@@ -9,14 +9,19 @@ use super::intro_phone::IntroPhone;
 use super::intro_qr::IntroQr;
 use super::intro_signup::IntroSignup;
 use super::intro_start::IntroStart;
-use super::intro_step::{IntroCallStatus, IntroStepData, IntroStepType};
+use super::intro_step::{IntroStepData, IntroStepType};
+use super::intro_topbar::{apply_widget_key_input, render_intro_top_bar};
+use crate::i18n::tr_str;
+use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
+use gpui::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IntroEnterPoint {
     #[default]
     Start,
-    Phone,
     Qr,
+    Phone,
+    AddAccount,
 }
 
 #[derive(Debug, Clone)]
@@ -26,8 +31,13 @@ pub struct IntroWidget {
     pub data: IntroStepData,
     pub language_code: String,
     pub is_settings_open: bool,
+    pub palette: TdesktopThemePalette,
+    pub server_url: String,
+    pub server_url_editing: bool,
+    pub server_connected: bool,
+    pub server_status_message: String,
+    pub pending_action: Option<IntroAction>,
 
-    // Step views
     pub start_view: IntroStart,
     pub qr_view: IntroQr,
     pub phone_view: IntroPhone,
@@ -47,9 +57,10 @@ impl IntroWidget {
     pub fn new(point: IntroEnterPoint) -> Self {
         let initial_step = match point {
             IntroEnterPoint::Start => IntroStepType::Start,
-            IntroEnterPoint::Phone => IntroStepType::Phone,
             IntroEnterPoint::Qr => IntroStepType::Qr,
+            IntroEnterPoint::Phone | IntroEnterPoint::AddAccount => IntroStepType::Phone,
         };
+        let phone_view = IntroPhone::new();
 
         Self {
             current_step: initial_step,
@@ -57,10 +68,15 @@ impl IntroWidget {
             data: IntroStepData::default(),
             language_code: "en".to_string(),
             is_settings_open: false,
-
+            palette: TdesktopThemePalette::default(),
+            server_url: "http://127.0.0.1:8080".to_string(),
+            server_url_editing: false,
+            server_connected: false,
+            server_status_message: String::new(),
+            pending_action: None,
             start_view: IntroStart::new(),
             qr_view: IntroQr::new(),
-            phone_view: IntroPhone::new(),
+            phone_view,
             code_view: IntroCode::default(),
             signup_view: IntroSignup::default(),
             password_check_view: IntroPasswordCheck::default(),
@@ -69,11 +85,11 @@ impl IntroWidget {
     }
 
     pub fn can_go_back(&self) -> bool {
-        !self.history.is_empty() && self.current_step != IntroStepType::Start
+        !self.history.is_empty()
     }
 
     pub fn show_step(&mut self, next: IntroStepType) {
-        if self.current_step != next {
+        if next != self.current_step {
             self.history.push(self.current_step);
             self.current_step = next;
         }
@@ -95,81 +111,107 @@ impl IntroWidget {
     pub fn toggle_settings(&mut self) {
         self.is_settings_open = !self.is_settings_open;
     }
+
+    pub fn toggle_theme_mode(&mut self) {
+        let next_mode = if self.palette.mode.is_dark() {
+            TdesktopThemeMode::Day
+        } else {
+            TdesktopThemeMode::Night
+        };
+        self.palette = TdesktopThemePalette::build(
+            next_mode,
+            next_mode.default_accent(),
+            self.palette.font_size_px,
+            self.palette.bubble_radius_px,
+        );
+    }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) {
+        self.palette = palette;
+    }
+
+    pub fn set_server_status(&mut self, url: impl Into<String>, connected: bool, message: impl Into<String>) {
+        self.server_url = url.into();
+        self.server_connected = connected;
+        self.server_status_message = message.into();
+    }
+
+    pub fn take_action(&mut self) -> Option<IntroAction> {
+        self.pending_action.take()
+    }
+
+    pub fn handle_key_input(&mut self, key: &str, key_char: Option<&str>, backspace: bool) {
+        apply_widget_key_input(self, key, key_char, backspace);
+    }
 }
 
 impl Render for IntroWidget {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let back_button = if self.can_go_back() {
-            div()
-                .size(px(40.0))
-                .rounded_full()
-                .hover(|s| s.bg(rgb(0x17212b)))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_lg()
-                .text_color(rgb(0x8292a1))
-                .child("←")
-        } else {
-            div().size(px(40.0))
-        };
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = self.palette.clone();
+        let lang = self.language_code.clone();
 
-        let step_content: AnyElement = match self.current_step {
-            IntroStepType::Start => self.start_view.render_view(),
-            IntroStepType::Qr => self.qr_view.render_view(),
-            IntroStepType::Phone => self.phone_view.render_view(),
-            IntroStepType::Code => self.code_view.render_view(),
-            IntroStepType::Signup => self.signup_view.render_view(),
-            IntroStepType::PasswordCheck => self.password_check_view.render_view(),
-            IntroStepType::Email => self.email_view.render_view(),
-            IntroStepType::AlipayQr => self.qr_view.render_view(),
-            IntroStepType::EmailRegister => self.email_view.render_view(),
+        let step_view: AnyElement = match self.current_step {
+            IntroStepType::Start => self.start_view.render_interactive(&palette, &lang, cx),
+            IntroStepType::Qr | IntroStepType::AlipayQr => {
+                self.qr_view.render_interactive(&palette, &lang, cx)
+            }
+            IntroStepType::Phone => self.phone_view.render_interactive(&palette, &lang, cx),
+            IntroStepType::Code => self.code_view.render_interactive(&palette, &lang, cx),
+            IntroStepType::Signup => self.signup_view.render_interactive(&palette, &lang, cx),
+            IntroStepType::PasswordCheck => {
+                self.password_check_view.render_interactive(&palette, &lang, cx)
+            }
+            IntroStepType::Email | IntroStepType::EmailRegister => {
+                self.email_view.render_interactive(&palette, &lang, cx)
+            }
         };
 
         div()
+            .w_full()
+            .h_full()
+            .bg(rgb(palette.window_bg))
             .flex()
             .flex_col()
-            .size_full()
-            .bg(rgb(0x0e1621))
+            .justify_between()
+            .child(render_intro_top_bar(self, cx))
             .child(
-                // TopBar with Back button and Language Switcher
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .w_full()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .child(back_button)
-                    .child(
-                        // Language switcher button
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(0x2aabee))
-                            .hover(|s| s.text_color(rgb(0x54c0f5)))
-                            .cursor_pointer()
-                            .child(format!("Language ({})", self.language_code.to_uppercase())),
-                    ),
-            )
-            .child(
-                // Centered step container (width: 380px)
-                div()
-                    .flex()
                     .flex_1()
+                    .w_full()
+                    .flex()
                     .items_center()
                     .justify_center()
-                    .w_full()
+                    .p(px(24.0))
                     .child(
                         div()
                             .w(px(380.0))
+                            .p(px(28.0))
+                            .rounded(px(14.0))
+                            .bg(rgb(palette.card_bg))
+                            .border_1()
+                            .border_color(rgb(palette.border_fg))
+                            .shadow_md()
                             .flex()
                             .flex_col()
                             .items_center()
-                            .child(step_content),
+                            .child(step_view),
                     ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .pb(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(11.5))
+                    .text_color(rgb(palette.text_secondary))
+                    .child(if self.server_status_message.is_empty() {
+                        tr_str(&lang, "Telegram Desktop GPUI • 端到端云原生桌面客户端", "Telegram Desktop GPUI • Native Desktop Client")
+                            .to_string()
+                    } else {
+                        self.server_status_message.clone()
+                    }),
             )
     }
 }

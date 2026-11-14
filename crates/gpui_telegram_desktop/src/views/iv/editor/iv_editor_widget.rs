@@ -1,6 +1,5 @@
 //! Target Symbol: IvEditorWidgetEditor
 //! Module 13: Instant View Article Editor Canvas Component
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

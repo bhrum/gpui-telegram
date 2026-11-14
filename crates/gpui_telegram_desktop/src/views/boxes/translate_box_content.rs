@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's TranslateBoxContent container.
 //! Upstream reference: `Telegram/SourceFiles/boxes/translate_box_content.h:L20-L66`
 //! and `Telegram/SourceFiles/boxes/translate_box_content.cpp:L30-L90`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

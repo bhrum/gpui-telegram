@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder_common.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -120,7 +119,7 @@ impl Render for InfoUserpicEmojiBuilderCommonUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_gradient_spec_generation_shapes() {
         let common = InfoUserpicEmojiBuilderCommonUserpic::new();
         assert_eq!(common.default_rotation, 45);
@@ -137,7 +136,7 @@ mod tests {
         assert_eq!(forum_spec.corner_radius, 28.0); // 100.0 * 0.28
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_start_data_default_colors() {
         let data = EmojiBuilderStartData::default();
         assert_eq!(data.gradient_editor_colors.len(), 2);

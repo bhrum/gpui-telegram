@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_translator.h`, `lang_translator.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 /// Translates native OS platform menus and dialog commands to Telegram localized strings.
 /// Matches upstream class `Lang::Translator : public QTranslator`.

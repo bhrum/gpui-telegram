@@ -1,5 +1,4 @@
 //! Instant View Theme & Editor Style Sheet (`iv.style`)
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::{px, rgb, rgba, Pixels, Rgba, Size};
 

@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_compose_ai_tooltip.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub const TOOLTIP_SKIP_PX: f32 = 8.0;
 

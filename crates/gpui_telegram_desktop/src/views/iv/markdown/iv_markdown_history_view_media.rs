@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownHistoryViewMediaMarkdown
 //! Module 13: Instant View Slideshow Media Gallery & Gesture Transitions
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

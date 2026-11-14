@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/inline_bots/inline_results_inner.h:L53-L100`
 //! - `Telegram/SourceFiles/inline_bots/inline_results_inner.cpp:L43-L98`
-#![allow(dead_code)]
 
 use gpui::*;
 use super::inline_bot_result::InlineBotResult;

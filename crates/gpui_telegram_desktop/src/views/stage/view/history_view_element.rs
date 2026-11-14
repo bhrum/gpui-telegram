@@ -8,8 +8,8 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::views::stage::history_element::{
-    ElementChatMode, ElementContext, ElementFlags, ElementMargins, HistoryElementBase,
-    K_ATTACH_MESSAGE_TO_PREVIOUS_SECONDS_DELTA, K_MAX_SHOWN_LINE,
+    ElementFlags,
+    HistoryElementBase,
 };
 
 /// Authentic GPUI wrapper for HistoryView::Element.

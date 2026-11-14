@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_factcheck_box.cpp:L20-L89
 //! Reference: Telegram/SourceFiles/ui/boxes/edit_factcheck_box.h:L15-L21
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

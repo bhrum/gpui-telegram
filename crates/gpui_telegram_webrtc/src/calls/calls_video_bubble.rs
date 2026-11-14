@@ -1,6 +1,5 @@
 //! Picture-in-Picture Draggable Video Bubble
 //! Upstream: Telegram/SourceFiles/calls/calls_video_bubble.h:L20-L70, calls_video_bubble.cpp:L17-L100
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 

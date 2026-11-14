@@ -102,12 +102,26 @@ impl Render for WindowPeerMenu {
             .border_1()
             .border_color(rgb(0x242F3D))
             .children(self.available_actions().iter().map(|act| {
+                let label = match act {
+                    PeerMenuAction::ViewProfile => "View Profile",
+                    PeerMenuAction::MuteNotifications => "Mute Notifications",
+                    PeerMenuAction::UnmuteNotifications => "Unmute Notifications",
+                    PeerMenuAction::MarkAsRead => "Mark as Read",
+                    PeerMenuAction::PinChat => "Pin to Top",
+                    PeerMenuAction::UnpinChat => "Unpin",
+                    PeerMenuAction::AddToFolder => "Add to Folder...",
+                    PeerMenuAction::ClearHistory => "Clear History",
+                    PeerMenuAction::DeleteChat => "Delete Chat",
+                    PeerMenuAction::BlockUser => "Block User",
+                    PeerMenuAction::Report => "Report",
+                };
+                let is_danger = matches!(act, PeerMenuAction::DeleteChat | PeerMenuAction::BlockUser | PeerMenuAction::Report);
                 div()
                     .px(px(12.0))
                     .py(px(8.0))
                     .text_xs()
-                    .text_color(rgb(0xFFFFFF))
-                    .child(format!("{:?}", act))
+                    .text_color(if is_danger { rgb(0xE57373) } else { rgb(0xFFFFFF) })
+                    .child(label)
             }))
             .into_any_element()
     }

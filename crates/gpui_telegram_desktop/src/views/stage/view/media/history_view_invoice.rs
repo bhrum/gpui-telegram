@@ -3,13 +3,11 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_invoice.h:L25-L106`
 //! - `Telegram/SourceFiles/history/view/media/history_view_invoice.cpp:L26-L112`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::invoice::{
-    RichInvoiceCard, is_ordinary_unpaid_credits_invoice,
-    format_amount_and_currency, K_CREDITS_CURRENCY, K_DESC_MAX_LINES,
+    RichInvoiceCard,
+    is_ordinary_unpaid_credits_invoice,
+    K_CREDITS_CURRENCY,
 };
 
 #[derive(Debug, Clone)]

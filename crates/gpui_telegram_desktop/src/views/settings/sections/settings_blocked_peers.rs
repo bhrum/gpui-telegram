@@ -1,9 +1,13 @@
-// Source: Telegram/SourceFiles/settings/sections/settings_blocked_peers.cpp, Telegram/SourceFiles/settings/sections/settings_blocked_peers.h
-// Subsystem: settings | Feature ID: TCG-N11
-// Upstream: Blocked::title, tr::lng_settings_blocked_users, tr::lng_blocked_list_empty_description
+// Source: Telegram/SourceFiles/settings/sections/settings_blocked_peers.cpp
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
+use crate::i18n::tr_str;
+use crate::theme::assets::IconName;
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_empty_state,
+    settings_section_header,
+};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +22,8 @@ pub struct SettingsBlockedPeersSections {
     pub blocked_list: Vec<BlockedPeerItem>,
     pub search_query: String,
     pub is_loading: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsBlockedPeersSections {
@@ -26,16 +32,18 @@ impl SettingsBlockedPeersSections {
             blocked_list: Vec::new(),
             search_query: String::new(),
             is_loading: false,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
     }
 
+    pub fn new_live() -> Self { Self::new() }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
+
     pub fn block_peer(&mut self, user_id: u64, name: impl Into<String>, date: impl Into<String>) {
         if !self.blocked_list.iter().any(|p| p.user_id == user_id) {
-            self.blocked_list.push(BlockedPeerItem {
-                user_id,
-                name: name.into(),
-                blocked_date: date.into(),
-            });
+            self.blocked_list.push(BlockedPeerItem { user_id, name: name.into(), blocked_date: date.into() });
         }
     }
 
@@ -54,10 +62,7 @@ impl SettingsBlockedPeersSections {
         if q.is_empty() {
             self.blocked_list.iter().collect()
         } else {
-            self.blocked_list
-                .iter()
-                .filter(|p| p.name.to_lowercase().contains(&q))
-                .collect()
+            self.blocked_list.iter().filter(|p| p.name.to_lowercase().contains(&q)).collect()
         }
     }
 
@@ -67,94 +72,30 @@ impl SettingsBlockedPeersSections {
 }
 
 impl Default for SettingsBlockedPeersSections {
-    fn default() -> Self {
-        let mut s = Self::new();
-        s.block_peer(1001, "Spam Bot", "2026-10-15");
-        s.block_peer(1002, "Unknown Caller", "2026-11-01");
-        s
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl Render for SettingsBlockedPeersSections {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let peers = self.filtered_peers();
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = self.palette;
+        let lang = &self.language_id;
+        let peers: Vec<BlockedPeerItem> = self.filtered_peers().into_iter().cloned().collect();
 
-        let mut root = div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .p(px(20.0))
-            .gap(px(16.0))
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_xl()
-                            .child("Blocked Users")
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x2481cc))
-                            .child("+ Block user")
-                    )
-            )
-            .child(
-                div()
-                    .p(px(8.0))
-                    .bg(rgb(0xf4f4f5))
-                    .rounded(px(6.0))
-                    .text_xs()
-                    .text_color(rgb(0x8e8e93))
-                    .child("Blocked users cannot send you messages or add you to groups.")
-            );
-
-        if self.is_empty() {
-            root = root.child(
-                div()
-                    .py(px(40.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(rgb(0x8e8e93))
-                    .child("You haven't blocked anyone yet.")
-            );
-        } else {
-            root = root.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .children(peers.into_iter().map(|peer| {
-                        div()
-                            .flex()
-                            .justify_between()
-                            .items_center()
-                            .p(px(10.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(0xfafafa))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(peer.name.clone()))
-                                    .child(div().text_xs().text_color(rgb(0x8e8e93)).child(format!("Blocked on {}", peer.blocked_date)))
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0xcc2424))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Unblock")
-                            )
-                    }))
-            );
-        }
-        root
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::Close, tr_str(lang, "已屏蔽用户", "Blocked Users"), Some(&format!("{} users", peers.len())), pal))
+                .map(|el| {
+                    if peers.is_empty() {
+                        el.child(settings_empty_state(IconName::ContactsUsers, tr_str(lang, "暂无屏蔽用户", "No blocked users yet"), pal))
+                    } else {
+                        el.children(peers.into_iter().map(|peer| {
+                            let uid = peer.user_id;
+                            settings_action_row(IconName::ContactsUsers, &peer.name, tr_str(lang, "取消屏蔽", "Unblock"), pal, true, move |this| {
+                                this.unblock_peer(uid);
+                            }, cx)
+                        }))
+                    }
+                }))
+            .into_any_element()
     }
 }

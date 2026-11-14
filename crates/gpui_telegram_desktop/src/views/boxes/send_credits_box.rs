@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's SendCreditsBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/send_credits_box.h:L35-L65`
 //! and `Telegram/SourceFiles/boxes/send_credits_box.cpp:L50-L130`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

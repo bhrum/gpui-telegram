@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Edit Filter Links Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/filters/edit_filter_links.h:L29-L64`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/filters/edit_filter_links.cpp:L45-L60`, `L320-L450`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

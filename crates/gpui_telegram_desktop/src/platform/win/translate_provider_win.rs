@@ -72,7 +72,7 @@ impl Render for TranslateProviderWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_translate_provider_win_methods() {
         let mut provider = TranslateProviderWinWin::new();
         assert!(provider.is_translate_provider_available().is_ok());

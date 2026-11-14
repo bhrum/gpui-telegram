@@ -1,6 +1,5 @@
 //! Authentic GPUI implementation of Telegram Desktop's About Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/about_box.h:L12-L23` and `about_box.cpp:L67-L188`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

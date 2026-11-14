@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/passcode_strength.cpp:L1-L240` & `passcode_strength.h:L1-L41`
 //! Authentic GPUI implementation of passcode entropy estimation and advice diagnostics.
-#![allow(dead_code)]
 
 use super::passcode_strength_translit::PasscodeStrengthTranslit;
 

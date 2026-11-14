@@ -134,7 +134,7 @@ impl Render for UpdateInstallLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_update_install_linux() {
         let mut installer = UpdateInstallLinuxLinux::new();
         assert!(installer.root_public_key_pem().contains("BEGIN PUBLIC KEY"));

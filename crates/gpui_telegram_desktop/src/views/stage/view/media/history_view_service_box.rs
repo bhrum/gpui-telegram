@@ -5,7 +5,6 @@
 //!
 //! Renders rich interactive service message cards for Telegram Star Gifts, Premium Gifts,
 //! Channel Boost acknowledgments, and Service Notifications.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

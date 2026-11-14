@@ -134,7 +134,7 @@ impl Render for MainWindowLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_main_window_linux() {
         let mut win = MainWindowLinuxLinux::new();
         assert_eq!(win.unread_count, 0);

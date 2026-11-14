@@ -3,8 +3,8 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_keys.h`, `lang_keys.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
+use std::collections::HashMap;
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc};
 
 pub const K_DEFAULT_LANGUAGE: &str = "en";
@@ -144,5 +144,28 @@ impl LangKeys {
         let date_part = Self::day_of_month(naive, current_date);
         let time_part = format!("{:02}:{:02}", date.hour(), date.minute());
         format!("{date_part} at {time_part}")
+    }
+
+    /// Looks up a built-in Telegram localization key for `lang_code`.
+    pub fn tr(lang_code: &str, key: &str) -> &'static str {
+        super::lang_pack::tr_key(lang_code, key)
+    }
+
+    /// Looks up and formats a built-in Telegram localization key with `{var}` substitutions.
+    pub fn tr_fmt(lang_code: &str, key: &str, vars: &[(&str, &str)]) -> String {
+        super::lang_pack::tr_fmt(lang_code, key, vars)
+    }
+
+    /// Returns the embedded static key-value dictionary for `lang_code`.
+    pub fn builtin_strings(lang_code: &str) -> &'static HashMap<&'static str, &'static str> {
+        super::lang_pack::builtin_pack(lang_code)
+    }
+
+    /// Lists built-in supported languages `(code, english_name, native_name)`.
+    pub fn supported_languages() -> &'static [(&'static str, &'static str, &'static str)] {
+        &[
+            ("en", "English", "English"),
+            ("zh-CN", "Chinese (Simplified)", "简体中文"),
+        ]
     }
 }

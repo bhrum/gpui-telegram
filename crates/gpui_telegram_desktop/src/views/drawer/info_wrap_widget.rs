@@ -94,7 +94,7 @@ impl InfoWrapWidget {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_info_wrap_widget_lifecycle() {
         let mut wrap = InfoWrapWidget::with_peer(999);
         assert!(wrap.is_open);

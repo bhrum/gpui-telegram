@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Sticker Set Preview Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/sticker_set_box.h:L51-L95`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/sticker_set_box.cpp:L84-L95`, `L320-L460`, `L1200-L1350`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

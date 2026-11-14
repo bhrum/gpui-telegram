@@ -4,7 +4,7 @@ tests/e2e/test_adversarial_cloud_m4_stress.py
 Adversarial Live Cloud Delivery & Stress Testing Suite for Milestone 4.
 
 Author: challenger_cloud_m4_2
-Target: Google Cloud VM 34.170.16.35:8080 (Rust Axum Server) & 8788 (AI Gateway)
+Target: Google Cloud VM 34.46.77.133:8080 (Rust Axum Server) & 8788 (AI Gateway)
 
 Test Dimensions:
 1. Multi-client concurrent registration and login bursts (5 concurrent user threads).
@@ -30,9 +30,9 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-SERVER_URL = os.getenv("GPUI_TELEGRAM_SERVER_URL", "http://34.170.16.35:8080")
-GATEWAY_URL = "http://34.170.16.35:8788"
-REPO_ROOT = "/Users/bhrum/teamwork_projects/gpui_telegram"
+SERVER_URL = os.getenv("GPUI_TELEGRAM_SERVER_URL", "http://34.46.77.133:8080")
+GATEWAY_URL = os.getenv("GPUI_TELEGRAM_GATEWAY_URL", "http://34.46.77.133:8788")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -505,7 +505,7 @@ class StressTestRunner:
             body={
                 "prompt": math_prompt,
                 "session_id": session_id,
-                "model_id": "grok-3",
+                "model_id": "deepseek-flash",
                 "thinking_budget_tokens": 1024,
             },
             token=token,
@@ -536,7 +536,7 @@ class StressTestRunner:
             body={
                 "prompt": code_prompt,
                 "session_id": session_id,
-                "model_id": "grok-3",
+                "model_id": "deepseek-flash",
                 "thinking_budget_tokens": 1024,
             },
             token=token,
@@ -563,7 +563,7 @@ class StressTestRunner:
             body={
                 "prompt": cjk_prompt,
                 "session_id": session_id,
-                "model_id": "grok-3",
+                "model_id": "deepseek-flash",
                 "thinking_budget_tokens": 1024,
             },
             token=token,

@@ -1,6 +1,7 @@
 //! Upstream Source: Telegram/SourceFiles/intro/intro_code_input.cpp, intro_code_input.h
 //! Subsystem: intro | Feature ID: TCG-N01 | Disposition: rust_domain_or_server_1to1
 
+use crate::theme::TdesktopThemePalette;
 use gpui::*;
 
 pub const MAX_DIGITS_COUNT: usize = 32;
@@ -41,7 +42,7 @@ impl IntroCodeInput {
         self.digits_count = count;
         self.digits.resize(count, None);
         if self.focused_index >= count {
-            self.focused_index = count.saturating_sub(1);
+            self.focused_index = count - 1;
         }
     }
 
@@ -50,25 +51,22 @@ impl IntroCodeInput {
             return false;
         }
         self.is_error = false;
-        if self.focused_index < self.digits_count {
-            self.digits[self.focused_index] = Some(c);
-            if self.focused_index + 1 < self.digits_count {
-                self.focused_index += 1;
-            }
+        if let Some(pos) = self.digits.iter().position(|d| d.is_none()) {
+            self.digits[pos] = Some(c);
+            self.focused_index = (pos + 1).min(self.digits_count - 1);
             true
         } else {
+            let last = self.digits_count - 1;
+            self.digits[last] = Some(c);
             false
         }
     }
 
     pub fn pop_digit(&mut self) -> bool {
         self.is_error = false;
-        if self.digits[self.focused_index].is_some() {
-            self.digits[self.focused_index] = None;
-            true
-        } else if self.focused_index > 0 {
-            self.focused_index -= 1;
-            self.digits[self.focused_index] = None;
+        if let Some(last_pos) = self.digits.iter().rposition(|d| d.is_some()) {
+            self.digits[last_pos] = None;
+            self.focused_index = last_pos;
             true
         } else {
             false
@@ -77,23 +75,23 @@ impl IntroCodeInput {
 
     pub fn set_code(&mut self, code_str: &str) {
         self.clear();
-        for c in code_str.chars().filter(|c| c.is_ascii_digit()) {
-            if !self.push_digit(c) {
+        for c in code_str.chars() {
+            if c.is_ascii_digit() && !self.push_digit(c) {
                 break;
             }
         }
     }
 
     pub fn clear(&mut self) {
-        for slot in &mut self.digits {
-            *slot = None;
+        for d in &mut self.digits {
+            *d = None;
         }
         self.focused_index = 0;
         self.is_error = false;
     }
 
     pub fn code(&self) -> String {
-        self.digits.iter().filter_map(|&d| d).collect()
+        self.digits.iter().flatten().collect()
     }
 
     pub fn is_complete(&self) -> bool {
@@ -105,46 +103,47 @@ impl IntroCodeInput {
     }
 
     pub fn render_view(&self) -> AnyElement {
-        let digit_width = (300.0 - (self.digits_count as f32 - 1.0) * self.digit_skip_px) / self.digits_count as f32;
+        self.render_themed(&TdesktopThemePalette::default())
+    }
+
+    pub fn render_themed(&self, palette: &TdesktopThemePalette) -> AnyElement {
+        let height = self.digit_height_px;
+        let skip = self.digit_skip_px;
+        let font_sz = self.font_size_px;
+        let active_idx = self.digits.iter().position(|d| d.is_none()).unwrap_or(self.digits_count - 1);
 
         div()
             .flex()
             .flex_row()
-            .justify_center()
             .items_center()
-            .gap(px(self.digit_skip_px))
-            .w_full()
-            .max_w(px(320.0))
-            .py(px(8.0))
-            .children((0..self.digits_count).map(|idx| {
-                let digit_char = self.digits.get(idx).copied().flatten();
-                let is_focused = idx == self.focused_index;
-
-                let border_color = if self.is_error {
-                    rgb(0xee5655)
+            .justify_center()
+            .gap(px(skip))
+            .children(self.digits.iter().enumerate().map(|(i, digit)| {
+                let is_focused = i == active_idx;
+                let border_col = if self.is_error {
+                    rgb(palette.danger)
                 } else if is_focused {
-                    rgb(0x2aabee)
+                    rgb(palette.accent)
                 } else {
-                    rgb(0x242f3d)
+                    rgb(palette.border_fg)
                 };
 
+                let char_str = digit.map(|c| c.to_string()).unwrap_or_default();
+
                 div()
-                    .w(px(digit_width))
-                    .h(px(self.digit_height_px))
-                    .rounded(px(6.0))
-                    .bg(rgb(0x17212b))
-                    .border_2()
-                    .border_color(border_color)
+                    .w(px(38.0))
+                    .h(px(height))
+                    .rounded(px(8.0))
+                    .bg(rgb(palette.input_bg))
+                    .border_b_2()
+                    .border_color(border_col)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
-                        div()
-                            .text_size(px(self.font_size_px))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(rgb(0xffffff))
-                            .child(digit_char.map(|c| c.to_string()).unwrap_or_default()),
-                    )
+                    .text_size(px(font_sz))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(palette.text_primary))
+                    .child(char_str)
             }))
             .into_any_element()
     }

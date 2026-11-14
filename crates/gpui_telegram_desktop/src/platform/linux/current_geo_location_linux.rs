@@ -119,7 +119,7 @@ impl Render for CurrentGeoLocationLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_current_geo_location_linux() {
         let mut geo = CurrentGeoLocationLinuxLinux::new();
         assert!(geo.is_supported);
@@ -127,7 +127,7 @@ mod tests {
         assert!(geo.current_coords.is_none());
 
         geo.update_location(37.7749, -122.4194, 15.0);
-        let coords = geo.current_coords.unwrap();
+        let coords = geo.current_coords.as_ref().unwrap();
         assert!((coords.latitude - 37.7749).abs() < 1e-4);
         assert!((coords.accuracy - 15.0).abs() < 1e-4);
 

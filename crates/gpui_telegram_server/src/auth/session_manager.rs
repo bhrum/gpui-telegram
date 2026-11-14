@@ -63,13 +63,21 @@ pub fn verify_verification_code(candidate_code: &str, stored_hash: &str) -> bool
     candidate_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }
 
+/// Maximum allowed username length in Unicode scalar characters for registration/login.
+pub const MAX_USERNAME_CHARS: usize = 128;
+
+/// Maximum allowed password size in UTF-8 bytes for Argon2id hashing and verification.
+pub const MAX_PASSWORD_BYTES: usize = 1024;
+
 /// Computes an Argon2id password hash with a random 16-byte salt in PHC string format
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
     if password.trim().is_empty() {
         return Err(AuthError::InvalidCredentials("Password cannot be empty".into()));
     }
-    if password.as_bytes().len() > 256 {
-        return Err(AuthError::InvalidCredentials("Password cannot exceed 256 bytes".into()));
+    if password.as_bytes().len() > MAX_PASSWORD_BYTES {
+        return Err(AuthError::InvalidCredentials(
+            "password must not exceed 1024 bytes".into(),
+        ));
     }
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
@@ -82,7 +90,7 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
 
 /// Verifies a password against an Argon2id PHC hash string using constant-time verification
 pub fn verify_password(password: &str, hash_str: &str) -> bool {
-    if password.as_bytes().len() > 256 {
+    if password.as_bytes().len() > MAX_PASSWORD_BYTES {
         return false;
     }
     let Ok(parsed_hash) = PasswordHash::new(hash_str) else {
@@ -161,6 +169,11 @@ impl SessionManager {
         }
     }
 
+    /// Allocates a fresh unique monotonically increasing UserId
+    pub fn allocate_user_id(&self) -> UserId {
+        UserId(self.next_user_id.fetch_add(1, Ordering::SeqCst))
+    }
+
     /// Register a new user account with Argon2id password hashing and return an initial session
     pub fn register(
         &self,
@@ -174,8 +187,10 @@ impl SessionManager {
         if username_key.is_empty() {
             return Err(AuthError::InvalidCredentials("Username cannot be empty".into()));
         }
-        if username.chars().count() > 64 {
-            return Err(AuthError::InvalidCredentials("Username cannot exceed 64 characters".into()));
+        if username.trim().chars().count() > MAX_USERNAME_CHARS {
+            return Err(AuthError::InvalidCredentials(
+                "username must be 1..=128 characters".into(),
+            ));
         }
 
         {

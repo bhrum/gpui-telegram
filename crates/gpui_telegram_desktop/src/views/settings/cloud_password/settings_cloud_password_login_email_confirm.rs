@@ -2,7 +2,6 @@
 //! Source: Telegram/SourceFiles/settings/cloud_password/settings_cloud_password_login_email_confirm.cpp, settings_cloud_password_login_email_confirm.h
 //! Subsystem: settings | Feature ID: TCG-N33
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

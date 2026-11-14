@@ -9,7 +9,6 @@
 //! - Shareable invitation link generation
 //! - Hover cursor handling and clipboard copy toast
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

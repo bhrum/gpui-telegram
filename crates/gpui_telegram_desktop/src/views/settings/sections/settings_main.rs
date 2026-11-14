@@ -1,9 +1,15 @@
-//! Upstream Source: Telegram/SourceFiles/settings/sections/settings_main.cpp, Telegram/SourceFiles/settings/sections/settings_main.h
-//! Subsystem: settings | Feature ID: TCG-N31 | Disposition: rust_domain_or_server_1to1
+//! Upstream Source: Telegram/SourceFiles/settings/sections/settings_main.cpp
 
-use gpui::*;
-use gpui::prelude::FluentBuilder;
+use crate::i18n::tr_str;
+use crate::theme::assets::{IconName, tg_icon};
+use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::settings::settings_theme_ui::{
+    settings_action_row, settings_card, settings_container, settings_section_header,
+    settings_subsection_title,
+};
 use crate::views::settings::settings_type::SettingsSectionType;
+use gpui::prelude::FluentBuilder;
+use gpui::*;
 
 #[derive(Debug, Clone)]
 pub struct SettingsMainProfile {
@@ -22,6 +28,8 @@ pub struct SettingsMainSections {
     pub active_section: Option<SettingsSectionType>,
     pub toast_message: Option<String>,
     pub is_visible: bool,
+    pub palette: TdesktopThemePalette,
+    pub language_id: String,
 }
 
 impl SettingsMainSections {
@@ -39,7 +47,34 @@ impl SettingsMainSections {
             active_section: None,
             toast_message: None,
             is_visible: true,
+            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            language_id: "en".into(),
         }
+    }
+
+    pub fn new_live() -> Self {
+        let mut s = Self::new();
+        s.profile = SettingsMainProfile {
+            name: String::new(),
+            phone: String::new(),
+            username: String::new(),
+            bio: String::new(),
+            is_verified: false,
+            is_premium: false,
+        };
+        s
+    }
+
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) {
+        self.palette = palette;
+    }
+
+    pub fn set_language(&mut self, lang: impl Into<String>) {
+        self.language_id = lang.into();
+    }
+
+    pub fn sync_profile(&mut self, name: String, phone: String, username: String, bio: String, is_verified: bool, is_premium: bool) {
+        self.profile = SettingsMainProfile { name, phone, username, bio, is_verified, is_premium };
     }
 
     pub fn copy_phone(&mut self) -> String {
@@ -78,168 +113,65 @@ impl Render for SettingsMainSections {
         if !self.is_visible {
             return div().into_any_element();
         }
+        let pal = self.palette;
+        let lang = &self.language_id;
+        let title = if self.profile.name.is_empty() {
+            tr_str(lang, "我的账号", "My Account")
+        } else {
+            &self.profile.name
+        };
 
-        let phone = self.profile.phone.clone();
-        let username = self.profile.username.clone();
+        let links = [
+            (IconName::ContactsUsers, tr_str(lang, "编辑资料", "Edit Profile"), SettingsSectionType::Information),
+            (IconName::Speaker, tr_str(lang, "通知与声音", "Notifications and Sounds"), SettingsSectionType::Notifications),
+            (IconName::Lock, tr_str(lang, "隐私与安全", "Privacy and Security"), SettingsSectionType::PrivacySecurity),
+            (IconName::NightMoon, tr_str(lang, "聊天设置", "Chat Settings"), SettingsSectionType::Chat),
+            (IconName::FolderAll, tr_str(lang, "聊天分组", "Folders"), SettingsSectionType::Folders),
+            (IconName::SettingsGear, tr_str(lang, "高级设置", "Advanced"), SettingsSectionType::Advanced),
+            (IconName::PhoneCall, tr_str(lang, "音视频通话", "Speakers and Camera"), SettingsSectionType::Calls),
+            (IconName::PremiumStar, "Telegram Premium", SettingsSectionType::Premium),
+            (IconName::WalletStars, "Telegram Stars", SettingsSectionType::Credits),
+            (IconName::Translate, tr_str(lang, "语言", "Language"), SettingsSectionType::Language),
+        ];
 
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(rgb(0x0e1621))
-            .child(
-                // Profile Cover Card
-                div()
-                    .flex()
-                    .flex_col()
-                    .p(px(20.0))
-                    .bg(rgb(0x17212b))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(16.0))
-                            .child(
-                                // Avatar circle with initials
-                                div()
-                                    .size(px(64.0))
-                                    .rounded(px(32.0))
-                                    .bg(rgb(0x5288c1))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_xl()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xffffff))
-                                    .child("AV"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.0))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(0xffffff))
-                                                    .child(self.profile.name.clone()),
-                                            )
-                                            .when(self.profile.is_premium, |this| {
-                                                this.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(rgb(0x5288c1))
-                                                        .child("⭐"),
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x8292a1))
-                                            .hover(|s| s.text_color(rgb(0x5288c1)))
-                                            .cursor_pointer()
-                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
-                                                this.copy_phone();
-                                                cx.notify();
-                                            }))
-                                            .child(phone),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x5288c1))
-                                            .hover(|s| s.text_color(rgb(0x73a9e3)))
-                                            .cursor_pointer()
-                                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _window, cx| {
-                                                this.copy_username();
-                                                cx.notify();
-                                            }))
-                                            .child(format!("@{}", username)),
-                                    ),
-                            ),
-                    ),
-            )
-            .when_some(self.toast_message.clone(), |this, msg| {
-                this.child(
-                    div()
-                        .mx(px(16.0))
-                        .my(px(8.0))
-                        .p(px(8.0))
-                        .rounded(px(6.0))
-                        .bg(rgb(0x232e3c))
-                        .text_xs()
-                        .text_color(rgb(0x5288c1))
-                        .child(msg),
-                )
-            })
-            .child(
-                // Settings Section Menu Rows
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .pt(px(12.0))
-                    .children(vec![
-                        (SettingsSectionType::Information, "👤 Edit Profile", "Name, bio, username"),
-                        (SettingsSectionType::Notifications, "🔔 Notifications & Sounds", "Alerts, preview, badge"),
-                        (SettingsSectionType::PrivacySecurity, "🔒 Privacy & Security", "2FA, passcode, passkeys"),
-                        (SettingsSectionType::Chat, "💬 Chat Settings", "Themes, stickers, emoji"),
-                        (SettingsSectionType::Folders, "📁 Chat Folders", "Organize dialogs"),
-                        (SettingsSectionType::Advanced, "⚙️ Advanced", "Data storage, connection"),
-                        (SettingsSectionType::Calls, "📞 Calls", "Mic, speaker, camera devices"),
-                        (SettingsSectionType::Credits, "⭐ Telegram Stars", "Balance & digital gifts"),
-                        (SettingsSectionType::Premium, "👑 Telegram Premium", "Subscription & features"),
-                        (SettingsSectionType::Shortcuts, "⌨️ Shortcuts", "Keyboard keybindings"),
-                    ].into_iter().map(|(sec, title, sub)| {
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
-                            .px(px(16.0))
-                            .py(px(12.0))
-                            .bg(rgb(0x17212b))
-                            .hover(|s| s.bg(rgb(0x232e3c)))
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _window, cx| {
-                                this.navigate_to(sec);
+        settings_container(pal)
+            .child(settings_card(pal)
+                .child(settings_section_header(IconName::ContactsUsers, title, Some(&self.profile.bio), pal))
+                .when(!self.profile.phone.is_empty(), |el| {
+                    el.child(settings_action_row(IconName::PhoneCall, &self.profile.phone, tr_str(lang, "复制", "Copy"), pal, false, |this| {
+                        this.copy_phone();
+                    }, cx))
+                })
+                .when(!self.profile.username.is_empty(), |el| {
+                    el.child(settings_action_row(IconName::Copy, &format!("@{}", self.profile.username), tr_str(lang, "复制", "Copy"), pal, false, |this| {
+                        this.copy_username();
+                    }, cx))
+                })
+                .when_some(self.toast_message.clone(), |el, msg| {
+                    el.child(div().text_size(px(12.0)).text_color(rgb(pal.success)).child(msg))
+                }))
+            .child(settings_card(pal)
+                .child(settings_subsection_title(tr_str(lang, "设置分类", "Sections"), pal))
+                .children(links.into_iter().map(|(icon, label, sec)| {
+                    settings_action_row(icon, label, "", pal, false, move |this| {
+                        this.navigate_to(sec);
+                    }, cx)
+                })))
+            .child(settings_card(pal)
+                .child(div().flex().items_center().justify_between()
+                    .child(div().flex().items_center().gap(px(8.0)).child(tg_icon(IconName::SettingsGear, 15.0, pal.icon_fg))
+                        .child(div().text_size(px(13.0)).text_color(rgb(pal.text_primary)).child(tr_str(lang, "界面缩放", "Interface Scale"))))
+                    .child(div().flex().gap(px(6.0)).children([100u32, 125, 150, 200].into_iter().map(|pct| {
+                        let act = self.interface_scale_pct == pct;
+                        div().cursor_pointer().px(px(8.0)).py(px(4.0)).rounded(px(6.0))
+                            .bg(rgb(if act { pal.accent } else { pal.input_bg })).text_size(px(11.5))
+                            .text_color(rgb(if act { pal.active_button_fg } else { pal.text_primary }))
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
+                                this.set_interface_scale(pct);
                                 cx.notify();
                             }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(rgb(0xffffff))
-                                            .child(title),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(0x6c7883))
-                                            .child(sub),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(0x6c7883))
-                                    .child("›"),
-                            )
-                    })),
-            )
+                            .child(format!("{}%", pct))
+                    })))))
             .into_any_element()
     }
 }

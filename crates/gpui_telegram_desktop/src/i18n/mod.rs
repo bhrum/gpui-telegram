@@ -12,6 +12,8 @@ pub mod lang_keys;
 pub use lang_keys::LangKeys;
 pub mod lang_numbers_animation;
 pub use lang_numbers_animation::{LangNumbersAnimation, StringWithNumbers};
+pub mod lang_pack;
+pub use lang_pack::{tr_fmt, tr_key, tr_key_or, tr_str};
 pub mod lang_pch;
 pub use lang_pch::LangPch;
 pub mod lang_tag;

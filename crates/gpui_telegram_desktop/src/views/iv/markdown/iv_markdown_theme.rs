@@ -1,7 +1,6 @@
 //! Target Symbol: IvMarkdownThemeMarkdown
 //! Subsystem: iv, Feature: TCG-N31
 //! Upstream: Telegram/SourceFiles/iv/markdown/iv_markdown_theme.h/.cpp
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

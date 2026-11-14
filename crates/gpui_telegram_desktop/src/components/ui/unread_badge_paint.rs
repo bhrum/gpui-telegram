@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/unread_badge_paint.cpp:L1-L193` & `unread_badge_paint.h:L1-L51`
 //! Authentic GPUI implementation of unread badge size presets and capsule geometry.
-#![allow(dead_code)]
 
 use gpui::{px, Bounds, Pixels, Point, Size};
 

@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/spellchecker_common.h:L20-L45`
 //! - `Telegram/SourceFiles/chat_helpers/spellchecker_common.cpp:L42-L95`
-#![allow(dead_code)]
 
 use gpui::*;
 use std::collections::HashSet;

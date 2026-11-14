@@ -2,7 +2,6 @@
 //! Source: `Telegram/SourceFiles/info/peer_gifts/info_peer_gifts_collections.cpp:L1-L158`, `info_peer_gifts_collections.h:L1-L39`
 //! Subsystem: info | Feature ID: TCG-N38 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

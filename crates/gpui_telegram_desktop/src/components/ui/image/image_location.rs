@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/image/image_location.cpp:L20-L1070` & `image_location.h:L1-L150`
 //! Authentic GPUI implementation of image locations, storage keys, and cache tags.
-#![allow(dead_code)]
 
 /// Document cache bitmask tags from `image_location.cpp:L22-L25`.
 pub const K_DOCUMENT_BASE_CACHE_TAG: u64 = 0x0000_0000_0001_0000;

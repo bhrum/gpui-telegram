@@ -11,7 +11,6 @@
 //! - Grouped media album vs individual files sending mode
 //! - Compress images toggle, silent send, schedule send, and caption input
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

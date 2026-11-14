@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/selecting_scroll.cpp:L20-L60
 //! Reference: Telegram/SourceFiles/ui/widgets/selecting_scroll.h:L10-L18
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Minimum interval between speed updates: 15ms.
 /// Reference: `selecting_scroll.cpp:L20`

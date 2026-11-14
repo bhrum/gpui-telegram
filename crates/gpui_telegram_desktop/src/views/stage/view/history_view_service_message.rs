@@ -5,7 +5,8 @@ use gpui::*;
 use serde::{Deserialize, Serialize};
 
 use crate::views::stage::history_service::{
-    ServiceMessageBubbleView, ServiceMessageData, ServiceMessageKind, WIDE_CHAT_WIDTH,
+    ServiceMessageData,
+    WIDE_CHAT_WIDTH,
 };
 
 /// Authentic GPUI View for HistoryView::Service.

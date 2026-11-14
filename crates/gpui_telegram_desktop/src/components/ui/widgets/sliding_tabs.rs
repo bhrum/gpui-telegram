@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/widgets/sliding_tabs.cpp:L17-L80
 //! Reference: Telegram/SourceFiles/ui/widgets/sliding_tabs.h:L18-L45
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SlideTransitionType {

@@ -22,8 +22,12 @@ pub mod settings_privacy_controllers;
 pub mod settings_recent_searches;
 pub mod settings_scale_preview;
 pub mod settings_search;
+pub mod settings_theme_ui;
 pub mod settings_type;
 pub mod storage_settings;
+pub mod workspace_pages_a;
+pub mod workspace_pages_b;
+pub mod workspace_pages_c;
 
 pub use detailed_settings_button::DetailedSettingsButton;
 pub use settings_builder::SettingsBuilder;

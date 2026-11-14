@@ -60,7 +60,7 @@ impl OverviewLayoutDelegate {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overview_layout_delegate() {
         let mut delegate = OverviewLayoutDelegate::new();
         delegate.request_repaint();

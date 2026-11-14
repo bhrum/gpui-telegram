@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/filter_icons.cpp:L1-L341` & `filter_icons.h:L1-L35`
 //! Authentic GPUI implementation of chat folder filter icons registry and icon keys.
-#![allow(dead_code)]
 
 /// Standard folder icon identifiers from `filter_icons.cpp:L20-L80`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

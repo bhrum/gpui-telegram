@@ -1,6 +1,5 @@
 //! Target Symbol: IvEditorWindowEditor
 //! Module 13: Instant View Editor Host Window Container
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

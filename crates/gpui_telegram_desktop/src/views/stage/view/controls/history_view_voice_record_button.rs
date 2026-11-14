@@ -3,7 +3,6 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_voice_record_button.h`
 
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub struct HistoryViewVoiceRecordButtonViewControls {
     pub level: u16,

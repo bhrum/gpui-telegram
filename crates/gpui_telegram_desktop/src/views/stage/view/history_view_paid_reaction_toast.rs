@@ -3,7 +3,7 @@
 //! - `history_view_paid_reaction_toast.cpp:L35-L80`
 
 use gpui::*;
-use crate::views::stage::reactions::paid_toast::{PaidReactionToast, UNDO_COUNTDOWN_TOTAL_MS, PAID_REACTION_STAR_TIERS};
+use crate::views::stage::reactions::paid_toast::PaidReactionToast;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewPaidReactionToastView {

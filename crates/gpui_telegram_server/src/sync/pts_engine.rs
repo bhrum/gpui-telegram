@@ -91,6 +91,14 @@ impl PtsEngine {
             UpdateEvent::PinnedMessageChanged { .. } => "pinned_message_changed",
             UpdateEvent::ReadHistoryOut { .. } => "read_history_out",
             UpdateEvent::ReadHistoryIn { .. } => "read_history_in",
+            UpdateEvent::PollUpdated { .. } => "poll_updated",
+            UpdateEvent::TodoUpdated { .. } => "todo_updated",
+            UpdateEvent::PinnedMessagesChanged { .. } => "pinned_messages_changed",
+            UpdateEvent::DraftUpdated { .. } => "draft_updated",
+            UpdateEvent::ForumTopicChanged { .. } => "forum_topic_changed",
+            UpdateEvent::FolderChanged { .. } => "folder_changed",
+            UpdateEvent::CallUpdated { .. } => "call_updated",
+            UpdateEvent::StoryUpdated { .. } => "story_updated",
         };
 
         let (new_pts, pts_update) = self.db.pool().with_transaction(|tx| {

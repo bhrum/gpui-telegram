@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_filter.h:L20-L32`
 //! - `Telegram/SourceFiles/history/admin_log/history_admin_log_filter.cpp:L17-L84` (FilterValueLabels category groupings)
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui_telegram_client::history::admin_log::{
     build_admin_log_filter_sections, AdminLogFilterFlags, AdminLogFilterSection,

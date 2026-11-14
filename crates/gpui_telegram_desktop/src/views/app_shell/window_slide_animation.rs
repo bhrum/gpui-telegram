@@ -78,12 +78,13 @@ impl Default for WindowSlideAnimation {
 
 impl Render for WindowSlideAnimation {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_active {
+            return div().into_any_element();
+        }
+        let alpha = self.progress.clamp(0.0, 1.0);
         div()
-            .text_xs()
-            .text_color(rgb(0x82868A))
-            .child(format!(
-                "SlideAnimation: {:?}, progress={:.2}, active={}",
-                self.direction, self.progress, self.is_active
-            ))
+            .size_full()
+            .opacity(alpha)
+            .into_any_element()
     }
 }

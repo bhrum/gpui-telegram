@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Language Selection Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/language_box.h:L26-L58`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/language_box.cpp:L62-L120`, `L1500-L1539`, and `ui/boxes/choose_language_box.cpp:L24-L65`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

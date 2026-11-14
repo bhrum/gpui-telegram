@@ -2,10 +2,6 @@
 //! Source: Telegram/SourceFiles/window/window.style
 //! Subsystem: window | Feature ID: TCG-N46 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
-use gpui::*;
-
 #[derive(Debug, Clone)]
 pub struct WindowStyleSheet {
     pub is_active: bool,

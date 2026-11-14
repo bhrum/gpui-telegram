@@ -239,7 +239,6 @@
         "offset",
         "status",
         "UploadScanDataPointer",
-        "bool",
         "Value",
         "fillDataFrom",
         "requiresSpecialScan",

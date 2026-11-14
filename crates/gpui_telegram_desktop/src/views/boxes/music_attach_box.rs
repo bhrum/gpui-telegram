@@ -10,7 +10,6 @@
 //! - Saved music library section & global audio search
 //! - Audio track multi-selection, preview playback status
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::HashSet;

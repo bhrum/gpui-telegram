@@ -96,12 +96,6 @@ impl Default for WindowAdaptive {
 
 impl Render for WindowAdaptive {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .gap(px(8.0))
-            .p(px(8.0))
-            .child(format!("Layout: {:?}", self.window_layout))
-            .child(format!("Chat: {:?}", self.chat_layout))
-            .child(format!("Width: {:.0}px", self.current_width))
+        div().size_full()
     }
 }

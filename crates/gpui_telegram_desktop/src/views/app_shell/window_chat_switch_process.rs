@@ -50,9 +50,28 @@ impl Default for WindowChatSwitchProcess {
 
 impl Render for WindowChatSwitchProcess {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_in_progress {
+            return div().into_any_element();
+        }
         div()
-            .text_xs()
-            .text_color(rgb(0x82868A))
-            .child(format!("ChatSwitch: in_progress={}", self.is_in_progress))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x0E162180))
+            .child(
+                div()
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .rounded(px(16.0))
+                    .bg(rgb(0x17212B))
+                    .border_1()
+                    .border_color(rgb(0x242F3D))
+                    .text_xs()
+                    .text_color(rgb(0xF5F5F5))
+                    .child("Loading messages..."),
+            )
+            .into_any_element()
     }
 }

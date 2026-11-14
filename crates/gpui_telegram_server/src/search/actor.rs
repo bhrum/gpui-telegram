@@ -41,9 +41,19 @@ impl TantivyWriterTask {
         }
     }
 
-    /// Spawns the writer actor onto the Tokio runtime.
-    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(self.run())
+    /// Spawns the writer actor onto a dedicated OS thread so async shutdown is never starved on single-threaded runtimes.
+    pub fn spawn(self) -> Option<std::thread::JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("tantivy-writer".into())
+            .spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                {
+                    rt.block_on(self.run());
+                }
+            })
+            .ok()
     }
 
     /// Background event loop handling commands and batched commits.

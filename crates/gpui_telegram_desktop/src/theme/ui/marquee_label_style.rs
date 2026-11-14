@@ -1,8 +1,7 @@
 //! Upstream C++ style sheet mapping: `ui/widgets/marquee_label.style:L1-L15`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
-use gpui::{hsla, px, Hsla, Pixels};
+use gpui::{px, Pixels};
 
 /// Authentic style sheet definition corresponding to `ui/widgets/marquee_label.style:L1-L15`.
 #[derive(Debug, Clone, Copy)]

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/new_badges.cpp:L1-L128` & `new_badges.h:L1-L32`
 //! Authentic GPUI implementation of "NEW" feature announcement badges.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

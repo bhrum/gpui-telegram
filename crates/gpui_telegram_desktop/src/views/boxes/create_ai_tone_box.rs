@@ -10,7 +10,6 @@
 //! - Create, edit, and deletion confirmation states
 //! - Tone count limits enforcement
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

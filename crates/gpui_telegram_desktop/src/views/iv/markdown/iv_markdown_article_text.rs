@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleTextMarkdown
 //! Module 13: Instant View Formatted Text Span Rendering & Entity Styling
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

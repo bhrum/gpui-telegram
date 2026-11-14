@@ -711,8 +711,14 @@ fn test_adversarial_source_oracle_all_back_to_chats_use_set_active_destination()
     );
 
     // 2. NavDestination::Calls must map to ActiveWorkspacePanel::Calls, NOT show_talk_mode
+    let calls_arm = content
+        .split("NavDestination::Calls => {")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .unwrap_or("");
     assert!(
-        content.contains("NavDestination::Calls => {\n                    shell.active_panel = ActiveWorkspacePanel::Calls;\n                }"),
+        calls_arm.contains("shell.active_panel = ActiveWorkspacePanel::Calls;")
+            && !calls_arm.contains("show_talk_mode"),
         "CRITICAL REGRESSION: `NavDestination::Calls` must assign `shell.active_panel = ActiveWorkspacePanel::Calls`!"
     );
 

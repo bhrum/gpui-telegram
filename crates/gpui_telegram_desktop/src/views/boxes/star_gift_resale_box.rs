@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Star Gift Resale Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/star_gift_resale_box.h:L32-L55`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/star_gift_resale_box.cpp:L42-L79`, `L220-L310`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

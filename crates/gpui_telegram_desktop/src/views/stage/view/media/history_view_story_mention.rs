@@ -3,11 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_story_mention.h:L20-L69`
 //! - `Telegram/SourceFiles/history/view/media/history_view_story_mention.cpp:L44-L60`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::gift::K_READ_OUTLINE_ALPHA;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewStoryMentionViewMedia {

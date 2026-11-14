@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_language_box.cpp:L25-L383
 //! Reference: Telegram/SourceFiles/ui/boxes/choose_language_box.h:L20-L36
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

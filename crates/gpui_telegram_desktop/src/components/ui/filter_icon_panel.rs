@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/filter_icon_panel.cpp:L1-L477` & `filter_icon_panel.h:L1-L95`
 //! Authentic GPUI implementation of folder filter icon selection popup matrix.
-#![allow(dead_code)]
 
 use std::time::Duration;
 

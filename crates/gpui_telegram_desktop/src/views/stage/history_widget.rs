@@ -20,7 +20,7 @@
 
 use gpui::*;
 
-use super::history_inner_widget::{HistoryInnerWidget, MessageItemGeometry};
+use super::history_inner_widget::HistoryInnerWidget;
 use super::history_drag_area::HistoryDragArea;
 use super::history_view_pull_to_next_channel::HistoryViewPullToNextChannel;
 use super::history_view_highlight_manager::{HistoryViewHighlightManager, SelectedQuote};

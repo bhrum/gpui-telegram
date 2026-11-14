@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder_menu_item.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -108,7 +107,7 @@ impl Render for InfoUserpicEmojiBuilderMenuItemUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_menu_item_sticker_cycling() {
         let mut item = InfoUserpicEmojiBuilderMenuItemUserpic::new(vec![10, 20, 30], false);
         assert_eq!(item.current_document_id(), Some(10));
@@ -123,7 +122,7 @@ mod tests {
         assert_eq!(item.current_document_id(), Some(10)); // Wrapped around
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_menu_item_icon_offset() {
         let item = InfoUserpicEmojiBuilderMenuItemUserpic::default();
         let (ox, oy) = item.compute_icon_offset();

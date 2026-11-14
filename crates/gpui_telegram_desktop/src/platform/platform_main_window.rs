@@ -128,7 +128,7 @@ impl Render for PlatformMainWindow {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_main_window_geometry_and_states() {
         let mut win = PlatformMainWindow::new();
         assert!(!win.is_maximized());

@@ -320,7 +320,6 @@
         "RecentInlineBots"
       ],
       "source_methods_and_signals": [
-        "bool",
         "Session",
         "validateSelf",
         "saveSettings",
@@ -493,7 +492,6 @@
         "showOrHideBoxOrLayer",
         "toastParent",
         "valid",
-        "bool",
         "_session",
         "MakeSessionShow"
       ],

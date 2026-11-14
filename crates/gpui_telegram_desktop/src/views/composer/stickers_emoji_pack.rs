@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/stickers_emoji_pack.h:L53-L60`
 //! - `Telegram/SourceFiles/chat_helpers/stickers_emoji_pack.cpp:L38-L90`
-#![allow(dead_code)]
 
 use gpui::*;
 use std::collections::HashMap;

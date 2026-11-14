@@ -162,13 +162,23 @@ impl ClientConfig {
         }
     }
 
-    /// Returns base application configuration directory (~/.config/gpui_telegram).
-    pub fn get_app_dir() -> PathBuf {
-        if let Ok(home) = env::var("HOME") {
-            PathBuf::from(home).join(".config").join("gpui_telegram")
-        } else {
-            PathBuf::from(".config").join("gpui_telegram")
+    fn resolve_app_dir(config_dir: Option<&str>, home: Option<&str>) -> PathBuf {
+        if let Some(dir) = config_dir.map(str::trim).filter(|s| !s.is_empty()) {
+            return PathBuf::from(dir);
         }
+        if let Some(home_dir) = home.map(str::trim).filter(|s| !s.is_empty()) {
+            return PathBuf::from(home_dir)
+                .join(".config")
+                .join("gpui_telegram");
+        }
+        PathBuf::from(".config").join("gpui_telegram")
+    }
+
+    /// Returns base application configuration directory (`GPUI_TELEGRAM_CONFIG_DIR`, or `$HOME/.config/gpui_telegram`).
+    pub fn get_app_dir() -> PathBuf {
+        let config_dir = env::var("GPUI_TELEGRAM_CONFIG_DIR").ok();
+        let home = env::var("HOME").ok();
+        Self::resolve_app_dir(config_dir.as_deref(), home.as_deref())
     }
 
     /// Returns path to user configuration file (~/.config/gpui_telegram/config.json).
@@ -407,5 +417,67 @@ mod tests {
         let cfg = ClientConfig::resolve_with_args(&args);
         assert_eq!(cfg.server_url, DEFAULT_SERVER_URL);
         assert_eq!(cfg.config_source, ConfigSource::DefaultFallback);
+    }
+
+    #[test]
+    fn test_app_dir_gpui_telegram_config_dir_override() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        struct EnvGuard {
+            key: &'static str,
+            prev: Option<String>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    match &self.prev {
+                        Some(val) => env::set_var(self.key, val),
+                        None => env::remove_var(self.key),
+                    }
+                }
+            }
+        }
+
+        // Pure helper precedence and trimming checks
+        assert_eq!(
+            ClientConfig::resolve_app_dir(Some("  /custom/gpui-cfg  "), Some("/Users/alice")),
+            PathBuf::from("/custom/gpui-cfg")
+        );
+        assert_eq!(
+            ClientConfig::resolve_app_dir(Some("   "), Some("/Users/alice")),
+            PathBuf::from("/Users/alice/.config/gpui_telegram")
+        );
+        assert_eq!(
+            ClientConfig::resolve_app_dir(None, None),
+            PathBuf::from(".config/gpui_telegram")
+        );
+
+        // Live environment variable override check on ClientConfig::get_app_dir()
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard {
+            key: "GPUI_TELEGRAM_CONFIG_DIR",
+            prev: env::var("GPUI_TELEGRAM_CONFIG_DIR").ok(),
+        };
+
+        let override_dir = env::temp_dir().join(format!(
+            "gpui_telegram_config_override_{}",
+            std::process::id()
+        ));
+        let padded = format!("  {}  ", override_dir.display());
+        unsafe {
+            env::set_var("GPUI_TELEGRAM_CONFIG_DIR", &padded);
+        }
+
+        assert_eq!(ClientConfig::get_app_dir(), override_dir);
+        assert_eq!(ClientConfig::get_config_path(), override_dir.join("config.json"));
+        assert_eq!(
+            ClientConfig::get_session_path(),
+            override_dir.join("session.json")
+        );
+
+        unsafe {
+            env::set_var("GPUI_TELEGRAM_CONFIG_DIR", "   ");
+        }
+        let expected_fallback = ClientConfig::resolve_app_dir(None, env::var("HOME").ok().as_deref());
+        assert_eq!(ClientConfig::get_app_dir(), expected_fallback);
     }
 }

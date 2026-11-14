@@ -97,7 +97,7 @@ impl Render for LauncherWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_launcher_win_lifecycle() {
         let mut launcher = LauncherWinWin::new();
         assert!(launcher.launcher().is_ok());

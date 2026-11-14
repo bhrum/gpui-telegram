@@ -137,7 +137,7 @@ impl Render for PlatformNotificationsManager {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_notifications_manager_logic() {
         let mut mgr = PlatformNotificationsManager::new();
         assert!(mgr.supported());

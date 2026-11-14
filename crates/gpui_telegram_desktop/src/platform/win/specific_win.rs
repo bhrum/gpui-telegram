@@ -105,7 +105,7 @@ impl Render for SpecificWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_specific_win_methods() {
         let mut spec = SpecificWinWin::new();
         assert!(spec.from_wchar_array().is_ok());

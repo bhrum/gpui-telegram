@@ -1,6 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/menu_icons.style:L1-L314`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

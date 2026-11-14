@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownMathMarkdown
 //! Module 13: Instant View LaTeX Math Syntax Scanner & Token Extractor
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

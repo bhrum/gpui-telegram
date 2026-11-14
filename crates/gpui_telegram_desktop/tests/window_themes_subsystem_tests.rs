@@ -3,6 +3,7 @@
 
 use gpui_telegram_desktop::views::app_shell::*;
 use gpui_telegram_desktop::views::app_shell::themes::*;
+use gpui_telegram_desktop::views::app_shell::window_main_menu::AccountEntry;
 use gpui_telegram_desktop::window::*;
 
 #[test]

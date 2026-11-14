@@ -1,5 +1,4 @@
 //! Instant View Button Block Editor Dialog (`iv_editor_button_box.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;

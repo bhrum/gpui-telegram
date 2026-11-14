@@ -3,7 +3,6 @@
 //! Upstream: `Telegram/SourceFiles/info/statistics/info_statistics_list_controllers.h:L1-L75`
 //! Subsystem: info | Feature ID: TCG-N12 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::hash::{Hash, Hasher};
@@ -191,7 +190,7 @@ impl Render for InfoStatisticsListControllersStatistics {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_unique_row_id() {
         let id1 = unique_row_id_from_entry("tx_1", false, false, false, true, false);
         let id2 = unique_row_id_from_entry("tx_1", true, false, false, true, false);

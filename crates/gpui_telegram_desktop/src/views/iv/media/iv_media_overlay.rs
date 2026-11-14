@@ -1,5 +1,4 @@
 //! Media overlay component for Instant View
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

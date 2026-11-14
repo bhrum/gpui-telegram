@@ -3,11 +3,10 @@
 //! Upstream header: `tdesktop/Telegram/SourceFiles/history/view/controls/history_view_voice_record_bar.h`
 
 use crate::views::composer::controls::{
-    StopType, VoiceRecordBar, VoiceRecordState, ANIMATION_THRESHOLD, AUDIO_VOICE_MAX_LENGTH_SECS,
-    AUDIO_VOICE_UPDATE_VIEW_MS, LOCK_HEIGHT_PX,
+    StopType,
+    VoiceRecordBar,
 };
 use gpui::*;
-use serde::{Deserialize, Serialize};
 
 pub struct HistoryViewVoiceRecordBarViewControls {
     pub bar: VoiceRecordBar,

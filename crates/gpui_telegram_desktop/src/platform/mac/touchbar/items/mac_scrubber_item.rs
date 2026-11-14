@@ -141,7 +141,7 @@ impl Render for MacScrubberItemMacTouchbarItems {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_scrubber_items_and_selection() {
         let mut scrubber = MacScrubberItemMacTouchbarItems::new();
         assert_eq!(scrubber.ideal_icon_size, 36);

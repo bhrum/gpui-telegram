@@ -113,7 +113,7 @@ impl Render for WindowsToastActivatorWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_toast_activator_win_com_lifecycle() {
         let mut act = WindowsToastActivatorWin::new();
         assert_eq!(act.ref_count, 1);

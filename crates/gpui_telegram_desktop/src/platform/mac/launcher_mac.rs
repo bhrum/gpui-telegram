@@ -114,7 +114,7 @@ impl Render for LauncherMacMac {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_launcher_mac() {
         let mut launcher = LauncherMacMac::new();
         assert!(launcher.is_supported);

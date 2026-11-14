@@ -67,7 +67,7 @@ impl Render for OverlayWidgetWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overlay_widget_win_lifecycle() {
         let mut widget = OverlayWidgetWinWin::new();
         assert!(!widget.window_handle_tracked);

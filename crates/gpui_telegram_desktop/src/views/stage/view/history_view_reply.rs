@@ -4,7 +4,7 @@
 use gpui::*;
 use serde::{Deserialize, Serialize};
 
-use crate::views::stage::reply_view::{ReplyPreviewData, ReplyPreviewView, K_NON_EXPANDED_LINES_LIMIT};
+use crate::views::stage::reply_view::{ReplyPreviewData, K_NON_EXPANDED_LINES_LIMIT};
 
 /// Authentic GPUI View for HistoryView::Reply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/global_media/info_global_media_widget.cpp
 //! Subsystem: info | Feature ID: TCG-N23 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use super::info_global_media_inner_widget::{
@@ -165,7 +164,7 @@ mod tests {
     use super::*;
     use super::super::info_global_media_inner_widget::MediaItemEntry;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_widget_lifecycle_and_delete_all() {
         let mut widget = InfoGlobalMediaWidgetGlobalMedia::new(SharedMediaType::Photo);
         widget.inner.add_item(MediaItemEntry {
@@ -187,7 +186,7 @@ mod tests {
         assert!(!widget.show_delete_all_confirmation);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_widget_memento_roundtrip() {
         let mut widget = InfoGlobalMediaWidgetGlobalMedia::new(SharedMediaType::File);
         widget.inner.scroll_top = 220;

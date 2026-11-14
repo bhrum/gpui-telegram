@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_emoji_builder_preview.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::f32::consts::SQRT_2;
@@ -124,7 +123,7 @@ impl Render for InfoUserpicEmojiBuilderPreviewUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_emoji_size_sqrt2_formula() {
         let size = 100.0;
         let emoji_size = InfoUserpicEmojiBuilderPreviewUserpic::compute_emoji_size(size);
@@ -139,7 +138,7 @@ mod tests {
         assert_eq!(frame.corner_radius, 71.0 * 0.25);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_gradient_transition_progress() {
         let mut preview = InfoUserpicEmojiBuilderPreviewUserpic::new(100.0, false);
         let initial_colors = preview.colors.clone();

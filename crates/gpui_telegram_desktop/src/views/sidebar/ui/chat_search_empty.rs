@@ -39,8 +39,9 @@ impl ChatSearchEmptyUi {
 
     pub fn for_no_results(query: &str, suggest_all_chats: bool) -> Self {
         let trimmed = query.trim();
-        let preview = if trimmed.len() > K_QUERY_PREVIEW_LIMIT {
-            format!("{}...", &trimmed[..K_QUERY_PREVIEW_LIMIT])
+        let preview = if trimmed.chars().count() > K_QUERY_PREVIEW_LIMIT {
+            let truncated: String = trimmed.chars().take(K_QUERY_PREVIEW_LIMIT).collect();
+            format!("{}...", truncated)
         } else {
             trimmed.to_string()
         };

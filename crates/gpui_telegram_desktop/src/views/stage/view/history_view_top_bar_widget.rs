@@ -4,8 +4,10 @@
 //! Reconstructs upstream: `Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp` (L1-L2042)
 
 use crate::views::stage::top_bar::{
-    has_group_call_menu, resolve_top_bar_title, HistoryViewTopBarWidgetState,
-    TopBarAction, TopBarSection, K_EMOJI_INTERACTION_SEEN_DURATION,
+    resolve_top_bar_title,
+    HistoryViewTopBarWidgetState,
+    TopBarSection,
+    K_EMOJI_INTERACTION_SEEN_DURATION,
     SWITCH_TO_CHOOSE_FROM_QUERY,
 };
 

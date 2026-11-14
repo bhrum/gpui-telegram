@@ -11,7 +11,6 @@
 //! - `days_label` localization formatting (weeks / months / years)
 //! - Test mode immediate account deletion trigger
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

@@ -4,8 +4,6 @@
 //! - `Telegram/SourceFiles/history/history_item.h:L89-L107`
 //! - `Telegram/SourceFiles/history/history_item_components.h:L109-L128`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use crate::views::stage::history_item::HistoryItem;
 use crate::views::stage::history_item_components::HistoryItemComponents;

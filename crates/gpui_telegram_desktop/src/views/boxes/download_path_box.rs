@@ -9,7 +9,6 @@
 //! - Radio selection for default Downloads folder, temporary cache folder, or custom path
 //! - Path bookmark storage and native folder chooser integration
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

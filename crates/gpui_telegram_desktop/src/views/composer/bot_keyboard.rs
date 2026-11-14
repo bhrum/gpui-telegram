@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/bot_keyboard.h:L23-L69`
 //! - `Telegram/SourceFiles/chat_helpers/bot_keyboard.cpp:L28-L450`
-#![allow(dead_code)]
 
 use gpui::*;
 

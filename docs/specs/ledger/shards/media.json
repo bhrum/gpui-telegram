@@ -587,7 +587,6 @@
         "LocalDiskCache"
       ],
       "source_methods_and_signals": [
-        "bool",
         "LocalDiskCache"
       ],
       "style_tokens_and_metrics": [],
@@ -731,8 +730,7 @@
         "bytes::compare",
         "bytes::make_span",
         "ReadBigEndian",
-        "CheckStreamingSupport",
-        "uint64"
+        "CheckStreamingSupport"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",
@@ -2683,7 +2681,6 @@
         "ContentLayout"
       ],
       "source_methods_and_signals": [
-        "bool",
         "valid",
         "View",
         "show",
@@ -3503,7 +3500,6 @@
       ],
       "source_methods_and_signals": [
         "valid",
-        "bool",
         "FillBlurredBackground"
       ],
       "style_tokens_and_metrics": [],

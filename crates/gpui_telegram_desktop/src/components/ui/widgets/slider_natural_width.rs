@@ -1,7 +1,6 @@
 //! Custom Natural Width Provider for Discrete Settings Sliders.
 //! Reference: Telegram/SourceFiles/ui/widgets/slider_natural_width.h:L14-L20
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 /// Target symbol providing natural width computation for segmented slider layouts.
 #[derive(Debug, Clone, PartialEq, Default)]

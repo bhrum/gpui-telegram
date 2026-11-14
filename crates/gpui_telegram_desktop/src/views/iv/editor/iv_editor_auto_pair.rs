@@ -1,5 +1,4 @@
 //! Instant View Editor Auto-Pair Delimiters (`iv_editor_auto_pair.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

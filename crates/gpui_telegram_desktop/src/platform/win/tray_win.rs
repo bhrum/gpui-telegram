@@ -118,7 +118,7 @@ impl Render for TrayWinWin {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_tray_win_lifecycle_and_methods() {
         let mut tray = TrayWinWin::new();
         assert!(tray.logo_no_margin().is_ok());

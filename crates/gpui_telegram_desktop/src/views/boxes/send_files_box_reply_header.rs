@@ -9,7 +9,6 @@
 //! - Quoted message sender name, body snippet, and spoiler support
 //! - Dismiss cancel button and desired height calculations
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

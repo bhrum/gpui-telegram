@@ -1,10 +1,6 @@
 //! Upstream Source: Telegram/SourceFiles/settings/sections/settings_local_storage.style
 //! Subsystem: settings | Feature ID: TCG-N34 | Disposition: rust_domain_or_server_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
-use gpui::*;
-
 #[derive(Debug, Clone)]
 pub struct SettingsLocalStorageSectionsStyleSheet {
     pub is_active: bool,

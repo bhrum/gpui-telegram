@@ -144,7 +144,7 @@ impl Render for FileUtilitiesLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_file_utilities_linux() {
         let mut utils = FileUtilitiesLinuxLinux::new();
         assert!(utils.is_supported);

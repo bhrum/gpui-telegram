@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownButtonRowMarkdown
 //! Module 13: Instant View Action Button Row Layout & Shimmer Glare
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

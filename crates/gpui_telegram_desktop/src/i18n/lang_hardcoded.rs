@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_hardcoded.h`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 /// System-level hardcoded error strings, fallback notices, and passport security dialogs.
 /// Matches upstream namespace `Lang::Hard`.

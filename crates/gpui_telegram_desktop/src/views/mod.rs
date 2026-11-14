@@ -12,6 +12,7 @@ pub mod context_inspector;
 pub mod conversation_stage;
 pub mod drawer;
 pub mod global_tasks_workspace;
+pub mod hermes_studio_panels;
 pub mod main_menu_drawer;
 pub mod media_viewer;
 pub mod modal_boxes_suite;

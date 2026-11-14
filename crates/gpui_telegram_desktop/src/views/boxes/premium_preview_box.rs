@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's PremiumPreviewBox.
 //! Upstream reference: `Telegram/SourceFiles/boxes/premium_preview_box.h:L52-L93`
 //! and `Telegram/SourceFiles/boxes/premium_preview_box.cpp:L1558-L1620`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

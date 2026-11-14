@@ -116,7 +116,7 @@ impl Render for PlatformIntegration {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_platform_integration_lifecycle() {
         let mut integration = PlatformIntegration::new();
         assert!(!integration.is_initialized());

@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/settings/info_settings_widget.h, info_settings_widget.cpp
 //! Exact container logic for info drawer settings sections, stack navigation, and flexible scroll pinning.
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -144,7 +143,7 @@ impl Render for InfoSettingsWidgetSettings {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_info_settings_widget_navigation_and_shadow() {
         let mut widget = InfoSettingsWidgetSettings::new(SettingsSectionType::Main);
         assert_eq!(widget.section_type, SettingsSectionType::Main);

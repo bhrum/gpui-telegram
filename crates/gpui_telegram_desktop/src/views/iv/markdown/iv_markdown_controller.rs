@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownControllerMarkdown
 //! Module 13: Instant View Article Navigation Controller & History Stack
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

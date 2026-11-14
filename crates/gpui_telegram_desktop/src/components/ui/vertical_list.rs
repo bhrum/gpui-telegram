@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/vertical_list.cpp:L1-L83` & `vertical_list.h:L1-L40`
 //! Authentic GPUI implementation of vertical stacked layout container with dividers.
-#![allow(dead_code)]
 
 use gpui::{px, Pixels};
 

@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/color_contrast.cpp:L1-L142` & `color_contrast.h:L1-L29`
 //! Authentic GPUI implementation of WCAG AA contrast ratio and perceived luminance algorithms.
-#![allow(dead_code)]
 
 use gpui::{rgba, Rgba};
 

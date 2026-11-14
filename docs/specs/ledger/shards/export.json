@@ -68,7 +68,6 @@
         "DomainApplicationId",
         "ParseString",
         "FillLeft",
-        "bool",
         "RefreshFileReference",
         "WriteImageThumb",
         "name",
@@ -735,8 +734,7 @@
         "Success",
         "isSuccess",
         "isError",
-        "isFatalError",
-        "bool"
+        "isFatalError"
       ],
       "style_tokens_and_metrics": [],
       "disposition": "rust_domain_or_server_1to1",

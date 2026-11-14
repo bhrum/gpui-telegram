@@ -1,6 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/boxes/collectible_info_box.style:L1-L28`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

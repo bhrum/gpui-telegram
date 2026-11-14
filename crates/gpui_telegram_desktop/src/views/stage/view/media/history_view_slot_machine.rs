@@ -3,8 +3,6 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_slot_machine.h:L20-L79`
 //! - `Telegram/SourceFiles/history/view/media/history_view_slot_machine.cpp:L21-L68`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use crate::views::stage::media::poll::{decode_slot_machine_reels, SlotReelSymbol, K_SLOT_WIN_VALUE};

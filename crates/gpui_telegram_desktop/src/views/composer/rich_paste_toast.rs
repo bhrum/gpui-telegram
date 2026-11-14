@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/chat_helpers/rich_paste_toast.h:L18-L60`
 //! - `Telegram/SourceFiles/chat_helpers/rich_paste_toast.cpp:L32-L92`
-#![allow(dead_code)]
 
 use gpui::*;
 

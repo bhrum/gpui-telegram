@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Edit Filter Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/filters/edit_filter_box.h:L22-L32`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/filters/edit_filter_box.cpp:L65-L120`, `L400-L550`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

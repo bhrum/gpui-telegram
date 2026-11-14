@@ -143,7 +143,7 @@ impl Render for PlatformOverlayWidget {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overlay_color_mixing_and_opacity() {
         let mut overlay = PlatformOverlayWidget::new();
         assert_eq!(overlay.master_opacity, K_NORMAL_ICON_OPACITY);

@@ -3,7 +3,6 @@
 //! Subsystem: `lang`, Feature ID: `TCG-N44`
 //! Disposition: `gpui_ui_1to1`
 //! Upstream Source: `Telegram/SourceFiles/lang/lang_numbers_animation.h`, `lang_numbers_animation.cpp`
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use crate::i18n::lang_tag::LangTag;
 

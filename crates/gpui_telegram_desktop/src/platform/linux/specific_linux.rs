@@ -137,7 +137,7 @@ impl Render for SpecificLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_specific_linux() {
         let mut specific = SpecificLinuxLinux::new();
         assert!(!specific.prevents_quit());

@@ -3,7 +3,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/country_select_box.h:L20-L59
 //! Reference: Telegram/SourceFiles/ui/boxes/country_select_box.style:L1-L23
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

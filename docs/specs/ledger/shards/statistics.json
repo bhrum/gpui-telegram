@@ -559,7 +559,6 @@
       ],
       "source_methods_and_signals": [
         "DoubleLineRatios",
-        "bool",
         "init",
         "paint",
         "paintSelectedXIndex",

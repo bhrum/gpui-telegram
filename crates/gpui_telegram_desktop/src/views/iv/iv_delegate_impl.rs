@@ -1,6 +1,5 @@
 //! Target Symbol: IvDelegateImpl
 //! Module 13: Instant View Host Delegate Platform Implementation
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 use std::collections::HashMap;

@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownCommonMarkdown
 //! Module 13: Instant View Common Media Block Contracts & Geometry Clamping
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

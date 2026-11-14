@@ -1,6 +1,5 @@
 //! Upstream C++ source: `Telegram/SourceFiles/ui/peer/color_sample.cpp:L1-L458` & `color_sample.h:L1-L85`
 //! Authentic GPUI implementation of peer profile color swatches and selection controls.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 use std::time::Duration;

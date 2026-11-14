@@ -1,7 +1,6 @@
 //! Authentic GPUI implementation of Telegram Desktop's Background Wallpapers Box.
 //! Upstream reference: `Telegram/SourceFiles/boxes/background_box.h:L22-L51`
 //! Upstream implementation: `Telegram/SourceFiles/boxes/background_box.cpp:L38-L60`, `L350-L460`.
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::sync::Arc;

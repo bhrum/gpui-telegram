@@ -348,14 +348,14 @@ fn test_context_inspector_drawer_320px_and_tabs() {
     // Switch to Members tab
     inspector.set_tab(InspectorTab::Members);
     assert_eq!(inspector.active_tab, InspectorTab::Members);
-    assert_eq!(inspector.members.members.len(), 3);
+    assert_eq!(inspector.members.members.len(), 2);
     assert_eq!(inspector.members.members[0].role, "Owner");
 
     // Switch to Shared Media tab
     inspector.set_tab(InspectorTab::SharedMedia);
     assert_eq!(inspector.active_tab, InspectorTab::SharedMedia);
-    assert_eq!(inspector.shared_media.files.len(), 2);
-    assert_eq!(inspector.shared_media.links.len(), 2);
+    assert_eq!(inspector.shared_media.files.len(), 0);
+    assert_eq!(inspector.shared_media.links.len(), 0);
 
     // Switch to Settings tab
     inspector.set_tab(InspectorTab::Settings);
@@ -427,7 +427,7 @@ fn test_remote_computer_workbench_controls() {
 
 #[test]
 fn test_media_viewer_lightbox_navigation_and_zoom() {
-    let mut viewer = MediaViewer::new("https://example.com/photo1.jpg".to_string(), false);
+    let mut viewer = MediaViewer::new_demo();
     assert_eq!(viewer.items.len(), 3);
     assert_eq!(viewer.current_index, 0);
     assert_eq!(viewer.zoom_level, 1.0);
@@ -589,7 +589,7 @@ fn test_nav_rail_1to1_geometry_metrics() {
 
     let rail = NavRail::new();
     assert_eq!(rail.items.len(), 9);
-    assert!(rail.is_connected);
+    assert!(!rail.is_connected);
     assert_eq!(rail.account_initials, "TG");
 }
 

@@ -332,6 +332,11 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     CREATE_PAYMENT_RECEIPTS_TABLE,
     CREATE_PURCHASE_HISTORY_TABLE,
     CREATE_CHAT_MESSAGE_SEQUENCES_TABLE,
+    crate::db::schema_parity::MIGRATION_V21_USER_AUTH_PROFILES,
+    crate::db::schema_parity::MIGRATION_V22_CONTACTS_FOLDERS_CHATS,
+    crate::db::schema_parity::MIGRATION_V23_REACTIONS_POLLS_MSG_EXTRAS,
+    crate::db::schema_parity_extra::MIGRATION_V24_MEDIA_STICKERS_STORIES_CALLS,
+    crate::db::schema_parity_extra::MIGRATION_V25_WALLET_ACP,
 ];
 
 // --- Database Row Representation Models ---

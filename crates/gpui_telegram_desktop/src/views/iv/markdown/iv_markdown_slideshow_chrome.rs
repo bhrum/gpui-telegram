@@ -1,7 +1,6 @@
 //! Target Symbol: IvMarkdownSlideshowChromeMarkdown
 //! Subsystem: iv, Feature: TCG-N42
 //! Upstream: Telegram/SourceFiles/iv/markdown/iv_markdown_slideshow_chrome.h/.cpp
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

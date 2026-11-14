@@ -80,9 +80,25 @@ impl Default for NotificationsManager {
 
 impl Render for NotificationsManager {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if self.notifications.is_empty() {
+            return div().into_any_element();
+        }
         div()
-            .text_xs()
-            .text_color(rgb(0x82868A))
-            .child(format!("Notifications: active={}", self.notifications.len()))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .children(self.notifications.iter().rev().take(3).map(|item| {
+                div()
+                    .w(px(280.0))
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x17212B))
+                    .border_1()
+                    .border_color(rgb(0x2B5278))
+                    .shadow_lg()
+                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(0xFFFFFF)).child(item.title.clone()))
+                    .child(div().text_xs().text_color(rgb(0x8E9BA8)).child(item.body.clone()))
+            }))
+            .into_any_element()
     }
 }

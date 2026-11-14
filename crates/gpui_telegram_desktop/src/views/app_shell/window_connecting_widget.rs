@@ -57,15 +57,19 @@ impl Default for WindowConnectingWidget {
 
 impl Render for WindowConnectingWidget {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.is_visible {
+            return div().into_any_element();
+        }
         div()
             .flex()
             .items_center()
             .justify_center()
-            .h(if self.is_visible { px(28.0) } else { px(0.0) })
+            .h(px(28.0))
             .w_full()
             .bg(rgb(0x2B5278))
             .text_color(rgb(0xFFFFFF))
             .text_xs()
             .child(self.status_text())
+            .into_any_element()
     }
 }

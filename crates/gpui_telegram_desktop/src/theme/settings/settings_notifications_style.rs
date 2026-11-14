@@ -1,10 +1,6 @@
 // Source: Telegram/SourceFiles/settings/sections/settings_notifications.style
 // Subsystem: settings | Feature ID: TCG-N31
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
-use gpui::*;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SettingsNotificationsSectionsStyleSheet {
     pub box_monitor: f32,

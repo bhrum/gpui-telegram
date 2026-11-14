@@ -2,7 +2,6 @@
 //! Reference: Telegram/SourceFiles/ui/boxes/peer_qr_box.cpp:L50-L1891
 //! Reference: Telegram/SourceFiles/ui/boxes/peer_qr_box.h:L18-L28
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 

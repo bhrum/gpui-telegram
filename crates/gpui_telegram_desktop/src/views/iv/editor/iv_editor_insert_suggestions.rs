@@ -1,5 +1,4 @@
 //! Instant View Slash Insert Suggestions Controller (`iv_editor_insert_suggestions.h/.cpp`)
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 

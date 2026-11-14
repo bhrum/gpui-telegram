@@ -2088,7 +2088,6 @@
         "QColor",
         "RenderField",
         "RenderBackground",
-        "int",
         "TintImage",
         "CardReferenceColor",
         "AverageColor",
@@ -4298,7 +4297,6 @@
         "TonConnectEventRequest"
       ],
       "source_methods_and_signals": [
-        "bool",
         "TonConnect",
         "walletChanged",
         "vaultChanged",
@@ -4453,7 +4451,6 @@
         "QJsonDocument::fromJson",
         "ranges::all_of",
         "ranges::any_of",
-        "uint32",
         "ParseTonConnectEmulation"
       ],
       "style_tokens_and_metrics": [],

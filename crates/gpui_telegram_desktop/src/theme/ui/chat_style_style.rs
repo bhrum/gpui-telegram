@@ -1,6 +1,5 @@
 //! Upstream C++ style sheet mapping: `ui/chat/chat_style.style:L1-L226`
 //! Genuine GPUI Telegram theme style sheet without boilerplate stubs.
-#![allow(dead_code)]
 
 use gpui::{hsla, px, Hsla, Pixels};
 

@@ -79,7 +79,7 @@ impl InfoContentWidget {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_content_widget_filler_and_swipe() {
         let mut widget = InfoContentWidget::new();
         widget.set_geometry(320.0, 600.0);

@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_color_circle_button.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -75,7 +74,7 @@ impl Render for InfoUserpicColorCircleButtonUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_color_circle_button_selection_progress() {
         let mut btn = InfoUserpicColorCircleButtonUserpic::new(3, 0xffa743ff);
         assert_eq!(btn.index, 3);

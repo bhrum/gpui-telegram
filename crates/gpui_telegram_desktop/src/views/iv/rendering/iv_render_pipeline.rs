@@ -1,5 +1,4 @@
 //! Multi-stage render pipeline for Instant View
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use super::iv_layout_cache::IvLayoutCache;
 use super::iv_paint_context::IvPaintContext;

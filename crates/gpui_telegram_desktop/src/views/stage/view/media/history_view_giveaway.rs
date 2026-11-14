@@ -3,11 +3,7 @@
 //! - `Telegram/SourceFiles/history/view/media/history_view_giveaway.h:L15-L35`
 //! - `Telegram/SourceFiles/history/view/media/history_view_giveaway.cpp:L30-L60`
 
-#![allow(dead_code, unused_imports, unused_variables)]
-
 use gpui::*;
-use gpui::prelude::FluentBuilder;
-use crate::views::stage::media::gift::K_OUTLINE_RATIO;
 
 #[derive(Debug, Clone)]
 pub struct HistoryViewGiveawayViewMedia {

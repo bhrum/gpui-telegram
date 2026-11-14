@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleScrollForwarderMarkdown
 //! Module 13: Instant View Nested Scroll Forwarder & Gesture Dispatcher
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 
@@ -45,7 +44,7 @@ impl IvMarkdownArticleScrollForwarderMarkdown {
         }
     }
 
-    pub fn forward_wheel(&mut self, dx: f32, dy: f32, is_precise: bool) -> Option<f32> {
+    pub fn forward_wheel(&mut self, _dx: f32, dy: f32, _is_precise: bool) -> Option<f32> {
         self.accumulated_delta_y += dy * self.damping;
         if self.accumulated_delta_y.abs() >= self.threshold {
             let out_dy = self.accumulated_delta_y;

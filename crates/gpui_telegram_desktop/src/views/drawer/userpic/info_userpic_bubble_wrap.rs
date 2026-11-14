@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/userpic/info_userpic_bubble_wrap.cpp
 //! Subsystem: info | Feature ID: TCG-N34 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 
@@ -104,7 +103,7 @@ impl Render for InfoUserpicBubbleWrapUserpic {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_bubble_wrap_inner_rect_math() {
         let wrap = InfoUserpicBubbleWrapUserpic::new(356.0, 216.0);
         let inner = wrap.inner_rect();
@@ -115,7 +114,7 @@ mod tests {
         assert_eq!(inner.height, 206.0);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_bubble_wrap_clamping() {
         let mut wrap = InfoUserpicBubbleWrapUserpic::new(8.0, 8.0);
         let inner = wrap.inner_rect();

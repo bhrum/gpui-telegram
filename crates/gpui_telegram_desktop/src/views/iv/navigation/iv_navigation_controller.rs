@@ -1,7 +1,6 @@
 //! Navigation controller for Instant View
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
-use super::iv_history_stack::{HistoryEntry, IvHistoryStack};
+use super::iv_history_stack::IvHistoryStack;
 
 #[derive(Debug, Clone, Default)]
 pub struct IvNavigationController {

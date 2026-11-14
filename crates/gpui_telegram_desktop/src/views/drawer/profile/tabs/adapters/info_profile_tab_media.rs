@@ -182,7 +182,7 @@ impl Render for InfoProfileTabMediaProfileTabsAdapters {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_media_adapter_pagination_and_grid() {
         let mut adapter = InfoProfileTabMediaProfileTabsAdapters::new(1001);
         assert_eq!(adapter.peer_id, 1001);

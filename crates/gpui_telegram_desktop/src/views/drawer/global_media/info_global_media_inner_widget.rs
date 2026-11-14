@@ -2,7 +2,6 @@
 //! Upstream: Telegram/SourceFiles/info/global_media/info_global_media_inner_widget.cpp
 //! Subsystem: info | Feature ID: TCG-N23 | Disposition: gpui_ui_1to1
 
-#![allow(dead_code, unused_imports, unused_variables)]
 
 use gpui::*;
 use std::collections::HashSet;
@@ -210,7 +209,7 @@ impl Render for InfoGlobalMediaInnerWidgetGlobalMedia {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_inner_widget_empty_state_and_height() {
         let mut widget = InfoGlobalMediaInnerWidgetGlobalMedia::new(SharedMediaType::Photo);
         assert!(widget.is_empty());
@@ -229,7 +228,7 @@ mod tests {
         assert_eq!(widget.recount_height(), 104);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_inner_widget_selection_actions() {
         let mut widget = InfoGlobalMediaInnerWidgetGlobalMedia::new(SharedMediaType::File);
         widget.add_item(MediaItemEntry {
@@ -263,7 +262,7 @@ mod tests {
         assert_eq!(widget.items[0].id, 2);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_scroll_mapping_and_memento() {
         let mut widget = InfoGlobalMediaInnerWidgetGlobalMedia::new(SharedMediaType::Video);
         widget.scroll_top = 150;

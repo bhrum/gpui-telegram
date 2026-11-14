@@ -3,7 +3,6 @@
 //! Upstream reference:
 //! - `Telegram/SourceFiles/inline_bots/inline_bot_storage.h:L18-L50`
 //! - `Telegram/SourceFiles/inline_bots/inline_bot_storage.cpp:L16-L86`
-#![allow(dead_code)]
 
 use gpui::*;
 use std::collections::HashMap;

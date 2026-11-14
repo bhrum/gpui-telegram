@@ -175,7 +175,7 @@ impl Render for ProfileBackButton {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_profile_back_button_interactions() {
         let mut btn = ProfileBackButton::new();
         assert_eq!(btn.circle_radius, 18.0);
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(btn.hover_opacity, 0.0);
     }
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_profile_back_button_text_and_elision() {
         let mut btn = ProfileBackButton::with_text("Telegram Channel Information");
         btn.set_subtext("1,450 subscribers");

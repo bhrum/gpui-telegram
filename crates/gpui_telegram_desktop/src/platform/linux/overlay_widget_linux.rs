@@ -100,7 +100,7 @@ impl Render for OverlayWidgetLinuxLinux {
 mod tests {
     use super::*;
 
-    #[test]
+    #[std::prelude::v1::test]
     fn test_overlay_widget_linux() {
         let mut overlay = OverlayWidgetLinuxLinux::new();
         assert!(overlay.initialize().is_ok());

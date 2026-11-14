@@ -1,6 +1,5 @@
 //! Target Symbol: IvMarkdownArticleQuoteMarkdown
 //! Module 13: Instant View Quote Segments, Intervals & Visual Highlights
-#![allow(dead_code, unused_imports, unused_variables, non_snake_case)]
 
 use gpui::*;
 
