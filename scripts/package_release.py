@@ -261,6 +261,21 @@ def build_macos_app_bundle(
     <string>public.app-category.social-networking</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Teamwork GPUI Telegram Contributors. Apache-2.0.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>org.gpui-telegram.desktop</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>gpui-telegram</string>
+                <string>fabushi</string>
+                <string>com.ombhrum.fabushi</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 """
