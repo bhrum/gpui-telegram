@@ -32,8 +32,17 @@ jobs:
   ledger-parity-audit:
     name: Ledger Closure & Static Parity Audit (3,441 Upstream Files)
     runs-on: ubuntu-24.04
+    needs: [macos-gpui-verify]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpui-telegram-desktop-macos-arm64-fast
+          path: target/release
+      - name: Stage Packaged App Bundle from CI Artifact
+        run: |
+          chmod +x target/release/gpui_telegram_desktop
+          python3 scripts/package_release.py --skip-clean
       - name: Run 6-Gate Source-File Parity Ledger Verification
         run: python3 scripts/verify_ledger_closure.py --ci-without-upstream --skip-cargo
 
@@ -102,8 +111,8 @@ jobs:
           tool: cargo-nextest
       - name: Run Parallel Nextest & Workspace Binary Check on macOS
         run: |
-          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_core             -p gpui_telegram_proto             -p gpui_telegram_media             -p gpui_telegram_webrtc             -p gpui_telegram_agent             -p gpui_telegram_server             -p gpui_telegram_client             --lib
-          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests             -p gpui_telegram_media --test waveform_5bit_codec_roundtrip             -p gpui_telegram_agent --test agent_runtime_tests --test mcp_cua_talk_tests --test hermes_engine_tests             -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests --test hermes_gateway_and_bot_bugfix_tests             -p gpui_telegram_client --test auth_client_tests             -p gpui_telegram_desktop               --test tdesktop_full_parity_integration_tests               --test desktop_views_tests               --test hermes_desktop_bugfix_tests               --test auth_wizard_tabs_tests               --test dialogs_widget_subsystem_tests               --test window_themes_subsystem_tests               --test milestone_1_nav_calls_regression_tests               --test milestone_3_settings_regression_tests
+          cargo nextest run --profile ci             -p gpui_telegram_core             -p gpui_telegram_proto             -p gpui_telegram_media             -p gpui_telegram_webrtc             -p gpui_telegram_agent             -p gpui_telegram_server             -p gpui_telegram_client             --lib
+          cargo nextest run --profile ci             -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests             -p gpui_telegram_media --test waveform_5bit_codec_roundtrip             -p gpui_telegram_agent --test agent_runtime_tests --test mcp_cua_talk_tests --test hermes_engine_tests             -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests --test hermes_gateway_and_bot_bugfix_tests             -p gpui_telegram_client --test auth_client_tests             -p gpui_telegram_desktop               --test tdesktop_full_parity_integration_tests               --test desktop_views_tests               --test hermes_desktop_bugfix_tests               --test auth_wizard_tabs_tests               --test dialogs_widget_subsystem_tests               --test window_themes_subsystem_tests               --test milestone_1_nav_calls_regression_tests               --test milestone_3_settings_regression_tests
           cargo check --workspace --lib --bins
           cargo build --profile ci --bin gpui_telegram_desktop
       - uses: actions/upload-artifact@v4
