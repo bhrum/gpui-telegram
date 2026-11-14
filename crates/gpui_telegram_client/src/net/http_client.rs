@@ -297,18 +297,39 @@ pub struct AddContactHttpResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResultItemDto {
+    #[serde(alias = "id")]
     pub chat_id: u64,
     #[serde(default)]
     pub message_id: u64,
+    #[serde(default, alias = "peer_name")]
     pub title: String,
+    #[serde(default, alias = "text", alias = "subtitle", alias = "preview")]
     pub snippet: String,
-    pub category: String,
     #[serde(default)]
+    pub category: String,
+    #[serde(default, alias = "timestamp", alias = "date_ms")]
     pub date: Option<i64>,
     #[serde(default)]
     pub avatar_color: Option<u32>,
     #[serde(default)]
     pub is_bot: bool,
+}
+
+/// Percent-encodes a query component strictly according to RFC 3986 unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`).
+pub fn percent_encode_rfc3986(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", byte));
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1701,16 +1722,18 @@ impl HttpClient {
         category: &str,
     ) -> Result<Vec<SearchResultItemDto>, HttpClientError> {
         let client = self.client.clone();
-        let url = format!("{}/api/v1/search/messages", self.base_url);
+        let url = format!(
+            "{}/api/v1/search/messages?q={}&category={}",
+            self.base_url,
+            percent_encode_rfc3986(query),
+            percent_encode_rfc3986(category)
+        );
         let token_owned = token.to_string();
-        let q = query.to_string();
-        let cat = category.to_string();
 
         self.run_on_tokio(async move {
             let resp = client
                 .get(&url)
                 .bearer_auth(&token_owned)
-                .query(&[("q", q.as_str()), ("category", cat.as_str())])
                 .send()
                 .await?;
             let status = resp.status();

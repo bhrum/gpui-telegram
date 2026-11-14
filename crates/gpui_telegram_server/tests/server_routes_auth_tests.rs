@@ -1168,4 +1168,46 @@ async fn test_welcome_bot_provisioning_contacts_groups_and_categorized_search() 
         app_results.iter().any(|r| r["title"] == "Rust Code Assistant"),
         "Apps category search must return created AI Bot"
     );
+    assert!(
+        !app_results.iter().any(|r| r["title"] == "Nikolai Durov"),
+        "Human contact (750_000_000+) must NOT be misclassified as an AI Bot in Apps category search"
+    );
+
+    // 7. Register a second user in the same database and verify multi-user Welcome Bot & contact creation
+    let reg2_body = json!({
+        "username": "second_user_tg",
+        "password": "StrongPassword!2",
+        "first_name": "AAA",
+        "device_name": "Telegram GPUI Mac 2"
+    });
+    let req_reg2 = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/register")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(&reg2_body).unwrap()))
+        .unwrap();
+    let res_reg2 = app.clone().oneshot(req_reg2).await.unwrap();
+    assert_eq!(res_reg2.status(), StatusCode::CREATED);
+    let reg2_json: Value =
+        serde_json::from_slice(&to_bytes(res_reg2.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let token2 = reg2_json["token"].as_str().unwrap().to_string();
+
+    let req_chats2 = Request::builder()
+        .method("GET")
+        .uri("/api/v1/chats")
+        .header(header::AUTHORIZATION, format!("Bearer {}", token2))
+        .body(Body::empty())
+        .unwrap();
+    let res_chats2 = app.clone().oneshot(req_chats2).await.unwrap();
+    assert_eq!(res_chats2.status(), StatusCode::OK);
+    let chats2_json: Value =
+        serde_json::from_slice(&to_bytes(res_chats2.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    let chats2_arr = chats2_json["chats"].as_array().unwrap();
+    let welcome_chat2 = chats2_arr
+        .iter()
+        .find(|c| c["title"] == "Telegram Official Bot")
+        .expect("Second user must also get Telegram Official Bot without UNIQUE constraint collision");
+    assert_eq!(welcome_chat2["username"], "telegram_official_bot");
+    assert_ne!(welcome_chat2["chat_id"], welcome_chat["chat_id"]);
 }

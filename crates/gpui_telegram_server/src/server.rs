@@ -591,6 +591,7 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                 revoked_at_ms: None,
             };
             let _ = state.db.create_session(&db_session);
+            let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
 
             (
                 StatusCode::OK,
@@ -646,6 +647,7 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                             revoked_at_ms: None,
                         };
                         let _ = state.db.create_session(&db_session);
+                        let _ = ensure_user_welcome_bot(&state, db_user.user_id, Some(&db_user.first_name));
 
                         return (
                             StatusCode::OK,
@@ -2632,7 +2634,30 @@ async fn messages_send(
                     let _ = state.db.add_chat_member(&bot_member);
 
                     let state_clone = state.clone();
-                    let prompt_text = text.to_string();
+                    let custom_system_prompt = state
+                        .db
+                        .get_chat(chat_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|c| c.about)
+                        .or_else(|| {
+                            state
+                                .db
+                                .get_user(bot_user_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|u| u.bio)
+                        })
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| {
+                            !s.is_empty()
+                                && s != "Official Telegram Desktop Welcome & AI Assistant Bot"
+                                && s != "Official AI Agent Assistant"
+                        });
+                    let prompt_text = match custom_system_prompt {
+                        Some(sp) => format!("[System Instruction: {}]\n\n{}", sp, text),
+                        None => text.to_string(),
+                    };
                     let user_msg_id = msg_id;
                     let sender_id = auth.user_id;
 
@@ -2776,6 +2801,12 @@ async fn messages_read(
     }))
 }
 
+/// Returns true if `chat_id` is in the reserved `700_000_000..750_000_000` range for per-user
+/// `Telegram Official Bot` welcome chats (keeping `750_000_000+` human contact direct chats separate).
+fn is_welcome_bot_chat(chat_id: ChatId) -> bool {
+    (700_000_000..750_000_000).contains(&chat_id.0)
+}
+
 /// Provisions the Official Telegram Welcome Bot (`Telegram Official Bot`, `user_id: 777000`,
 /// `chat_id: 700_000_000 + user_id`) and seeds welcome messages if not yet present.
 fn ensure_user_welcome_bot(
@@ -2834,7 +2865,7 @@ fn ensure_user_welcome_bot(
             chat_type: 0,
             peer_type: 1,
             title: "Telegram Official Bot".to_string(),
-            username: Some("telegram_official_bot".to_string()),
+            username: Some(format!("telegram_official_bot_{}", user_id.0)),
             about: Some("Official Telegram Desktop Welcome & AI Assistant Bot".to_string()),
             creator_id: bot_id,
             is_forum: false,
@@ -2851,7 +2882,9 @@ fn ensure_user_welcome_bot(
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         };
-        let _ = state.db.create_chat(&chat);
+        if let Err(e) = state.db.create_chat(&chat) {
+            tracing::warn!("Failed to create welcome chat {}: {}", welcome_chat_id.0, e);
+        }
         let _ = state.db.add_chat_member(&crate::db::schema::ChatMemberRecord {
             chat_id: welcome_chat_id,
             user_id: bot_id,
@@ -2969,7 +3002,7 @@ async fn chats_list(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Res
                         })
                         .filter(|s| !s.is_empty());
 
-                    let is_bot_chat = c.chat_id.0 >= 700_000_000
+                    let is_bot_chat = is_welcome_bot_chat(c.chat_id)
                         || c.title.to_lowercase().contains("bot")
                         || c.username
                             .as_deref()
@@ -3000,11 +3033,27 @@ async fn chats_list(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Res
                         0x27AE60
                     };
 
+                    let public_username = if is_welcome_bot_chat(c.chat_id) {
+                        Some("telegram_official_bot".to_string())
+                    } else if c.username.as_deref().map(|u| u.starts_with("dm_")).unwrap_or(false) {
+                        state
+                            .db
+                            .get_chat_members(c.chat_id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|&m| m != auth.user_id)
+                            .and_then(|m| state.db.get_user(m).ok().flatten())
+                            .and_then(|u| u.username)
+                            .or_else(|| c.username.clone())
+                    } else {
+                        c.username.clone()
+                    };
+
                     json!({
                         "chat_id": c.chat_id.0,
                         "id": c.chat_id.0,
                         "title": c.title,
-                        "username": c.username,
+                        "username": public_username,
                         "about": c.about,
                         "chat_type": c.chat_type,
                         "kind": if c.chat_type == 0 { "direct" } else { "group" },
@@ -3142,14 +3191,18 @@ async fn contacts_add(
 
     let _ = ensure_user_welcome_bot(&state, auth.user_id, None);
 
-    let contact_user_id = if let Ok(Some(existing)) = state.db.get_user_by_username(&clean_username) {
+    let (contact_user_id, db_username) = if let Ok(Some(existing)) = state.db.get_user_by_username(&clean_username) {
         if existing.user_id != auth.user_id {
-            existing.user_id
+            (existing.user_id, clean_username.clone())
         } else {
-            UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000))
+            let uid = UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000));
+            (uid, format!("{}_{}", clean_username, uid.0))
         }
     } else {
-        UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000))
+        (
+            UserId(500_000 + (Utc::now().timestamp_micros().unsigned_abs() % 400_000)),
+            clean_username.clone(),
+        )
     };
 
     let full_title = match &last_name {
@@ -3158,9 +3211,9 @@ async fn contacts_add(
     };
 
     if let Ok(None) = state.db.get_user(contact_user_id) {
-        let new_user = crate::db::schema::UserRecord {
+        let mut new_user = crate::db::schema::UserRecord {
             user_id: contact_user_id,
-            username: Some(clean_username.clone()),
+            username: Some(db_username),
             phone: phone.clone(),
             first_name: first_name.to_string(),
             last_name: last_name.clone(),
@@ -3176,17 +3229,25 @@ async fn contacts_add(
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         };
-        let _ = state.db.create_user(&new_user);
+        if state.db.create_user(&new_user).is_err() {
+            new_user.phone = None;
+            new_user.username = Some(format!("{}_{}", clean_username, contact_user_id.0));
+            let _ = state.db.create_user(&new_user);
+        }
     }
 
-    let direct_chat_id = ChatId(600_000_000 + (contact_user_id.0 as i64));
+    let direct_chat_id = ChatId(
+        750_000_000
+            + ((auth.user_id.0 as i64 % 100_000) * 1_000_000)
+            + (contact_user_id.0 as i64 % 1_000_000),
+    );
     if let Ok(None) = state.db.get_chat(direct_chat_id) {
         let chat = crate::db::schema::ChatRecord {
             chat_id: direct_chat_id,
             chat_type: 0,
             peer_type: 1,
             title: full_title.clone(),
-            username: Some(clean_username.clone()),
+            username: Some(format!("dm_{}_{}", auth.user_id.0, contact_user_id.0)),
             about: bot_system_prompt.clone(),
             creator_id: auth.user_id,
             is_forum: false,
@@ -4662,7 +4723,7 @@ async fn search_messages(
 
     if let Ok(chats) = state.db.list_user_chats(auth.user_id) {
         for c in chats {
-            let is_bot = c.chat_id.0 >= 700_000_000
+            let is_bot = is_welcome_bot_chat(c.chat_id)
                 || c.title.to_lowercase().contains("bot")
                 || c.username
                     .as_deref()

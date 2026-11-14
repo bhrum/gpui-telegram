@@ -1,0 +1,137 @@
+name: Deploy Backend Server to Cloud VM
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/gpui_telegram_core/**"
+      - "crates/gpui_telegram_common/**"
+      - "crates/gpui_telegram_proto/**"
+      - "crates/gpui_telegram_media/**"
+      - "crates/gpui_telegram_webrtc/**"
+      - "crates/gpui_telegram_agent/**"
+      - "crates/gpui_telegram_server/**"
+      - "inherited/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+    inputs:
+      verify_live_routes:
+        description: "Run live post-deploy verification against Cloud VM :8080"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: gpui-telegram-deploy-backend-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  CI: "true"
+
+jobs:
+  build-and-deploy-backend:
+    name: Build & Deploy gpui_telegram_server (Ubuntu 22.04 -> Cloud VM)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Build Dependencies & mold Linker
+        run: |
+          sudo apt-get update -o Acquire::Languages=none
+          sudo apt-get install -y --no-install-recommends \
+            mold clang pkg-config protobuf-compiler libclang-dev libssl-dev \
+            libsqlite3-dev libzstd-dev ca-certificates curl openssh-client rsync
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "ubuntu-22-backend-deploy-v1"
+
+      - name: Verify Backend Auth, Welcome Bot & Categorized Search Tests
+        run: |
+          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" \
+            cargo test -p gpui_telegram_server --test server_routes_auth_tests -- --nocapture
+
+      - name: Build Release gpui_telegram_server Binary (GLIBC 2.35 Compatible)
+        run: |
+          cargo build --release --bin gpui_telegram_server
+          ls -lh target/release/gpui_telegram_server
+
+      - name: Configure SSH Credentials from GitHub Secrets
+        env:
+          SSH_KEY: ${{ secrets.BACKEND_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.BACKEND_SSH_HOST }}
+          SSH_PORT: ${{ secrets.BACKEND_SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Sync Source & Deploy Binary to Google Cloud VM
+        env:
+          SSH_HOST: ${{ secrets.BACKEND_SSH_HOST }}
+          SSH_PORT: ${{ secrets.BACKEND_SSH_PORT }}
+          SSH_USER: ${{ secrets.BACKEND_SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
+          SERVICE_NAME: ${{ secrets.BACKEND_SERVICE_NAME }}
+          BACKEND_ENV: ${{ secrets.BACKEND_ENV_FILE }}
+          AI_BACKEND_SERVICE: ${{ secrets.AI_BACKEND_SERVICE_NAME }}
+        run: |
+          PORT_ARG="${SSH_PORT:-22}"
+          REMOTE_DIR="${DEPLOY_PATH:-/opt/fabushi/gpui-server}"
+          SVC="${SERVICE_NAME:-gpui-telegram-server}"
+
+          # 1. Sync updated source tree to remote workspace
+          rsync -az --delete \
+            --exclude 'target/' \
+            --exclude '.git/' \
+            --exclude 'dist/' \
+            --exclude 'artifacts/' \
+            --exclude 'data/' \
+            -e "ssh -i ~/.ssh/deploy_key -p ${PORT_ARG} -o StrictHostKeyChecking=no" \
+            ./ "${SSH_USER}@${SSH_HOST}:/tmp/gpui-server-sync/"
+
+          # 2. Upload compiled release binary
+          scp -i ~/.ssh/deploy_key -P "${PORT_ARG}" -o StrictHostKeyChecking=no \
+            target/release/gpui_telegram_server \
+            "${SSH_USER}@${SSH_HOST}:/tmp/gpui_telegram_server.new"
+
+          # 3. Atomically install source + binary and restart systemd service
+          ssh -i ~/.ssh/deploy_key -p "${PORT_ARG}" -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" bash -s <<EOF
+          set -euo pipefail
+          sudo mkdir -p "${REMOTE_DIR}/target/release" /opt/fabushi/data /opt/fabushi/logs
+          sudo rsync -a --exclude 'target/' --exclude '.env' /tmp/gpui-server-sync/ "${REMOTE_DIR}/"
+          sudo mv /tmp/gpui_telegram_server.new "${REMOTE_DIR}/target/release/gpui_telegram_server"
+          sudo chmod 755 "${REMOTE_DIR}/target/release/gpui_telegram_server"
+          sudo chown -R ubuntu:ubuntu "${REMOTE_DIR}" /opt/fabushi/data /opt/fabushi/logs || true
+          rm -rf /tmp/gpui-server-sync
+
+          sudo systemctl daemon-reload
+          sudo systemctl restart "${SVC}"
+          if [ -n "${AI_BACKEND_SERVICE:-}" ]; then
+            sudo systemctl status "${AI_BACKEND_SERVICE}" --no-pager || true
+          fi
+
+          for i in \$(seq 1 15); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              echo "Backend health check passed on attempt \${i}"
+              curl -fsS http://127.0.0.1:8080/api/v1/status
+              echo ""
+              exit 0
+            fi
+            sleep 1
+          done
+          sudo journalctl -u "${SVC}" -n 50 --no-pager
+          exit 1
+          EOF
