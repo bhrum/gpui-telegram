@@ -1,22 +1,31 @@
-name: GPUI Telegram CI & 1:1 Parity Verification
+name: GPUI Telegram Turbo CI
 
 on:
   push:
     branches: [main, master, dev]
-    tags: ["v*"]
+    paths-ignore:
+      - "**.md"
+      - "!docs/specs/**"
+      - "LICENSE*"
+      - ".gitignore"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "!docs/specs/**"
+      - "LICENSE*"
+      - ".gitignore"
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 concurrency:
-  group: gpui-telegram-ci-${{ github.ref }}
+  group: gpui-telegram-turbo-ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
   CI: "true"
 
 jobs:
@@ -25,109 +34,78 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Run 6-Gate Source-File Parity Ledger Verification
         run: python3 scripts/verify_ledger_closure.py --ci-without-upstream --skip-cargo
 
-  macos-gpui-verify:
-    name: macOS Apple Silicon GPUI Build & Full Test Suite
-    runs-on: macos-15
-    needs: ledger-parity-audit
-    steps:
-      - uses: actions/checkout@v4
-      - name: Ensure Metal Shader Toolchain & Protobuf
-        run: |
-          xcrun -sdk macosx metal -v || xcodebuild -downloadComponent MetalToolchain || true
-          which protoc || brew install protobuf
-          which cmake || brew install cmake
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          shared-key: "macos-15-gpui-telegram-v2"
-      - name: Check Workspace Libraries & Binaries
-        run: cargo check --workspace --lib --bins
-      - name: Gate 6.3 Ledger Closure Verification
-        run: python3 scripts/verify_ledger_closure.py --ci-without-upstream --skip-cargo
-      - name: Run GPUI Telegram & Parity Test Suites
-        run: |
-          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo test -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_media -p gpui_telegram_webrtc -p gpui_telegram_agent -p gpui_telegram_server -p gpui_telegram_client --lib
-          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo test -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests -p gpui_telegram_media --test waveform_5bit_codec_roundtrip -p gpui_telegram_agent --test agent_runtime_tests --test mcp_cua_talk_tests -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests -p gpui_telegram_client --test auth_client_tests -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests --test auth_wizard_tabs_tests --test dialogs_widget_subsystem_tests --test window_themes_subsystem_tests --test milestone_1_nav_calls_regression_tests --test milestone_3_settings_regression_tests
-          python3 scripts/clean_build_garbage.py
-      - name: Build Release GPUI Binaries & Package macOS App Bundle
-        run: |
-          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
-          python3 scripts/package_release.py --version 1.0.0 --skip-clean
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gpui-telegram-macos-arm64
-          path: |
-            dist/*.tar.gz
-            dist/SHA256SUMS
-            dist/RELEASE_NOTES.md
-            target/release/gpui_telegram_desktop
-            target/release/gpui_telegram_server
-          retention-days: 30
-      - name: Upload macOS Release Assets on Tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          cp target/release/gpui_telegram_server "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64"
-          shasum -a 256 "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" >> dist/SHA256SUMS
-          gh release upload "$TAG_NAME" dist/*.tar.gz "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" dist/SHA256SUMS --clobber
-
-  linux-cross-platform-verify:
-    name: Linux X11/Wayland/Vulkan Cross-Platform Check & Tests
+  linux-fast-verify:
+    name: Linux Turbo Check & Nextest (mold + sccache)
     runs-on: ubuntu-24.04
-    needs: ledger-parity-audit
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux System Dependencies
+      - name: Cache Linux APT Packages (mold + GPUI headers)
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-ubuntu24-mold-gpui-v1
+      - name: Install Linux Dependencies & mold Linker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake protobuf-compiler clang libclang-dev libssl-dev libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libasound2-dev libfontconfig1-dev libfreetype6-dev
+          PKGS="mold clang pkg-config protobuf-compiler libclang-dev libssl-dev libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libasound2-dev libfontconfig1-dev libfreetype6-dev"
+          if [ -f ~/apt-cache/debs.tar.zst ]; then
+            sudo tar --zstd -xf ~/apt-cache/debs.tar.zst -C /
+            sudo apt-get install -y --no-install-recommends --no-upgrade $PKGS
+          else
+            mkdir -p ~/apt-cache
+            sudo rm -f /var/cache/apt/archives/*.deb
+            sudo apt-get update -o Acquire::Languages=none
+            sudo apt-get install -y -d --no-install-recommends $PKGS
+            sudo tar --zstd -cf ~/apt-cache/debs.tar.zst /var/cache/apt/archives /var/lib/apt/lists
+            sudo chown -R "$USER:$USER" ~/apt-cache
+            sudo apt-get install -y --no-install-recommends $PKGS
+          fi
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-          shared-key: "ubuntu-24-gpui-telegram-v3"
-      - name: Patch Legacy xattr-0.2.3 ENOATTR for Linux libc
+          shared-key: "ubuntu-24-turbo-v1"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run Parallel Nextest & Workspace Binary Check on Linux
         run: |
-          cargo fetch
-          python3 - << 'PYPATCH'
-          import glob, json, os
-          cargo_home = os.environ.get("CARGO_HOME", os.path.expanduser("~/.cargo"))
-          for d in glob.glob(os.path.join(cargo_home, "registry/src/*/xattr-0.2.3")):
-              for p in glob.glob(os.path.join(d, "src/**/*.rs"), recursive=True):
-                  txt = open(p, "r", encoding="utf-8").read()
-                  if "ENOATTR" in txt:
-                      txt = txt.replace("::libc::ENOATTR", "::libc::ENODATA").replace("libc::ENOATTR", "libc::ENODATA")
-                      open(p, "w", encoding="utf-8").write(txt)
-              csum = os.path.join(d, ".cargo-checksum.json")
-              if os.path.exists(csum):
-                  data = json.load(open(csum, "r", encoding="utf-8"))
-                  data["files"] = {}
-                  json.dump(data, open(csum, "w", encoding="utf-8"))
-          PYPATCH
-      - name: Check Full Workspace Libraries & Binaries on Linux
-        run: |
+          cargo nextest run --profile ci             -p gpui_telegram_core             -p gpui_telegram_proto             -p gpui_telegram_server             -p gpui_telegram_client             --lib
+          cargo nextest run --profile ci             -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests             -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests             -p gpui_telegram_client --test auth_client_tests             -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
           cargo check --workspace --lib --bins
-          python3 scripts/clean_build_garbage.py
-      - name: Run Protocol, Persistence, Durable Server & Desktop Tests on Linux
+      - name: Report sccache Hit Statistics & Clean Temp Garbage
         run: |
-          cargo test -p gpui_telegram_core -p gpui_telegram_proto -p gpui_telegram_server -p gpui_telegram_client --lib
-          cargo test -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests -p gpui_telegram_client --test auth_client_tests -p gpui_telegram_desktop --test tdesktop_full_parity_integration_tests --test desktop_views_tests
+          sccache --show-stats || true
           python3 scripts/clean_build_garbage.py
-      - name: Build & Upload Linux Release Binaries on Tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  macos-gpui-verify:
+    name: macOS Apple Silicon Turbo Check & Nextest (sccache)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Metal Toolchain & Protobuf
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
-          tar -czf "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" -C target/release gpui_telegram_desktop gpui_telegram_server
-          gh release upload "$TAG_NAME" "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" --clobber
+          xcrun -sdk macosx metal -v >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain || true
+          command -v protoc >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install protobuf
+          command -v cmake >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "macos-15-turbo-v1"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run Parallel Nextest & Workspace Binary Check on macOS
+        run: |
+          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_core             -p gpui_telegram_proto             -p gpui_telegram_media             -p gpui_telegram_webrtc             -p gpui_telegram_agent             -p gpui_telegram_server             -p gpui_telegram_client             --lib
+          AI_GATEWAY_URL="http://127.0.0.1:9/api/ai/chat/stream" cargo nextest run --profile ci             -p gpui_telegram_proto --test proto_tests --test api_rpc_endpoints_tests             -p gpui_telegram_media --test waveform_5bit_codec_roundtrip             -p gpui_telegram_agent --test agent_runtime_tests --test mcp_cua_talk_tests             -p gpui_telegram_server --test db_pts_messaging_tests --test server_routes_auth_tests             -p gpui_telegram_client --test auth_client_tests             -p gpui_telegram_desktop               --test tdesktop_full_parity_integration_tests               --test desktop_views_tests               --test auth_wizard_tabs_tests               --test dialogs_widget_subsystem_tests               --test window_themes_subsystem_tests               --test milestone_1_nav_calls_regression_tests               --test milestone_3_settings_regression_tests
+          cargo check --workspace --lib --bins
+      - name: Report sccache Hit Statistics & Clean Temp Garbage
+        run: |
+          sccache --show-stats || true
+          python3 scripts/clean_build_garbage.py

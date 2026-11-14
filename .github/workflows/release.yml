@@ -1,0 +1,119 @@
+name: GPUI Telegram Release Packaging
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing GitHub Release tag to upload assets to (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpui-telegram-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  CI: "true"
+
+jobs:
+  release-macos-arm64:
+    name: Build & Sign macOS arm64 App Bundle (16-CGU ThinLTO)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Metal Toolchain & Protobuf
+        run: |
+          xcrun -sdk macosx metal -v >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain || true
+          command -v protoc >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install protobuf
+          command -v cmake >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "macos-15-release-lto16-v1"
+      - name: Build Parallel ThinLTO Release & Package GPUI Telegram.app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+          python3 scripts/package_release.py --version "$VERSION" --skip-clean
+          sccache --show-stats || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-telegram-macos-arm64
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
+            target/release/gpui_telegram_desktop
+            target/release/gpui_telegram_server
+          retention-days: 30
+      - name: Upload macOS Assets to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ inputs.tag_name || github.ref_name }}"
+          cp target/release/gpui_telegram_server "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64"
+          shasum -a 256 "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" >> dist/SHA256SUMS
+          gh release upload "$TAG_NAME" dist/*.tar.gz "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" dist/SHA256SUMS --clobber
+
+  release-linux-x86_64:
+    name: Build Linux x86_64 Release Archive (mold + 16-CGU ThinLTO)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Linux APT Packages (mold + GPUI headers)
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-cache
+          key: apt-ubuntu24-mold-gpui-v1
+      - name: Install Linux Dependencies & mold Linker
+        run: |
+          PKGS="mold clang pkg-config protobuf-compiler libclang-dev libssl-dev libegl-dev libgl-dev libgles2-mesa-dev libpipewire-0.3-dev libspa-0.2-dev libgbm-dev libdrm-dev libdbus-1-dev libzstd-dev libsqlite3-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libasound2-dev libfontconfig1-dev libfreetype6-dev"
+          if [ -f ~/apt-cache/debs.tar.zst ]; then
+            sudo tar --zstd -xf ~/apt-cache/debs.tar.zst -C /
+            sudo apt-get install -y --no-install-recommends --no-upgrade $PKGS
+          else
+            mkdir -p ~/apt-cache
+            sudo rm -f /var/cache/apt/archives/*.deb
+            sudo apt-get update -o Acquire::Languages=none
+            sudo apt-get install -y -d --no-install-recommends $PKGS
+            sudo tar --zstd -cf ~/apt-cache/debs.tar.zst /var/cache/apt/archives /var/lib/apt/lists
+            sudo chown -R "$USER:$USER" ~/apt-cache
+            sudo apt-get install -y --no-install-recommends $PKGS
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          shared-key: "ubuntu-24-release-lto16-v1"
+      - name: Build Parallel ThinLTO Linux Binaries
+        run: |
+          TAG_NAME="${{ inputs.tag_name || github.ref_name }}"
+          cargo build --release --bin gpui_telegram_desktop --bin gpui_telegram_server
+          tar -czf "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" -C target/release gpui_telegram_desktop gpui_telegram_server
+          sccache --show-stats || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-telegram-linux-x86_64
+          path: gpui_telegram-*-linux-x86_64.tar.gz
+          retention-days: 30
+      - name: Upload Linux Archive to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag_name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ inputs.tag_name || github.ref_name }}"
+          gh release upload "$TAG_NAME" "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" --clobber

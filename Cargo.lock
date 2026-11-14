@@ -2906,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_agent"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2926,7 +2926,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_client"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "argon2",
@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "cbc",
@@ -2979,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_media"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "argon2",
  "axum",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_test_harness"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "gpui_telegram_agent",
@@ -3087,7 +3087,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_webrtc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -9247,8 +9247,6 @@ dependencies = [
 [[package]]
 name = "xattr"
 version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d1526bbe5aaeb5eb06885f4d987bcdfa5e23187055de9b83fe00156a821fabc"
 dependencies = [
  "libc",
 ]
