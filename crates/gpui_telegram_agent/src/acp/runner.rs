@@ -109,7 +109,7 @@ fn default_turn_composition() -> TurnAgentComposition {
     )
 }
 
-pub const DEFAULT_GATEWAY_URL: &str = "http://34.170.16.35:8788/api/ai/chat/stream";
+pub const DEFAULT_GATEWAY_URL: &str = "http://34.46.77.133:8788/api/ai/chat/stream";
 pub const DEFAULT_FIRST_TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DEFAULT_STREAM_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -666,8 +666,8 @@ mod runner_tests {
     #[test]
     fn test_url_parser() {
         let (host, port, path) =
-            parse_http_url("http://34.170.16.35:8788/api/ai/chat/stream").unwrap();
-        assert_eq!(host, "34.170.16.35");
+            parse_http_url("http://34.46.77.133:8788/api/ai/chat/stream").unwrap();
+        assert_eq!(host, "34.46.77.133");
         assert_eq!(port, 8788);
         assert_eq!(path, "/api/ai/chat/stream");
 

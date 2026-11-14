@@ -4,7 +4,7 @@
 - **Target Release**: GPUI Telegram Desktop v1.0.0-RELEASE
 - **Publication Date**: 2026-11-08
 - **Milestone**: Milestone 4: Final Full E2E Automated Verification & Adversarial Coverage Hardening
-- **Target Backend**: Live Telegram Cloud VM `http://34.170.16.35:8080` (Rust Axum 8080) & AI Gateway `http://34.170.16.35:8788`
+- **Target Backend**: Live Telegram Cloud VM `http://34.46.77.133:8080` (Rust Axum 8080) & AI Gateway `http://34.46.77.133:8788`
 - **Presentation Layer**: Headless GPUI 0.2.2 Desktop Client (`crates/gpui_telegram_desktop`)
 - **Status**: **CERTIFIED READY (100.0% PASS — 166 / 166 AUTOMATED TESTS — ZERO DUMMY FACADES — ZERO CONSTANT ASSERTIONS)**
 - **Governing Specifications**:
@@ -17,11 +17,11 @@
 
 ## 1. Executive Summary
 
-The comprehensive End-to-End (E2E) and Adversarial Test Suite for GPUI Telegram Desktop has been fully executed, validated, and verified against the live cloud backend environment (`http://34.170.16.35:8080`) and local GPUI presentation architecture.
+The comprehensive End-to-End (E2E) and Adversarial Test Suite for GPUI Telegram Desktop has been fully executed, validated, and verified against the live cloud backend environment (`http://34.46.77.133:8080`) and local GPUI presentation architecture.
 
 ### Key Certification Achievements:
 1. **100% Automated Test Pass Rate**: All 7 master test suites across Python E2E and Rust cargo integration harnesses passed with **exit code 0** and **0 failures** (166 passed test assertions / test cases).
-2. **Authentic Live Cloud Connectivity**: Verified authentic TCP socket reachability, HTTP/RESTful APIs, WebSocket PTS delta synchronization, Argon2id authentication, POSIX 0600 session persistence, and ACP autonomous AI agent execution directly on `34.170.16.35:8080`.
+2. **Authentic Live Cloud Connectivity**: Verified authentic TCP socket reachability, HTTP/RESTful APIs, WebSocket PTS delta synchronization, Argon2id authentication, POSIX 0600 session persistence, and ACP autonomous AI agent execution directly on `34.46.77.133:8080`.
 3. **1:1 Telegram Desktop UI/UX Parity**: Validated 4-pane geometric layout metrics (52px NavRail, 288px ChatSidebar with 62px rows, 160-430px bubble bounds with 16px/4px corner radii, 320px ContextInspectorDrawer, and 44-192px CanonicalComposer).
 4. **Adversarial Resilience**: Validated 3-state IME commit fencing, message list virtualization with GPUI `ScrollHandle` under 25,000-message stress, session switching isolation across 55 peers, 5-thread concurrent bursts, and Bearer token fuzzing (including SQLi payloads).
 5. **AGENTS.md Build Hygiene Compliance**: Unified single `target/` workspace, `debug = 0`, `strip = "debuginfo"`, `incremental = false`, and automated post-test garbage cleanup via `scripts/clean_build_garbage.py`.
@@ -160,7 +160,7 @@ All 15 authoritative features defined in `PROJECT.md § Feature Inventory` are f
 | **F8** | `F8_STAGE_SCROLL_VIRTUALIZATION` | M2 | `ORIGINAL_REQUEST §R1, §R2`<br>`PROJECT.md §F8` | `desktop_views_tests`<br>`challenger_m2_adversarial_tests` | GPUI `ScrollHandle` integration, variable-height row caching, monotonic prefix sums binary search, 48px scroll stickiness threshold, stable anchored scrolling under 25,000-message stress | **PASS** |
 | **F9** | `F9_SESSION_SWITCHING_INTEGRITY` | M2 | `ORIGINAL_REQUEST §R2`<br>`PROJECT.md §F9` | `desktop_views_tests`<br>`challenger_m2_adversarial_tests` | Chat history switching isolation in `ConversationStage` and `AppShell`, independent scroll position preservation across 55 concurrent chats, zero prior conversation message leakage | **PASS** |
 | **F10** | `F10_CHAT_INTERACTION_CLEANUP` | M2 | `ORIGINAL_REQUEST §R2`<br>`PROJECT.md §F10` | `desktop_views_tests` | Accidental click-to-pin/react bug removed, rich text and markdown parsing, right-click context menu (Copy, Reply, Forward, Pin, Delete), lightbox media viewer, 5-bit voice waveform renderer | **PASS** |
-| **F11** | `F11_REAL_BACKEND_HTTP_MESSAGING` | M3 | `ORIGINAL_REQUEST §R3`<br>`PROJECT.md §F11` | `live_cloud_connectivity_tests`<br>`challenger_m3_f11_f12_adversarial_tests`<br>`verify_cloud_delivery.py` | Axum REST client wired to live cloud endpoints (`/api/v1/auth/login`, `/api/v1/messages/send`, `/api/v1/chats`, `/api/v1/chats/:id/messages`) against `34.170.16.35:8080`, dual-endpoint fallback | **PASS** |
+| **F11** | `F11_REAL_BACKEND_HTTP_MESSAGING` | M3 | `ORIGINAL_REQUEST §R3`<br>`PROJECT.md §F11` | `live_cloud_connectivity_tests`<br>`challenger_m3_f11_f12_adversarial_tests`<br>`verify_cloud_delivery.py` | Axum REST client wired to live cloud endpoints (`/api/v1/auth/login`, `/api/v1/messages/send`, `/api/v1/chats`, `/api/v1/chats/:id/messages`) against `34.46.77.133:8080`, dual-endpoint fallback | **PASS** |
 | **F12** | `F12_REALTIME_WS_STREAMING` | M3 | `ORIGINAL_REQUEST §R3`<br>`PROJECT.md §F12` | `live_cloud_connectivity_tests`<br>`challenger_m3_f11_f12_adversarial_tests` | WebSocket transport client (`/api/v1/ws?token=...`), 25s ping heartbeats, `WsServerFrame::Ack`, `WsServerFrame::PtsPush`, PTS gap detection, multi-step recovery, broadcast stress | **PASS** |
 | **F13** | `F13_SESSION_LIFECYCLE_RECONNECT` | M3 | `ORIGINAL_REQUEST §R3`<br>`PROJECT.md §F13` | `live_cloud_connectivity_tests`<br>`challenger_m3_adversarial_stress_tests` | 4-tier configuration cascading (CLI > ENV > ConfigFile > Default), atomic POSIX 0600 `session.json` storage, exponential backoff with jitter bounds [1.0s, 30.0s], clean 401 token revocation | **PASS** |
 | **F14** | `F14_OPAQUE_BOX_E2E_AUTOMATION` | M4 | `ORIGINAL_REQUEST §R3`<br>`PROJECT.md §F14` | `verify_cloud_delivery.py`<br>`verify_live_cloud_m3_adversarial.py` | Automated opaque-box E2E validation against live cloud backend: TCP reachability, HTTP health/status, auth registration, login, auth token verification, autonomous ACP agent execution, SSE stream, exit code 0 | **PASS** |
@@ -185,7 +185,7 @@ Per the **AGENTS.md Build Hygiene Mandate**:
 
 ## 6. Formal Sign-Off & Release Certification
 
-All 15 authoritative features (F1 to F15), 4 architectural panes, live cloud backend integrations (`http://34.170.16.35:8080`), and adversarial stress dimensions have been completely and independently verified with a **100.0% pass rate** (166 / 166 passing assertions and tests, 0 failures, exit code 0).
+All 15 authoritative features (F1 to F15), 4 architectural panes, live cloud backend integrations (`http://34.46.77.133:8080`), and adversarial stress dimensions have been completely and independently verified with a **100.0% pass rate** (166 / 166 passing assertions and tests, 0 failures, exit code 0).
 
 The software meets all requirements of `ORIGINAL_REQUEST.md`, `PROJECT.md`, `TEST_INFRA.md`, and `AGENTS.md`.
 

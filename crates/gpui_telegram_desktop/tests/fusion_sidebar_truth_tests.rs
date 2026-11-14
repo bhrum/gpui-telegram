@@ -67,7 +67,7 @@ fn test_sidebar_new_and_default_truthful_empty_state() {
 #[test]
 fn test_sidebar_cloud_workspace_does_not_fabricate_peers_or_connectivity() {
     let mut sidebar = ChatSidebar::new();
-    sidebar.configure_for_cloud_workspace("http://34.170.16.35:8080");
+    sidebar.configure_for_cloud_workspace("http://34.46.77.133:8080");
 
     assert!(
         sidebar.dialogs.is_empty(),

@@ -262,7 +262,7 @@ def build_macos_app_bundle(
     <key>LSEnvironment</key>
     <dict>
         <key>GPUI_TELEGRAM_SERVER_URL</key>
-        <string>http://34.170.16.35:8080</string>
+        <string>http://34.46.77.133:8080</string>
     </dict>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Teamwork GPUI Telegram Contributors. Apache-2.0.</string>
@@ -327,14 +327,14 @@ def generate_release_notes(
 
 ## Production Cloud Endpoints
 The GPUI Telegram client connects directly to the production cloud infrastructure on Google Cloud Platform:
-- **Rust Telegram Server Gateway (HTTP/WS)**: `http://34.170.16.35:8080`
-- **Node.js AI Gateway (DeepSeek SSE Stream)**: `http://34.170.16.35:8788`
+- **Rust Telegram Server Gateway (HTTP/WS)**: `http://34.46.77.133:8080`
+- **Node.js AI Gateway (DeepSeek SSE Stream)**: `http://34.46.77.133:8788`
 
 ## Configuration Options
 The client supports 4-tier configuration precedence:
-1. CLI Flag: `./bin/gpui_telegram_desktop --server-url http://34.170.16.35:8080`
-2. Environment Variable: `export GPUI_TELEGRAM_SERVER_URL=http://34.170.16.35:8080`
-3. Local Config File: `~/.config/gpui_telegram/config.json` (`{{"server_url": "http://34.170.16.35:8080"}}`)
+1. CLI Flag: `./bin/gpui_telegram_desktop --server-url http://34.46.77.133:8080`
+2. Environment Variable: `export GPUI_TELEGRAM_SERVER_URL=http://34.46.77.133:8080`
+3. Local Config File: `~/.config/gpui_telegram/config.json` (`{{"server_url": "http://34.46.77.133:8080"}}`)
 4. Fallback Default: `http://127.0.0.1:8080`
 
 ## Package Structure

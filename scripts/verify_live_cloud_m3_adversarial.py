@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Live Cloud VM Adversarial Verification Harness for Milestone 3
-Target: Google Cloud VM 34.170.16.35:8080 (gpui-telegram-server & AI Agent)
+Target: Google Cloud VM 34.46.77.133:8080 (gpui-telegram-server & AI Agent)
 Author: challenger_cloud_m3_2
 """
 
@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VM_HOST = "34.170.16.35"
+VM_HOST = "34.46.77.133"
 VM_PORT = 8080
 BASE_URL = f"http://{VM_HOST}:{VM_PORT}"
 
@@ -83,7 +83,7 @@ def http_request(
 
 def main():
     print(f"{BLUE}======================================================================{RESET}")
-    print(f"{BLUE}     M3 Empirical Adversarial Challenge: Live Cloud VM 34.170.16.35    {RESET}")
+    print(f"{BLUE}     M3 Empirical Adversarial Challenge: Live Cloud VM 34.46.77.133    {RESET}")
     print(f"{BLUE}======================================================================{RESET}")
     print(f"Target: {BASE_URL}")
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Adversarial Empirical Verification Harness for Cloud M2 Remediation
-Target: Google Cloud VM 34.170.16.35:8080 (gpui-telegram-server)
+Target: Google Cloud VM 34.46.77.133:8080 (gpui-telegram-server)
 Author: challenger_cloud_m2_iter2_1
 """
 
@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VM_HOST = "34.170.16.35"
+VM_HOST = "34.46.77.133"
 VM_PORT = 8080
 BASE_URL = f"http://{VM_HOST}:{VM_PORT}"
 SSH_KEY = "~/.ssh/google_compute_engine"

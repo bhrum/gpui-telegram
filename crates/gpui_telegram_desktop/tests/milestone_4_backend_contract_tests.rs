@@ -5,7 +5,7 @@
 //!
 //! Validates:
 //! 1. Multi-environment 4-tier configuration resolution (CLI, ENV, Config File, Default Fallback).
-//! 2. Live Cloud VM backend contract (http://34.170.16.35:8080: /health, /api/v1/status, auth register & login,
+//! 2. Live Cloud VM backend contract (http://34.46.77.133:8080: /health, /api/v1/status, auth register & login,
 //!    session profile verification, atomic POSIX 0600 storage, chats, message send & history,
 //!    WebSocket bidirectional ping/pong & PtsPush broadcast).
 //! 3. Local backend contract (crates/gpui_telegram_server loopback in-memory service,
@@ -277,7 +277,7 @@ fn test_multi_environment_4_tier_url_resolution() {
 #[tokio::test]
 async fn test_real_backend_live_cloud_vm_full_contract() {
     let cloud_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
     let client = HttpClient::new(cloud_url.clone());
 
     // 1. Health check (GET /health)
@@ -692,7 +692,7 @@ async fn test_local_backend_in_memory_full_stack_contract() {
 #[tokio::test]
 async fn test_network_resilience_401_rejection_and_session_invalidation() {
     let cloud_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
     let client = HttpClient::new(cloud_url.clone());
 
     // 1. REST call with forged token yields Unauthorized (HTTP 401)

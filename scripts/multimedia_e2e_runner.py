@@ -55,7 +55,7 @@ class MultimediaE2ERunner:
         self,
         artifacts_dir: str = "artifacts/multimedia_e2e",
         report_path: str = "docs/verification/MULTIMEDIA_E2E_VERIFICATION.md",
-        server_url: str = "http://34.170.16.35:8080",
+        server_url: str = "http://34.46.77.133:8080",
         clean_after: bool = True,
         verbose: bool = True,
     ):
@@ -500,7 +500,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GPUI Telegram Multimedia E2E Automation Runner")
     parser.add_argument("--artifacts-dir", default="artifacts/multimedia_e2e", help="Artifacts directory")
     parser.add_argument("--report-path", default="docs/verification/MULTIMEDIA_E2E_VERIFICATION.md", help="Markdown report path")
-    parser.add_argument("--server-url", default="http://34.170.16.35:8080", help="Telegram server URL")
+    parser.add_argument("--server-url", default="http://34.46.77.133:8080", help="Telegram server URL")
     parser.add_argument("--no-clean", action="store_true", help="Skip post-run build hygiene cleanup")
     args = parser.parse_args()
 

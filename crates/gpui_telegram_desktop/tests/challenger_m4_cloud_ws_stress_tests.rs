@@ -1,7 +1,7 @@
 //! Milestone 4 Empirical Adversarial Stress Test Suite (`crates/gpui_telegram_desktop`).
 //!
 //! Focus:
-//! 1. Live Cloud VM (`http://34.170.16.35:8080`) high-frequency stress:
+//! 1. Live Cloud VM (`http://34.46.77.133:8080`) high-frequency stress:
 //!    - Concurrent registrations and logins across multiple adversarial user profiles.
 //!    - Duplicate username registration conflict verification (assert HTTP 409 Conflict).
 //!    - Rapid-fire message sending and history retrieval under load.
@@ -39,7 +39,7 @@ static UNIQUE_SEQ: AtomicU64 = AtomicU64::new(100);
 
 fn live_cloud_url() -> String {
     std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string())
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string())
 }
 
 // ============================================================================

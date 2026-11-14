@@ -806,7 +806,11 @@ impl HttpClient {
                     let status = resp.status();
                     if status.is_success() {
                         let mut data = resp.json::<AlipayStartResponse>().await?;
-                        if data.login_url.contains("openauth.alipay.com") {
+                        let needs_cli_upgrade = data.login_url.contains("openauth.alipay.com")
+                            && (data.login_url.contains("state=fbs_")
+                                || data.login_url.contains("state=placeholder")
+                                || !data.login_url.contains("redirect_uri=https%3A%2F%2Fapi.ombhrum.com"));
+                        if needs_cli_upgrade {
                             if let Some(ref fabushi_base) = fabushi_base_opt {
                                 let fabushi_login_endpoint = format!(
                                     "{}/api/auth/alipay/login-url?platform=cli",

@@ -9,7 +9,7 @@ use gpui_telegram_proto::sync::{PtsUpdate, TypingAction, TypingEvent, UpdateEven
 use gpui_telegram_proto::ws::WsServerFrame;
 use std::time::Duration;
 
-const LIVE_CLOUD_URL: &str = "http://34.170.16.35:8080";
+const LIVE_CLOUD_URL: &str = "http://34.46.77.133:8080";
 
 fn get_live_client() -> HttpClient {
     let url = std::env::var("GPUI_TELEGRAM_SERVER_URL")

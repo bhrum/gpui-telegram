@@ -50,7 +50,7 @@ fn cloud_workspace_reset_clears_populated_state_without_fabricating_bot_or_url_p
     inspector.is_contact_blocked = true;
     inspector.pending_media_open = Some(("https://example.com/photo.jpg".to_string(), false));
 
-    let server_url = "http://34.170.16.35:8080";
+    let server_url = "http://34.46.77.133:8080";
     inspector.configure_for_cloud_workspace(server_url);
 
     assert!(!inspector.is_open, "Cloud reset must close the inspector drawer");

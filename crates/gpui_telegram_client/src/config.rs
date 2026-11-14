@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 
-pub const DEFAULT_SERVER_URL: &str = "http://34.170.16.35:8080";
+pub const DEFAULT_SERVER_URL: &str = "http://34.46.77.133:8080";
 pub const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 25;
 pub const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 10;
@@ -323,12 +323,12 @@ mod tests {
     #[test]
     fn test_url_normalization() {
         assert_eq!(
-            ClientConfig::normalize_url("34.170.16.35:8080"),
-            "http://34.170.16.35:8080"
+            ClientConfig::normalize_url("34.46.77.133:8080"),
+            "http://34.46.77.133:8080"
         );
         assert_eq!(
-            ClientConfig::normalize_url("http://34.170.16.35:8080/"),
-            "http://34.170.16.35:8080"
+            ClientConfig::normalize_url("http://34.46.77.133:8080/"),
+            "http://34.46.77.133:8080"
         );
         assert_eq!(
             ClientConfig::normalize_url("https://secure.example.com/api/"),
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn test_stored_session_serde() {
         let session = StoredSession {
-            server_url: "http://34.170.16.35:8080".to_string(),
+            server_url: "http://34.46.77.133:8080".to_string(),
             user_id: 100077,
             username: "probe_user".to_string(),
             token: "sess_token_123.456".to_string(),

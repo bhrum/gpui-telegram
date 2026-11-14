@@ -10,7 +10,7 @@ use gpui_telegram_proto::sync::{PtsUpdate, TypingAction, TypingEvent, UpdateEven
 #[tokio::test]
 async fn test_live_cloud_backend_connectivity_and_flow() {
     let base_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
     let client = HttpClient::new(base_url.clone());
 
     // 1. Health check
@@ -95,7 +95,7 @@ fn test_non_tokio_executor_login_and_ws_start_no_panic() {
     );
 
     let base_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
     let tg_client = gpui_telegram_client::TelegramClient::new_with_url(base_url);
 
     let login_req = LoginRequest {
@@ -118,7 +118,7 @@ fn test_non_tokio_executor_login_and_ws_start_no_panic() {
 #[tokio::test]
 async fn test_live_cloud_http_send_message_and_chats_and_history() {
     let base_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
     let client = HttpClient::new(base_url.clone());
 
     let login_req = LoginRequest {
@@ -234,7 +234,7 @@ fn test_pts_delta_sync_gap_detection_and_pending_buffer() {
 #[test]
 fn test_session_storage_atomic_0600_permissions_and_lifecycle() {
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 100150,
         username: "test_m3_secure".to_string(),
         token: "sess_secret_token_abc123".to_string(),

@@ -329,7 +329,7 @@ fn test_adversarial_session_storage_hostile_umasks_0600_invariance() {
         set_env_var("HOME", temp_home.path());
 
         let session = StoredSession {
-            server_url: "http://34.170.16.35:8080".to_string(),
+            server_url: "http://34.46.77.133:8080".to_string(),
             user_id: 888123 + (umask as u64),
             username: format!("umask_adversary_{:03o}", umask),
             token: format!("token_umask_{:03o}_xyz789", umask),
@@ -399,7 +399,7 @@ fn test_adversarial_session_storage_overwrite_preexisting_insecure_file() {
     assert_eq!(initial_mode, 0o666);
 
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 99901,
         username: "overwritten_user".to_string(),
         token: "overwritten_token_0600".to_string(),
@@ -440,7 +440,7 @@ fn test_adversarial_session_storage_concurrent_threads_under_umask000() {
             b.wait();
             for iter in 0..20 {
                 let session = StoredSession {
-                    server_url: "http://34.170.16.35:8080".to_string(),
+                    server_url: "http://34.46.77.133:8080".to_string(),
                     user_id: 10000 + (worker_idx * 100 + iter) as u64,
                     username: format!("worker_{}_{}", worker_idx, iter),
                     token: format!("tok_{}_{}", worker_idx, iter),
@@ -710,7 +710,7 @@ async fn test_adversarial_ws_transport_401_live_cloud_halts_and_wipes_session() 
     set_env_var("HOME", temp_home.path());
 
     let cloud_url = env::var("GPUI_TELEGRAM_SERVER_URL")
-        .unwrap_or_else(|_| "http://34.170.16.35:8080".to_string());
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
 
     // 1. Store dummy session
     let session = StoredSession {

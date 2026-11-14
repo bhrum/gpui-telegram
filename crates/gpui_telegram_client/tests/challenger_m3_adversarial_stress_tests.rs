@@ -123,7 +123,7 @@ fn test_adversarial_env_precedence_over_config_file_and_default() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     set_env("HOME", temp_dir.path());
-    set_env("GPUI_TELEGRAM_SERVER_URL", "34.170.16.35:8080//");
+    set_env("GPUI_TELEGRAM_SERVER_URL", "34.46.77.133:8080//");
 
     let cfg_dir = temp_dir.path().join(".config").join("gpui_telegram");
     fs::create_dir_all(&cfg_dir).unwrap();
@@ -135,7 +135,7 @@ fn test_adversarial_env_precedence_over_config_file_and_default() {
 
     let empty_args = vec!["gpui_telegram".to_string()];
     let cfg = ClientConfig::resolve_with_args(&empty_args);
-    assert_eq!(cfg.server_url, "http://34.170.16.35:8080");
+    assert_eq!(cfg.server_url, "http://34.46.77.133:8080");
     assert_eq!(cfg.config_source, ConfigSource::EnvironmentVariable);
 }
 
@@ -294,7 +294,7 @@ fn test_adversarial_session_posix_permissions_0600() {
     set_env("HOME", temp_dir.path());
 
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 88812,
         username: "perm_test_user".to_string(),
         token: "secret_token_123456789".to_string(),
@@ -347,7 +347,7 @@ fn test_adversarial_session_corruption_and_truncation_resilience() {
     // Corruption Case 2: Truncated JSON during simulated power cut
     fs::write(
         &session_path,
-        br#"{"server_url":"http://34.170.16.35:8080","user_id":888,"#,
+        br#"{"server_url":"http://34.46.77.133:8080","user_id":888,"#,
     )
     .unwrap();
     assert!(ClientConfig::load_session().is_none());
@@ -360,7 +360,7 @@ fn test_adversarial_session_corruption_and_truncation_resilience() {
     // Corruption Case 4: Missing required fields
     fs::write(
         &session_path,
-        br#"{"server_url":"http://34.170.16.35:8080","user_id":888}"#,
+        br#"{"server_url":"http://34.46.77.133:8080","user_id":888}"#,
     )
     .unwrap();
     assert!(ClientConfig::load_session().is_none());
@@ -369,7 +369,7 @@ fn test_adversarial_session_corruption_and_truncation_resilience() {
     fs::write(
         &session_path,
         br#"{
-            "server_url": "http://34.170.16.35:8080",
+            "server_url": "http://34.46.77.133:8080",
             "user_id": "not_a_number",
             "username": "user",
             "token": "tok",
@@ -396,7 +396,7 @@ fn test_adversarial_session_corruption_and_truncation_resilience() {
 
 #[tokio::test]
 async fn test_adversarial_rejected_session_token_live_cloud_401() {
-    let client = HttpClient::new("http://34.170.16.35:8080".to_string());
+    let client = HttpClient::new("http://34.46.77.133:8080".to_string());
 
     // Adversarial probe: forged/expired session token
     let bogus_token = "adversarial_forged_expired_session_token_xyz987";
@@ -424,7 +424,7 @@ fn test_adversarial_rejected_session_clearing_lifecycle() {
 
     // 1. Simulate existing session on disk
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 99901,
         username: "revoked_user".to_string(),
         token: "revoked_token_123".to_string(),
@@ -468,7 +468,7 @@ fn test_adversarial_concurrent_session_saves_stress() {
         let handle = thread::spawn(move || {
             for iter in 0..iterations_per_thread {
                 let session = StoredSession {
-                    server_url: "http://34.170.16.35:8080".to_string(),
+                    server_url: "http://34.46.77.133:8080".to_string(),
                     user_id: 1000 + (thread_idx as u64) * 100 + (iter as u64),
                     username: format!("thread_{}_iter_{}", thread_idx, iter),
                     token: format!("tok_{}_{}", thread_idx, iter),
@@ -712,7 +712,7 @@ async fn test_adversarial_ws_transport_401_terminates_loop_and_clears_session() 
 
     // 1. Store a session file on disk
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 77701,
         username: "revoked_ws_user".to_string(),
         token: "adversarial_forged_token_ws_401".to_string(),
@@ -724,7 +724,7 @@ async fn test_adversarial_ws_transport_401_terminates_loop_and_clears_session() 
 
     // 2. Initialize WsTransport with the invalid token against live cloud backend
     let ws_channel = WsChannel::new();
-    let transport = WsTransport::new("http://34.170.16.35:8080".to_string(), ws_channel);
+    let transport = WsTransport::new("http://34.46.77.133:8080".to_string(), ws_channel);
     let mut status_rx = transport.subscribe_status();
     transport.set_token(Some(session.token.clone()));
     transport.start();
@@ -829,7 +829,7 @@ fn test_adversarial_session_posix_permissions_under_hostile_umasks() {
     set_env("HOME", temp_dir.path());
 
     let session = StoredSession {
-        server_url: "http://34.170.16.35:8080".to_string(),
+        server_url: "http://34.46.77.133:8080".to_string(),
         user_id: 12345,
         username: "umask_user".to_string(),
         token: "tok_umask".to_string(),

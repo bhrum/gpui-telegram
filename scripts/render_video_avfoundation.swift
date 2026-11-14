@@ -632,7 +632,7 @@ func generateAlipayQRSimulateVideo(outputURL: URL) {
             NSBezierPath(roundedRect: vmRect, xRadius: 6, yRadius: 6).fill()
             Colors.onlineGreen.setFill()
             NSBezierPath(ovalIn: NSRect(x: vmRect.minX + 10, y: vmRect.minY + 9, width: 8, height: 8)).fill()
-            drawText("Cloud VM: http://34.170.16.35:8080", at: NSPoint(x: vmRect.minX + 24, y: vmRect.minY + 6), font: NSFont.systemFont(ofSize: 11), color: Colors.textSecondary)
+            drawText("Cloud VM: http://34.46.77.133:8080", at: NSPoint(x: vmRect.minX + 24, y: vmRect.minY + 6), font: NSFont.systemFont(ofSize: 11), color: Colors.textSecondary)
 
             // Segmented Tabs
             let tabY = cardRect.maxY - 186
@@ -813,7 +813,7 @@ func generateMessageSendPtsEchoVideo(outputURL: URL) {
         }
         NSBezierPath(roundedRect: ptsBadgeRect, xRadius: 6, yRadius: 6).fill()
         let ptsColor = (isEchoed && frame < 165) ? Colors.accent : Colors.onlineGreen
-        drawCenteredText("⚡ Live PTS: \(currentPts) | WS: 34.170.16.35", in: ptsBadgeRect, font: NSFont.boldSystemFont(ofSize: 11), color: ptsColor)
+        drawCenteredText("⚡ Live PTS: \(currentPts) | WS: 34.46.77.133", in: ptsBadgeRect, font: NSFont.boldSystemFont(ofSize: 11), color: ptsColor)
 
         // Incoming bubble from Alice
         let b1 = NSRect(x: stageRect.minX + 24, y: stageRect.maxY - 140, width: 340, height: 54)

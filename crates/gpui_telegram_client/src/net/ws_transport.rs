@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn test_format_ws_url() {
-        let url = WsTransport::format_ws_url("http://34.170.16.35:8080", "secret_token_123");
-        assert_eq!(url, "ws://34.170.16.35:8080/api/v1/ws?token=secret_token_123");
+        let url = WsTransport::format_ws_url("http://34.46.77.133:8080", "secret_token_123");
+        assert_eq!(url, "ws://34.46.77.133:8080/api/v1/ws?token=secret_token_123");
 
         let url_ssl = WsTransport::format_ws_url("https://secure.example.com/", "token_xyz");
         assert_eq!(url_ssl, "wss://secure.example.com/api/v1/ws?token=token_xyz");
