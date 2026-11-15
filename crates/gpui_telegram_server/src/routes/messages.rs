@@ -99,6 +99,7 @@ pub async fn history_for_chat(state: &AppState, viewer_id: UserId, chat_id: i64,
         return err_resp(StatusCode::BAD_REQUEST, "conflicting_pagination", "Cannot specify both before_id and after_id");
     }
     let (chat, _, _) = match check_active_membership(state, ChatId(chat_id), viewer_id) { Ok(c) => c, Err(r) => return r };
+    crate::routes::enforce_ttl_expiry(state).await;
     match state.db.list_messages_page(ChatId(chat_id), topic_id, before_eff, after_id, limit) {
         Ok((rows, has_more)) => {
             let messages: Vec<Value> = rows.iter().map(|r| format_message_json(state, r, viewer_id)).collect();
@@ -167,6 +168,22 @@ pub async fn send_for_chat(state: &Arc<AppState>, auth_user: UserId, chat_id_raw
     if let Some(m) = member_opt {
         if m.role == "restricted" && (m.banned_rights & 1) != 0 {
             return err_resp(StatusCode::FORBIDDEN, "forbidden", "User is restricted from sending messages");
+        }
+    }
+    if matches!(chat.chat_type, 0 | 4) {
+        if let Ok(members) = state.db.get_chat_members(chat_id) {
+            for peer_uid in members {
+                if peer_uid != auth_user
+                    && (state.db.is_user_blocked(peer_uid, auth_user).unwrap_or(false)
+                        || state.db.is_user_blocked(auth_user, peer_uid).unwrap_or(false))
+                {
+                    return err_resp(
+                        StatusCode::FORBIDDEN,
+                        "user_is_blocked",
+                        "Cannot send messages in a blocked direct chat",
+                    );
+                }
+            }
         }
     }
     let mut forward_info: Option<ForwardInfo> = None;

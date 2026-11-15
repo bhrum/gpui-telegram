@@ -229,6 +229,7 @@ def build_macos_app_bundle(
     os.chmod(dest_bin, 0o755)
 
     # 2. Write Info.plist
+    display_bundle_name = "AI Chat" if app_name == "GPUI Telegram" else app_name
     info_plist = contents_dir / "Info.plist"
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -239,9 +240,9 @@ def build_macos_app_bundle(
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>{app_name}</string>
+    <string>{display_bundle_name}</string>
     <key>CFBundleDisplayName</key>
-    <string>{app_name}</string>
+    <string>{display_bundle_name}</string>
     <key>CFBundleIdentifier</key>
     <string>org.gpui-telegram.desktop</string>
     <key>CFBundleVersion</key>
@@ -265,7 +266,7 @@ def build_macos_app_bundle(
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Teamwork GPUI Telegram Contributors. Apache-2.0.</string>
+    <string>Copyright © 2026 Contributors. Apache-2.0.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

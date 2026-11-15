@@ -142,7 +142,7 @@ impl Render for GiftPremiumBox {
                         .text_size(px(18.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(rgb(0x111827))
-                        .child(format!("Gift Telegram Premium to {}", self.recipient_name)),
+                        .child(format!("Gift Premium to {}", self.recipient_name)),
                 )
                 .child(
                     div()

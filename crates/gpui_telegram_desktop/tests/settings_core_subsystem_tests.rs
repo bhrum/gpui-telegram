@@ -37,7 +37,7 @@ fn test_settings_section_types_catalog() {
     assert!(SettingsSectionType::Main.is_root());
     assert!(!SettingsSectionType::Information.is_root());
     assert_eq!(SettingsSectionType::Calls.id_str(), "calls");
-    assert_eq!(SettingsSectionType::Credits.display_title(), "Telegram Stars");
+    assert_eq!(SettingsSectionType::Credits.display_title(), "Stars");
 
     let mut view = SettingsType::new();
     assert_eq!(view.current_section, SettingsSectionType::Main);

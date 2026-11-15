@@ -207,7 +207,7 @@ impl Render for IntroWidget {
                     .text_size(px(11.5))
                     .text_color(rgb(palette.text_secondary))
                     .child(if self.server_status_message.is_empty() {
-                        tr_str(&lang, "Telegram Desktop GPUI • 端到端云原生桌面客户端", "Telegram Desktop GPUI • Native Desktop Client")
+                        tr_str(&lang, "AI Chat • 端到端云原生桌面客户端", "AI Chat • Native Desktop Client")
                             .to_string()
                     } else {
                         self.server_status_message.clone()

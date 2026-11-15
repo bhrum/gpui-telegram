@@ -110,7 +110,7 @@ impl Render for SettingsScalePreview {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_xs()
-                            .child("Telegram Desktop"),
+                            .child("AI Chat"),
                     )
                     .child(
                         div()

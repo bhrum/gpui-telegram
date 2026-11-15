@@ -1,18 +1,44 @@
 pub mod api_acp;
 pub mod api_auth;
 pub mod api_chats;
+pub mod api_computers;
 pub mod api_features;
+pub mod api_miniapps;
 pub mod hermes_client;
 pub mod http_client;
 pub mod http_helpers;
 pub mod ws_channel;
 pub mod ws_transport;
 
+pub use api_computers::{
+    detect_local_host_info, detect_local_hostname, execute_local_computer_op,
+};
+pub use api_miniapps::{
+    compute_telegram_init_data_hash, parse_init_data_check_string,
+    verify_telegram_init_data_hmac, GlobalCatalogSearchResponse,
+};
+pub use gpui_telegram_proto::computer_contracts::{
+    ApproveComputerCommandRequest, AuthorizedControllerEntry, AuthorizedControllerKind,
+    BotComputerProfileDto, CloudAuthMethod, ComputerListResponse, ComputerNodeDto,
+    ComputerNodeKind, ComputerRunPolicy, PendingComputerCommandDto, RegisterLocalComputerRequest,
+    RemoteComputerCommandRequest, RemoteComputerCommandResult, RemoteComputerOp,
+    UpdateBotComputerRequest, UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
+};
+pub use gpui_telegram_proto::miniapp_contracts::{
+    BotCommandSpec, BotRegistryEntry, BotTokenResponse, ChatCallbackRequest, CloudStorageItem,
+    CreateBotRequest, CreateMiniAppRequest, InstallMiniAppRequest, LaunchMiniAppRequest,
+    MiniAppActionButton, MiniAppActionKind, MiniAppActionRequest, MiniAppActionResponse,
+    MiniAppEntry, MiniAppInitDataDto, MiniAppLaunchContext, MiniAppLaunchMode,
+    MiniAppManifestDto, MiniAppThemeParams, MiniAppUiSchema, MiniAppUiWidget, MiniAppWidgetType,
+    NaturalLanguageCreateRequest, NaturalLanguageCreateResponse, PeerBotActionResult,
+    ValidateInitDataRequest, ValidateInitDataResponse,
+};
+
 pub use gpui_telegram_proto::contracts::{
-    AuthResponse as ProtoAuthResponse, CallInviteRequest, CallRecordDto, CallSignalRequest,
-    ChannelStatisticsDto, ChatDetailDto, ChatFolderDto, ContactDto, CreateChatRequest,
-    CreatePollHttpRequest, DailyStatPoint, DraftDto, EditMessageHttpRequest, ForumTopicDto,
-    GifResultDto, InlineKeyboardButton, InviteLinkDto, MediaUploadCompleteResponse,
+    AuthResponse as ProtoAuthResponse, BlockedUserDto, CallInviteRequest, CallRecordDto,
+    CallSignalRequest, ChannelStatisticsDto, ChatDetailDto, ChatFolderDto, ContactDto,
+    CreateChatRequest, CreatePollHttpRequest, DailyStatPoint, DraftDto, EditMessageHttpRequest,
+    ForumTopicDto, GifResultDto, InlineKeyboardButton, InviteLinkDto, MediaUploadCompleteResponse,
     MediaUploadInitResponse, MemberDto, PhoneSendCodeRequest, PhoneSendCodeResponse,
     PhoneVerifyRequest, PinnedMessageDto, PollHttpResponse, QrPairAcceptRequest,
     QrPairInitResponse, QrPairPollResponse, ReactionHttpRequest, ReactionHttpResponse,
@@ -21,8 +47,8 @@ pub use gpui_telegram_proto::contracts::{
     SendMessageHttpResponse as RichSendMessageResponse, SessionDto, StarGiftRequest,
     StatusResponse, StickerItemDto, StickerSetDto, StoryDto, TwoFactorSetRequest,
     TwoFactorStatusResponse, TwoFactorVerifyRequest,
-    UpdateProfileRequest as ProtoUpdateProfileRequest, UserProfileDto, VotePollHttpRequest,
-    WalletBalanceDto, WalletTransactionDto,
+    UpdateProfileRequest as ProtoUpdateProfileRequest, UserPrivacySettingsDto, UserProfileDto,
+    VotePollHttpRequest, WalletBalanceDto, WalletTransactionDto,
 };
 pub use http_client::{
     AddContactHttpRequest, AddContactHttpResponse, AgentRunRequest, AgentRunResponse,

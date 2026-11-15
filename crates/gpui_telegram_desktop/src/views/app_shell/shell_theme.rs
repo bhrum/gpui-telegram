@@ -2,18 +2,11 @@ use gpui::{Context, Entity};
 
 use crate::app::preferences::{AppPreferences, ThemeMode};
 use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::components::bots::bot_attach_web_view::BotAttachWebView;
 use crate::views::app_shell::ModalContainer;
-use crate::views::settings::sections::{
-    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsBlockedPeersSections,
-    SettingsBusinessSections, SettingsCallsSections, SettingsChatSections,
-    SettingsCreditsSections, SettingsFoldersSections, SettingsGlobalTtlSections,
-    SettingsInformationSections, SettingsLocalPasscodeSections, SettingsLocalStorageSections,
-    SettingsMainSections, SettingsNotificationsReactionsSections, SettingsNotificationsSections,
-    SettingsNotificationsTypeSections, SettingsPasskeysSections, SettingsPremiumSections,
-    SettingsPrivacySecuritySections, SettingsShortcutsSections, SettingsWebsitesSections,
-};
-use crate::views::settings::settings_power_saving::SettingsPowerSaving;
-use crate::views::settings::settings_search::SettingsSearch;
+use crate::views::auth::AuthWizardView;
+use crate::views::boxes::peers::create_managed_bot_box::CreateManagedBotBoxPeers;
+use crate::views::settings::SettingsRouter;
 use crate::views::tdesktop_theme::resolve_desktop_palette;
 use crate::views::{
     CallOverlay, CanonicalComposer, ChatSidebar, ComputerWorkbench, ContextInspector,
@@ -37,7 +30,9 @@ pub fn compute_shell_palette(
         font_size,
         bubble_radius_px,
         wallpaper_id,
-    );
+    )
+    .with_ui_scale(prefs.interface_scale_pct)
+    .with_blur_wallpaper(prefs.appearance.blur_wallpaper);
     (mode, palette)
 }
 
@@ -94,37 +89,19 @@ pub struct ShellThemeTargets<'a> {
     pub computer_overlay: Option<&'a Entity<ComputerWorkbench>>,
     pub media_viewer_overlay: Option<&'a Entity<MediaViewer>>,
     pub iv_viewer_overlay: Option<&'a Entity<IvViewer>>,
-    pub settings_main: &'a Entity<SettingsMainSections>,
-    pub settings_information: &'a Entity<SettingsInformationSections>,
-    pub settings_notifications: &'a Entity<SettingsNotificationsSections>,
-    pub settings_notif_reactions: &'a Entity<SettingsNotificationsReactionsSections>,
-    pub settings_notif_type: &'a Entity<SettingsNotificationsTypeSections>,
-    pub settings_privacy: &'a Entity<SettingsPrivacySecuritySections>,
-    pub settings_blocked_peers: &'a Entity<SettingsBlockedPeersSections>,
-    pub settings_active_sessions: &'a Entity<SettingsActiveSessionsSections>,
-    pub settings_local_passcode: &'a Entity<SettingsLocalPasscodeSections>,
-    pub settings_passkeys: &'a Entity<SettingsPasskeysSections>,
-    pub settings_global_ttl: &'a Entity<SettingsGlobalTtlSections>,
-    pub settings_websites: &'a Entity<SettingsWebsitesSections>,
-    pub settings_chat: &'a Entity<SettingsChatSections>,
-    pub settings_folders: &'a Entity<SettingsFoldersSections>,
-    pub settings_advanced: &'a Entity<SettingsAdvancedSections>,
-    pub settings_local_storage: &'a Entity<SettingsLocalStorageSections>,
-    pub settings_power_saving: &'a Entity<SettingsPowerSaving>,
-    pub settings_calls: &'a Entity<SettingsCallsSections>,
-    pub settings_credits: &'a Entity<SettingsCreditsSections>,
-    pub settings_premium: &'a Entity<SettingsPremiumSections>,
-    pub settings_shortcuts: &'a Entity<SettingsShortcutsSections>,
-    pub settings_business: &'a Entity<SettingsBusinessSections>,
-    pub settings_search: &'a Entity<SettingsSearch>,
+    pub auth_wizard: &'a Entity<AuthWizardView>,
+    pub settings_router: &'a Entity<SettingsRouter>,
+    pub miniapp_overlay: Option<&'a Entity<BotAttachWebView>>,
+    pub create_bot_box: Option<&'a Entity<CreateManagedBotBoxPeers>>,
 }
 
 macro_rules! sync_palette_and_lang {
     ($cx:expr, $pal:expr, $lang:expr, $($ent:expr),* $(,)?) => {
         $(
-            $ent.update($cx, |view, _| {
+            $ent.update($cx, |view, vcx| {
                 view.set_palette($pal.clone());
                 view.set_language($lang);
+                vcx.notify();
             });
         )*
     };
@@ -147,50 +124,48 @@ pub fn propagate_theme_and_locale<V: 'static>(
         targets.inspector,
         targets.modal_container,
         targets.tasks_workspace,
-        targets.settings_main,
-        targets.settings_information,
-        targets.settings_notifications,
-        targets.settings_notif_reactions,
-        targets.settings_notif_type,
-        targets.settings_privacy,
-        targets.settings_blocked_peers,
-        targets.settings_active_sessions,
-        targets.settings_local_passcode,
-        targets.settings_passkeys,
-        targets.settings_global_ttl,
-        targets.settings_websites,
-        targets.settings_chat,
-        targets.settings_folders,
-        targets.settings_advanced,
-        targets.settings_local_storage,
-        targets.settings_power_saving,
-        targets.settings_calls,
-        targets.settings_credits,
-        targets.settings_premium,
-        targets.settings_shortcuts,
-        targets.settings_business,
-        targets.settings_search,
     );
 
-    targets.stage.update(cx, |s, _| s.apply_theme(palette.clone(), lang_id));
-    targets.composer.update(cx, |c, _| c.apply_theme(palette.clone(), lang_id));
+    let is_zh = lang_id.starts_with("zh");
+    targets.auth_wizard.update(cx, |w, wcx| {
+        w.apply_theme_and_locale(palette.clone(), is_zh);
+        wcx.notify();
+    });
+    targets
+        .settings_router
+        .update(cx, |sr, scx| sr.apply_theme_and_locale(palette.clone(), is_zh, scx));
+
+    targets.stage.update(cx, |s, scx| {
+        s.apply_theme(palette.clone(), lang_id);
+        scx.notify();
+    });
+    targets.composer.update(cx, |c, ccx| {
+        c.apply_theme(palette.clone(), lang_id);
+        ccx.notify();
+    });
 
     if let Some(overlay) = targets.talk_mode_overlay {
-        overlay.update(cx, |o, _| {
-            o.set_palette(palette.clone());
-            o.set_language(lang_id);
-        });
+        sync_palette_and_lang!(cx, palette, lang_id, overlay);
     }
     if let Some(overlay) = targets.computer_overlay {
-        overlay.update(cx, |o, _| {
-            o.set_palette(palette.clone());
-            o.set_language(lang_id);
-        });
+        sync_palette_and_lang!(cx, palette, lang_id, overlay);
+    }
+    if let Some(overlay) = targets.miniapp_overlay {
+        sync_palette_and_lang!(cx, palette, lang_id, overlay);
+    }
+    if let Some(box_ent) = targets.create_bot_box {
+        sync_palette_and_lang!(cx, palette, lang_id, box_ent);
     }
     if let Some(overlay) = targets.media_viewer_overlay {
-        overlay.update(cx, |o, _| o.apply_theme(palette.clone(), lang_id));
+        overlay.update(cx, |o, ocx| {
+            o.apply_theme(palette.clone(), lang_id);
+            ocx.notify();
+        });
     }
     if let Some(overlay) = targets.iv_viewer_overlay {
-        overlay.update(cx, |o, _| o.apply_theme(palette.clone(), lang_id));
+        overlay.update(cx, |o, ocx| {
+            o.apply_theme(palette.clone(), lang_id);
+            ocx.notify();
+        });
     }
 }

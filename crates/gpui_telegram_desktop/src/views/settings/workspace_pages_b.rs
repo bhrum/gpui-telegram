@@ -69,7 +69,7 @@ pub fn render_advanced_storage_page(
             .child(settings_action_row(IconName::SettingsGear, tr_str(lang, "连接与代理设置", "Connection Type / Proxy"), "", pal, false, |this| {
                 this.pending_mutation = Some(SettingsMutation::OpenProxyModal);
             }, cx))
-            .child(settings_action_row(IconName::FileDoc, tr_str(lang, "导出聊天数据", "Export Telegram Data"), "", pal, false, |this| {
+            .child(settings_action_row(IconName::FileDoc, tr_str(lang, "导出聊天数据", "Export Chat Data"), "", pal, false, |this| {
                 this.pending_mutation = Some(SettingsMutation::OpenExportModal);
             }, cx)))
         .into_any_element()

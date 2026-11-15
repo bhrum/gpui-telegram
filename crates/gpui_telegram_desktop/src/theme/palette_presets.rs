@@ -348,5 +348,7 @@ pub(super) fn preset_palette(
         peer_avatar_colors_bottom: PEER_AVATAR_BOTTOM,
         font_size_px: font_size_px.clamp(12, 20),
         bubble_radius_px: bubble_radius_px.clamp(6, 18),
+        ui_scale_pct: 100,
+        blur_wallpaper: false,
     }
 }

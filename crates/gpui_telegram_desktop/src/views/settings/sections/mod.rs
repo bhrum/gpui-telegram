@@ -6,6 +6,7 @@ pub mod settings_blocked_peers;
 pub mod settings_business;
 pub mod settings_calls;
 pub mod settings_chat;
+pub mod settings_computers;
 pub mod settings_credits;
 pub mod settings_folders;
 pub mod settings_global_ttl;
@@ -28,6 +29,9 @@ pub use settings_blocked_peers::SettingsBlockedPeersSections;
 pub use settings_business::SettingsBusinessSections;
 pub use settings_calls::SettingsCallsSections;
 pub use settings_chat::SettingsChatSections;
+pub use settings_computers::{
+    CloudFormField, SettingsComputersEvent, SettingsComputersPage, SettingsComputersSections,
+};
 pub use settings_credits::SettingsCreditsSections;
 pub use settings_folders::SettingsFoldersSections;
 pub use settings_global_ttl::SettingsGlobalTtlSections;

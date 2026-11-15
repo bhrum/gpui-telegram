@@ -2,24 +2,27 @@ use crate::cache::LocalStore;
 use crate::client_dispatch::{apply_ws_frame, ClientDomainEvent};
 use crate::config::ClientConfig;
 use crate::net::{
-    AuthResponse, ConnectionStatus, HermesApprovalDecisionRequest, HermesApprovalDto,
-    HermesCallInviteRequest, HermesCallInviteResponse, HermesClient, HermesCommandDescriptor,
-    HermesCommandRequest, HermesCommandResponse, HermesCreateKanbanBoardRequest,
-    HermesCreateKanbanCardRequest, HermesCronJobDto, HermesHeartbeatConfigDto,
-    HermesHonchoRequest, HermesHonchoStateDto, HermesKanbanBoardDto, HermesKanbanCardDto,
-    HermesMemoryMutationRequest, HermesMemoryStateDto, HermesMoveKanbanCardRequest,
-    HermesProviderConfigDto, HermesRichChatDto, HermesRichMessageDto, HermesRollbackRequest,
-    HermesRollbackResponse, HermesSaveCronRequest, HermesSaveProviderRequest,
-    HermesSaveSkillRequest, HermesSessionBranchRequest, HermesSessionDetailDto,
-    HermesSessionDto, HermesSessionExportResponse, HermesSessionSearchRequest, HermesSkillDto,
-    HermesSoulDto, HermesStatusDto, HermesTalkTurnRequest, HermesTalkTurnResponse,
-    HermesTerminalProcessDto, HermesToolsetDto, HermesTurnRequest, HermesTurnResponse,
-    HermesUpdateToolsetsRequest, HermesUsageSummaryDto, HttpClient, HttpClientError,
-    OpenAiChatCompletionsRequest, WsChannel, WsTransport,
+    AuthResponse, BotComputerProfileDto, ComputerListResponse, ComputerNodeDto, ConnectionStatus,
+    HermesApprovalDecisionRequest, HermesApprovalDto, HermesCallInviteRequest,
+    HermesCallInviteResponse, HermesClient, HermesCommandDescriptor, HermesCommandRequest,
+    HermesCommandResponse, HermesCreateKanbanBoardRequest, HermesCreateKanbanCardRequest,
+    HermesCronJobDto, HermesHeartbeatConfigDto, HermesHonchoRequest, HermesHonchoStateDto,
+    HermesKanbanBoardDto, HermesKanbanCardDto, HermesMemoryMutationRequest, HermesMemoryStateDto,
+    HermesMoveKanbanCardRequest, HermesProviderConfigDto, HermesRichChatDto, HermesRichMessageDto,
+    HermesRollbackRequest, HermesRollbackResponse, HermesSaveCronRequest,
+    HermesSaveProviderRequest, HermesSaveSkillRequest, HermesSessionBranchRequest,
+    HermesSessionDetailDto, HermesSessionDto, HermesSessionExportResponse,
+    HermesSessionSearchRequest, HermesSkillDto, HermesSoulDto, HermesStatusDto,
+    HermesTalkTurnRequest, HermesTalkTurnResponse, HermesTerminalProcessDto, HermesToolsetDto,
+    HermesTurnRequest, HermesTurnResponse, HermesUpdateToolsetsRequest, HermesUsageSummaryDto,
+    HttpClient, HttpClientError, OpenAiChatCompletionsRequest, PendingComputerCommandDto,
+    RegisterLocalComputerRequest, RemoteComputerCommandRequest, RemoteComputerCommandResult,
+    UpdateBotComputerRequest, UpdateComputerPolicyRequest, UpsertCloudComputerRequest, WsChannel,
+    WsTransport,
 };
 use crate::sync::ClientSyncCoordinator;
 use gpui_telegram_core::error::Result;
-use gpui_telegram_core::types::{ChatId, MessageId};
+use gpui_telegram_core::types::{ChatId, MessageId, UserId};
 use gpui_telegram_proto::message::MessageItem;
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
 use parking_lot::{Mutex, RwLock};
@@ -112,6 +115,34 @@ impl TelegramClient {
         &self.runtime
     }
 
+    pub fn device_id(&self) -> String {
+        self.http_client.device_id()
+    }
+
+    pub fn set_device_id(&self, id: impl Into<String>) {
+        self.http_client.set_device_id(id);
+    }
+
+    fn block_on_http<F, T>(&self, fut: F) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, HttpClientError>> + Send,
+        T: Send,
+    {
+        let res = if tokio::runtime::Handle::try_current().is_ok() {
+            let runtime = Arc::clone(&self.runtime);
+            std::thread::scope(|scope| scope.spawn(move || runtime.block_on(fut)).join()).map_err(
+                |_| {
+                    gpui_telegram_core::error::TelegramError::Internal(
+                        "Client runtime scope thread panicked".to_string(),
+                    )
+                },
+            )?
+        } else {
+            self.runtime.block_on(fut)
+        };
+        res.map_err(Into::into)
+    }
+
     pub fn status(&self) -> ConnectionStatus {
         self.ws_transport.status()
     }
@@ -121,6 +152,8 @@ impl TelegramClient {
     }
 
     pub fn set_auth_session(&self, session: AuthResponse) {
+        self.local_store
+            .bind_account_scope(&self.config.server_url, session.user_id);
         self.set_token(Some(session.token.clone()));
         *self.auth_session.write() = Some(session);
     }
@@ -185,7 +218,14 @@ impl TelegramClient {
 
     pub fn process_ws_frame(&self, frame: WsServerFrame) -> Vec<ClientDomainEvent> {
         let mut events = Vec::new();
-        let gaps = apply_ws_frame(&self.local_store, &self.sync_coordinator, frame, &mut events);
+        let viewer = self.current_user_id().map(UserId);
+        let gaps = apply_ws_frame(
+            &self.local_store,
+            &self.sync_coordinator,
+            viewer,
+            frame,
+            &mut events,
+        );
         if !gaps.is_empty() {
             self.gap_chats.lock().extend(gaps);
         }
@@ -196,10 +236,16 @@ impl TelegramClient {
     }
 
     pub fn poll_events(&self) -> Vec<ClientDomainEvent> {
+        let viewer = self.current_user_id().map(UserId);
         while let Some(frame) = self.ws_channel.try_recv() {
             let mut batch = Vec::new();
-            let gaps =
-                apply_ws_frame(&self.local_store, &self.sync_coordinator, frame, &mut batch);
+            let gaps = apply_ws_frame(
+                &self.local_store,
+                &self.sync_coordinator,
+                viewer,
+                frame,
+                &mut batch,
+            );
             if !gaps.is_empty() {
                 self.gap_chats.lock().extend(gaps);
             }
@@ -553,5 +599,258 @@ impl TelegramClient {
     ) -> std::result::Result<Vec<HermesRichMessageDto>, HttpClientError> {
         let token = self.require_token()?;
         self.hermes.messages_history_rich(&token, chat_id, limit).await
+    }
+
+    pub fn list_computers(&self) -> Result<ComputerListResponse> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.list_computers(&token).await })
+    }
+
+    pub async fn list_computers_async(&self) -> Result<ComputerListResponse> {
+        let token = self.require_token()?;
+        Ok(self.http_client.list_computers(&token).await?)
+    }
+
+    pub fn register_local_computer(
+        &self,
+        req: &RegisterLocalComputerRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.register_local_computer(&token, req).await })
+    }
+
+    pub async fn register_local_computer_async(
+        &self,
+        req: &RegisterLocalComputerRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        Ok(self.http_client.register_local_computer(&token, req).await?)
+    }
+
+    pub fn register_current_host_computer(&self) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.register_current_host_computer(&token).await })
+    }
+
+    pub async fn register_current_host_computer_async(&self) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .register_current_host_computer(&token)
+            .await?)
+    }
+
+    pub fn poll_local_computer_commands(&self) -> Result<Vec<PendingComputerCommandDto>> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.poll_local_computer_commands(&token).await })
+    }
+
+    pub async fn poll_local_computer_commands_async(
+        &self,
+    ) -> Result<Vec<PendingComputerCommandDto>> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .poll_local_computer_commands(&token)
+            .await?)
+    }
+
+    pub fn process_ready_local_computer_commands(&self) -> Result<Vec<PendingComputerCommandDto>> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.process_ready_local_computer_commands(&token).await })
+    }
+
+    pub async fn process_ready_local_computer_commands_async(
+        &self,
+    ) -> Result<Vec<PendingComputerCommandDto>> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .process_ready_local_computer_commands(&token)
+            .await?)
+    }
+
+    pub fn approve_computer_command(
+        &self,
+        command_id: &str,
+        approved: bool,
+    ) -> Result<PendingComputerCommandDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move {
+            http.approve_computer_command(&token, command_id, approved)
+                .await
+        })
+    }
+
+    pub async fn approve_computer_command_async(
+        &self,
+        command_id: &str,
+        approved: bool,
+    ) -> Result<PendingComputerCommandDto> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .approve_computer_command(&token, command_id, approved)
+            .await?)
+    }
+
+    pub fn complete_computer_command(
+        &self,
+        command_id: &str,
+        result: &RemoteComputerCommandResult,
+    ) -> Result<()> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move {
+            http.complete_computer_command(&token, command_id, result)
+                .await
+        })
+    }
+
+    pub async fn complete_computer_command_async(
+        &self,
+        command_id: &str,
+        result: &RemoteComputerCommandResult,
+    ) -> Result<()> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .complete_computer_command(&token, command_id, result)
+            .await?)
+    }
+
+    pub fn upsert_cloud_computer(
+        &self,
+        req: &UpsertCloudComputerRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.upsert_cloud_computer(&token, req).await })
+    }
+
+    pub async fn upsert_cloud_computer_async(
+        &self,
+        req: &UpsertCloudComputerRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        Ok(self.http_client.upsert_cloud_computer(&token, req).await?)
+    }
+
+    pub fn update_computer_policy(
+        &self,
+        node_id: &str,
+        req: &UpdateComputerPolicyRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.update_computer_policy(&token, node_id, req).await })
+    }
+
+    pub async fn update_computer_policy_async(
+        &self,
+        node_id: &str,
+        req: &UpdateComputerPolicyRequest,
+    ) -> Result<ComputerNodeDto> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .update_computer_policy(&token, node_id, req)
+            .await?)
+    }
+
+    pub fn delete_computer(&self, node_id: &str) -> Result<()> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.delete_computer(&token, node_id).await })
+    }
+
+    pub async fn delete_computer_async(&self, node_id: &str) -> Result<()> {
+        let token = self.require_token()?;
+        Ok(self.http_client.delete_computer(&token, node_id).await?)
+    }
+
+    pub fn test_computer_connection(
+        &self,
+        node_id: &str,
+    ) -> Result<RemoteComputerCommandResult> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.test_computer_connection(&token, node_id).await })
+    }
+
+    pub async fn test_computer_connection_async(
+        &self,
+        node_id: &str,
+    ) -> Result<RemoteComputerCommandResult> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .test_computer_connection(&token, node_id)
+            .await?)
+    }
+
+    pub fn execute_remote_computer_op(
+        &self,
+        req: &RemoteComputerCommandRequest,
+    ) -> Result<RemoteComputerCommandResult> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.execute_remote_computer_op(&token, req).await })
+    }
+
+    pub async fn execute_remote_computer_op_async(
+        &self,
+        req: &RemoteComputerCommandRequest,
+    ) -> Result<RemoteComputerCommandResult> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .execute_remote_computer_op(&token, req)
+            .await?)
+    }
+
+    pub fn get_bot_computer_profile(&self, bot_id: u64) -> Result<BotComputerProfileDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.get_bot_computer_profile(&token, bot_id).await })
+    }
+
+    pub async fn get_bot_computer_profile_async(
+        &self,
+        bot_id: u64,
+    ) -> Result<BotComputerProfileDto> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .get_bot_computer_profile(&token, bot_id)
+            .await?)
+    }
+
+    pub fn update_bot_computer_profile(
+        &self,
+        bot_id: u64,
+        req: &UpdateBotComputerRequest,
+    ) -> Result<BotComputerProfileDto> {
+        let token = self.require_token()?;
+        let http = self.http_client.clone();
+        self.block_on_http(async move { http.update_bot_computer_profile(&token, bot_id, req).await })
+    }
+
+    pub async fn update_bot_computer_profile_async(
+        &self,
+        bot_id: u64,
+        req: &UpdateBotComputerRequest,
+    ) -> Result<BotComputerProfileDto> {
+        let token = self.require_token()?;
+        Ok(self
+            .http_client
+            .update_bot_computer_profile(&token, bot_id, req)
+            .await?)
     }
 }

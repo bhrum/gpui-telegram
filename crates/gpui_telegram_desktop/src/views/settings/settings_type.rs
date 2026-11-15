@@ -32,6 +32,7 @@ pub enum SettingsSectionType {
     PowerSaving,
     LocalStorage,
     Business,
+    Computers,
     Language,
     Search,
 }
@@ -61,6 +62,7 @@ impl SettingsSectionType {
             Self::PowerSaving => "power_saving",
             Self::LocalStorage => "local_storage",
             Self::Business => "business",
+            Self::Computers => "computers",
             Self::Language => "language",
             Self::Search => "search",
         }
@@ -85,8 +87,8 @@ impl SettingsSectionType {
                 Self::Folders => "对话分组",
                 Self::Advanced => "高级设置",
                 Self::Calls => "通话与音频",
-                Self::Credits => "Telegram 星标",
-                Self::Premium => "Telegram 会员",
+                Self::Credits => "星币钱包",
+                Self::Premium => "高级会员",
                 Self::Shortcuts => "键盘快捷键",
                 Self::Websites => "已授权网站",
                 Self::Passkeys => "密钥与两步验证",
@@ -95,6 +97,7 @@ impl SettingsSectionType {
                 Self::PowerSaving => "省电模式",
                 Self::LocalStorage => "数据与存储",
                 Self::Business => "商业功能",
+                Self::Computers => "电脑",
                 Self::Language => "界面语言",
                 Self::Search => "搜索设置",
             }
@@ -112,8 +115,8 @@ impl SettingsSectionType {
                 Self::Folders => "Chat Folders",
                 Self::Advanced => "Advanced",
                 Self::Calls => "Calls",
-                Self::Credits => "Telegram Stars",
-                Self::Premium => "Telegram Premium",
+                Self::Credits => "Stars",
+                Self::Premium => "Premium",
                 Self::Shortcuts => "Keyboard Shortcuts",
                 Self::Websites => "Logged in Websites",
                 Self::Passkeys => "Passkeys",
@@ -121,7 +124,8 @@ impl SettingsSectionType {
                 Self::GlobalTtl => "Auto-Delete Messages",
                 Self::PowerSaving => "Power Saving",
                 Self::LocalStorage => "Data and Storage",
-                Self::Business => "Telegram Business",
+                Self::Business => "Business",
+                Self::Computers => "Computers",
                 Self::Language => "Language",
                 Self::Search => "Search Settings",
             }
@@ -148,6 +152,7 @@ impl SettingsSectionType {
             Self::Shortcuts => "⌨️",
             Self::Websites => "🌐",
             Self::Business => "💼",
+            Self::Computers => "💻",
             Self::Language => "🗣️",
             Self::Search => "🔍",
         }
@@ -173,6 +178,7 @@ impl SettingsSectionType {
             Self::Shortcuts => IconName::TerminalMcp,
             Self::Websites => IconName::BotRobot,
             Self::Business => IconName::ChannelMegaphone,
+            Self::Computers => IconName::ComputerDesktop,
             Self::Language => IconName::Translate,
             Self::Search => IconName::Search,
         }

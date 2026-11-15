@@ -164,20 +164,22 @@ pub fn render_plus_dropdown<V: 'static>(
     palette: &TdesktopThemePalette,
     lang_id: &str,
     cx: &mut Context<V>,
+    on_dismiss: impl Fn(&mut V, &mut Context<V>) + 'static,
     on_add_contact: impl Fn(&mut V, AddContactKind, &mut Context<V>) + Clone + 'static,
     on_create_group: impl Fn(&mut V, &mut Context<V>) + 'static,
+    on_create_channel: impl Fn(&mut V, &mut Context<V>) + 'static,
     on_open_contacts: impl Fn(&mut V, &mut Context<V>) + 'static,
 ) -> AnyElement {
-    let row_bg = rgb(palette.composer_bg);
-    let hover_bg = rgb(palette.dialogs_active_bg);
+    let hover_bg = rgb(palette.menu_hover_bg);
+    let pal = *palette;
     let menu_row = |id: &'static str, icon: IconName, title: String, subtitle: String| {
         div()
             .id(id)
             .cursor_pointer()
+            .w_full()
             .px(px(10.0))
             .py(px(7.0))
             .rounded(px(8.0))
-            .bg(row_bg)
             .hover(move |s| s.bg(hover_bg))
             .flex()
             .items_center()
@@ -186,53 +188,54 @@ pub fn render_plus_dropdown<V: 'static>(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(9.0))
-                    .child(tg_icon(icon, 16.0, palette.accent))
+                    .gap(px(10.0))
+                    .child(tg_icon(icon, 16.0, pal.accent))
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .child(div().text_size(px(12.5)).font_weight(FontWeight::BOLD).text_color(rgb(palette.text_primary)).child(title))
-                            .child(div().text_size(px(10.5)).text_color(rgb(palette.text_secondary)).child(subtitle)),
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(subtitle),
+                            ),
                     ),
             )
-            .child(tg_icon(IconName::ChevronRight, 12.0, palette.icon_fg))
+            .child(tg_icon(IconName::ChevronRight, 12.0, pal.icon_fg))
     };
 
     let add_cb = on_add_contact.clone();
     let friend_cb = on_add_contact;
-    div()
-        .w_full()
-        .px(px(10.0))
-        .py(px(8.0))
-        .bg(rgb(palette.menu_bg))
-        .border_b_1()
-        .border_color(rgb(palette.border_fg))
+    let popup = div()
+        .id("sidebar-plus-floating-menu")
+        .absolute()
+        .top(px(46.0))
+        .left(px(10.0))
+        .right(px(10.0))
+        .p(px(6.0))
+        .rounded(px(12.0))
+        .bg(rgb(pal.menu_bg))
+        .border_1()
+        .border_color(rgb(pal.border_fg))
+        .shadow_xl()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+            }),
+        )
         .flex()
         .flex_col()
-        .gap(px(5.0))
-        .child(
-            menu_row(
-                "plus-menu-add-contact",
-                IconName::BotRobot,
-                tr_str(lang_id, "创建 AI Bot / 添加联系人", "Create AI Bot / Add Contact").to_string(),
-                tr_str(lang_id, "通过用户名或 Bot Token 添加对话", "Start chat by username or bot handle").to_string(),
-            )
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
-                add_cb(this, AddContactKind::AiBot, cx);
-            })),
-        )
-        .child(
-            menu_row(
-                "plus-menu-add-friend",
-                IconName::ContactsUsers,
-                tr_str(lang_id, "添加好友", "New Private Chat").to_string(),
-                tr_str(lang_id, "搜索联系人并建立私聊", "Add friend by handle or phone").to_string(),
-            )
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
-                friend_cb(this, AddContactKind::Friend, cx);
-            })),
-        )
+        .gap(px(2.0))
         .child(
             menu_row(
                 "plus-menu-create-group",
@@ -240,21 +243,89 @@ pub fn render_plus_dropdown<V: 'static>(
                 tr_str(lang_id, "新建群组", "New Group").to_string(),
                 tr_str(lang_id, "创建多人或协同群聊", "Create a group chat").to_string(),
             )
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
-                on_create_group(this, cx);
-            })),
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    on_create_group(this, cx);
+                }),
+            ),
         )
+        .child(
+            menu_row(
+                "plus-menu-create-channel",
+                IconName::ChannelMegaphone,
+                tr_str(lang_id, "新建频道", "New Channel").to_string(),
+                tr_str(lang_id, "面向订阅者广播消息", "Broadcast to unlimited subscribers").to_string(),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    on_create_channel(this, cx);
+                }),
+            ),
+        )
+        .child(
+            menu_row(
+                "plus-menu-add-friend",
+                IconName::ContactsUsers,
+                tr_str(lang_id, "添加好友", "Add Contact").to_string(),
+                tr_str(lang_id, "通过手机号或 @用户名添加好友", "Add friend by phone or @username").to_string(),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    friend_cb(this, AddContactKind::Friend, cx);
+                }),
+            ),
+        )
+        .child(
+            menu_row(
+                "plus-menu-add-contact",
+                IconName::BotRobot,
+                tr_str(lang_id, "创建 AI Bot", "Create AI Bot").to_string(),
+                tr_str(lang_id, "自定义智能体提示词与用户名", "Create AI assistant bot").to_string(),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    add_cb(this, AddContactKind::AiBot, cx);
+                }),
+            ),
+        )
+        .child(div().h(px(1.0)).my(px(2.0)).bg(rgb(pal.border_fg)))
         .child(
             menu_row(
                 "plus-menu-contacts-modal",
                 IconName::ContactsUsers,
                 tr_str(lang_id, "联系人列表", "Contacts").to_string(),
-                tr_str(lang_id, "查看全部联系人", "Browse saved contacts").to_string(),
+                tr_str(lang_id, "查看全部联系人并发起对话", "Browse saved contacts").to_string(),
             )
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
-                on_open_contacts(this, cx);
-            })),
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    on_open_contacts(this, cx);
+                }),
+            ),
+        );
+
+    div()
+        .id("sidebar-plus-backdrop")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _ev, _w, cx| {
+                cx.stop_propagation();
+                on_dismiss(this, cx);
+            }),
         )
+        .child(deferred(popup).with_priority(35))
         .into_any_element()
 }
 

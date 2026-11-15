@@ -1,11 +1,14 @@
 use crate::client::TelegramClient;
+use crate::net::http_client::HistoricalReaction;
 use crate::net::{
     CreatePollHttpRequest, EditMessageHttpRequest, HistoricalMessage, HttpClientError,
     PollHttpResponse, ReactionHttpRequest, ReactionHttpResponse, ReadChatHttpRequest,
     ReadChatHttpResponse, RichSendMessageRequest, RichSendMessageResponse,
 };
 use gpui_telegram_core::types::{ChatId, MessageId, PeerId, TopicId, UserId};
-use gpui_telegram_proto::message::{MessageContent, MessageEntity, MessageItem, ReplyHeader};
+use gpui_telegram_proto::message::{
+    MessageContent, MessageEntity, MessageItem, ReactionCount, ReplyHeader,
+};
 use gpui_telegram_proto::sync::{SyncGetDifferenceRequest, SyncGetDifferenceResponse, TypingAction, TypingEvent};
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
 
@@ -101,7 +104,40 @@ impl TelegramClient {
         limit: Option<usize>,
     ) -> std::result::Result<Vec<HistoricalMessage>, HttpClientError> {
         let token = self.require_token()?;
-        self.http_client.get_chat_messages(&token, chat_id, limit).await
+        self.get_chat_messages_with_token(&token, chat_id, limit).await
+    }
+
+    pub async fn get_chat_messages_with_token(
+        &self,
+        token: &str,
+        chat_id: u64,
+        limit: Option<usize>,
+    ) -> std::result::Result<Vec<HistoricalMessage>, HttpClientError> {
+        let mut msgs = self.http_client.get_chat_messages(token, chat_id, limit).await?;
+        let cid = ChatId(chat_id as i64);
+        for hm in &mut msgs {
+            let mid = MessageId(hm.message_id as i64);
+            if hm.has_authoritative_reactions() {
+                let counts: Vec<ReactionCount> = hm
+                    .reactions
+                    .iter()
+                    .map(|r| ReactionCount::new(r.emoji.clone(), r.count, r.chosen))
+                    .collect();
+                self.local_store.update_reactions(cid, mid, counts);
+            } else if let Some(cached) = self.local_store.get_reactions(cid, mid) {
+                hm.reactions = cached
+                    .into_iter()
+                    .map(|r| HistoricalReaction {
+                        emoji: r.emoji,
+                        count: r.count,
+                        chosen: r.is_chosen_by_me,
+                        user_ids: Vec::new(),
+                    })
+                    .collect();
+                hm.reactions_authoritative = true;
+            }
+        }
+        Ok(msgs)
     }
 
     pub async fn edit_message(
@@ -146,15 +182,25 @@ impl TelegramClient {
             emoji: emoji.into(),
             action: action.map(|s| s.to_string()),
         };
-        let resp = self
+        let mut resp = self
             .http_client
             .react_to_message(&token, chat_id, message_id, &req)
             .await?;
-        self.local_store.update_reactions(
-            ChatId(chat_id),
-            MessageId(message_id),
-            resp.reactions.clone(),
-        );
+        if resp.has_authoritative_reactions() {
+            self.local_store.update_reactions(
+                ChatId(chat_id),
+                MessageId(message_id),
+                resp.reactions.clone(),
+            );
+        } else {
+            let updated = self.local_store.apply_viewer_reaction_mutation(
+                ChatId(chat_id),
+                MessageId(message_id),
+                &req.emoji,
+                req.action.as_deref(),
+            );
+            resp.reactions = updated;
+        }
         Ok(resp)
     }
 

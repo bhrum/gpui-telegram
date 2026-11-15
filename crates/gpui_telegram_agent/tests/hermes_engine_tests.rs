@@ -43,7 +43,13 @@ use gpui_telegram_agent::hermes::trajectory::{
     SecretRedactor, TrajectoryCompressionConfig, TrajectoryExporter, TrajectoryFormat,
     TrajectoryMessage, TrajectorySession, TrajectoryToolCall,
 };
+use gpui_telegram_agent::computer::cloud_bridge::BoxFuture as CloudBoxFuture;
 use gpui_telegram_agent::hermes::{HermesEngine, HermesEngineConfig, HermesEvent, HermesTurnRequest};
+use gpui_telegram_agent::{
+    parse_cloud_credentials_from_prompt, redact_cloud_secrets, AgentCloudServerConfigInput,
+    AgentComputerExecInput, AgentComputerExecOutput, AgentComputerNodeSummary,
+    ComputerCloudProvider,
+};
 use gpui_telegram_agent::mcp::{McpRegistry, McpToolDefinition, ToolRiskLevel};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -1226,4 +1232,433 @@ async fn test_bot_display_name_override_and_deepseek_wire_model_normalization() 
         "response must not emit internal upstream API key setup banner: {}",
         outcome.response_text
     );
+}
+
+struct MockComputerCloudProvider {
+    nodes: std::sync::Mutex<Vec<AgentComputerNodeSummary>>,
+    exec_calls: std::sync::Mutex<Vec<(u64, AgentComputerExecInput)>>,
+    configured_secrets: std::sync::Mutex<Vec<String>>,
+}
+
+impl MockComputerCloudProvider {
+    fn new() -> Self {
+        Self {
+            nodes: std::sync::Mutex::new(vec![AgentComputerNodeSummary {
+                node_id: "local:mac-studio".to_string(),
+                kind: "local_device".to_string(),
+                display_name: "Mac Studio".to_string(),
+                ip_address: "192.168.1.10".to_string(),
+                host: Some("mac-studio.local".to_string()),
+                os_name: "macOS".to_string(),
+                online: true,
+                is_current_device: true,
+                bound_to_this_bot: false,
+                run_policy: "ask_every_time".to_string(),
+                tier_badge: "本地".to_string(),
+            }]),
+            exec_calls: std::sync::Mutex::new(Vec::new()),
+            configured_secrets: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ComputerCloudProvider for MockComputerCloudProvider {
+    fn list_computers<'a>(
+        &'a self,
+        _user_id: u64,
+        _bot_id: Option<u64>,
+    ) -> CloudBoxFuture<'a, gpui_telegram_core::Result<Vec<AgentComputerNodeSummary>>> {
+        Box::pin(async move { Ok(self.nodes.lock().unwrap().clone()) })
+    }
+
+    fn bind_bot_computer<'a>(
+        &'a self,
+        _user_id: u64,
+        _bot_id: u64,
+        node_id: Option<String>,
+    ) -> CloudBoxFuture<'a, gpui_telegram_core::Result<AgentComputerNodeSummary>> {
+        Box::pin(async move {
+            let mut nodes = self.nodes.lock().unwrap();
+            let target_id = node_id.unwrap_or_default();
+            let mut matched = None;
+            for node in nodes.iter_mut() {
+                if !target_id.is_empty() && node.node_id == target_id {
+                    node.bound_to_this_bot = true;
+                    matched = Some(node.clone());
+                } else {
+                    node.bound_to_this_bot = false;
+                }
+            }
+            matched.ok_or_else(|| {
+                gpui_telegram_core::TelegramError::Validation(format!(
+                    "Unknown computer node '{target_id}'"
+                ))
+            })
+        })
+    }
+
+    fn configure_cloud_server<'a>(
+        &'a self,
+        _user_id: u64,
+        _bot_id: Option<u64>,
+        cfg: AgentCloudServerConfigInput,
+    ) -> CloudBoxFuture<'a, gpui_telegram_core::Result<AgentComputerNodeSummary>> {
+        Box::pin(async move {
+            self.configured_secrets.lock().unwrap().push(cfg.secret.clone());
+            let node_id = cfg
+                .node_id
+                .clone()
+                .unwrap_or_else(|| format!("cloud:{}", cfg.host));
+            let mut nodes = self.nodes.lock().unwrap();
+            if cfg.bind_to_bot {
+                for n in nodes.iter_mut() {
+                    n.bound_to_this_bot = false;
+                }
+            }
+            let summary = AgentComputerNodeSummary {
+                node_id: node_id.clone(),
+                kind: "cloud_server".to_string(),
+                display_name: cfg.display_name,
+                ip_address: cfg.host.clone(),
+                host: Some(cfg.host),
+                os_name: "Linux".to_string(),
+                online: true,
+                is_current_device: false,
+                bound_to_this_bot: cfg.bind_to_bot,
+                run_policy: "always_allow_authorized".to_string(),
+                tier_badge: "云电脑".to_string(),
+            };
+            if let Some(existing) = nodes.iter_mut().find(|n| n.node_id == node_id) {
+                *existing = summary.clone();
+            } else {
+                nodes.push(summary.clone());
+            }
+            Ok(summary)
+        })
+    }
+
+    fn execute_on_computer<'a>(
+        &'a self,
+        user_id: u64,
+        req: AgentComputerExecInput,
+    ) -> CloudBoxFuture<'a, gpui_telegram_core::Result<AgentComputerExecOutput>> {
+        Box::pin(async move {
+            self.exec_calls.lock().unwrap().push((user_id, req.clone()));
+            let target = req.node_id.clone().unwrap_or_else(|| {
+                self.nodes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|n| n.bound_to_this_bot)
+                    .map(|n| n.node_id.clone())
+                    .unwrap_or_else(|| "local:mac-studio".to_string())
+            });
+            let out = match req.op.as_str() {
+                "shell_exec" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: format!(
+                        "Linux cloud-node 6.8.0 ({})",
+                        req.command.as_deref().unwrap_or("")
+                    ),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "ssh".to_string(),
+                },
+                "list_dir" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    entries: vec!["app.rs".to_string(), "Cargo.toml".to_string()],
+                    frame_data_url: None,
+                    executed_by: "sftp".to_string(),
+                },
+                "read_file" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: "cloud-host-01\n".to_string(),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "sftp".to_string(),
+                },
+                "write_file" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: format!(
+                        "wrote {} bytes",
+                        req.content.as_deref().unwrap_or("").len()
+                    ),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "sftp".to_string(),
+                },
+                "capture_screen" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: "captured".to_string(),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: Some("data:image/png;base64,AAAA".to_string()),
+                    executed_by: "desktop_agent".to_string(),
+                },
+                "click" | "move" | "type" | "key" => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: format!("gui:{}", req.op),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "desktop_agent".to_string(),
+                },
+                other => AgentComputerExecOutput {
+                    node_id: target,
+                    ok: false,
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: format!("unsupported op: {other}"),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "mock".to_string(),
+                },
+            };
+            Ok(out)
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_computer_cloud_tools_toolset_invariant_and_direct_execution() {
+    assert_eq!(ToolsetId::all().len(), 28);
+    for preset in [
+        ToolsetPreset::HermesTelegram,
+        ToolsetPreset::HermesCli,
+        ToolsetPreset::HermesAcp,
+        ToolsetPreset::Full,
+    ] {
+        let reg = ToolsetRegistry::from_preset(preset);
+        assert!(
+            reg.is_toolset_enabled(ToolsetId::ComputerUse),
+            "Preset {:?} must enable ToolsetId::ComputerUse",
+            preset
+        );
+    }
+
+    for tool_name in [
+        "computer_use",
+        "computer_list",
+        "computer_bind",
+        "computer_configure_cloud",
+        "computer_exec",
+        "computer_file",
+        "computer_screen",
+    ] {
+        let spec = find_tool_spec(tool_name).expect("computer tool spec missing");
+        assert_eq!(spec.toolset, ToolsetId::ComputerUse);
+    }
+
+    let workspace = TempDir::new().expect("temp dir");
+    // 1. Without provider: `computer_list` cleanly falls back to lease status.
+    let ctx_no_provider = HermesToolContext::new(workspace.path());
+    let fallback_res = HermesToolExecutor::execute("computer_list", json!({}), &ctx_no_provider).await;
+    assert!(fallback_res.success, "fallback should succeed: {}", fallback_res.output);
+    assert_eq!(
+        fallback_res.structured.as_ref().and_then(|v| v.get("fallback")).and_then(Value::as_str),
+        Some("lease_status")
+    );
+
+    // 2. With mock provider: test all 6 tools including remote paths outside workspace root.
+    let provider = Arc::new(MockComputerCloudProvider::new());
+    let ctx = HermesToolContext::new(workspace.path())
+        .with_chat_and_bot(Some(10), Some(888))
+        .with_user_id(Some(42))
+        .with_computer_provider(provider.clone());
+
+    let cfg_res = HermesToolExecutor::execute(
+        "computer_configure_cloud",
+        json!({
+            "display_name": "ProdCloud",
+            "host": "10.20.30.40",
+            "port": 2222,
+            "username": "ubuntu",
+            "secret": "MyCloudSecret!99",
+            "workdir": "/srv/remote/app",
+            "bind_to_bot": true
+        }),
+        &ctx,
+    )
+    .await;
+    assert!(cfg_res.success, "configure failed: {}", cfg_res.output);
+    assert!(!cfg_res.output.contains("MyCloudSecret!99"));
+    assert_eq!(
+        cfg_res.structured.as_ref().and_then(|v| v.get("secret_redacted")).and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let list_res = HermesToolExecutor::execute("computer_list", json!({}), &ctx).await;
+    assert!(list_res.success);
+    assert_eq!(
+        list_res.structured.as_ref().and_then(|v| v.get("count")).and_then(Value::as_u64),
+        Some(2)
+    );
+
+    let bind_res = HermesToolExecutor::execute(
+        "computer_bind",
+        json!({ "node_id": "local:mac-studio" }),
+        &ctx,
+    )
+    .await;
+    assert!(bind_res.success, "bind failed: {}", bind_res.output);
+
+    let exec_res = HermesToolExecutor::execute(
+        "computer_exec",
+        json!({ "command": "uname -a", "cwd": "/var/log", "node_id": "cloud:10.20.30.40" }),
+        &ctx,
+    )
+    .await;
+    assert!(exec_res.success, "exec failed: {}", exec_res.output);
+    assert!(exec_res.output.contains("Linux cloud-node"));
+
+    let file_list = HermesToolExecutor::execute(
+        "computer_file",
+        json!({ "op": "list", "path": "/etc/app", "node_id": "cloud:10.20.30.40" }),
+        &ctx,
+    )
+    .await;
+    assert!(file_list.success, "file list failed: {}", file_list.output);
+
+    let file_write = HermesToolExecutor::execute(
+        "computer_file",
+        json!({ "op": "write", "path": "/tmp/hello.txt", "content": "hi" }),
+        &ctx,
+    )
+    .await;
+    assert!(file_write.success, "file write failed: {}", file_write.output);
+
+    let file_read = HermesToolExecutor::execute(
+        "computer_file",
+        json!({ "op": "read", "path": "/etc/hostname" }),
+        &ctx,
+    )
+    .await;
+    assert!(file_read.success, "file read failed: {}", file_read.output);
+
+    for (args, expected_op) in [
+        (json!({ "op": "capture" }), "capture_screen"),
+        (json!({ "op": "click", "x": 120, "y": 240 }), "click"),
+        (json!({ "op": "move", "x": 10, "y": 20 }), "move"),
+        (json!({ "op": "type", "text": "hello" }), "type"),
+        (json!({ "op": "key", "key": "Enter" }), "key"),
+    ] {
+        let screen_res = HermesToolExecutor::execute("computer_screen", args, &ctx).await;
+        assert!(screen_res.success, "screen {} failed: {}", expected_op, screen_res.output);
+    }
+
+    let recorded = provider.exec_calls.lock().unwrap();
+    let ops: Vec<&str> = recorded.iter().map(|(_, r)| r.op.as_str()).collect();
+    assert_eq!(
+        ops,
+        vec![
+            "shell_exec",
+            "list_dir",
+            "write_file",
+            "read_file",
+            "capture_screen",
+            "click",
+            "move",
+            "type",
+            "key"
+        ]
+    );
+    assert!(recorded.iter().all(|(uid, r)| *uid == 42 && r.caller_bot_id == Some(888)));
+}
+
+#[tokio::test]
+async fn test_local_hermes_computer_cloud_end_to_end_turn_loop() {
+    assert!(parse_cloud_credentials_from_prompt("帮我看下有哪些电脑").is_none());
+    let sample_redacted = redact_cloud_secrets(r#"{"secret":"pw123","secret_redacted":true}"#);
+    assert!(!sample_redacted.contains("pw123"));
+    assert!(sample_redacted.contains("\"secret_redacted\":true"));
+
+    let dir = TempDir::new().expect("temp dir");
+    let engine = HermesEngine::open(dir.path(), dir.path()).expect("open engine");
+    let provider = Arc::new(MockComputerCloudProvider::new());
+    engine.set_computer_provider(provider.clone());
+
+    // Turn 1: auto-parse cloud credentials & execute `computer_configure_cloud` via LocalHermes tool loop.
+    let mut req1 = HermesTurnRequest::new(
+        "帮我连接云服务器 地址 47.98.10.20 端口 2222 用户名 deploy 密码 TopSecretPass99 工作目录 /opt/app",
+    )
+    .with_session("computer_e2e")
+    .with_chat_bot(100, "501");
+    req1.user_id = Some("77".to_string());
+    req1.preset = Some(ToolsetPreset::HermesTelegram);
+
+    let out1 = engine.run_turn(req1).await.expect("configure turn");
+    assert!(
+        !out1.tool_calls.is_empty(),
+        "expected tool call in turn 1: {:?}",
+        out1.tool_calls
+    );
+    assert_eq!(out1.tool_calls[0].tool_name, "computer_configure_cloud");
+    assert!(out1.tool_calls[0].success);
+    assert!(
+        out1.response_text.contains("cloud:47.98.10.20") && out1.response_text.contains("47.98.10.20"),
+        "expected configured cloud node summary: {}",
+        out1.response_text
+    );
+    assert!(
+        !out1.response_text.contains("TopSecretPass99"),
+        "raw secret leaked in response: {}",
+        out1.response_text
+    );
+
+    // Turn 2: natural language list computers query.
+    let mut req2 = HermesTurnRequest::new("帮我看下有哪些电脑")
+        .with_session("computer_e2e")
+        .with_chat_bot(100, "501");
+    req2.user_id = Some("77".to_string());
+    req2.preset = Some(ToolsetPreset::HermesTelegram);
+
+    let out2 = engine.run_turn(req2).await.expect("list turn");
+    assert!(!out2.tool_calls.is_empty());
+    assert_eq!(out2.tool_calls[0].tool_name, "computer_list");
+    assert!(
+        out2.response_text.contains("Mac Studio") && out2.response_text.contains("cloud:47.98.10.20"),
+        "expected both devices in summary: {}",
+        out2.response_text
+    );
+
+    // Turn 3: remote execution query via LocalHermes -> `computer_exec`.
+    let mut req3 = HermesTurnRequest::new("帮我在 cloud:47.98.10.20 上运行 `uname -a`")
+        .with_session("computer_e2e")
+        .with_chat_bot(100, "501");
+    req3.user_id = Some("77".to_string());
+    req3.preset = Some(ToolsetPreset::HermesTelegram);
+
+    let out3 = engine.run_turn(req3).await.expect("exec turn");
+    assert!(!out3.tool_calls.is_empty());
+    assert_eq!(out3.tool_calls[0].tool_name, "computer_exec");
+    assert!(
+        out3.response_text.contains("Linux cloud-node 6.8.0 (uname -a)"),
+        "expected stdout in final reply: {}",
+        out3.response_text
+    );
+
+    let calls = provider.exec_calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, 77);
+    assert_eq!(calls[0].1.node_id.as_deref(), Some("cloud:47.98.10.20"));
+    assert_eq!(calls[0].1.caller_bot_id, Some(501));
+    assert_eq!(calls[0].1.op, "shell_exec");
+    assert_eq!(calls[0].1.command.as_deref(), Some("uname -a"));
 }

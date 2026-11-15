@@ -165,8 +165,20 @@ fn test_desktop_cooldown_generation_fence_isolation() {
 
 #[test]
 fn test_shell_source_ast_countdown_state_machine_compliance() {
-    let shell_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views/shell.rs");
-    let content = fs::read_to_string(&shell_path).expect("Failed to read shell.rs");
+    let auth_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views/auth");
+    let mut content = String::new();
+    for file in [
+        "auth_wizard_view.rs",
+        "auth_wizard_actions.rs",
+        "auth_wizard_tabs_render.rs",
+    ] {
+        let path = auth_dir.join(file);
+        content.push('\n');
+        content.push_str(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e)),
+        );
+    }
 
     // 1. AppShell struct contains email_code_cooldown and email_cooldown_generation
     assert!(

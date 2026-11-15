@@ -40,7 +40,9 @@ pub struct ForwardInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactionCount {
     pub emoji: String,
+    #[serde(default)]
     pub count: u32,
+    #[serde(default, alias = "chosen", alias = "user_reacted")]
     pub is_chosen_by_me: bool,
 }
 

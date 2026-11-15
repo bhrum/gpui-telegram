@@ -84,7 +84,7 @@ impl Render for UrlAuthBoxView {
                 .text_size(px(18.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(rgb(0x1F2937))
-                .child("Open Link with Telegram Login?"),
+                .child("Open Link with Account Login?"),
         );
 
         // Body message

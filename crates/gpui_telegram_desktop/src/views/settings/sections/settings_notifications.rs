@@ -7,6 +7,7 @@ use crate::views::settings::settings_theme_ui::{
     settings_action_row, settings_card, settings_container, settings_section_header,
     settings_subsection_title, settings_toggle_row,
 };
+use crate::views::settings::settings_type::SettingsSectionType;
 use gpui::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub struct SettingsNotificationsSections {
     pub flash_taskbar_icon: bool,
     pub sound_enabled: bool,
     pub exceptions_count: usize,
+    pub pending_sync: bool,
+    pub pending_nav_section: Option<SettingsSectionType>,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
 }
@@ -40,6 +43,8 @@ impl SettingsNotificationsSections {
             flash_taskbar_icon: true,
             sound_enabled: true,
             exceptions_count: 5,
+            pending_sync: false,
+            pending_nav_section: None,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
         }
@@ -53,13 +58,13 @@ impl SettingsNotificationsSections {
 
     pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
     pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
-    pub fn toggle_private_chats(&mut self) { self.private_chats_enabled = !self.private_chats_enabled; }
-    pub fn toggle_groups(&mut self) { self.groups_enabled = !self.groups_enabled; }
-    pub fn toggle_channels(&mut self) { self.channels_enabled = !self.channels_enabled; }
-    pub fn toggle_badge_include_muted(&mut self) { self.include_muted_in_badge = !self.include_muted_in_badge; }
-    pub fn set_badge_count_type(&mut self, count_type: BadgeCountType) { self.badge_count_type = count_type; }
-    pub fn toggle_flash_taskbar(&mut self) { self.flash_taskbar_icon = !self.flash_taskbar_icon; }
-    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; }
+    pub fn toggle_private_chats(&mut self) { self.private_chats_enabled = !self.private_chats_enabled; self.pending_sync = true; }
+    pub fn toggle_groups(&mut self) { self.groups_enabled = !self.groups_enabled; self.pending_sync = true; }
+    pub fn toggle_channels(&mut self) { self.channels_enabled = !self.channels_enabled; self.pending_sync = true; }
+    pub fn toggle_badge_include_muted(&mut self) { self.include_muted_in_badge = !self.include_muted_in_badge; self.pending_sync = true; }
+    pub fn set_badge_count_type(&mut self, count_type: BadgeCountType) { self.badge_count_type = count_type; self.pending_sync = true; }
+    pub fn toggle_flash_taskbar(&mut self) { self.flash_taskbar_icon = !self.flash_taskbar_icon; self.pending_sync = true; }
+    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; self.pending_sync = true; }
 }
 
 impl Default for SettingsNotificationsSections {
@@ -86,12 +91,21 @@ impl Render for SettingsNotificationsSections {
                 .child(settings_subsection_title(tr_str(lang, "角标与闪烁", "Badge Counter"), pal))
                 .child(settings_toggle_row(IconName::Mute, tr_str(lang, "包含已静音对话", "Include Muted Chats"), None, self.include_muted_in_badge, pal, Self::toggle_badge_include_muted, cx))
                 .child(settings_action_row(IconName::ArchivedChats, tr_str(lang, "角标计数方式", "Count Unread"), badge_label, pal, false, |this| {
-                    this.badge_count_type = match this.badge_count_type {
+                    let next = match this.badge_count_type {
                         BadgeCountType::CountMessages => BadgeCountType::CountChats,
                         BadgeCountType::CountChats => BadgeCountType::CountMessages,
                     };
+                    this.set_badge_count_type(next);
                 }, cx))
                 .child(settings_toggle_row(IconName::SettingsGear, tr_str(lang, "任务栏闪烁提醒", "Flash Taskbar Icon"), None, self.flash_taskbar_icon, pal, Self::toggle_flash_taskbar, cx)))
+            .child(settings_card(pal)
+                .child(settings_subsection_title(tr_str(lang, "高级通知设置", "Advanced Notifications"), pal))
+                .child(settings_action_row(IconName::HeartReaction, tr_str(lang, "回应与动态通知", "Reaction Notifications"), "›", pal, false, |this| {
+                    this.pending_nav_section = Some(SettingsSectionType::NotificationsReactions);
+                }, cx))
+                .child(settings_action_row(IconName::ContactsUsers, tr_str(lang, "对话分类与例外管理", "Chat Type Overrides & Exceptions"), "›", pal, false, |this| {
+                    this.pending_nav_section = Some(SettingsSectionType::NotificationsType);
+                }, cx)))
             .into_any_element()
     }
 }

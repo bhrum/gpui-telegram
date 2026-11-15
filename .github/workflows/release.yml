@@ -66,6 +66,7 @@ jobs:
           TAG_NAME="${{ inputs.tag_name || github.ref_name }}"
           cp target/release/gpui_telegram_server "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64"
           shasum -a 256 "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" >> dist/SHA256SUMS
+          gh release view "$TAG_NAME" >/dev/null 2>&1 || gh release create "$TAG_NAME" --title "GPUI Telegram ${TAG_NAME}" --generate-notes
           gh release upload "$TAG_NAME" dist/*.tar.gz "dist/gpui_telegram_server-${TAG_NAME}-macos-arm64" dist/SHA256SUMS --clobber
 
   release-linux-x86_64:
@@ -116,4 +117,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG_NAME="${{ inputs.tag_name || github.ref_name }}"
+          gh release view "$TAG_NAME" >/dev/null 2>&1 || gh release create "$TAG_NAME" --title "GPUI Telegram ${TAG_NAME}" --generate-notes
           gh release upload "$TAG_NAME" "gpui_telegram-${TAG_NAME}-linux-x86_64.tar.gz" --clobber

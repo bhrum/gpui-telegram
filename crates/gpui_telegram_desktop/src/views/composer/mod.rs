@@ -75,3 +75,4 @@ pub mod editor_state;
 pub mod selector_ui;
 pub mod popups_ui;
 pub mod composer_ui;
+pub mod composer_event_handlers;

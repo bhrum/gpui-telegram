@@ -77,6 +77,8 @@ pub struct TdesktopThemePalette {
     pub peer_avatar_colors_bottom: [u32; 7],
     pub font_size_px: u32,
     pub bubble_radius_px: u32,
+    pub ui_scale_pct: u32,
+    pub blur_wallpaper: bool,
 }
 
 impl TdesktopThemePalette {
@@ -89,6 +91,29 @@ impl TdesktopThemePalette {
         bubble_radius_px: u32,
     ) -> Self {
         preset_palette(mode, accent, font_size_px, bubble_radius_px)
+    }
+
+    /// Applies live interface zoom percentage (`100..=300`) to scale fixed-pixel UI tokens.
+    pub fn with_ui_scale(mut self, scale_pct: u32) -> Self {
+        self.ui_scale_pct = scale_pct.clamp(50, 300);
+        self
+    }
+
+    /// Applies wallpaper frosted-blur state to stage rendering.
+    pub fn with_blur_wallpaper(mut self, blur: bool) -> Self {
+        self.blur_wallpaper = blur;
+        self
+    }
+
+    /// Multiplier (`1.0` at `100%`, `1.25` at `125%`, `1.5` at `150%`, `2.0` at `200%`).
+    pub fn scale_factor(&self) -> f32 {
+        let pct = if self.ui_scale_pct == 0 { 100 } else { self.ui_scale_pct.clamp(50, 300) };
+        (pct as f32) / 100.0
+    }
+
+    /// Scales a base pixel metric by the active interface scale factor.
+    pub fn scaled_px(&self, base_px: f32) -> f32 {
+        base_px * self.scale_factor()
     }
 
     /// Applies a named built-in wallpaper preset (`default_night`, `aurora_dusk`, etc.).

@@ -147,6 +147,19 @@ impl TantivyIndexer {
         }
     }
 
+    pub fn delete_chat_message_nonblocking(
+        &self,
+        chat_id: impl Into<String>,
+        message_id: impl Into<String>,
+    ) {
+        if let Ok(tx) = self.writer_sender() {
+            let _ = tx.try_send(IndexCommand::DeleteChatMessage {
+                chat_id: chat_id.into(),
+                message_id: message_id.into(),
+            });
+        }
+    }
+
     pub fn commit_nonblocking(&self) {
         if let Ok(tx) = self.writer_sender() {
             let _ = tx.try_send(IndexCommand::Commit { reply: None });
@@ -192,6 +205,16 @@ impl TantivyIndexer {
         self.writer_sender()?
             .send(IndexCommand::DeleteMessage {
                 message_id: message_id.into(),
+            })
+            .await
+            .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()))
+    }
+
+    /// Queues deletion of all indexed messages belonging to `chat_id`.
+    pub async fn delete_chat(&self, chat_id: impl Into<String>) -> Result<()> {
+        self.writer_sender()?
+            .send(IndexCommand::DeleteChat {
+                chat_id: chat_id.into(),
             })
             .await
             .map_err(|_| TelegramError::Internal("Tantivy writer actor channel closed".into()))

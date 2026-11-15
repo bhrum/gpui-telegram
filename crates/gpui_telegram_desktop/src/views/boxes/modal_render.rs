@@ -10,7 +10,8 @@ use crate::views::boxes::modal_render_misc::{
     render_language_picker, render_shortcuts_legend,
 };
 use crate::views::boxes::modal_render_moderation::{
-    render_delete_messages, render_pin_message, render_report_message,
+    render_clear_chat_history, render_delete_messages, render_leave_or_delete_chat,
+    render_pin_message, render_report_message,
 };
 use crate::views::boxes::modal_render_peers::{
     render_edit_peer, render_new_channel, render_new_group,
@@ -118,6 +119,12 @@ pub fn render_dialog_overlay<V: 'static>(
         ModalDialogKind::AboutTelegram => render_about_telegram(dlg, access, on_close, cx),
         ModalDialogKind::InfoDocument { title, body } => {
             render_info_document(dlg, title, body, on_close, cx)
+        }
+        ModalDialogKind::ClearChatHistory { peer_name } => {
+            render_clear_chat_history(dlg, peer_name, access, on_close, cx)
+        }
+        ModalDialogKind::LeaveOrDeleteChat { peer_name, is_group } => {
+            render_leave_or_delete_chat(dlg, peer_name, is_group, access, on_close, cx)
         }
     };
 

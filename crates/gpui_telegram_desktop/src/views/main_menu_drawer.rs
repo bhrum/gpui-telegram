@@ -46,6 +46,8 @@ pub struct MainMenuDrawer {
     pub is_night_mode: bool,
     pub language_id: String,
     pub pending_command: Option<MainMenuCommand>,
+    pub pending_botfather_open: bool,
+    pub pending_miniapps_center: bool,
     pub palette: TdesktopThemePalette,
 }
 
@@ -61,6 +63,8 @@ impl MainMenuDrawer {
             is_night_mode: palette.mode.is_dark(),
             language_id: "en".to_string(),
             pending_command: None,
+            pending_botfather_open: false,
+            pending_miniapps_center: false,
             palette,
         }
     }
@@ -94,6 +98,18 @@ impl MainMenuDrawer {
         self.pending_command.take()
     }
 
+    pub fn take_botfather_open(&mut self) -> bool {
+        let v = self.pending_botfather_open;
+        self.pending_botfather_open = false;
+        v
+    }
+
+    pub fn take_miniapps_center(&mut self) -> bool {
+        let v = self.pending_miniapps_center;
+        self.pending_miniapps_center = false;
+        v
+    }
+
     pub fn active_account(&self) -> AccountSessionRecord {
         self.accounts
             .iter()
@@ -102,7 +118,7 @@ impl MainMenuDrawer {
             .or_else(|| self.accounts.first().cloned())
             .unwrap_or_else(|| AccountSessionRecord {
                 account_id: 1,
-                display_name: "Telegram User".to_string(),
+                display_name: "Desktop User".to_string(),
                 username: String::new(),
                 phone: String::new(),
                 bio: String::new(),
@@ -122,6 +138,13 @@ enum MenuRowEntry {
         zh: &'static str,
         en: &'static str,
         cmd: MainMenuCommand,
+    },
+    Custom {
+        id: &'static str,
+        icon: IconName,
+        zh: &'static str,
+        en: &'static str,
+        kind: u8,
     },
     Divider,
 }
@@ -207,6 +230,21 @@ impl Render for MainMenuDrawer {
                 cmd: MainMenuCommand::SavedMessages,
             },
             MenuRowEntry::Divider,
+            MenuRowEntry::Custom {
+                id: "main-menu-botfather",
+                icon: IconName::BotRobot,
+                zh: "BotFather · 创建机器人/小程序",
+                en: "BotFather · Create Bot/App",
+                kind: 1,
+            },
+            MenuRowEntry::Custom {
+                id: "main-menu-miniapps",
+                icon: IconName::FolderBots,
+                zh: "小程序中心 (Mini Apps)",
+                en: "Mini Apps Center",
+                kind: 2,
+            },
+            MenuRowEntry::Divider,
             MenuRowEntry::Action {
                 icon: IconName::Poll,
                 zh: "任务中心",
@@ -244,7 +282,7 @@ impl Render for MainMenuDrawer {
             MenuRowEntry::Action {
                 icon: IconName::FileDoc,
                 zh: "导出聊天数据",
-                en: "Export Telegram Data",
+                en: "Export Chat Data",
                 cmd: MainMenuCommand::ExportData,
             },
             MenuRowEntry::Action {
@@ -665,6 +703,45 @@ impl Render for MainMenuDrawer {
                                             .my(px(4.0))
                                             .bg(divider_col)
                                             .into_any_element(),
+                                        MenuRowEntry::Custom {
+                                            id,
+                                            icon,
+                                            zh,
+                                            en,
+                                            kind,
+                                        } => {
+                                            let label = tr_str(&lang, zh, en).to_string();
+                                            div()
+                                                .id(id)
+                                                .cursor_pointer()
+                                                .h(px(40.0))
+                                                .px(px(18.0))
+                                                .hover(move |s| s.bg(row_hover))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(16.0))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _e, _w, cx| {
+                                                        if kind == 1 {
+                                                            this.pending_botfather_open = true;
+                                                        } else {
+                                                            this.pending_miniapps_center = true;
+                                                        }
+                                                        this.is_open = false;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(tg_icon(icon, 19.0, palette.accent))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.5))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(fg_primary)
+                                                        .child(label),
+                                                )
+                                                .into_any_element()
+                                        }
                                         MenuRowEntry::Action { icon, zh, en, cmd } => {
                                             let label = tr_str(&lang, zh, en).to_string();
                                             div()
@@ -762,6 +839,45 @@ impl Render for MainMenuDrawer {
                                     .child(div().w_full().h(px(1.0)).my(px(4.0)).bg(divider_col))
                                     .children(secondary_rows.into_iter().map(|entry| match entry {
                                         MenuRowEntry::Divider => div().into_any_element(),
+                                        MenuRowEntry::Custom {
+                                            id,
+                                            icon,
+                                            zh,
+                                            en,
+                                            kind,
+                                        } => {
+                                            let label = tr_str(&lang, zh, en).to_string();
+                                            div()
+                                                .id(id)
+                                                .cursor_pointer()
+                                                .h(px(40.0))
+                                                .px(px(18.0))
+                                                .hover(move |s| s.bg(row_hover))
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(16.0))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _e, _w, cx| {
+                                                        if kind == 1 {
+                                                            this.pending_botfather_open = true;
+                                                        } else {
+                                                            this.pending_miniapps_center = true;
+                                                        }
+                                                        this.is_open = false;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(tg_icon(icon, 19.0, palette.accent))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.5))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(fg_primary)
+                                                        .child(label),
+                                                )
+                                                .into_any_element()
+                                        }
                                         MenuRowEntry::Action { icon, zh, en, cmd } => {
                                             let label = tr_str(&lang, zh, en).to_string();
                                             div()
@@ -817,13 +933,13 @@ impl Render for MainMenuDrawer {
                                     .text_size(px(12.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(palette.text_link))
-                                    .child("Telegram Desktop"),
+                                    .child("AI Chat Desktop"),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(fg_muted)
-                                    .child("Telegram Desktop GPUI v1.0.0"),
+                                    .child(concat!("AI Chat v", env!("CARGO_PKG_VERSION"))),
                             ),
                     ),
             )

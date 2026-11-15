@@ -1,5 +1,5 @@
-/* Authentic Telegram Desktop English strings pack */
-"lng_app_name" = "Telegram Desktop";
+/* Desktop English strings pack */
+"lng_app_name" = "AI Chat";
 "lng_cancel" = "Cancel";
 "lng_close" = "Close";
 "lng_box_ok" = "OK";
@@ -13,14 +13,14 @@
 "lng_skip" = "Skip";
 "lng_search" = "Search";
 
-"lng_intro_title" = "Telegram Desktop";
-"lng_intro_about" = "Welcome to the official Telegram Desktop app. It's fast and secure.";
+"lng_intro_title" = "AI Chat";
+"lng_intro_about" = "Welcome to the desktop chat workspace. Fast and secure.";
 "lng_intro_start_messaging" = "Start Messaging";
 "lng_intro_next" = "Next";
 "lng_intro_finish" = "Sign Up";
 "lng_intro_submit" = "Submit";
-"lng_intro_qr_title" = "Scan From Mobile Telegram";
-"lng_intro_qr_step1" = "Open Telegram on your phone";
+"lng_intro_qr_title" = "Scan From Mobile App";
+"lng_intro_qr_step1" = "Open the app on your phone";
 "lng_intro_qr_step2" = "Go to Settings > Devices > Link Desktop Device";
 "lng_intro_qr_step3" = "Scan this image to Log In";
 "lng_intro_qr_skip" = "Or log in using your phone number";

@@ -27,6 +27,8 @@ pub struct SettingsMainSections {
     pub interface_scale_pct: u32,
     pub active_section: Option<SettingsSectionType>,
     pub toast_message: Option<String>,
+    pub pending_copy_text: Option<String>,
+    pub pending_scale_change: Option<u32>,
     pub is_visible: bool,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
@@ -46,6 +48,8 @@ impl SettingsMainSections {
             interface_scale_pct: 100,
             active_section: None,
             toast_message: None,
+            pending_copy_text: None,
+            pending_scale_change: None,
             is_visible: true,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
@@ -78,19 +82,30 @@ impl SettingsMainSections {
     }
 
     pub fn copy_phone(&mut self) -> String {
-        let msg = "Phone copied to clipboard".to_string();
+        let msg = tr_str(&self.language_id, "手机号已复制到剪贴板", "Phone copied to clipboard").to_string();
         self.toast_message = Some(msg.clone());
+        if !self.profile.phone.is_empty() {
+            self.pending_copy_text = Some(self.profile.phone.clone());
+        }
         msg
     }
 
     pub fn copy_username(&mut self) -> String {
-        let msg = format!("Username copied: @{}", self.profile.username);
+        let msg = if self.language_id.starts_with("zh") {
+            format!("用户名已复制: @{}", self.profile.username)
+        } else {
+            format!("Username copied: @{}", self.profile.username)
+        };
         self.toast_message = Some(msg.clone());
+        if !self.profile.username.is_empty() {
+            self.pending_copy_text = Some(format!("@{}", self.profile.username));
+        }
         msg
     }
 
     pub fn set_interface_scale(&mut self, scale_pct: u32) {
         self.interface_scale_pct = scale_pct.clamp(100, 300);
+        self.pending_scale_change = Some(self.interface_scale_pct);
     }
 
     pub fn navigate_to(&mut self, section: SettingsSectionType) {
@@ -128,15 +143,28 @@ impl Render for SettingsMainSections {
             (IconName::NightMoon, tr_str(lang, "聊天设置", "Chat Settings"), SettingsSectionType::Chat),
             (IconName::FolderAll, tr_str(lang, "聊天分组", "Folders"), SettingsSectionType::Folders),
             (IconName::SettingsGear, tr_str(lang, "高级设置", "Advanced"), SettingsSectionType::Advanced),
+            (IconName::ComputerDesktop, tr_str(lang, "电脑", "Computers"), SettingsSectionType::Computers),
             (IconName::PhoneCall, tr_str(lang, "音视频通话", "Speakers and Camera"), SettingsSectionType::Calls),
-            (IconName::PremiumStar, "Telegram Premium", SettingsSectionType::Premium),
-            (IconName::WalletStars, "Telegram Stars", SettingsSectionType::Credits),
+            (IconName::ComputerDesktop, tr_str(lang, "键盘快捷键", "Keyboard Shortcuts"), SettingsSectionType::Shortcuts),
+            (IconName::BotRobot, tr_str(lang, "商业功能", "Business"), SettingsSectionType::Business),
+            (IconName::PremiumStar, tr_str(lang, "高级会员", "Premium"), SettingsSectionType::Premium),
+            (IconName::WalletStars, tr_str(lang, "星币钱包", "Stars"), SettingsSectionType::Credits),
             (IconName::Translate, tr_str(lang, "语言", "Language"), SettingsSectionType::Language),
         ];
 
         settings_container(pal)
             .child(settings_card(pal)
-                .child(settings_section_header(IconName::ContactsUsers, title, Some(&self.profile.bio), pal))
+                .child(
+                    div()
+                        .cursor_pointer()
+                        .rounded(px(8.0))
+                        .hover(move |s| s.bg(rgb(pal.dialogs_hover_bg)))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                            this.navigate_to(SettingsSectionType::Information);
+                            cx.notify();
+                        }))
+                        .child(settings_section_header(IconName::ContactsUsers, title, Some(&self.profile.bio), pal)),
+                )
                 .when(!self.profile.phone.is_empty(), |el| {
                     el.child(settings_action_row(IconName::PhoneCall, &self.profile.phone, tr_str(lang, "复制", "Copy"), pal, false, |this| {
                         this.copy_phone();
@@ -159,12 +187,13 @@ impl Render for SettingsMainSections {
                 })))
             .child(settings_card(pal)
                 .child(div().flex().items_center().justify_between()
-                    .child(div().flex().items_center().gap(px(8.0)).child(tg_icon(IconName::SettingsGear, 15.0, pal.icon_fg))
-                        .child(div().text_size(px(13.0)).text_color(rgb(pal.text_primary)).child(tr_str(lang, "界面缩放", "Interface Scale"))))
-                    .child(div().flex().gap(px(6.0)).children([100u32, 125, 150, 200].into_iter().map(|pct| {
+                    .child(div().flex().items_center().gap(px(pal.scaled_px(8.0))).child(tg_icon(IconName::SettingsGear, pal.scaled_px(15.0), pal.icon_fg))
+                        .child(div().text_size(px(pal.scaled_px(13.0))).text_color(rgb(pal.text_primary)).child(tr_str(lang, "界面缩放", "Interface Scale"))))
+                    .child(div().flex().gap(px(pal.scaled_px(6.0))).children([100u32, 125, 150, 200].into_iter().map(|pct| {
                         let act = self.interface_scale_pct == pct;
-                        div().cursor_pointer().px(px(8.0)).py(px(4.0)).rounded(px(6.0))
-                            .bg(rgb(if act { pal.accent } else { pal.input_bg })).text_size(px(11.5))
+                        div().id(SharedString::from(format!("settings-scale-btn-{}", pct)))
+                            .cursor_pointer().px(px(pal.scaled_px(8.0))).py(px(pal.scaled_px(4.0))).rounded(px(pal.scaled_px(6.0)))
+                            .bg(rgb(if act { pal.accent } else { pal.input_bg })).text_size(px(pal.scaled_px(11.5)))
                             .text_color(rgb(if act { pal.active_button_fg } else { pal.text_primary }))
                             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
                                 this.set_interface_scale(pct);

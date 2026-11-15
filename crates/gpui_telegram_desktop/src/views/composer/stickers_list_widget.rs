@@ -85,6 +85,7 @@ pub struct StickersListWidget {
     pub selected_set_id: Option<u64>,
     pub active_index: Option<usize>,
     pub is_active: bool,
+    pub loop_animated: bool,
     pub scroll_top: f32,
     pub updated_at: i64,
 }
@@ -100,6 +101,7 @@ impl StickersListWidget {
             selected_set_id: None,
             active_index: None,
             is_active: false,
+            loop_animated: true,
             scroll_top: 0.0,
             updated_at: chrono::Utc::now().timestamp(),
         }

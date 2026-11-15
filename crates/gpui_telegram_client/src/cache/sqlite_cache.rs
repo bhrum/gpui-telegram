@@ -1,7 +1,7 @@
 use gpui_telegram_core::error::{Result, TelegramError};
 use gpui_telegram_core::types::{ChatId, MessageId};
 use gpui_telegram_proto::contracts::{ChatDetailDto, DraftDto};
-use gpui_telegram_proto::message::MessageItem;
+use gpui_telegram_proto::message::{MessageItem, ReactionCount};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,7 @@ pub struct CachedMediaEntry {
 
 pub(crate) struct SqliteClientCache {
     conn: Mutex<Connection>,
+    base_dir: PathBuf,
     media_dir: PathBuf,
 }
 
@@ -80,13 +81,120 @@ impl SqliteClientCache {
                  mime_type TEXT,
                  size_bytes INTEGER NOT NULL,
                  local_path TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS message_reactions (
+                 chat_id INTEGER NOT NULL,
+                 msg_id INTEGER NOT NULL,
+                 payload_json TEXT NOT NULL,
+                 PRIMARY KEY (chat_id, msg_id)
+             );
+             CREATE TABLE IF NOT EXISTS cache_meta (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              );",
         )
         .map_err(db_err)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            base_dir: base_dir.to_path_buf(),
             media_dir,
         })
+    }
+
+    pub(crate) fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    pub(crate) fn load_owner_scope(&self) -> Option<(String, u64)> {
+        let conn = self.conn.lock();
+        let uid_str: Option<String> = conn
+            .query_row(
+                "SELECT value FROM cache_meta WHERE key = 'owner_user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let uid = uid_str.and_then(|s| s.parse::<u64>().ok()).filter(|&id| id > 0)?;
+        let srv: String = conn
+            .query_row(
+                "SELECT value FROM cache_meta WHERE key = 'owner_server_url'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        Some((srv, uid))
+    }
+
+    pub(crate) fn save_owner_scope(&self, server_url: &str, user_id: u64) {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('owner_user_id', ?1)",
+            params![user_id.to_string()],
+        );
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO cache_meta (key, value) VALUES ('owner_server_url', ?1)",
+            params![server_url],
+        );
+    }
+
+    pub(crate) fn load_message_reactions(&self) -> Result<HashMap<(ChatId, MessageId), Vec<ReactionCount>>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT chat_id, msg_id, payload_json FROM message_reactions")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
+            .map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (cid, mid, json) = row.map_err(db_err)?;
+            if let Ok(reactions) = serde_json::from_str::<Vec<ReactionCount>>(&json) {
+                if !reactions.is_empty() {
+                    out.insert((ChatId(cid), MessageId(mid)), reactions);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn upsert_message_reactions(
+        &self,
+        chat_id: ChatId,
+        msg_id: MessageId,
+        reactions: &[ReactionCount],
+    ) {
+        let conn = self.conn.lock();
+        if reactions.is_empty() {
+            let _ = conn.execute(
+                "DELETE FROM message_reactions WHERE chat_id = ?1 AND msg_id = ?2",
+                params![chat_id.0, msg_id.0],
+            );
+        } else if let Ok(json) = serde_json::to_string(reactions) {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO message_reactions (chat_id, msg_id, payload_json) VALUES (?1, ?2, ?3)",
+                params![chat_id.0, msg_id.0, json],
+            );
+        }
+    }
+
+    pub(crate) fn clear_chat_reactions(&self, chat_id: ChatId) {
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "DELETE FROM message_reactions WHERE chat_id = ?1",
+            params![chat_id.0],
+        );
+    }
+
+    pub(crate) fn clear_all(&self) {
+        let conn = self.conn.lock();
+        let _ = conn.execute_batch(
+            "DELETE FROM messages;
+             DELETE FROM message_reactions;
+             DELETE FROM chats;
+             DELETE FROM drafts;
+             DELETE FROM read_states;
+             DELETE FROM cache_meta;",
+        );
     }
 
     pub(crate) fn load_messages(&self) -> Result<HashMap<ChatId, Vec<MessageItem>>> {
@@ -194,6 +302,10 @@ impl SqliteClientCache {
         let conn = self.conn.lock();
         let _ = conn.execute(
             "DELETE FROM messages WHERE chat_id = ?1 AND msg_id = ?2",
+            params![chat_id.0, msg_id.0],
+        );
+        let _ = conn.execute(
+            "DELETE FROM message_reactions WHERE chat_id = ?1 AND msg_id = ?2",
             params![chat_id.0, msg_id.0],
         );
     }

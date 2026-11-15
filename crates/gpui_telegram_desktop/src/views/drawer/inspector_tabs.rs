@@ -68,6 +68,22 @@ pub struct SharedVoiceItem {
     pub date: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorSubpage {
+    #[default]
+    Main,
+    ComputersList,
+    BotConfigEditor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BotConfigFocusField {
+    #[default]
+    None,
+    Persona,
+    Model,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InspectorAction {
     StartVoiceCall(String),
@@ -80,6 +96,23 @@ pub enum InspectorAction {
     ChangeAutoDelete(String),
     OpenMedia { url: String, is_video: bool },
     OpenEditPeer,
+    LaunchMiniApp(String),
+    ToggleAttachMenuBot(u64),
+    RunBotCommand(String),
+    OpenBotComputersSubpage,
+    CloseBotComputersSubpage,
+    OpenRemoteWorkbench { node_id: String },
+    OpenComputerDetailInSettings { node_id: String },
+    OpenCreateCloudComputerModal { bind_bot_id: Option<u64> },
+    BindBotToComputer { bot_id: u64, node_id: Option<String> },
+    SaveBotComputerConfig {
+        bot_id: u64,
+        persona_prompt: String,
+        preferred_model: String,
+        approval_mode: gpui_telegram_proto::ComputerRunPolicy,
+        allow_cross_device_control: bool,
+        allow_cloud_self_config: bool,
+    },
 }
 
 pub struct ProfileTabModel {
@@ -93,6 +126,13 @@ pub struct ProfileTabModel {
     pub avatar_path: Option<String>,
     pub facts: Vec<(String, String)>,
     pub is_notifications_enabled: bool,
+    pub is_bot: bool,
+    pub bot_id: u64,
+    pub bot_persona_prompt: String,
+    pub bot_commands: Vec<(String, String)>,
+    pub miniapp_title: Option<String>,
+    pub miniapp_url: Option<String>,
+    pub in_attach_menu: bool,
 }
 
 pub struct MembersTabModel {
@@ -207,6 +247,171 @@ impl InspectorTabsView {
             }))
             .when_some(copied_feedback.cloned(), |el, hint| {
                 el.child(div().text_size(px(11.0)).text_color(rgb(pal.success)).child(hint))
+            })
+            .when(model.is_bot, |el| {
+                let mini_title = model
+                    .miniapp_title
+                    .clone()
+                    .unwrap_or_else(|| tr_str(lang, "打开小程序", "Open Mini App").to_string());
+                let mini_url = model.miniapp_url.clone();
+                let bot_id = model.bot_id;
+                let in_attach = model.in_attach_menu;
+                let persona = model.bot_persona_prompt.clone();
+                let cmds = model.bot_commands.clone();
+                el.child(
+                    div()
+                        .w_full()
+                        .p(px(10.0))
+                        .rounded(px(10.0))
+                        .bg(rgb(pal.card_bg))
+                        .border_1()
+                        .border_color(rgb(pal.border_fg))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(tg_icon(IconName::BotRobot, 15.0, pal.accent))
+                                        .child(
+                                            div()
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::BOLD)
+                                                .text_color(rgb(pal.text_primary))
+                                                .child(tr_str(lang, "机器人与小程序", "Bot & Mini App")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .rounded(px(999.0))
+                                        .bg(rgb(pal.composer_bg))
+                                        .text_size(px(10.5))
+                                        .text_color(rgb(pal.accent))
+                                        .child("AI Companion"),
+                                ),
+                        )
+                        .when_some(mini_url, |col, url| {
+                            col.child(
+                                div()
+                                    .id("inspector-launch-miniapp-btn")
+                                    .cursor_pointer()
+                                    .w_full()
+                                    .h(px(34.0))
+                                    .rounded(px(8.0))
+                                    .bg(rgb(pal.accent))
+                                    .hover(|s| s.bg(rgb(pal.accent_hover)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(6.0))
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                        this.pending_action = Some(InspectorAction::LaunchMiniApp(url.clone()));
+                                        cx.notify();
+                                    }))
+                                    .child("🚀")
+                                    .child(mini_title),
+                            )
+                        })
+                        .when(bot_id > 0, |col| {
+                            col.child(
+                                div()
+                                    .id("inspector-toggle-attach-btn")
+                                    .cursor_pointer()
+                                    .w_full()
+                                    .py(px(6.0))
+                                    .px(px(8.0))
+                                    .rounded(px(7.0))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .hover(|s| s.bg(rgb(pal.dialogs_hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(pal.text_link))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                        this.pending_action = Some(InspectorAction::ToggleAttachMenuBot(bot_id));
+                                        cx.notify();
+                                    }))
+                                    .child(if in_attach {
+                                        tr_str(lang, "从附件菜单移除", "Remove from Attachment Menu")
+                                    } else {
+                                        tr_str(lang, "+ 添加到附件菜单", "+ Add to Attachment Menu")
+                                    }),
+                            )
+                        })
+                        .when(!persona.trim().is_empty(), |col| {
+                            col.child(
+                                div()
+                                    .p(px(8.0))
+                                    .rounded(px(6.0))
+                                    .bg(rgb(pal.input_bg))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(pal.text_secondary))
+                                            .child(tr_str(lang, "AI 人设 / System Persona", "AI Persona")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.5))
+                                            .text_color(rgb(pal.text_primary))
+                                            .child(persona),
+                                    ),
+                            )
+                        })
+                        .when(!cmds.is_empty(), |col| {
+                            col.child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(px(5.0))
+                                    .children(cmds.into_iter().map(|(cmd, desc)| {
+                                        let run_cmd = if cmd.starts_with('/') {
+                                            cmd.clone()
+                                        } else {
+                                            format!("/{}", cmd)
+                                        };
+                                        let label = if desc.is_empty() {
+                                            run_cmd.clone()
+                                        } else {
+                                            format!("{} · {}", run_cmd, desc)
+                                        };
+                                        div()
+                                            .cursor_pointer()
+                                            .px(px(8.0))
+                                            .py(px(4.0))
+                                            .rounded(px(6.0))
+                                            .bg(rgb(pal.input_bg))
+                                            .hover(|s| s.bg(rgb(pal.dialogs_hover_bg)))
+                                            .text_size(px(11.0))
+                                            .text_color(rgb(pal.text_link))
+                                            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                                                this.pending_action = Some(InspectorAction::RunBotCommand(run_cmd.clone()));
+                                                cx.notify();
+                                            }))
+                                            .child(label)
+                                    })),
+                            )
+                        }),
+                )
             })
             .child(div().flex().gap(px(6.0))
                 .child(Self::action_pill(

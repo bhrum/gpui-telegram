@@ -24,6 +24,16 @@ pub enum AutoLockTimeout {
 }
 
 impl AutoLockTimeout {
+    pub fn from_seconds(secs: u64) -> Self {
+        match secs {
+            0 => Self::Disabled,
+            1..=120 => Self::In1Min,
+            121..=900 => Self::In5Mins,
+            901..=7200 => Self::In1Hour,
+            _ => Self::In5Hours,
+        }
+    }
+
     pub fn as_seconds(&self) -> u64 {
         match self {
             Self::Disabled => 0,
@@ -41,6 +51,16 @@ impl AutoLockTimeout {
             Self::In5Mins => "In 5 minutes",
             Self::In1Hour => "In 1 hour",
             Self::In5Hours => "In 5 hours",
+        }
+    }
+
+    pub fn display_name_localized(&self, lang: &str) -> &'static str {
+        match self {
+            Self::Disabled => tr_str(lang, "已禁用", "Disabled"),
+            Self::In1Min => tr_str(lang, "1 分钟后", "In 1 minute"),
+            Self::In5Mins => tr_str(lang, "5 分钟后", "In 5 minutes"),
+            Self::In1Hour => tr_str(lang, "1 小时后", "In 1 hour"),
+            Self::In5Hours => tr_str(lang, "5 小时后", "In 5 hours"),
         }
     }
 }
@@ -71,15 +91,27 @@ pub struct SettingsLocalPasscodeSections {
     pub countdown: PasscodeCountdown,
     pub bad_tries: u32,
     pub is_locked: bool,
+    pub pending_open_passcode_box: bool,
+    pub pending_disable_passcode: bool,
+    pub pending_prefs_sync: bool,
+    pub pending_lock_now: bool,
     pub is_visible: bool,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
 }
 
 impl SettingsLocalPasscodeSections {
-    fn hash_passcode_digest(pass: &str) -> String {
+    pub fn hash_passcode_hex(pass: &str) -> String {
         let digest = PasscodeBox::hash_passcode(pass, b"tg-local-pass-salt-1", b"tg-local-pass-salt-2");
         digest.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    pub fn verify_passcode_against_hash(pass: &str, expected_hash: &str) -> bool {
+        !expected_hash.is_empty() && Self::hash_passcode_hex(pass) == expected_hash
+    }
+
+    fn hash_passcode_digest(pass: &str) -> String {
+        Self::hash_passcode_hex(pass)
     }
 
     pub fn new() -> Self {
@@ -90,6 +122,10 @@ impl SettingsLocalPasscodeSections {
             countdown: PasscodeCountdown::new(),
             bad_tries: 0,
             is_locked: false,
+            pending_open_passcode_box: false,
+            pending_disable_passcode: false,
+            pending_prefs_sync: false,
+            pending_lock_now: false,
             is_visible: true,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
@@ -115,6 +151,7 @@ impl SettingsLocalPasscodeSections {
         self.has_passcode = true;
         self.bad_tries = 0;
         self.countdown.restart();
+        self.pending_prefs_sync = true;
         true
     }
 
@@ -157,8 +194,40 @@ impl Render for SettingsLocalPasscodeSections {
         settings_container(pal)
             .child(settings_card(pal)
                 .child(settings_section_header(IconName::Lock, tr_str(lang, "本地锁定密码", "Passcode Lock"), None, pal))
-                .child(settings_info_row(tr_str(lang, "密码状态", "Status"), if self.has_passcode { "Enabled" } else { "Disabled" }, pal))
-                .child(settings_action_row(IconName::ClockSending, tr_str(lang, "自动锁定超时", "Auto-Lock"), self.auto_lock.display_name(), pal, false, |this| {
+                .child(settings_info_row(tr_str(lang, "密码状态", "Status"), if self.has_passcode { tr_str(lang, "已开启", "Enabled") } else { tr_str(lang, "已关闭", "Disabled") }, pal))
+                .child(settings_action_row(
+                    IconName::Lock,
+                    if self.has_passcode {
+                        tr_str(lang, "修改本地密码", "Change Passcode")
+                    } else {
+                        tr_str(lang, "开启本地密码锁", "Turn On Passcode")
+                    },
+                    "",
+                    pal,
+                    false,
+                    |this| {
+                        this.pending_open_passcode_box = true;
+                    },
+                    cx,
+                ))
+                .when(self.has_passcode, |el| {
+                    el.child(settings_action_row(
+                        IconName::DeleteTrash,
+                        tr_str(lang, "关闭本地密码锁", "Turn Off Passcode"),
+                        "",
+                        pal,
+                        true,
+                        |this| {
+                            this.has_passcode = false;
+                            this.passcode_hash = None;
+                            this.is_locked = false;
+                            this.pending_disable_passcode = true;
+                            this.pending_prefs_sync = true;
+                        },
+                        cx,
+                    ))
+                })
+                .child(settings_action_row(IconName::ClockSending, tr_str(lang, "自动锁定超时", "Auto-Lock"), self.auto_lock.display_name_localized(lang), pal, false, |this| {
                     this.auto_lock = match this.auto_lock {
                         AutoLockTimeout::Disabled => AutoLockTimeout::In1Min,
                         AutoLockTimeout::In1Min => AutoLockTimeout::In5Mins,
@@ -166,11 +235,13 @@ impl Render for SettingsLocalPasscodeSections {
                         AutoLockTimeout::In1Hour => AutoLockTimeout::In5Hours,
                         AutoLockTimeout::In5Hours => AutoLockTimeout::Disabled,
                     };
+                    this.pending_prefs_sync = true;
                 }, cx))
                 .when(self.has_passcode, |el| {
                     el.child(settings_subsection_title(tr_str(lang, "锁屏控制", "Controls"), pal))
-                        .child(settings_action_row(IconName::Lock, tr_str(lang, "立即锁定", "Lock Telegram"), &self.countdown.formatted_text(), pal, false, |this| {
-                            this.is_locked = !this.is_locked;
+                        .child(settings_action_row(IconName::Lock, tr_str(lang, "立即锁定", "Lock App"), &self.countdown.formatted_text(), pal, false, |this| {
+                            this.is_locked = true;
+                            this.pending_lock_now = true;
                         }, cx))
                 }))
             .into_any_element()

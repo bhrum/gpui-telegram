@@ -58,6 +58,26 @@ impl HttpClient {
         self.request_empty(Method::DELETE, &path, Some(token), None::<&()>).await
     }
 
+    pub async fn clear_chat_history(&self, token: &str, chat_id: i64) -> Result<(), HttpClientError> {
+        let path = format!("/api/v1/chats/{}/clear", chat_id);
+        self.request_empty(Method::POST, &path, Some(token), Some(&serde_json::json!({}))).await
+    }
+
+    pub async fn leave_or_delete_chat(&self, token: &str, chat_id: i64) -> Result<(), HttpClientError> {
+        let path = format!("/api/v1/chats/{}/leave", chat_id);
+        self.request_empty(Method::POST, &path, Some(token), Some(&serde_json::json!({}))).await
+    }
+
+    pub async fn set_chat_ttl(&self, token: &str, chat_id: i64, ttl_seconds: u32) -> Result<u32, HttpClientError> {
+        let path = format!("/api/v1/chats/{}/ttl", chat_id);
+        let body = serde_json::json!({ "ttl_seconds": ttl_seconds });
+        let resp: serde_json::Value = self.request_json(Method::POST, &path, Some(token), Some(&body)).await?;
+        Ok(resp
+            .get("ttl_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(ttl_seconds as u64) as u32)
+    }
+
     pub async fn list_invites(&self, token: &str, chat_id: i64) -> Result<Vec<InviteLinkDto>, HttpClientError> {
         let path = format!("/api/v1/chats/{}/invites", chat_id);
         self.request_vec_or_field(Method::GET, &path, Some(token), &["invites", "items"]).await
@@ -177,7 +197,26 @@ impl HttpClient {
 
     pub async fn react_to_message(&self, token: &str, chat_id: i64, message_id: i64, req: &ReactionHttpRequest) -> Result<ReactionHttpResponse, HttpClientError> {
         let path = format!("/api/v1/chats/{}/messages/{}/reactions", chat_id, message_id);
-        self.request_json(Method::POST, &path, Some(token), Some(req)).await
+        match self.request_json(Method::POST, &path, Some(token), Some(req)).await {
+            Err(HttpClientError::Api { status, .. }) if status == 404 || status == 405 => {
+                #[derive(Serialize)]
+                struct LegacyReactionBody<'a> {
+                    chat_id: i64,
+                    message_id: i64,
+                    emoji: &'a str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    action: Option<&'a str>,
+                }
+                let legacy = LegacyReactionBody {
+                    chat_id,
+                    message_id,
+                    emoji: &req.emoji,
+                    action: req.action.as_deref(),
+                };
+                self.request_json(Method::POST, "/api/v1/messages/reaction", Some(token), Some(&legacy)).await
+            }
+            other => other,
+        }
     }
 
     pub async fn create_poll(&self, token: &str, chat_id: i64, req: &CreatePollHttpRequest) -> Result<PollHttpResponse, HttpClientError> {

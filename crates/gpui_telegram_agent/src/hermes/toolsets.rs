@@ -1,4 +1,4 @@
-use crate::computer::ComputerLeaseBroker;
+use crate::computer::{ComputerCloudProvider, ComputerLeaseBroker};
 use crate::mcp::{McpRegistry, ToolRiskLevel};
 use crate::talk::TalkCoordinator;
 use serde::{Deserialize, Serialize};
@@ -251,12 +251,14 @@ impl ToolsetPreset {
                 ToolsetId::Clarify,
                 ToolsetId::Vision,
                 ToolsetId::Kanban,
+                ToolsetId::ComputerUse,
             ],
             Self::HermesTelegram => vec![
                 ToolsetId::Core,
                 ToolsetId::File,
                 ToolsetId::Workspace,
                 ToolsetId::Web,
+                ToolsetId::Browser,
                 ToolsetId::Memory,
                 ToolsetId::Skills,
                 ToolsetId::AudioTts,
@@ -295,6 +297,7 @@ impl ToolsetPreset {
                 ToolsetId::Mcp,
                 ToolsetId::Subagents,
                 ToolsetId::SessionSearch,
+                ToolsetId::ComputerUse,
                 ToolsetId::DesktopUi,
             ],
             Self::Minimal => vec![ToolsetId::Core, ToolsetId::File, ToolsetId::Reasoning],
@@ -734,6 +737,7 @@ pub struct HermesToolContext {
     pub session_id: String,
     pub chat_id: Option<i64>,
     pub bot_id: Option<i64>,
+    pub user_id: Option<u64>,
     pub turn_index: u64,
     pub caller_depth: usize,
     pub max_depth: usize,
@@ -744,6 +748,7 @@ pub struct HermesToolContext {
     pub processes: Arc<ProcessRegistry>,
     pub mcp_registry: Arc<RwLock<McpRegistry>>,
     pub computer_broker: Arc<Mutex<ComputerLeaseBroker>>,
+    pub computer_provider: Option<Arc<dyn ComputerCloudProvider>>,
     pub talk_coordinator: Arc<Mutex<TalkCoordinator>>,
     pub todos: Arc<Mutex<TodoStore>>,
     pub agentic_store: Arc<Mutex<LocalAgenticStore>>,
@@ -769,6 +774,7 @@ impl HermesToolContext {
             session_id: "default".into(),
             chat_id: None,
             bot_id: None,
+            user_id: None,
             turn_index: 1,
             caller_depth: 0,
             max_depth: 3,
@@ -779,6 +785,7 @@ impl HermesToolContext {
             processes: Arc::new(ProcessRegistry::new()),
             mcp_registry: Arc::new(RwLock::new(McpRegistry::new())),
             computer_broker: Arc::new(Mutex::new(ComputerLeaseBroker::new())),
+            computer_provider: None,
             talk_coordinator: Arc::new(Mutex::new(TalkCoordinator::new())),
             todos: Arc::new(Mutex::new(TodoStore::new())),
             agentic_store: Arc::new(Mutex::new(LocalAgenticStore::new())),
@@ -801,6 +808,16 @@ impl HermesToolContext {
     pub fn with_chat_and_bot(mut self, chat_id: Option<i64>, bot_id: Option<i64>) -> Self {
         self.chat_id = chat_id;
         self.bot_id = bot_id;
+        self
+    }
+
+    pub fn with_user_id(mut self, user_id: Option<u64>) -> Self {
+        self.user_id = user_id;
+        self
+    }
+
+    pub fn with_computer_provider(mut self, provider: Arc<dyn ComputerCloudProvider>) -> Self {
+        self.computer_provider = Some(provider);
         self
     }
 
@@ -1686,12 +1703,13 @@ pub fn all_builtin_tool_specs() -> Vec<HermesToolSpec> {
         HermesToolSpec::new(
             "computer_use",
             ToolsetId::ComputerUse,
-            "Acquire/release ComputerControlLease and execute generation-fenced Remote Computer CUA actions.",
+            "Acquire/release ComputerControlLease and execute generation-fenced Remote Computer CUA actions. In authorized/Yolo sessions or bound online computers, omitting lease_id auto-acquires a lease transparently.",
             json!({
                 "type": "object",
                 "properties": {
                     "action": { "type": "string", "enum": ["acquire_lease", "release_lease", "emergency_takeover", "lease_status", "click", "move_cursor", "key_press", "type_string", "screenshot", "wait"] },
                     "device_id": { "type": "string" },
+                    "computer_id": { "type": "string", "description": "Optional alias for device_id / node_id." },
                     "lease_id": { "type": "string" },
                     "x": { "type": "integer" },
                     "y": { "type": "integer" },
@@ -1704,6 +1722,140 @@ pub fn all_builtin_tool_specs() -> Vec<HermesToolSpec> {
             }),
             ToolRiskLevel::High,
             false,
+        ),
+        HermesToolSpec::new(
+            "computer_list",
+            ToolsetId::ComputerUse,
+            "List all logged-in local computers and configured cloud servers accessible to the user.",
+            json!({
+                "type": "object",
+                "properties": {}
+            }),
+            ToolRiskLevel::ReadOnly,
+            false,
+        ),
+        HermesToolSpec::new(
+            "computer_status",
+            ToolsetId::ComputerUse,
+            "Inspect accessible computers, online status, active bindings, approval mode, and current ComputerControlLease status.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "string" },
+                    "computer_id": { "type": "string" }
+                }
+            }),
+            ToolRiskLevel::ReadOnly,
+            false,
+        ),
+        HermesToolSpec::new(
+            "computer_lease_acquire",
+            ToolsetId::ComputerUse,
+            "Explicitly acquire a ComputerControlLease for a device/node (auto-resolves bound or single online computer when omitted).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "device_id": { "type": "string" },
+                    "node_id": { "type": "string" },
+                    "computer_id": { "type": "string" }
+                }
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "computer_bind",
+            ToolsetId::ComputerUse,
+            "Bind or unbind the active bot to a local computer or cloud server by node_id.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": ["string", "null"], "description": "Computer node_id to bind (or null/omitted to unbind)." },
+                    "computer_id": { "type": ["string", "null"], "description": "Optional alias for node_id." }
+                }
+            }),
+            ToolRiskLevel::Low,
+            true,
+        ),
+        HermesToolSpec::new(
+            "computer_configure_cloud",
+            ToolsetId::ComputerUse,
+            "Configure, connect, and sync a cloud server or sandbox (SSH password, SSH private key, or HTTP agent endpoint + token).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "display_name": { "type": "string" },
+                    "host": { "type": "string" },
+                    "port": { "type": "integer" },
+                    "username": { "type": "string" },
+                    "auth_method": { "type": "string", "enum": ["ssh_password", "ssh_private_key", "agent_http_token"] },
+                    "secret": { "type": "string" },
+                    "agent_endpoint_url": { "type": "string" },
+                    "workdir": { "type": "string" },
+                    "bind_to_bot": { "type": "boolean" }
+                },
+                "required": ["host", "secret"]
+            }),
+            ToolRiskLevel::Medium,
+            true,
+        ),
+        HermesToolSpec::new(
+            "computer_exec",
+            ToolsetId::ComputerUse,
+            "Execute a shell command on a bound local computer or configured cloud server. Auto-resolves bound/single online computer and auto-acquires a lease when authorized.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" },
+                    "node_id": { "type": "string" },
+                    "computer_id": { "type": "string", "description": "Optional node_id or display name alias (e.g. GCP-Free-e2-micro)." },
+                    "lease_id": { "type": "string", "description": "Optional lease_id (auto-acquired if omitted in authorized/Yolo sessions)." },
+                    "cwd": { "type": "string" }
+                },
+                "required": ["command"]
+            }),
+            ToolRiskLevel::Medium,
+            true,
+        ),
+        HermesToolSpec::new(
+            "computer_file",
+            ToolsetId::ComputerUse,
+            "Read, write, or list files/directories on a bound local computer or configured cloud server. Auto-resolves bound/single online computer and auto-acquires a lease when authorized.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "op": { "type": "string", "enum": ["read", "write", "list"] },
+                    "path": { "type": "string" },
+                    "content": { "type": "string" },
+                    "node_id": { "type": "string" },
+                    "computer_id": { "type": "string" },
+                    "lease_id": { "type": "string" }
+                },
+                "required": ["op", "path"]
+            }),
+            ToolRiskLevel::Medium,
+            true,
+        ),
+        HermesToolSpec::new(
+            "computer_screen",
+            ToolsetId::ComputerUse,
+            "Capture screen or send GUI input (click/move/type/key) on a bound local computer or configured cloud desktop. Auto-resolves bound/single online computer and auto-acquires a lease when authorized.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "op": { "type": "string", "enum": ["capture", "click", "move", "type", "key"] },
+                    "node_id": { "type": "string" },
+                    "computer_id": { "type": "string" },
+                    "lease_id": { "type": "string" },
+                    "x": { "type": "integer" },
+                    "y": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "key": { "type": "string" }
+                },
+                "required": ["op"]
+            }),
+            ToolRiskLevel::Medium,
+            true,
         ),
         HermesToolSpec::new(
             "manage_connections",
@@ -1833,6 +1985,33 @@ pub fn all_builtin_tool_specs() -> Vec<HermesToolSpec> {
             false,
         ),
         HermesToolSpec::new(
+            "skill_list",
+            ToolsetId::Skills,
+            "List available bundled, user, and learned skills with optional name/tag filter.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "filter": { "type": "string" }
+                }
+            }),
+            ToolRiskLevel::ReadOnly,
+            false,
+        ),
+        HermesToolSpec::new(
+            "skill_view",
+            ToolsetId::Skills,
+            "Load the full SKILL.md instructions for a named skill from the Progressive Skills Index.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            }),
+            ToolRiskLevel::ReadOnly,
+            false,
+        ),
+        HermesToolSpec::new(
             "honcho_profile",
             ToolsetId::Honcho,
             "Inspect, query, or record observations in Honcho dialectic user modeling.",
@@ -1923,14 +2102,40 @@ impl HermesToolExecutor {
             .with_duration(start.elapsed().as_millis() as u64);
         }
 
-        // TIR pre-execution check (note: terminal & execute_code also run full ApprovalQueue inside tools_terminal)
+        const REMOTE_COMPUTER_TOOLS: &[&str] = &[
+            "computer_list",
+            "computer_status",
+            "computer_lease_acquire",
+            "computer_bind",
+            "computer_configure_cloud",
+            "computer_exec",
+            "computer_file",
+            "computer_screen",
+        ];
+
+        // TIR pre-execution check (note: terminal & execute_code also run full ApprovalQueue inside tools_terminal;
+        // remote/cloud computer tools bypass local workspace path containment so remote paths like `/srv/app` work).
         if let Ok(sec) = ctx.security.read() {
-            match sec.pre_execute_check(spec_name, &args) {
-                TirVerdict::Block { reason } => {
-                    return HermesToolResult::err(spec_name, reason)
-                        .with_duration(start.elapsed().as_millis() as u64);
+            if REMOTE_COMPUTER_TOOLS.contains(&spec_name) {
+                let arg_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0);
+                if arg_len > sec.tir_policy.max_argument_bytes {
+                    return HermesToolResult::err(
+                        spec_name,
+                        format!(
+                            "Tool arguments exceed TIR max_argument_bytes ({} > {})",
+                            arg_len, sec.tir_policy.max_argument_bytes
+                        ),
+                    )
+                    .with_duration(start.elapsed().as_millis() as u64);
                 }
-                TirVerdict::Allow | TirVerdict::RequireApproval { .. } => {}
+            } else {
+                match sec.pre_execute_check(spec_name, &args) {
+                    TirVerdict::Block { reason } => {
+                        return HermesToolResult::err(spec_name, reason)
+                            .with_duration(start.elapsed().as_millis() as u64);
+                    }
+                    TirVerdict::Allow | TirVerdict::RequireApproval { .. } => {}
+                }
             }
         }
 
@@ -1949,18 +2154,18 @@ impl HermesToolExecutor {
             | ToolsetId::Vision
             | ToolsetId::ImageGen
             | ToolsetId::VideoGen => execute_web_media_tool(spec_name, args, ctx).await,
+            ToolsetId::ComputerUse => execute_computer_use_tool(spec_name, args, ctx).await,
+            ToolsetId::Skills => execute_skills_tool(spec_name, args, ctx).await,
             ToolsetId::Subagents
             | ToolsetId::Cronjob
             | ToolsetId::Kanban
             | ToolsetId::Clarify
             | ToolsetId::DesktopUi
-            | ToolsetId::ComputerUse
             | ToolsetId::Connections
             | ToolsetId::Reasoning
             | ToolsetId::Mcp
             | ToolsetId::SessionSearch
             | ToolsetId::Memory
-            | ToolsetId::Skills
             | ToolsetId::Honcho
             | ToolsetId::Voice => execute_agentic_tool(spec_name, args, ctx).await,
         };
@@ -2030,6 +2235,288 @@ fn execute_core_toolset_tool(
     }
 }
 
+fn extract_non_empty_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| {
+        args.get(*k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    })
+}
+
+async fn execute_skills_tool(
+    spec_name: &str,
+    args: Value,
+    ctx: &HermesToolContext,
+) -> HermesToolResult {
+    match spec_name {
+        "skill_list" => {
+            let mut res =
+                execute_agentic_tool("skill_manage", json!({ "action": "list" }), ctx).await;
+            res.tool_name = "skill_list".to_string();
+            res
+        }
+        "skill_view" => {
+            let name_val = args
+                .get("name")
+                .or_else(|| args.get("skill_name"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            if name_val
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+            {
+                return HermesToolResult::err("skill_view", "Missing required 'name' parameter");
+            }
+            let mut res = execute_agentic_tool(
+                "skill_manage",
+                json!({ "action": "view", "name": name_val }),
+                ctx,
+            )
+            .await;
+            res.tool_name = "skill_view".to_string();
+            res
+        }
+        _ => execute_agentic_tool(spec_name, args, ctx).await,
+    }
+}
+
+async fn execute_computer_use_tool(
+    spec_name: &str,
+    mut args: Value,
+    ctx: &HermesToolContext,
+) -> HermesToolResult {
+    let approval_mode = ctx
+        .security
+        .read()
+        .map(|s| s.approvals.get_session_mode(&ctx.session_id))
+        .unwrap_or(ApprovalMode::Prompt);
+
+    match spec_name {
+        "computer_list" | "computer_configure_cloud" => {
+            return execute_agentic_tool(spec_name, args, ctx).await;
+        }
+        "computer_status" => {
+            let list_res = execute_agentic_tool("computer_list", json!({}), ctx).await;
+            let lease_res =
+                execute_agentic_tool("computer_use", json!({ "action": "lease_status" }), ctx)
+                    .await;
+            let summary = json!({
+                "session_id": ctx.session_id,
+                "approval_mode": approval_mode.as_str(),
+                "computers_ok": list_res.success,
+                "computers": list_res.structured.unwrap_or_else(|| Value::Array(Vec::new())),
+                "computers_message": list_res.output,
+                "lease": lease_res.structured.unwrap_or(Value::Null),
+                "lease_message": lease_res.output,
+            });
+            return HermesToolResult::ok(
+                "computer_status",
+                serde_json::to_string_pretty(&summary).unwrap_or_default(),
+                Some(summary),
+            );
+        }
+        _ => {}
+    }
+
+    let cua_action = args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let is_fenced_cua = matches!(
+        cua_action.as_str(),
+        "click" | "move_cursor" | "key_press" | "type_string" | "screenshot" | "wait"
+    );
+    let is_lease_or_exec_tool = matches!(
+        spec_name,
+        "computer_exec" | "computer_file" | "computer_screen" | "computer_lease_acquire"
+    ) || (spec_name == "computer_use"
+        && (is_fenced_cua || cua_action == "acquire_lease" || cua_action == "emergency_takeover"));
+
+    if approval_mode == ApprovalMode::Deny && is_lease_or_exec_tool {
+        return HermesToolResult::err(
+            spec_name,
+            "Computer execution denied by active ApprovalMode::Deny policy",
+        );
+    }
+
+    // Normalize alias keys (`computer_id` / `device_id` <-> `node_id`) on mutable args object.
+    let explicit_raw = if matches!(spec_name, "computer_use" | "computer_lease_acquire") {
+        extract_non_empty_str(&args, &["device_id", "computer_id", "node_id"])
+            .map(ToString::to_string)
+    } else {
+        extract_non_empty_str(&args, &["node_id", "computer_id", "device_id"])
+            .map(ToString::to_string)
+    };
+    if let (Some(target), Some(obj)) = (explicit_raw.as_ref(), args.as_object_mut()) {
+        if matches!(spec_name, "computer_use" | "computer_lease_acquire") {
+            if !obj
+                .get("device_id")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.trim().is_empty())
+            {
+                obj.insert("device_id".into(), Value::String(target.clone()));
+            }
+        } else if !obj
+            .get("node_id")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            obj.insert("node_id".into(), Value::String(target.clone()));
+        }
+    }
+
+    let needs_execution_lease = matches!(
+        spec_name,
+        "computer_exec" | "computer_file" | "computer_screen"
+    ) || (spec_name == "computer_use" && is_fenced_cua);
+
+    let mut resolved_target = explicit_raw.clone();
+    let mut node_authorized = false;
+
+    if spec_name != "computer_bind"
+        && (resolved_target.is_none()
+            || needs_execution_lease
+            || spec_name == "computer_lease_acquire")
+    {
+        if let (Some(provider), Some(uid)) = (ctx.computer_provider.clone(), ctx.user_id) {
+            let bot_u64 = ctx.bot_id.and_then(|id| u64::try_from(id).ok());
+            if let Ok(nodes) = provider.list_computers(uid, bot_u64).await {
+                if let Some(ref req_id) = resolved_target {
+                    let matched = nodes
+                        .iter()
+                        .find(|n| n.node_id == *req_id)
+                        .or_else(|| {
+                            let by_name: Vec<_> = nodes
+                                .iter()
+                                .filter(|n| {
+                                    n.display_name.eq_ignore_ascii_case(req_id)
+                                        || n.host
+                                            .as_deref()
+                                            .is_some_and(|h| h.eq_ignore_ascii_case(req_id))
+                                })
+                                .collect();
+                            if by_name.len() == 1 {
+                                Some(by_name[0])
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(node) = matched {
+                        node_authorized =
+                            node.online || node.bound_to_this_bot || node.is_current_device;
+                        if node.node_id != *req_id {
+                            resolved_target = Some(node.node_id.clone());
+                            if let Some(obj) = args.as_object_mut() {
+                                if matches!(spec_name, "computer_use" | "computer_lease_acquire") {
+                                    obj.insert("device_id".into(), Value::String(node.node_id.clone()));
+                                } else {
+                                    obj.insert("node_id".into(), Value::String(node.node_id.clone()));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let bound_online = nodes.iter().find(|n| n.online && n.bound_to_this_bot);
+                    let single_online = {
+                        let online: Vec<_> = nodes.iter().filter(|n| n.online).collect();
+                        if online.len() == 1 {
+                            Some(online[0])
+                        } else {
+                            None
+                        }
+                    };
+                    let single_bound = {
+                        let bound: Vec<_> = nodes.iter().filter(|n| n.bound_to_this_bot).collect();
+                        if bound.len() == 1 {
+                            Some(bound[0])
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(node) = bound_online.or(single_online).or(single_bound) {
+                        node_authorized =
+                            node.online || node.bound_to_this_bot || node.is_current_device;
+                        resolved_target = Some(node.node_id.clone());
+                        if let Some(obj) = args.as_object_mut() {
+                            if matches!(spec_name, "computer_use" | "computer_lease_acquire") {
+                                obj.insert("device_id".into(), Value::String(node.node_id.clone()));
+                            } else {
+                                obj.insert("node_id".into(), Value::String(node.node_id.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if spec_name == "computer_lease_acquire" {
+        let device_id = resolved_target.unwrap_or_else(|| "local".to_string());
+        let mut res = execute_agentic_tool(
+            "computer_use",
+            json!({ "action": "acquire_lease", "device_id": device_id }),
+            ctx,
+        )
+        .await;
+        res.tool_name = "computer_lease_acquire".to_string();
+        return res;
+    }
+
+    let mode_authorized = matches!(
+        approval_mode,
+        ApprovalMode::Yolo
+            | ApprovalMode::SmartApprove
+            | ApprovalMode::PermanentAllow
+            | ApprovalMode::SessionAllow
+    );
+    let authorized_for_auto_lease =
+        (mode_authorized || node_authorized) && approval_mode != ApprovalMode::Deny;
+    let manual_lease_omitted = extract_non_empty_str(&args, &["lease_id"]).is_none();
+
+    let mut auto_lease_id: Option<String> = None;
+    if needs_execution_lease && manual_lease_omitted && authorized_for_auto_lease {
+        let lease_missing = ctx
+            .computer_broker
+            .lock()
+            .map(|b| !b.is_lease_active())
+            .unwrap_or(false);
+        if lease_missing {
+            let lease_device = resolved_target
+                .clone()
+                .unwrap_or_else(|| "local".to_string());
+            let lease_res = execute_agentic_tool(
+                "computer_use",
+                json!({ "action": "acquire_lease", "device_id": lease_device }),
+                ctx,
+            )
+            .await;
+            if lease_res.success {
+                auto_lease_id = lease_res
+                    .structured
+                    .as_ref()
+                    .and_then(|d| d.get("lease_id"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+            }
+        }
+    }
+
+    let mut res = execute_agentic_tool(spec_name, args, ctx).await;
+    if let Some(lid) = auto_lease_id {
+        if let Some(Value::Object(ref mut map)) = res.structured {
+            map.entry("lease_id".to_string()).or_insert_with(|| json!(lid));
+            map.entry("auto_leased".to_string())
+                .or_insert_with(|| json!(true));
+        }
+    }
+    res
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2071,5 +2558,238 @@ mod tests {
         assert!(reg.is_toolset_enabled(ToolsetId::Kanban));
         assert!(reg.is_tool_enabled(&find_tool_spec("think").unwrap()));
         assert!(!reg.is_tool_enabled(&find_tool_spec("kanban_delete_card").unwrap()));
+    }
+
+    #[test]
+    fn test_hermes_telegram_preset_includes_browser_and_computer_tools() {
+        let reg = ToolsetRegistry::from_preset(ToolsetPreset::HermesTelegram);
+        assert!(reg.is_toolset_enabled(ToolsetId::Browser));
+        assert!(reg.is_toolset_enabled(ToolsetId::ComputerUse));
+        assert!(reg.is_toolset_enabled(ToolsetId::Skills));
+        let active: HashSet<String> = reg.active_specs().into_iter().map(|s| s.name).collect();
+        for expected in [
+            "computer_list",
+            "computer_status",
+            "computer_lease_acquire",
+            "computer_exec",
+            "computer_file",
+            "computer_screen",
+            "computer_use",
+            "skill_list",
+            "skill_view",
+            "skill_manage",
+        ] {
+            assert!(
+                active.contains(expected),
+                "HermesTelegram preset missing tool '{expected}'"
+            );
+        }
+    }
+
+    use crate::computer::cloud_bridge::{
+        AgentComputerExecInput, AgentComputerExecOutput, AgentComputerNodeSummary,
+    };
+
+    struct MockCloudComputerProvider {
+        nodes: Vec<AgentComputerNodeSummary>,
+        recorded_exec: Arc<Mutex<Vec<AgentComputerExecInput>>>,
+    }
+
+    impl ComputerCloudProvider for MockCloudComputerProvider {
+        fn list_computers<'a>(
+            &'a self,
+            _user_id: u64,
+            _bot_id: Option<u64>,
+        ) -> crate::computer::cloud_bridge::BoxFuture<
+            'a,
+            gpui_telegram_core::Result<Vec<AgentComputerNodeSummary>>,
+        > {
+            let nodes = self.nodes.clone();
+            Box::pin(async move { Ok(nodes) })
+        }
+
+        fn bind_bot_computer<'a>(
+            &'a self,
+            _user_id: u64,
+            _bot_id: u64,
+            _node_id: Option<String>,
+        ) -> crate::computer::cloud_bridge::BoxFuture<
+            'a,
+            gpui_telegram_core::Result<AgentComputerNodeSummary>,
+        > {
+            let node = self.nodes[0].clone();
+            Box::pin(async move { Ok(node) })
+        }
+
+        fn configure_cloud_server<'a>(
+            &'a self,
+            _user_id: u64,
+            _bot_id: Option<u64>,
+            _cfg: crate::computer::cloud_bridge::AgentCloudServerConfigInput,
+        ) -> crate::computer::cloud_bridge::BoxFuture<
+            'a,
+            gpui_telegram_core::Result<AgentComputerNodeSummary>,
+        > {
+            let node = self.nodes[0].clone();
+            Box::pin(async move { Ok(node) })
+        }
+
+        fn execute_on_computer<'a>(
+            &'a self,
+            _user_id: u64,
+            req: AgentComputerExecInput,
+        ) -> crate::computer::cloud_bridge::BoxFuture<
+            'a,
+            gpui_telegram_core::Result<AgentComputerExecOutput>,
+        > {
+            if let Ok(mut guard) = self.recorded_exec.lock() {
+                guard.push(req.clone());
+            }
+            let node_id = req
+                .node_id
+                .clone()
+                .unwrap_or_else(|| self.nodes[0].node_id.clone());
+            Box::pin(async move {
+                Ok(AgentComputerExecOutput {
+                    node_id,
+                    ok: true,
+                    exit_code: 0,
+                    stdout: "Linux gcp-e2 6.8.0".to_string(),
+                    stderr: String::new(),
+                    entries: Vec::new(),
+                    frame_data_url: None,
+                    executed_by: "mock-ssh".to_string(),
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_computer_use_auto_lease_under_yolo_mode() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let ctx = HermesToolContext::new(dir.path())
+            .with_session("sess_yolo_cua", 1)
+            .with_approval_mode(ApprovalMode::Yolo);
+
+        assert!(!ctx.computer_broker.lock().unwrap().is_lease_active());
+
+        // Call computer_use CUA action WITHOUT acquiring lease manually first
+        let res = HermesToolExecutor::execute(
+            "computer_use",
+            json!({ "action": "click", "x": 120, "y": 240 }),
+            &ctx,
+        )
+        .await;
+        assert!(res.success, "expected auto-leased click to succeed: {}", res.output);
+        assert!(
+            ctx.computer_broker.lock().unwrap().is_lease_active(),
+            "broker should now hold an auto-acquired lease"
+        );
+
+        let status = HermesToolExecutor::execute("computer_status", json!({}), &ctx).await;
+        assert!(status.success);
+        assert!(status.structured.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_computer_exec_auto_lease_and_computer_id_resolution() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let recorded = Arc::new(Mutex::new(Vec::<AgentComputerExecInput>::new()));
+        let provider: Arc<dyn ComputerCloudProvider> = Arc::new(MockCloudComputerProvider {
+            nodes: vec![AgentComputerNodeSummary {
+                node_id: "cloud:gcp-e2".to_string(),
+                kind: "cloud_server".to_string(),
+                display_name: "GCP-Free-e2-micro".to_string(),
+                ip_address: "34.120.0.10".to_string(),
+                host: Some("34.120.0.10".to_string()),
+                os_name: "Linux".to_string(),
+                online: true,
+                is_current_device: false,
+                bound_to_this_bot: false,
+                run_policy: "allow_always".to_string(),
+                tier_badge: "Cloud".to_string(),
+            }],
+            recorded_exec: recorded.clone(),
+        });
+
+        // 1. Omitted node_id + omitted lease_id auto-resolves single online computer and auto-leases
+        let ctx = HermesToolContext::new(dir.path())
+            .with_session("sess_exec_auto", 1)
+            .with_user_id(Some(42))
+            .with_chat_and_bot(Some(100), Some(7))
+            .with_approval_mode(ApprovalMode::Yolo)
+            .with_computer_provider(provider.clone());
+
+        let res = HermesToolExecutor::execute(
+            "computer_exec",
+            json!({ "command": "uname -a" }),
+            &ctx,
+        )
+        .await;
+        assert!(res.success, "computer_exec failed: {}", res.output);
+        assert!(ctx.computer_broker.lock().unwrap().is_lease_active());
+
+        // 2. Display name passed via `computer_id` resolves to actual `node_id` in fresh session
+        let ctx2 = HermesToolContext::new(dir.path())
+            .with_session("sess_exec_alias", 1)
+            .with_user_id(Some(42))
+            .with_chat_and_bot(Some(100), Some(7))
+            .with_computer_provider(provider);
+
+        let res2 = HermesToolExecutor::execute(
+            "computer_exec",
+            json!({ "computer_id": "GCP-Free-e2-micro", "command": "uptime" }),
+            &ctx2,
+        )
+        .await;
+        assert!(res2.success, "computer_exec by computer_id failed: {}", res2.output);
+        assert!(ctx2.computer_broker.lock().unwrap().is_lease_active());
+
+        let calls = recorded.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].node_id.as_deref(), Some("cloud:gcp-e2"));
+        assert_eq!(calls[1].node_id.as_deref(), Some("cloud:gcp-e2"));
+
+        // 3. ApprovalMode::Deny blocks execution and does not auto-lease
+        let denied_ctx = HermesToolContext::new(dir.path())
+            .with_session("sess_exec_deny", 1)
+            .with_user_id(Some(42))
+            .with_approval_mode(ApprovalMode::Deny);
+        let denied = HermesToolExecutor::execute(
+            "computer_exec",
+            json!({ "command": "uname -a" }),
+            &denied_ctx,
+        )
+        .await;
+        assert!(!denied.success);
+        assert!(!denied_ctx.computer_broker.lock().unwrap().is_lease_active());
+    }
+
+    #[tokio::test]
+    async fn test_skill_list_and_skill_view_dispatch() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let ctx = HermesToolContext::new(dir.path());
+        let created = HermesToolExecutor::execute(
+            "skill_manage",
+            json!({
+                "action": "create",
+                "name": "gcp-ops",
+                "description": "Manage GCP VM",
+                "content": "# GCP Ops\nRun health checks."
+            }),
+            &ctx,
+        )
+        .await;
+        assert!(created.success, "create skill failed: {}", created.output);
+
+        let listed = HermesToolExecutor::execute("skill_list", json!({}), &ctx).await;
+        assert!(listed.success);
+        assert_eq!(listed.tool_name, "skill_list");
+
+        let viewed =
+            HermesToolExecutor::execute("skill_view", json!({ "name": "gcp-ops" }), &ctx).await;
+        assert!(viewed.success, "skill_view failed: {}", viewed.output);
+        assert_eq!(viewed.tool_name, "skill_view");
+        assert!(viewed.output.contains("GCP Ops"));
     }
 }

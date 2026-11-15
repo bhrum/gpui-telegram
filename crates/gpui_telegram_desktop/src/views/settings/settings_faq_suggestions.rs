@@ -29,7 +29,7 @@ impl SettingsFaqSuggestions {
                     url: "https://telegram.org/faq#general-questions".into(),
                 },
                 FaqSuggestionEntry {
-                    title: "Telegram Premium".into(),
+                    title: "Premium".into(),
                     anchor: "premium".into(),
                     url: "https://telegram.org/faq#telegram-premium".into(),
                 },
@@ -117,7 +117,7 @@ impl Render for SettingsFaqSuggestions {
                 div()
                     .font_weight(FontWeight::BOLD)
                     .text_lg()
-                    .child("Telegram FAQ"),
+                    .child("FAQ"),
             )
             .child(
                 div()

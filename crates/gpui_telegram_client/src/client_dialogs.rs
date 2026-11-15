@@ -45,7 +45,32 @@ impl TelegramClient {
 
     pub async fn delete_chat(&self, chat_id: i64) -> std::result::Result<(), HttpClientError> {
         let token = self.require_token()?;
-        self.http_client.delete_chat(&token, chat_id).await
+        self.http_client.delete_chat(&token, chat_id).await?;
+        self.local_store.remove_chat(ChatId(chat_id));
+        Ok(())
+    }
+
+    pub async fn clear_chat_history(&self, chat_id: i64) -> std::result::Result<(), HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.clear_chat_history(&token, chat_id).await?;
+        self.local_store.clear_chat_messages(ChatId(chat_id));
+        Ok(())
+    }
+
+    pub async fn leave_or_delete_chat(&self, chat_id: i64) -> std::result::Result<(), HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.leave_or_delete_chat(&token, chat_id).await?;
+        self.local_store.remove_chat(ChatId(chat_id));
+        Ok(())
+    }
+
+    pub async fn set_chat_ttl(
+        &self,
+        chat_id: i64,
+        ttl_seconds: u32,
+    ) -> std::result::Result<u32, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.set_chat_ttl(&token, chat_id, ttl_seconds).await
     }
 
     pub async fn get_chat_members(

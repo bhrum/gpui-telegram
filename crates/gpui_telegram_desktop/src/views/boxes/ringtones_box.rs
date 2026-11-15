@@ -43,7 +43,7 @@ impl RingtonesBox {
             sounds: vec![
                 RingtoneItem { id: K_DEFAULT_SOUND_VALUE as i64, title: "Default Tone".to_string(), is_custom: false, document_id: 0 },
                 RingtoneItem { id: K_NO_SOUND_VALUE as i64, title: "No Sound".to_string(), is_custom: false, document_id: 0 },
-                RingtoneItem { id: 101, title: "Telegram Chime".to_string(), is_custom: false, document_id: 0 },
+                RingtoneItem { id: 101, title: "Default Chime".to_string(), is_custom: false, document_id: 0 },
                 RingtoneItem { id: 102, title: "Aurora".to_string(), is_custom: false, document_id: 0 },
             ],
             playing_id: None,

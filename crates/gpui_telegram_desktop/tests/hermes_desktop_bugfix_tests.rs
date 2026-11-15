@@ -489,22 +489,57 @@ fn test_global_tasks_workspace_6_hermes_studio_tabs_and_state_sync() {
 #[test]
 fn test_desktop_bot_call_inline_routing_and_zero_legacy_persona_contract() {
     let root = desktop_src_root();
-    let shell_src = std::fs::read_to_string(root.join("views/shell.rs")).unwrap();
-    let truth_src = std::fs::read_to_string(root.join("views/app_shell/shell_truth.rs")).unwrap();
     let stage_actions_src =
         std::fs::read_to_string(root.join("views/app_shell/shell_stage_actions.rs")).unwrap();
     let calls_rtc_src =
         std::fs::read_to_string(root.join("views/app_shell/shell_calls_rtc.rs")).unwrap();
-    let studio_panels_src =
-        std::fs::read_to_string(root.join("views/hermes_studio_panels.rs")).unwrap();
 
-    for (name, src) in [
-        ("shell.rs", &shell_src),
-        ("shell_truth.rs", &truth_src),
-        ("shell_stage_actions.rs", &stage_actions_src),
-        ("shell_calls_rtc.rs", &calls_rtc_src),
-        ("hermes_studio_panels.rs", &studio_panels_src),
-    ] {
+    let mut shell_paths = vec![root.join("views/shell.rs")];
+    let mut app_shell_paths: Vec<_> = std::fs::read_dir(root.join("views/app_shell"))
+        .expect("Failed to read views/app_shell")
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("shell_") && n.ends_with(".rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+    app_shell_paths.sort();
+    assert!(!app_shell_paths.is_empty(), "Expected views/app_shell/shell_*.rs files");
+    shell_paths.extend(app_shell_paths);
+
+    let mut all_shell_src = String::new();
+    for path in &shell_paths {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("shell");
+        let src = std::fs::read_to_string(path).unwrap();
+        assert!(
+            !src.contains("大乘 AI 助手"),
+            "{name} must never hardcode legacy persona string"
+        );
+        assert!(
+            !src.contains("\"PR\".to_string()"),
+            "{name} must never hardcode fallback PR initials"
+        );
+        all_shell_src.push('\n');
+        all_shell_src.push_str(&src);
+    }
+
+    let mut studio_paths = vec![root.join("views/hermes_studio_panels.rs")];
+    let mut studio_subpaths: Vec<_> = std::fs::read_dir(root.join("views/hermes_studio_panels"))
+        .expect("Failed to read views/hermes_studio_panels")
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    studio_subpaths.sort();
+    assert!(
+        !studio_subpaths.is_empty(),
+        "Expected views/hermes_studio_panels/*.rs files"
+    );
+    studio_paths.extend(studio_subpaths);
+    for path in studio_paths {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("studio");
+        let src = std::fs::read_to_string(&path).unwrap();
         assert!(
             !src.contains("大乘 AI 助手"),
             "{name} must never hardcode legacy persona string"
@@ -512,8 +547,8 @@ fn test_desktop_bot_call_inline_routing_and_zero_legacy_persona_contract() {
     }
 
     // Incoming NewMessage uses resolve_incoming_sender_identity rather than hardcoded Peer/PR
-    assert!(shell_src.contains("resolve_incoming_sender_identity"));
-    assert!(!shell_src.contains("\"PR\".to_string()"));
+    assert!(all_shell_src.contains("resolve_incoming_sender_identity"));
+    assert!(!all_shell_src.contains("\"PR\".to_string()"));
 
     // Bot inline callback + TopBar AI Bot call route through Hermes call/Talk/CUA handlers
     assert!(stage_actions_src.contains("execute_hermes_inline_callback"));
@@ -585,4 +620,59 @@ fn test_rich_text_multiline_and_cjk_inline_wrapping_regression() {
         tokens.iter().any(|t| t == "行。"),
         "closing punctuation should attach to preceding CJK character: {tokens:?}"
     );
+}
+
+#[test]
+fn test_markdown_heading_divider_list_blockquote_and_link_parsing() {
+    use gpui_telegram_desktop::views::stage::{parse_rich_blocks, plain_text_of_segments, RichBlock};
+
+    let sample = concat!(
+        "### 2. 💻 本地电脑控制\n",
+        "- **文件与目录操作**: 查看日志 (`free -h`)\n",
+        "> 💡 **关于安装 Hermes**: 说明文本\n",
+        "---\n",
+        "参考 [NousResearch](https://github.com/NousResearch/hermes-agent) 项目"
+    );
+    let blocks = parse_rich_blocks(sample, &[]);
+
+    assert!(matches!(blocks.first(), Some(RichBlock::Heading { level: 3, .. })));
+    if let RichBlock::Heading { segments, .. } = &blocks[0] {
+        assert_eq!(plain_text_of_segments(segments), "2. 💻 本地电脑控制");
+    }
+
+    match &blocks[1] {
+        RichBlock::ListItem { bullet, segments, .. } => {
+            assert_eq!(bullet, "•");
+            assert!(segments.iter().any(|s| s.flags.bold && s.text.contains("文件与目录操作")));
+            assert!(segments.iter().any(|s| s.flags.code && s.text == "free -h"));
+        }
+        other => panic!("expected ListItem block, got {other:?}"),
+    }
+
+    match &blocks[2] {
+        RichBlock::Blockquote { lines, .. } => {
+            assert_eq!(lines.len(), 1);
+            assert!(
+                lines[0].iter().any(|s| s.flags.bold && s.text == "关于安装 Hermes"),
+                "expected bold segment inside blockquote without literal asterisks: {lines:?}"
+            );
+            assert!(!plain_text_of_segments(&lines[0]).contains("**"));
+        }
+        other => panic!("expected Blockquote block, got {other:?}"),
+    }
+
+    assert!(matches!(blocks.get(3), Some(RichBlock::Divider)));
+
+    match &blocks[4] {
+        RichBlock::Paragraph(segs) => {
+            assert!(
+                segs.iter().any(|s| {
+                    s.text == "NousResearch"
+                        && s.flags.link_url.as_deref() == Some("https://github.com/NousResearch/hermes-agent")
+                }),
+                "expected parsed markdown link segment: {segs:?}"
+            );
+        }
+        other => panic!("expected Paragraph block with link, got {other:?}"),
+    }
 }

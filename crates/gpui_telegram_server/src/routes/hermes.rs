@@ -1,4 +1,7 @@
-use crate::routes::{broadcast_chat_pts, check_active_membership, err_resp, map_telegram_err};
+use crate::db::miniapp_store::MiniAppRecord;
+use crate::routes::{
+    broadcast_chat_event, broadcast_chat_pts, check_active_membership, err_resp, map_telegram_err,
+};
 use crate::server::{ensure_default_ai_bot, AppState, AuthBearer};
 use axum::{
     body::Body,
@@ -8,17 +11,17 @@ use axum::{
 };
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
-use gpui_telegram_agent::hermes::commands::InlineActionButton;
+use gpui_telegram_agent::hermes::commands::{InlineActionButton, SlashCommandParser};
 use gpui_telegram_agent::hermes::memory::{MemoryTarget, ObservationCategory, SoulProfile};
 use gpui_telegram_agent::hermes::providers::{ApiMode, CredentialEntry, ProviderConfig};
 use gpui_telegram_agent::hermes::security::{
-    ApprovalDecisionAction, ApprovalStatus as SecurityApprovalStatus,
+    ApprovalDecisionAction, ApprovalMode, ApprovalStatus as SecurityApprovalStatus,
 };
 use gpui_telegram_agent::hermes::skills::{CreateSkillRequest, SkillDocument, SkillOrigin};
 use gpui_telegram_agent::hermes::state_db::{
-    ApprovalRecord, ApprovalStatus, CreateCronJobRequest, CreateKanbanCardRequest,
-    CreateSessionRequest, CronJobPatch, CronJobRecord, KanbanBoardRecord, KanbanCardPatch,
-    KanbanCardRecord, SessionListFilter, SessionRecord,
+    ApprovalRecord, ApprovalStatus, CreateCronJobRequest, CreateKanbanCardRequest, CronJobPatch,
+    CronJobRecord, KanbanBoardRecord, KanbanCardPatch, KanbanCardRecord, SessionListFilter,
+    SessionRecord,
 };
 use gpui_telegram_agent::hermes::toolsets::{all_builtin_tool_specs, ToolsetId, ToolsetPreset};
 use gpui_telegram_agent::hermes::trajectory::TrajectoryFormat;
@@ -27,13 +30,16 @@ use gpui_telegram_agent::hermes::{
 };
 use gpui_telegram_agent::tasks::CronRoutine;
 use gpui_telegram_core::types::{ChatId, MsgId, PeerId, UserId};
+use gpui_telegram_proto::computer_contracts::ComputerRunPolicy;
 use gpui_telegram_proto::message::{InlineKeyboardButton, MessageContent, MessageItem};
-use gpui_telegram_proto::sync::UpdateEvent;
+use gpui_telegram_proto::sync::{TypingAction, TypingEvent, UpdateEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
 use uuid::Uuid;
 
 // ============================================================================
@@ -424,8 +430,42 @@ pub(crate) fn load_bot_persona_config(
                 .map(ToString::to_string)
         });
 
+    let reg_bot = state
+        .db
+        .get_bot_by_user_id(bot_user_id.0 as i64)
+        .ok()
+        .flatten();
     if system_prompt.is_none() {
-        if let Some(u) = &user {
+        if let Some(ref b) = reg_bot {
+            let apps = state
+                .db
+                .list_mini_apps_for_bot(b.bot_user_id)
+                .unwrap_or_default();
+            let mut prompt_parts = Vec::new();
+            if !b.ai_persona.trim().is_empty() {
+                prompt_parts.push(b.ai_persona.trim().to_string());
+            } else {
+                prompt_parts.push(format!(
+                    "Your name is {} (@{}). You are a helpful AI Telegram bot assistant.",
+                    b.display_name, b.username
+                ));
+            }
+            if !b.description.trim().is_empty() {
+                prompt_parts.push(format!("Bot description: {}", b.description.trim()));
+            }
+            if !apps.is_empty() {
+                let app_list = apps
+                    .iter()
+                    .map(|a| format!("{} {} (/miniapps/{}/{})", a.icon_emoji, a.title, a.bot_username, a.short_name))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                prompt_parts.push(format!(
+                    "You are also the AI companion bot for Mini App(s): {}. Help users use the Mini App, summarize or act on their Mini App data, and reply concisely in their language.",
+                    app_list
+                ));
+            }
+            system_prompt = Some(prompt_parts.join("\n"));
+        } else if let Some(u) = &user {
             let display_name = if u.first_name.trim().is_empty() {
                 u.username.as_deref().unwrap_or("Assistant")
             } else {
@@ -501,43 +541,42 @@ pub(crate) fn build_default_bot_quick_actions(
     res: &HermesTurnResult,
     prompt_hint: &str,
 ) -> Vec<Vec<InlineKeyboardButton>> {
-    if !res.buttons.is_empty() {
-        return map_proto_buttons(&res.buttons);
+    let pending_approval_id = res.events.iter().find_map(|ev| match ev {
+        HermesEvent::ApprovalRequired { approval_id, .. } => Some(approval_id.as_str()),
+        _ => None,
+    });
+    build_bot_quick_actions_from_parts(&res.buttons, pending_approval_id, prompt_hint)
+}
+
+pub(crate) fn build_bot_quick_actions_from_parts(
+    buttons: &[Vec<InlineActionButton>],
+    pending_approval_id: Option<&str>,
+    prompt_hint: &str,
+) -> Vec<Vec<InlineKeyboardButton>> {
+    if !buttons.is_empty() {
+        return map_proto_buttons(buttons);
     }
-    let has_pending_approval = res
-        .events
-        .iter()
-        .any(|ev| matches!(ev, HermesEvent::ApprovalRequired { .. }));
-    if has_pending_approval {
-        for ev in &res.events {
-            if let HermesEvent::ApprovalRequired {
-                approval_id,
-                tool_name: _,
-                ..
-            } = ev
-            {
-                return vec![vec![
-                    InlineKeyboardButton {
-                        text: "✅ Approve Once".to_string(),
-                        callback_data: Some(format!("hermes:approve:{approval_id}:approve_once")),
-                        url: None,
-                        web_app_url: None,
-                    },
-                    InlineKeyboardButton {
-                        text: "🛡️ Session".to_string(),
-                        callback_data: Some(format!("hermes:approve:{approval_id}:approve_session")),
-                        url: None,
-                        web_app_url: None,
-                    },
-                    InlineKeyboardButton {
-                        text: "❌ Deny".to_string(),
-                        callback_data: Some(format!("hermes:approve:{approval_id}:deny")),
-                        url: None,
-                        web_app_url: None,
-                    },
-                ]];
-            }
-        }
+    if let Some(approval_id) = pending_approval_id.filter(|s| !s.trim().is_empty()) {
+        return vec![vec![
+            InlineKeyboardButton {
+                text: "✅ Approve Once".to_string(),
+                callback_data: Some(format!("hermes:approve:{approval_id}:approve_once")),
+                url: None,
+                web_app_url: None,
+            },
+            InlineKeyboardButton {
+                text: "🛡️ Session".to_string(),
+                callback_data: Some(format!("hermes:approve:{approval_id}:approve_session")),
+                url: None,
+                web_app_url: None,
+            },
+            InlineKeyboardButton {
+                text: "❌ Deny".to_string(),
+                callback_data: Some(format!("hermes:approve:{approval_id}:deny")),
+                url: None,
+                web_app_url: None,
+            },
+        ]];
     }
 
     let lower = prompt_hint.to_ascii_lowercase();
@@ -571,6 +610,1058 @@ pub(crate) fn build_default_bot_quick_actions(
     } else {
         vec![row]
     }
+}
+
+fn is_deepseek_provider(active_provider_id: &str, active_base_url: Option<&str>) -> bool {
+    let pid = active_provider_id.to_ascii_lowercase();
+    let url = active_base_url.unwrap_or("").to_ascii_lowercase();
+    pid.contains("deepseek") || url.contains("deepseek") || url.contains("ai.ombhrum.com")
+}
+
+pub(crate) fn sanitize_model_override_for_provider(
+    raw: Option<String>,
+    active_provider_id: &str,
+    active_base_url: Option<&str>,
+) -> Option<String> {
+    raw.map(|m| m.trim().to_string()).filter(|m| {
+        if m.is_empty() {
+            return false;
+        }
+        let lower = m.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "default"
+                | "默认"
+                | "默认模型"
+                | "hermes-local-v1"
+                | "local_hermes/hermes-local-v1"
+                | "auto"
+        ) {
+            return false;
+        }
+        if lower == "deepseek-flash" && !is_deepseek_provider(active_provider_id, active_base_url)
+        {
+            return false;
+        }
+        true
+    })
+}
+
+pub(crate) fn sanitize_model_override(state: &AppState, raw: Option<String>) -> Option<String> {
+    let snap = state.hermes.providers().snapshot();
+    let active_base_url = snap
+        .providers
+        .get(&snap.active_provider_id)
+        .map(|p| p.base_url.as_str());
+    sanitize_model_override_for_provider(raw, &snap.active_provider_id, active_base_url)
+}
+
+fn is_autonomous_policy_str(raw: &str) -> bool {
+    let normalized: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '_' | '-' | ' '))
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    matches!(normalized.as_str(), "alwaysallowauthorized" | "yolo")
+}
+
+pub(crate) fn bot_execution_policy_is_yolo(
+    state: &AppState,
+    user_id: u64,
+    bot_user_id: UserId,
+) -> bool {
+    let key = bot_user_id.0.to_string();
+    for ns in ["ai_bot_profile", "bot_soul", "bot_persona"] {
+        if let Ok(Some(raw)) = state.hermes.store().kv_get(ns, &key) {
+            if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+                if let Some(policy) = val
+                    .get("execution_policy")
+                    .or_else(|| val.get("approval_mode"))
+                    .and_then(|v| v.as_str())
+                {
+                    if is_autonomous_policy_str(policy) {
+                        return true;
+                    }
+                    let norm = policy.trim().to_ascii_lowercase();
+                    if matches!(
+                        norm.as_str(),
+                        "ask_every_time" | "allow_read_only" | "disabled" | "prompt" | "deny"
+                    ) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    state
+        .db
+        .get_bot_computer_profile_or_default(user_id, bot_user_id.0)
+        .map(|p| p.approval_mode == ComputerRunPolicy::AlwaysAllowAuthorized)
+        .unwrap_or(false)
+}
+
+pub(crate) fn resolve_and_apply_bot_session_policy(
+    state: &AppState,
+    user_id: u64,
+    bot_user_id: UserId,
+    chat_id: Option<ChatId>,
+    session_id_hint: Option<&str>,
+    source: &str,
+    model_override: Option<&str>,
+    force_yolo: bool,
+) -> gpui_telegram_core::error::Result<(String, bool)> {
+    let sess = state.hermes.resolve_or_create_session(
+        session_id_hint,
+        chat_id.map(|c| c.0),
+        Some(&bot_user_id.0.to_string()),
+        source,
+        model_override,
+    )?;
+    let yolo = force_yolo || bot_execution_policy_is_yolo(state, user_id, bot_user_id);
+    if yolo {
+        if let Ok(mut sec) = state.hermes.security().write() {
+            sec.approvals
+                .set_session_mode(sess.id.clone(), ApprovalMode::Yolo);
+        }
+    }
+    Ok((sess.id, yolo))
+}
+
+pub(crate) fn build_enriched_bot_turn_context(
+    state: &AppState,
+    user_id: u64,
+    bot_id: Option<u64>,
+    bot_display_name: Option<&str>,
+    base_system_prompt: Option<String>,
+    explicit_model: Option<String>,
+    fallback_model: Option<String>,
+    extra_sections: &[String],
+    include_state_patch_hint: bool,
+) -> (Option<String>, Option<String>) {
+    let (computer_enriched, raw_model) = crate::routes::computers::enrich_bot_turn_prompt_and_model(
+        state,
+        user_id,
+        bot_id,
+        base_system_prompt.clone(),
+        explicit_model,
+        fallback_model,
+    );
+    let effective_model = sanitize_model_override(state, raw_model);
+
+    let now_ms = Utc::now().timestamp_millis();
+    let profile = bot_id.and_then(|bid| {
+        state
+            .db
+            .get_bot_computer_profile_or_default(user_id, bid)
+            .ok()
+    });
+    let nodes = state
+        .db
+        .list_computer_nodes(user_id, None, now_ms)
+        .unwrap_or_default();
+
+    let default_computer_id = profile
+        .as_ref()
+        .and_then(|p| p.bound_node_id.clone())
+        .or_else(|| {
+            bot_id.and_then(|bid| {
+                nodes
+                    .iter()
+                    .find(|n| n.bound_bot_ids.contains(&bid))
+                    .map(|n| n.node_id.clone())
+            })
+        })
+        .or_else(|| {
+            nodes
+                .iter()
+                .find(|n| n.online)
+                .or_else(|| nodes.first())
+                .map(|n| n.node_id.clone())
+        });
+
+    let mut prompt_blocks: Vec<String> = Vec::new();
+    let persona_body = computer_enriched
+        .unwrap_or_else(|| "You are an autonomous Hermes AI Telegram Assistant.".to_string());
+    let has_soul_header = persona_body.trim_start().starts_with("# ");
+    if !has_soul_header {
+        let name_label = bot_display_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Hermes Assistant");
+        prompt_blocks.push(format!("# {name_label}\n- Role: Autonomous AI Telegram Agent\n\n## Persona\n{persona_body}"));
+    } else {
+        prompt_blocks.push(persona_body);
+    }
+
+    if !nodes.is_empty() || default_computer_id.is_some() {
+        let mut comp_lines = vec!["## Live Computer Node Inventory".to_string()];
+        if let Some(ref def_id) = default_computer_id {
+            comp_lines.push(format!("- default_computer_id: `{def_id}`"));
+        }
+        for n in &nodes {
+            let host_label = n
+                .agent_endpoint_url
+                .as_deref()
+                .or(n.host.as_deref())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(if n.ip_address.trim().is_empty() {
+                    "local"
+                } else {
+                    n.ip_address.as_str()
+                });
+            let os_label = if n.os_name.trim().is_empty() {
+                "unknown"
+            } else {
+                n.os_name.trim()
+            };
+            let is_bound = default_computer_id.as_deref() == Some(n.node_id.as_str())
+                || bot_id.is_some_and(|bid| n.bound_bot_ids.contains(&bid));
+            comp_lines.push(format!(
+                "- id=`{}` | name=\"{}\" | ip_or_host=`{}` | os=`{}` | online={} | policy={} | bound={}",
+                n.node_id,
+                n.display_name,
+                host_label,
+                os_label,
+                n.online,
+                n.run_policy.as_str(),
+                is_bound
+            ));
+        }
+        prompt_blocks.push(comp_lines.join("\n"));
+    }
+
+    for sec in extra_sections {
+        let trimmed = sec.trim();
+        if !trimmed.is_empty() {
+            prompt_blocks.push(trimmed.to_string());
+        }
+    }
+
+    if include_state_patch_hint {
+        prompt_blocks.push(
+            "## Companion Mini App State Patch Protocol\nIf the user asks you to add, update, or modify data in the companion Mini App, include a valid JSON object wrapped in `[STATE_PATCH]{...}[/STATE_PATCH]` at the end of your reply so the live Mini App state updates automatically."
+                .to_string(),
+        );
+    }
+
+    let combined_so_far = prompt_blocks.join("\n\n");
+    if !combined_so_far.contains("## Directives") {
+        prompt_blocks.push(
+            "## Directives\n\
+             - Execute multi-step requests iteratively using Hermes tools (`computer_list`, `computer_status`, `computer_lease_acquire`, `computer_exec`, `computer_file`, `computer_configure_cloud`, `computer_bind`, `terminal`, `read_file`, `write_file`, `search_files`, `skill_list`, `skill_view`, `skill_manage`, `memory`) until the task is genuinely verified.\n\
+             - Base all answers strictly on verified tool outputs and live state; never fabricate results or suppress tool/provider failures.\n\
+             - Never disclose raw SSH passwords, private keys, API keys, or tokens.\n\
+             - Capture reusable procedures or user preferences with `skill_manage` / `memory` when helpful, and respond in the user's language."
+                .to_string(),
+        );
+    }
+
+    (Some(prompt_blocks.join("\n\n")), effective_model)
+}
+
+pub(crate) struct BotTypingGuard {
+    state: Arc<AppState>,
+    chat_id: ChatId,
+    bot_user_id: UserId,
+    heartbeat_task: Option<tokio::task::JoinHandle<()>>,
+    stopped: bool,
+}
+
+impl BotTypingGuard {
+    pub(crate) fn start(state: Arc<AppState>, chat_id: ChatId, bot_user_id: UserId) -> Self {
+        Self::emit_typing(&state, chat_id, bot_user_id, TypingAction::Typing);
+        let hb_state = Arc::clone(&state);
+        let heartbeat_task = tokio::runtime::Handle::try_current().ok().map(|rt| {
+            rt.spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(4));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    Self::emit_typing(&hb_state, chat_id, bot_user_id, TypingAction::Typing);
+                }
+            })
+        });
+        Self {
+            state,
+            chat_id,
+            bot_user_id,
+            heartbeat_task,
+            stopped: false,
+        }
+    }
+
+    pub(crate) fn finish(mut self) {
+        self.stop_inner();
+    }
+
+    fn emit_typing(state: &AppState, chat_id: ChatId, bot_user_id: UserId, action: TypingAction) {
+        broadcast_chat_event(
+            state,
+            chat_id,
+            UpdateEvent::UserTyping(TypingEvent::new(chat_id, bot_user_id, action)),
+        );
+    }
+
+    fn stop_inner(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
+        if let Some(handle) = self.heartbeat_task.take() {
+            handle.abort();
+        }
+        Self::emit_typing(&self.state, self.chat_id, self.bot_user_id, TypingAction::Cancel);
+    }
+}
+
+impl Drop for BotTypingGuard {
+    fn drop(&mut self) {
+        self.stop_inner();
+    }
+}
+
+fn find_ascii_case_from(haystack: &str, needle: &str, start: usize) -> Option<usize> {
+    if start >= haystack.len() || needle.is_empty() || needle.len() > haystack.len() - start {
+        return None;
+    }
+    let needle_lower = needle.to_ascii_lowercase();
+    for (rel_idx, _) in haystack[start..].char_indices() {
+        let abs = start + rel_idx;
+        if let Some(slice) = haystack.get(abs..abs + needle.len()) {
+            if slice.eq_ignore_ascii_case(&needle_lower) {
+                return Some(abs);
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn extract_state_patches(raw: &str) -> Vec<Value> {
+    const OPEN_TAG: &str = "[STATE_PATCH]";
+    const CLOSE_TAG: &str = "[/STATE_PATCH]";
+    let mut patches = Vec::new();
+    let mut cursor = 0;
+    while let Some(open_idx) = find_ascii_case_from(raw, OPEN_TAG, cursor) {
+        let body_start = open_idx + OPEN_TAG.len();
+        let Some(close_idx) = find_ascii_case_from(raw, CLOSE_TAG, body_start) else {
+            break;
+        };
+        let mut inner = raw[body_start..close_idx].trim();
+        if let Some(stripped) = inner.strip_prefix("```json") {
+            inner = stripped.trim();
+        } else if let Some(stripped) = inner.strip_prefix("```") {
+            inner = stripped.trim();
+        }
+        if let Some(stripped) = inner.strip_suffix("```") {
+            inner = stripped.trim();
+        }
+        if let Ok(val) = serde_json::from_str::<Value>(inner) {
+            if val.is_object() {
+                patches.push(val);
+            }
+        }
+        cursor = close_idx + CLOSE_TAG.len();
+    }
+    patches
+}
+
+pub(crate) fn strip_state_patches_for_display(raw: &str) -> String {
+    const OPEN_TAG: &str = "[STATE_PATCH]";
+    const CLOSE_TAG: &str = "[/STATE_PATCH]";
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0;
+    while let Some(open_idx) = find_ascii_case_from(raw, OPEN_TAG, cursor) {
+        out.push_str(&raw[cursor..open_idx]);
+        let body_start = open_idx + OPEN_TAG.len();
+        if let Some(close_idx) = find_ascii_case_from(raw, CLOSE_TAG, body_start) {
+            cursor = close_idx + CLOSE_TAG.len();
+        } else {
+            // Unclosed tag while streaming: conceal incomplete patch payload.
+            cursor = raw.len();
+            break;
+        }
+    }
+    if cursor < raw.len() {
+        out.push_str(&raw[cursor..]);
+    }
+    // Conceal a partial trailing `[STATE_PATCH]` prefix (e.g. `[STATE_`) while streaming.
+    if let Some(bracket_idx) = out.rfind('[') {
+        let tail = &out[bracket_idx..];
+        if tail.len() < OPEN_TAG.len()
+            && OPEN_TAG[..tail.len()].eq_ignore_ascii_case(tail)
+        {
+            out.truncate(bracket_idx);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let prefix: String = text.chars().take(keep).collect();
+    format!("{prefix}…")
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    let skip = char_count.saturating_sub(max_chars.saturating_sub(1));
+    let tail: String = text.chars().skip(skip).collect();
+    format!("…{tail}")
+}
+
+fn is_sensitive_arg_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k.contains("password")
+        || k.contains("secret")
+        || k.contains("token")
+        || k.contains("private_key")
+        || k.contains("api_key")
+        || k.contains("credential")
+}
+
+fn format_tool_args_preview(arguments: &Value) -> String {
+    if let Some(obj) = arguments.as_object() {
+        for preferred in ["command", "path", "node_id", "query", "action", "name", "url"] {
+            if let Some(v) = obj.get(preferred).and_then(|x| x.as_str()) {
+                let single_line = v.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !single_line.is_empty() {
+                    return truncate_chars(&single_line, 72);
+                }
+            }
+        }
+        let parts: Vec<String> = obj
+            .iter()
+            .take(3)
+            .map(|(k, v)| {
+                if is_sensitive_arg_key(k) {
+                    format!("{k}=***")
+                } else {
+                    let s = match v {
+                        Value::String(s) => s.split_whitespace().collect::<Vec<_>>().join(" "),
+                        other => other.to_string(),
+                    };
+                    format!("{k}={}", truncate_chars(&s, 28))
+                }
+            })
+            .collect();
+        return truncate_chars(&parts.join(", "), 80);
+    }
+    let compact = arguments.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&compact, 72)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepStatus {
+    Running,
+    Ok,
+    Err,
+}
+
+#[derive(Debug, Clone)]
+struct StepTrace {
+    idx: usize,
+    tool_call_id: String,
+    tool_name: String,
+    args_preview: String,
+    status: StepStatus,
+    duration_ms: Option<u64>,
+    result_preview: Option<String>,
+}
+
+pub(crate) fn format_live_bot_runtime_card_section(
+    state: &AppState,
+    user_id: u64,
+    bot_user_id: UserId,
+) -> String {
+    let (active_provider, active_model, _) = state.hermes.providers().active_info();
+    let now_ms = Utc::now().timestamp_millis();
+    let profile = state
+        .db
+        .get_bot_computer_profile_or_default(user_id, bot_user_id.0)
+        .ok();
+    let nodes = state
+        .db
+        .list_computer_nodes(user_id, None, now_ms)
+        .unwrap_or_default();
+
+    let mut lines = vec![format!(
+        "⚡ **实时引擎与算力节点**\n• 当前模型：`{}` (`{}`)",
+        active_model, active_provider
+    )];
+    if let Some(ref p) = profile {
+        lines.push(format!("• 执行策略：`{}`", p.approval_mode.label_zh()));
+    }
+    let bound_nodes: Vec<_> = nodes
+        .iter()
+        .filter(|n| {
+            profile
+                .as_ref()
+                .and_then(|p| p.bound_node_id.as_deref())
+                == Some(n.node_id.as_str())
+                || n.bound_bot_ids.contains(&bot_user_id.0)
+        })
+        .collect();
+    let display_nodes = if bound_nodes.is_empty() {
+        nodes.iter().take(3).collect::<Vec<_>>()
+    } else {
+        bound_nodes
+    };
+    if display_nodes.is_empty() {
+        lines.push("• 受控电脑：暂无已绑定节点（可在「我的电脑」添加或绑定）".to_string());
+    } else {
+        for n in display_nodes {
+            let status = if n.online { "🟢 在线" } else { "⚪ 离线" };
+            lines.push(format!(
+                "• 电脑节点：**{}** (`{}`) · {} · {}",
+                n.display_name,
+                n.node_id,
+                status,
+                n.run_policy.label_zh()
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+struct StreamConsumerState {
+    thinking_buf: String,
+    tool_steps: Vec<StepTrace>,
+    round_answer_buf: String,
+    final_done_text: Option<String>,
+    goal_status: Option<String>,
+    pending_approval_id: Option<String>,
+    approval_notice: Option<String>,
+    event_buttons: Vec<Vec<InlineActionButton>>,
+    terminal_error: Option<String>,
+    saw_terminal_event: bool,
+    bot_msg_id: Option<MsgId>,
+    last_rendered: String,
+    last_kb_json: Option<String>,
+    last_edit_at: Option<Instant>,
+    dirty: bool,
+}
+
+impl StreamConsumerState {
+    fn new() -> Self {
+        Self {
+            thinking_buf: String::new(),
+            tool_steps: Vec::new(),
+            round_answer_buf: String::new(),
+            final_done_text: None,
+            goal_status: None,
+            pending_approval_id: None,
+            approval_notice: None,
+            event_buttons: Vec::new(),
+            terminal_error: None,
+            saw_terminal_event: false,
+            bot_msg_id: None,
+            last_rendered: String::new(),
+            last_kb_json: None,
+            last_edit_at: None,
+            dirty: false,
+        }
+    }
+
+    fn apply_event(&mut self, ev: HermesEvent) -> bool {
+        match ev {
+            HermesEvent::Meta { .. } => false,
+            HermesEvent::ThinkingDelta { text } => {
+                self.thinking_buf.push_str(&text);
+                self.bot_msg_id.is_none() && !self.thinking_buf.trim().is_empty()
+            }
+            HermesEvent::GoalProgress {
+                iteration,
+                max_iterations,
+                status,
+                note,
+            } => {
+                let note_clean = truncate_chars(&note.split_whitespace().collect::<Vec<_>>().join(" "), 120);
+                self.goal_status = Some(format!(
+                    "🎯 **目标进度 ({iteration}/{max_iterations})**：{status} — {note_clean}"
+                ));
+                self.bot_msg_id.is_none()
+            }
+            HermesEvent::ToolStart {
+                tool_call_id,
+                tool_name,
+                arguments,
+            } => {
+                self.round_answer_buf.clear();
+                let idx = self.tool_steps.len() + 1;
+                self.tool_steps.push(StepTrace {
+                    idx,
+                    tool_call_id,
+                    tool_name,
+                    args_preview: format_tool_args_preview(&arguments),
+                    status: StepStatus::Running,
+                    duration_ms: None,
+                    result_preview: None,
+                });
+                true
+            }
+            HermesEvent::ToolResult {
+                tool_call_id,
+                tool_name,
+                success,
+                output,
+                duration_ms,
+                ..
+            } => {
+                let single_line = output.split_whitespace().collect::<Vec<_>>().join(" ");
+                let preview = if single_line.is_empty() {
+                    None
+                } else {
+                    Some(truncate_chars(&single_line, 96))
+                };
+                let step_idx = self
+                    .tool_steps
+                    .iter()
+                    .rposition(|s| s.tool_call_id == tool_call_id)
+                    .or_else(|| {
+                        self.tool_steps
+                            .iter()
+                            .rposition(|s| s.tool_name == tool_name && s.status == StepStatus::Running)
+                    });
+                if let Some(step) = step_idx.and_then(|idx| self.tool_steps.get_mut(idx)) {
+                    step.status = if success { StepStatus::Ok } else { StepStatus::Err };
+                    step.duration_ms = Some(duration_ms);
+                    step.result_preview = preview;
+                }
+                true
+            }
+            HermesEvent::ApprovalRequired {
+                approval_id,
+                tool_name,
+                command,
+                risk_level,
+                reason,
+                ..
+            } => {
+                self.pending_approval_id = Some(approval_id);
+                self.approval_notice = Some(format!(
+                    "⚠️ **等待执行审批** (`{risk_level}`)\n工具：`{tool_name}`\n命令：`{}`\n原因：{reason}",
+                    truncate_chars(&command, 140)
+                ));
+                true
+            }
+            HermesEvent::InlineButtons { rows } => {
+                if !rows.is_empty() {
+                    self.event_buttons = rows;
+                }
+                false
+            }
+            HermesEvent::CommandResult { outcome } => {
+                if !outcome.should_continue_to_llm && !outcome.response_text.trim().is_empty() {
+                    self.round_answer_buf = outcome.response_text;
+                }
+                if !outcome.buttons.is_empty() {
+                    self.event_buttons = outcome.buttons;
+                }
+                true
+            }
+            HermesEvent::TextDelta { text, accumulated } => {
+                if !text.is_empty() {
+                    self.round_answer_buf.push_str(&text);
+                } else if self.round_answer_buf.is_empty() && !accumulated.is_empty() {
+                    self.round_answer_buf = accumulated;
+                }
+                self.bot_msg_id.is_none()
+                    && !strip_state_patches_for_display(&self.round_answer_buf)
+                        .trim()
+                        .is_empty()
+            }
+            HermesEvent::Done {
+                response_text,
+                reasoning,
+                buttons,
+                ..
+            } => {
+                self.saw_terminal_event = true;
+                if !response_text.trim().is_empty() {
+                    self.final_done_text = Some(response_text);
+                }
+                if self.thinking_buf.trim().is_empty() {
+                    if let Some(r) = reasoning {
+                        self.thinking_buf = r;
+                    }
+                }
+                if !buttons.is_empty() {
+                    self.event_buttons = buttons;
+                }
+                true
+            }
+            HermesEvent::Error { code, message } => {
+                self.saw_terminal_event = true;
+                self.terminal_error = Some(format!("⚠️ **执行失败 ({code})**：{message}"));
+                true
+            }
+        }
+    }
+
+    fn raw_answer_text(&self) -> &str {
+        self.final_done_text
+            .as_deref()
+            .unwrap_or(&self.round_answer_buf)
+    }
+
+    fn render_steps_block(&self) -> Option<String> {
+        if self.tool_steps.is_empty() {
+            return None;
+        }
+        let total = self.tool_steps.len();
+        let done = self
+            .tool_steps
+            .iter()
+            .filter(|s| s.status != StepStatus::Running)
+            .count();
+        let mut lines = vec![format!("🔧 **执行步骤 ({done}/{total})**")];
+        let max_display = 8;
+        let start_idx = if total > max_display {
+            lines.push(format!("…已折叠前 {} 步", total - max_display + 1));
+            total - (max_display - 1)
+        } else {
+            0
+        };
+        if start_idx > 0 {
+            if let Some(first) = self.tool_steps.first() {
+                lines.push(Self::format_step_line(first));
+            }
+        }
+        for step in &self.tool_steps[start_idx..] {
+            lines.push(Self::format_step_line(step));
+        }
+        Some(lines.join("\n"))
+    }
+
+    fn format_step_line(step: &StepTrace) -> String {
+        let icon = match step.status {
+            StepStatus::Running => "⏳",
+            StepStatus::Ok => "✅",
+            StepStatus::Err => "❌",
+        };
+        let args = if step.args_preview.is_empty() {
+            String::new()
+        } else {
+            format!(" (`{}`)", step.args_preview)
+        };
+        let timing = match step.duration_ms {
+            Some(ms) => format!(" · {ms}ms"),
+            None => String::new(),
+        };
+        let mut line = format!("{}. {icon} `{}`{args}{timing}", step.idx, step.tool_name);
+        if step.status == StepStatus::Err {
+            if let Some(ref preview) = step.result_preview {
+                line.push_str(&format!(" — {}", truncate_chars(preview, 72)));
+            }
+        }
+        line
+    }
+
+    fn render(&self, is_final: bool, extra_suffix: Option<&str>) -> String {
+        let mut sections: Vec<String> = Vec::new();
+
+        if !is_final && !self.thinking_buf.trim().is_empty() {
+            let bounded = tail_chars(self.thinking_buf.trim(), 700);
+            let quoted = bounded.replace('\n', "\n> ");
+            sections.push(format!("💭 **思考过程**\n> {quoted}"));
+        }
+
+        if let Some(steps_md) = self.render_steps_block() {
+            sections.push(steps_md);
+        }
+
+        if !is_final {
+            if let Some(ref g) = self.goal_status {
+                sections.push(g.clone());
+            }
+        }
+
+        let mut clean_answer = strip_state_patches_for_display(self.raw_answer_text());
+        if is_final {
+            if let Some(suffix) = extra_suffix.map(str::trim).filter(|s| !s.is_empty()) {
+                if !clean_answer.is_empty() {
+                    clean_answer.push_str("\n\n");
+                }
+                clean_answer.push_str(suffix);
+            }
+        }
+        if !clean_answer.trim().is_empty() {
+            sections.push(clean_answer);
+        }
+
+        if let Some(ref approval) = self.approval_notice {
+            sections.push(approval.clone());
+        }
+
+        if let Some(ref err) = self.terminal_error {
+            sections.push(err.clone());
+        } else if is_final && sections.is_empty() {
+            if !self.thinking_buf.trim().is_empty() {
+                sections.push(self.thinking_buf.trim().to_string());
+            } else {
+                sections.push(
+                    "⚠️ 模型未返回有效内容，请检查当前 active provider 与模型配置是否可用。"
+                        .to_string(),
+                );
+            }
+        }
+
+        sections.join("\n\n")
+    }
+}
+
+pub(crate) struct BotStreamTurnParams {
+    pub chat_id: ChatId,
+    pub sender_id: UserId,
+    pub bot_user_id: UserId,
+    pub prompt: String,
+    pub base_system_prompt: Option<String>,
+    pub bot_display_name: Option<String>,
+    pub explicit_model: Option<String>,
+    pub bot_model: Option<String>,
+    pub extra_context_sections: Vec<String>,
+    pub companion_apps: Vec<MiniAppRecord>,
+    pub help_bot_commands_suffix: Option<String>,
+}
+
+fn attach_companion_webapp_button(
+    kb_rows: &mut Vec<Vec<InlineKeyboardButton>>,
+    apps: &[MiniAppRecord],
+) {
+    let Some(first) = apps.first() else {
+        return;
+    };
+    let has_webapp_btn = kb_rows
+        .iter()
+        .flatten()
+        .any(|b| b.web_app_url.is_some());
+    if !has_webapp_btn {
+        kb_rows.insert(
+            0,
+            vec![InlineKeyboardButton {
+                text: format!("{} 打开 {}", first.icon_emoji, first.title),
+                callback_data: None,
+                url: None,
+                web_app_url: Some(format!(
+                    "gpui-miniapp://{}/{}",
+                    first.bot_username, first.short_name
+                )),
+            }],
+        );
+    }
+}
+
+fn flush_streamed_bot_message(
+    state: &Arc<AppState>,
+    params: &BotStreamTurnParams,
+    consumer: &mut StreamConsumerState,
+    is_final: bool,
+) {
+    if is_final && !params.companion_apps.is_empty() {
+        let patches = extract_state_patches(consumer.raw_answer_text());
+        if !patches.is_empty() {
+            crate::routes::bots_miniapps::apply_miniapp_state_patches_for_bot_user(
+                state,
+                params.sender_id.0 as i64,
+                params.bot_user_id.0 as i64,
+                params.chat_id.0,
+                &params.companion_apps,
+                &patches,
+            );
+        }
+    }
+
+    let rendered = consumer.render(is_final, params.help_bot_commands_suffix.as_deref());
+    if rendered.trim().is_empty() {
+        return;
+    }
+
+    let mut kb_rows = if is_final || consumer.pending_approval_id.is_some() || !consumer.event_buttons.is_empty() {
+        build_bot_quick_actions_from_parts(
+            &consumer.event_buttons,
+            consumer.pending_approval_id.as_deref(),
+            &params.prompt,
+        )
+    } else {
+        Vec::new()
+    };
+    attach_companion_webapp_button(&mut kb_rows, &params.companion_apps);
+
+    let kb_json_opt = if kb_rows.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&kb_rows).ok()
+    };
+
+    if let Some(msg_id) = consumer.bot_msg_id {
+        let kb_changed = kb_json_opt.is_some() && kb_json_opt != consumer.last_kb_json;
+        if rendered != consumer.last_rendered || kb_changed {
+            if kb_changed {
+                if let Some(ref kb_json) = kb_json_opt {
+                    let _ = state
+                        .db
+                        .save_message_extras(params.chat_id, msg_id, Some(kb_json), None);
+                }
+                consumer.last_kb_json = kb_json_opt;
+            }
+            if let Ok(pts_update) = state.message_pipeline.edit_message(
+                params.chat_id,
+                msg_id,
+                MessageContent::plain_text(&rendered),
+            ) {
+                broadcast_chat_pts(state, params.chat_id, pts_update);
+                consumer.last_rendered = rendered;
+            }
+        }
+    } else {
+        let mut bot_msg = MessageItem::new(
+            MsgId(0),
+            params.chat_id,
+            params.bot_user_id,
+            PeerId::Chat(params.chat_id),
+            MessageContent::plain_text(&rendered),
+        );
+        bot_msg.flags.is_out = false;
+        if let Ok(pts_update) = state.message_pipeline.process_incoming_message(bot_msg) {
+            if let UpdateEvent::NewMessage(saved) = &pts_update.event {
+                consumer.bot_msg_id = Some(saved.id);
+                if let Some(ref kb_json) = kb_json_opt {
+                    let _ = state
+                        .db
+                        .save_message_extras(params.chat_id, saved.id, Some(kb_json), None);
+                    consumer.last_kb_json = kb_json_opt;
+                }
+            }
+            broadcast_chat_pts(state, params.chat_id, pts_update);
+            consumer.last_rendered = rendered;
+        }
+    }
+
+    consumer.last_edit_at = Some(Instant::now());
+    consumer.dirty = false;
+}
+
+pub(crate) async fn execute_bot_turn_streamed(
+    state: &Arc<AppState>,
+    params: BotStreamTurnParams,
+) {
+    let typing_guard =
+        BotTypingGuard::start(Arc::clone(state), params.chat_id, params.bot_user_id);
+
+    let (enriched_sp, effective_model) = build_enriched_bot_turn_context(
+        state,
+        params.sender_id.0,
+        Some(params.bot_user_id.0),
+        params.bot_display_name.as_deref(),
+        params.base_system_prompt.clone(),
+        params.explicit_model.clone(),
+        params.bot_model.clone(),
+        &params.extra_context_sections,
+        !params.companion_apps.is_empty(),
+    );
+
+    let session_id_opt = resolve_and_apply_bot_session_policy(
+        state,
+        params.sender_id.0,
+        params.bot_user_id,
+        Some(params.chat_id),
+        None,
+        "telegram_bot",
+        effective_model.as_deref(),
+        false,
+    )
+    .ok()
+    .map(|(sid, _)| sid);
+
+    let skip_slash = if params.prompt.trim().starts_with('/') {
+        SlashCommandParser::parse(&params.prompt)
+            .is_some_and(|parsed| state.hermes.commands().get(&parsed.command).is_none())
+    } else {
+        false
+    };
+
+    let mut req = HermesTurnRequest::new(&params.prompt)
+        .with_chat_bot(params.chat_id.0, params.bot_user_id.0.to_string());
+    req.session_id = session_id_opt;
+    req.bot_name = params.bot_display_name.clone();
+    req.user_id = Some(params.sender_id.0.to_string());
+    req.source = "telegram_bot".to_string();
+    req.preset = Some(ToolsetPreset::HermesTelegram);
+    req.model = effective_model;
+    req.system_prompt = enriched_sp;
+    req.skip_slash_commands = skip_slash;
+
+    let mut rx = match state.hermes.start_turn_stream(req) {
+        Ok(rx) => rx,
+        Err(err) => {
+            let mut err_consumer = StreamConsumerState::new();
+            err_consumer.terminal_error = Some(format!("⚠️ **无法启动 AI 回复**：{err}"));
+            flush_streamed_bot_message(state, &params, &mut err_consumer, true);
+            typing_guard.finish();
+            return;
+        }
+    };
+
+    const EDIT_THROTTLE: Duration = Duration::from_millis(350);
+    let mut consumer = StreamConsumerState::new();
+
+    enum LoopWake {
+        FlushTimer,
+        Event(Option<HermesEvent>),
+    }
+
+    loop {
+        let sleep_fut = async {
+            if let Some(last_edit) = consumer.last_edit_at.filter(|_| consumer.dirty) {
+                tokio::time::sleep_until(last_edit + EDIT_THROTTLE).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let wake = tokio::select! {
+            _ = sleep_fut => LoopWake::FlushTimer,
+            ev = rx.recv() => LoopWake::Event(ev),
+        };
+        match wake {
+            LoopWake::FlushTimer => {
+                flush_streamed_bot_message(state, &params, &mut consumer, false);
+            }
+            LoopWake::Event(None) => break,
+            LoopWake::Event(Some(first_ev)) => {
+                let mut flush_now = consumer.apply_event(first_ev);
+                while let Ok(next_ev) = rx.try_recv() {
+                    if consumer.apply_event(next_ev) {
+                        flush_now = true;
+                    }
+                }
+                consumer.dirty = true;
+                if consumer.saw_terminal_event {
+                    flush_streamed_bot_message(state, &params, &mut consumer, true);
+                    break;
+                } else if flush_now
+                    || consumer
+                        .last_edit_at
+                        .is_none_or(|t| t.elapsed() >= EDIT_THROTTLE)
+                {
+                    flush_streamed_bot_message(state, &params, &mut consumer, false);
+                }
+            }
+        }
+    }
+
+    if !consumer.saw_terminal_event {
+        flush_streamed_bot_message(state, &params, &mut consumer, true);
+    }
+
+    typing_guard.finish();
 }
 
 pub(crate) async fn deliver_hermes_proactive_message(
@@ -691,11 +1782,55 @@ fn sse_response_from_chunks(chunks: Vec<String>) -> Response {
 // Health, Turns, Events & Slash Commands
 // ============================================================================
 
+fn collect_available_models(
+    snap: &gpui_telegram_agent::hermes::providers::ProviderRouterState,
+) -> Vec<String> {
+    let mut models = Vec::new();
+    let mut push_unique = |m: &str| {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() && !models.iter().any(|existing| existing == trimmed) {
+            models.push(trimmed.to_string());
+        }
+    };
+    push_unique(&snap.active_model);
+    if let Some(active_cfg) = snap.providers.get(&snap.active_provider_id) {
+        push_unique(&active_cfg.default_model);
+        for m in &active_cfg.fallback_models {
+            push_unique(m);
+        }
+    }
+    let mut sorted_providers: Vec<_> = snap.providers.values().collect();
+    sorted_providers.sort_by(|a, b| a.id.cmp(&b.id));
+    for cfg in sorted_providers {
+        if !cfg.enabled {
+            continue;
+        }
+        push_unique(&cfg.default_model);
+        for m in &cfg.fallback_models {
+            push_unique(m);
+        }
+    }
+    let mut profile_ids: Vec<_> = snap.model_profiles.values().collect();
+    profile_ids.sort_by(|a, b| a.id.cmp(&b.id));
+    for prof in profile_ids {
+        push_unique(&prof.model);
+    }
+    models
+}
+
 pub async fn hermes_status(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let (active_provider, active_model, api_mode) = state.hermes.providers().active_info();
+    let snap = state.hermes.providers().snapshot();
+    let available_models = collect_available_models(&snap);
+    let mut provider_list: Vec<_> = snap.providers.values().collect();
+    provider_list.sort_by(|a, b| a.id.cmp(&b.id));
+    let providers: Vec<Value> = provider_list
+        .into_iter()
+        .map(|cfg| provider_to_dto(cfg, &snap.active_provider_id, &snap.model_profiles))
+        .collect();
     let (toolsets_count, tools_count) = {
         let reg = state
             .hermes
@@ -739,6 +1874,9 @@ pub async fn hermes_status(
             "active_model": active_model,
             "active_provider": active_provider,
             "api_mode": api_mode.as_str(),
+            "allow_local_fallback": snap.allow_local_fallback,
+            "available_models": available_models,
+            "providers": providers,
             "toolsets_count": toolsets_count,
             "tools_count": tools_count,
             "skills_count": skills_count,
@@ -772,7 +1910,7 @@ pub async fn hermes_turns_create(
         }
     }
 
-    let session_id = payload
+    let mut session_id = payload
         .get("session_id")
         .and_then(|v| v.as_str())
         .map(str::trim)
@@ -809,7 +1947,10 @@ pub async fn hermes_turns_create(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
 
-    if let Some(bid_num) = bot_id.as_deref().and_then(|b| b.parse::<u64>().ok()) {
+    let explicit_model = sanitize_model_override(&state, model.clone());
+    let bot_id_u64 = bot_id.as_deref().and_then(|b| b.parse::<u64>().ok());
+    let mut bot_fallback_model: Option<String> = None;
+    if let Some(bid_num) = bot_id_u64 {
         let (bot_sp, bot_model, _) = load_bot_persona_config(&state, UserId(bid_num));
         if bot_name.is_none() {
             bot_name = resolve_bot_display_name(&state, UserId(bid_num));
@@ -817,17 +1958,43 @@ pub async fn hermes_turns_create(
         if system_prompt.is_none() {
             system_prompt = bot_sp;
         }
-        if model.is_none() {
-            model = bot_model;
-        }
+        bot_fallback_model = sanitize_model_override(&state, bot_model);
     }
+    let (enriched_sp, effective_model) = build_enriched_bot_turn_context(
+        &state,
+        auth.user_id.0,
+        bot_id_u64,
+        bot_name.as_deref(),
+        system_prompt,
+        explicit_model,
+        bot_fallback_model,
+        &[],
+        false,
+    );
+    system_prompt = enriched_sp;
+    model = effective_model;
 
     let yolo_mode = payload.get("yolo_mode").and_then(|v| v.as_bool()).unwrap_or(false);
-    if yolo_mode {
+    if let Some(bid_num) = bot_id_u64 {
+        if let Ok((sid, _)) = resolve_and_apply_bot_session_policy(
+            &state,
+            auth.user_id.0,
+            UserId(bid_num),
+            chat_id.map(ChatId),
+            session_id.as_deref(),
+            "api",
+            model.as_deref(),
+            yolo_mode,
+        ) {
+            if session_id.is_none() {
+                session_id = Some(sid);
+            }
+        }
+    } else if yolo_mode {
         if let Some(ref sid) = session_id {
             if let Ok(mut sec) = state.hermes.security().write() {
                 sec.approvals
-                    .set_session_mode(sid.clone(), gpui_telegram_agent::hermes::security::ApprovalMode::Yolo);
+                    .set_session_mode(sid.clone(), ApprovalMode::Yolo);
             }
         }
     }
@@ -849,7 +2016,8 @@ pub async fn hermes_turns_create(
         preset: payload
             .get("preset")
             .and_then(|v| v.as_str())
-            .and_then(ToolsetPreset::from_str),
+            .and_then(ToolsetPreset::from_str)
+            .or(Some(ToolsetPreset::HermesTelegram)),
         max_iterations: payload
             .get("max_iterations")
             .and_then(|v| v.as_u64())
@@ -2036,24 +3204,17 @@ pub async fn hermes_approvals_list(
         .into_response()
 }
 
-pub async fn hermes_approval_decide(
-    auth: AuthBearer,
-    State(state): State<Arc<AppState>>,
-    Path(approval_id): Path<String>,
-    Json(payload): Json<Value>,
-) -> Response {
-    let raw_dec = payload
-        .get("decision")
-        .or_else(|| payload.get("action"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("approve_once")
-        .trim()
-        .to_ascii_lowercase();
-    let actor = payload
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .map(|r| format!("user_{}:{r}", auth.user_id.0))
-        .unwrap_or_else(|| format!("user_{}", auth.user_id.0));
+pub(crate) fn apply_hermes_approval_decision(
+    state: &AppState,
+    user_id: UserId,
+    approval_id: &str,
+    raw_decision: &str,
+    reason: Option<&str>,
+) -> Result<(String, Value), Response> {
+    let raw_dec = raw_decision.trim().to_ascii_lowercase();
+    let actor = reason
+        .map(|r| format!("user_{}:{r}", user_id.0))
+        .unwrap_or_else(|| format!("user_{}", user_id.0));
 
     let (mem_action, db_status) = match raw_dec.as_str() {
         "approve" | "approve_once" | "once" => {
@@ -2067,16 +3228,17 @@ pub async fn hermes_approval_decide(
             ApprovalDecisionAction::ApprovePermanent,
             ApprovalStatus::ApprovedPermanent,
         ),
-        "yolo" | "enable_yolo" => {
-            (ApprovalDecisionAction::EnableYolo, ApprovalStatus::ApprovedSession)
-        }
+        "yolo" | "enable_yolo" => (
+            ApprovalDecisionAction::EnableYolo,
+            ApprovalStatus::ApprovedSession,
+        ),
         "deny" | "reject" => (ApprovalDecisionAction::Deny, ApprovalStatus::Denied),
         other => {
-            return err_resp(
+            return Err(err_resp(
                 StatusCode::BAD_REQUEST,
                 "invalid_decision",
                 &format!("Unsupported approval decision '{other}'"),
-            );
+            ));
         }
     };
 
@@ -2085,40 +3247,65 @@ pub async fn hermes_approval_decide(
         .security()
         .write()
         .ok()
-        .and_then(|mut sec| sec.approvals.decide(&approval_id, mem_action, actor.clone()).ok());
+        .and_then(|mut sec| sec.approvals.decide(approval_id, mem_action, actor.clone()).ok());
     let db_res = state
         .hermes
         .store()
-        .decide_approval(&approval_id, db_status, Some(actor.clone()))
+        .decide_approval(approval_id, db_status, Some(actor))
         .ok();
 
     if let Some(p) = mem_res {
-        return (
-            StatusCode::OK,
-            Json(json!({
+        let status_str = sec_approval_status_str(p.status).to_string();
+        return Ok((
+            status_str.clone(),
+            json!({
                 "approval_id": p.id,
                 "session_id": p.session_id,
                 "tool_name": p.tool_name,
                 "command_preview": p.command,
                 "risk_level": p.risk_level,
                 "reason": p.reason,
-                "status": sec_approval_status_str(p.status),
+                "status": status_str,
                 "created_at_ms": p.created_at.timestamp_millis(),
                 "decided_at_ms": p.decided_at.map(|d| d.timestamp_millis()),
-            })),
-        )
-            .into_response();
+            }),
+        ));
     }
 
-    if let Some(rec) = db_res {
-        return (StatusCode::OK, Json(db_approval_to_dto(&rec))).into_response();
+    match db_res {
+        Some(rec) => {
+            let dto = db_approval_to_dto(&rec);
+            let status_str = dto
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("decided")
+                .to_string();
+            Ok((status_str, dto))
+        }
+        None => Err(err_resp(
+            StatusCode::NOT_FOUND,
+            "approval_not_found",
+            "Pending approval request not found",
+        )),
     }
+}
 
-    err_resp(
-        StatusCode::NOT_FOUND,
-        "approval_not_found",
-        "Pending approval request not found",
-    )
+pub async fn hermes_approval_decide(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(approval_id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let raw_dec = payload
+        .get("decision")
+        .or_else(|| payload.get("action"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("approve_once");
+    let reason = payload.get("reason").and_then(|v| v.as_str());
+    match apply_hermes_approval_decision(&state, auth.user_id, &approval_id, raw_dec, reason) {
+        Ok((_, body)) => (StatusCode::OK, Json(body)).into_response(),
+        Err(resp) => resp,
+    }
 }
 
 // ============================================================================
@@ -2606,6 +3793,7 @@ pub async fn hermes_providers_get(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let snap = state.hermes.providers().snapshot();
+    let available_models = collect_available_models(&snap);
     let mut list: Vec<&ProviderConfig> = snap.providers.values().collect();
     list.sort_by(|a, b| a.id.cmp(&b.id));
     let providers: Vec<Value> = list
@@ -2618,6 +3806,8 @@ pub async fn hermes_providers_get(
             "providers": providers,
             "active_provider": snap.active_provider_id,
             "active_model": snap.active_model,
+            "allow_local_fallback": snap.allow_local_fallback,
+            "available_models": available_models,
         })),
     )
         .into_response()
@@ -2732,18 +3922,30 @@ pub async fn hermes_providers_put(
         }
     }
 
+    if let Some(allow_local) = payload
+        .get("allow_local_fallback")
+        .and_then(|v| v.as_bool())
+    {
+        state.hermes.providers().set_allow_local_fallback(allow_local);
+    }
+
     state.hermes.persist_providers_state();
     let snap_after = state.hermes.providers().snapshot();
     match snap_after.providers.get(&provider_id) {
-        Some(updated) => (
-            StatusCode::OK,
-            Json(provider_to_dto(
+        Some(updated) => {
+            let mut dto = provider_to_dto(
                 updated,
                 &snap_after.active_provider_id,
                 &snap_after.model_profiles,
-            )),
-        )
-            .into_response(),
+            );
+            if let Some(obj) = dto.as_object_mut() {
+                obj.insert(
+                    "allow_local_fallback".into(),
+                    json!(snap_after.allow_local_fallback),
+                );
+            }
+            (StatusCode::OK, Json(dto)).into_response()
+        }
         None => err_resp(StatusCode::NOT_FOUND, "provider_not_found", "Provider not found"),
     }
 }
@@ -2934,16 +4136,44 @@ pub async fn hermes_talk_turn(
             .map(|v| format!(" (voice preset: {v})"))
             .unwrap_or_default()
     );
+    let bot_display_name = bot_id_u64.and_then(|bid| resolve_bot_display_name(&state, UserId(bid)));
+    let (enriched_sp, effective_model) = build_enriched_bot_turn_context(
+        &state,
+        auth.user_id.0,
+        bot_id_u64,
+        bot_display_name.as_deref(),
+        Some(voice_sys),
+        None,
+        sanitize_model_override(&state, bot_model),
+        &[],
+        false,
+    );
+
+    let talk_sid = format!("hermes_{session_id}");
+    if let Some(bid) = bot_id_u64 {
+        let _ = resolve_and_apply_bot_session_policy(
+            &state,
+            auth.user_id.0,
+            UserId(bid),
+            chat_id.map(ChatId),
+            Some(&talk_sid),
+            "talk_mode",
+            effective_model.as_deref(),
+            false,
+        );
+    }
 
     let req = HermesTurnRequest {
-        session_id: Some(format!("hermes_{session_id}")),
+        session_id: Some(talk_sid),
         chat_id,
         bot_id: bot_id_u64.map(|id| id.to_string()),
+        bot_name: bot_display_name,
         user_id: Some(auth.user_id.0.to_string()),
         source: "talk_mode".to_string(),
         prompt: transcript.clone(),
-        model: bot_model,
-        system_prompt: Some(voice_sys),
+        model: effective_model,
+        system_prompt: enriched_sp,
+        preset: Some(ToolsetPreset::HermesTelegram),
         ..Default::default()
     };
 
@@ -3271,4 +4501,294 @@ pub async fn hermes_acp_rpc(
 ) -> Response {
     let resp = state.hermes.acp_json_rpc(rpc_req).await;
     (StatusCode::OK, Json(resp)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+    use crate::db::ServerDatabase;
+    use gpui_telegram_agent::hermes::providers::TokenUsage;
+    use gpui_telegram_proto::ws::WsServerFrame;
+    use tokio::sync::mpsc;
+
+    struct TempMediaGuard(std::path::PathBuf);
+    impl TempMediaGuard {
+        fn new(prefix: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("{prefix}_{}", Uuid::new_v4().simple()));
+            let _ = std::fs::create_dir_all(&p);
+            Self(p)
+        }
+    }
+    impl Drop for TempMediaGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_state(prefix: &str) -> (TempMediaGuard, Arc<AppState>) {
+        let dir = TempMediaGuard::new(prefix);
+        let db = Arc::new(ServerDatabase::open_in_memory().expect("in-memory db"));
+        let mut cfg = ServerConfig::default();
+        cfg.media_storage_path = dir.0.to_string_lossy().into_owned();
+        let state = Arc::new(AppState::with_db(cfg, db));
+        (dir, state)
+    }
+
+    #[test]
+    fn test_sanitize_model_override_filters_placeholders() {
+        for raw in [
+            "",
+            "   ",
+            "default",
+            "DEFAULT",
+            "默认",
+            "默认模型",
+            "hermes-local-v1",
+            "local_hermes/hermes-local-v1",
+            "auto",
+            "Auto",
+        ] {
+            assert_eq!(
+                sanitize_model_override_for_provider(
+                    Some(raw.to_string()),
+                    "magpie_local",
+                    Some("http://127.0.0.1:3425/v1"),
+                ),
+                None,
+                "raw={raw}"
+            );
+        }
+        // "deepseek-flash" is stripped on non-DeepSeek providers (e.g. magpie_local)
+        // so ServerConfig's default does not override magpie_local's auto/gemini-3.8-flash.
+        assert_eq!(
+            sanitize_model_override_for_provider(
+                Some(" deepseek-flash ".to_string()),
+                "magpie_local",
+                Some("http://127.0.0.1:3425/v1"),
+            ),
+            None
+        );
+        // "deepseek-flash" MUST be preserved when a DeepSeek or ai.ombhrum.com provider is active.
+        assert_eq!(
+            sanitize_model_override_for_provider(
+                Some(" deepseek-flash ".to_string()),
+                "deepseek",
+                Some("https://api.deepseek.com/v1"),
+            )
+            .as_deref(),
+            Some("deepseek-flash")
+        );
+        assert_eq!(
+            sanitize_model_override_for_provider(
+                Some("deepseek-flash".to_string()),
+                "custom_openai",
+                Some("https://ai.ombhrum.com/v1"),
+            )
+            .as_deref(),
+            Some("deepseek-flash")
+        );
+        assert_eq!(
+            sanitize_model_override_for_provider(
+                Some(" deepseek-chat ".to_string()),
+                "magpie_local",
+                Some("http://127.0.0.1:3425/v1"),
+            )
+            .as_deref(),
+            Some("deepseek-chat")
+        );
+        assert_eq!(
+            sanitize_model_override_for_provider(
+                Some("claude-sonnet-4-20250514".to_string()),
+                "magpie_local",
+                Some("http://127.0.0.1:3425/v1"),
+            )
+            .as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+
+        let (_dir, state) = test_state("hermes_sanitize_model");
+        use gpui_telegram_agent::hermes::providers::{ApiMode, CredentialPool, ProviderConfig};
+        state.hermes.providers().register_provider(ProviderConfig {
+            id: "magpie_test".to_string(),
+            name: "Magpie Test".to_string(),
+            api_mode: ApiMode::ChatCompletions,
+            base_url: "http://127.0.0.1:3425/v1".to_string(),
+            default_model: "auto/gemini-3.8-flash".to_string(),
+            headers: Default::default(),
+            credentials: CredentialPool::new(),
+            fallback_models: Vec::new(),
+            timeout_secs: 30,
+            enabled: true,
+        });
+        state
+            .hermes
+            .providers()
+            .set_active("magpie_test", None)
+            .expect("activate magpie_test");
+        assert_eq!(
+            sanitize_model_override(&state, Some("deepseek-flash".to_string())),
+            None
+        );
+
+        state.hermes.providers().register_provider(ProviderConfig {
+            id: "deepseek_test".to_string(),
+            name: "DeepSeek Test".to_string(),
+            api_mode: ApiMode::ChatCompletions,
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            default_model: "deepseek-flash".to_string(),
+            headers: Default::default(),
+            credentials: CredentialPool::new(),
+            fallback_models: Vec::new(),
+            timeout_secs: 30,
+            enabled: true,
+        });
+        state
+            .hermes
+            .providers()
+            .set_active("deepseek_test", None)
+            .expect("activate deepseek_test");
+        assert_eq!(
+            sanitize_model_override(&state, Some("deepseek-flash".to_string())).as_deref(),
+            Some("deepseek-flash")
+        );
+    }
+
+    #[test]
+    fn test_is_autonomous_policy_str_variants() {
+        for p in [
+            "always_allow_authorized",
+            "AlwaysAllowAuthorized",
+            "always-allow-authorized",
+            "yolo",
+            "YOLO",
+        ] {
+            assert!(is_autonomous_execution_policy_for_test(p), "p={p}");
+        }
+        for p in ["ask_every_time", "allow_read_only", "disabled", "prompt"] {
+            assert!(!is_autonomous_execution_policy_for_test(p), "p={p}");
+        }
+    }
+
+    fn is_autonomous_execution_policy_for_test(raw: &str) -> bool {
+        is_autonomous_policy_str(raw)
+    }
+
+    #[test]
+    fn test_state_patch_extraction_and_display_stripping() {
+        let streaming = "已加入冰拿铁\n[STATE_PATCH]{\"orders\": [\"冰拿";
+        assert_eq!(strip_state_patches_for_display(streaming), "已加入冰拿铁");
+
+        let partial_prefix = "更新中...[STATE_";
+        assert_eq!(strip_state_patches_for_display(partial_prefix), "更新中...");
+
+        let completed = "已完成点单！\n[STATE_PATCH]```json\n{\"orders\": [\"冰拿铁 x1\"], \"total_amount\": 28}\n```[/STATE_PATCH]\n还有其他需要吗？";
+        assert_eq!(
+            strip_state_patches_for_display(completed),
+            "已完成点单！\n\n还有其他需要吗？"
+        );
+        let patches = extract_state_patches(completed);
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0]["total_amount"], 28);
+    }
+
+    #[test]
+    fn test_stream_consumer_render_streaming_and_final() {
+        let mut sc = StreamConsumerState::new();
+        sc.apply_event(HermesEvent::ThinkingDelta {
+            text: "正在检查远程节点磁盘和进程状态".into(),
+        });
+        sc.apply_event(HermesEvent::ToolStart {
+            tool_call_id: "c1".into(),
+            tool_name: "computer_exec".into(),
+            arguments: json!({"node_id": "cloud_1", "command": "df -h && uname -a"}),
+        });
+        let live_md = sc.render(false, None);
+        assert!(live_md.contains("💭 **思考过程**"));
+        assert!(live_md.contains("🔧 **执行步骤 (0/1)**"));
+        assert!(live_md.contains("⏳ `computer_exec`"));
+
+        sc.apply_event(HermesEvent::ToolResult {
+            tool_call_id: "c1".into(),
+            tool_name: "computer_exec".into(),
+            success: true,
+            output: "Filesystem Size Used Avail".into(),
+            duration_ms: 145,
+            inline_buttons: Vec::new(),
+            ui_actions: Vec::new(),
+        });
+        sc.apply_event(HermesEvent::TextDelta {
+            text: "服务器运行正常。".into(),
+            accumulated: "服务器运行正常。".into(),
+        });
+        sc.apply_event(HermesEvent::Done {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            response_text: "服务器运行正常。[STATE_PATCH]{\"ok\":true}[/STATE_PATCH]".into(),
+            reasoning: None,
+            iterations: 2,
+            tool_calls_count: 1,
+            usage: TokenUsage::default(),
+            buttons: Vec::new(),
+        });
+        let final_md = sc.render(true, None);
+        assert!(final_md.contains("🔧 **执行步骤 (1/1)**"));
+        assert!(final_md.contains("✅ `computer_exec`"));
+        assert!(final_md.contains("145ms"));
+        assert!(final_md.contains("服务器运行正常。"));
+        assert!(!final_md.contains("STATE_PATCH"));
+        assert!(!final_md.contains("💭 **思考过程**"));
+    }
+
+    #[tokio::test]
+    async fn test_bot_typing_guard_emits_cancel_on_drop_and_yolo_policy_applies() {
+        let (_dir, state) = test_state("hermes_typing_guard");
+        let uid = UserId(100_005);
+        let bot_id = UserId(600_001);
+        let chat_id = ChatId(990_001);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.gateway_hub.register(uid, tx);
+        state.gateway_hub.subscribe_chat(chat_id.0, uid);
+
+        {
+            let _guard = BotTypingGuard::start(Arc::clone(&state), chat_id, bot_id);
+        }
+
+        let mut actions = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let WsServerFrame::Update(UpdateEvent::UserTyping(ev)) = frame {
+                actions.push(ev.action);
+            }
+        }
+        assert!(
+            actions.contains(&TypingAction::Typing),
+            "expected TypingAction::Typing, got {actions:?}"
+        );
+        assert_eq!(
+            actions.last(),
+            Some(&TypingAction::Cancel),
+            "expected final TypingAction::Cancel on drop, got {actions:?}"
+        );
+
+        let (sid, is_yolo) = resolve_and_apply_bot_session_policy(
+            &state,
+            uid.0,
+            bot_id,
+            Some(chat_id),
+            None,
+            "telegram_bot",
+            None,
+            false,
+        )
+        .expect("resolve policy");
+        assert!(is_yolo, "default bot computer policy AlwaysAllowAuthorized must map to Yolo");
+        let mode = state
+            .hermes
+            .security()
+            .read()
+            .expect("sec lock")
+            .approvals
+            .get_session_mode(&sid);
+        assert_eq!(mode, ApprovalMode::Yolo);
+    }
 }

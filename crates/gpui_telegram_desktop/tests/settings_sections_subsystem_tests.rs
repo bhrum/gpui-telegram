@@ -57,7 +57,7 @@ fn test_settings_premium_section_discounts() {
 fn test_settings_shortcuts_section_registry() {
     let shortcuts = SettingsShortcutsSections::new();
     assert_eq!(shortcuts.shortcuts.len(), 6);
-    assert_eq!(shortcuts.lng_shortcuts_lock(), "Lock Telegram");
+    assert_eq!(shortcuts.lng_shortcuts_lock(), "Lock App");
 }
 
 #[test]

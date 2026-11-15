@@ -310,3 +310,135 @@ fn test_cascading_four_tier_configuration_resolution() {
     assert_eq!(resolved_eq.server_url, "http://cli-eq.local:8080");
     assert_eq!(resolved_eq.config_source, ConfigSource::CliArgument);
 }
+
+#[tokio::test]
+async fn test_live_cloud_reaction_roundtrip_and_durable_sqlite_persistence() {
+    let base_url = std::env::var("GPUI_TELEGRAM_SERVER_URL")
+        .unwrap_or_else(|_| "http://34.46.77.133:8080".to_string());
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let cfg = ClientConfig {
+        server_url: base_url.clone(),
+        ..Default::default()
+    };
+
+    let client = gpui_telegram_client::TelegramClient::open_with_dir(cfg.clone(), temp_dir.path())
+        .expect("open durable client");
+    let login_req = LoginRequest {
+        username: "cloud_probe_user".to_string(),
+        password: "probe_password_123".to_string(),
+        device_name: "GPUI Live Reaction E2E Test".to_string(),
+    };
+    let auth = client
+        .http_client
+        .login(&login_req)
+        .await
+        .expect("login to live cloud server");
+    client.set_auth_session(auth.clone());
+
+    let chats = client
+        .http_client
+        .get_chats(&auth.token)
+        .await
+        .expect("get_chats on live server");
+    let target_chat_id = if let Some(first) = chats.first() {
+        first.chat_id as u64
+    } else {
+        client
+            .http_client
+            .provision_welcome_chat(&auth.token)
+            .await
+            .expect("provision_welcome_chat")
+            .chat_id as u64
+    };
+
+    let send_ack = client
+        .http_client
+        .send_message(
+            &auth.token,
+            &SendMessageHttpRequest {
+                chat_id: target_chat_id,
+                text: "Live server reaction roundtrip verification".to_string(),
+                reply_to: None,
+            },
+        )
+        .await
+        .expect("send_message on live server");
+    let mid = send_ack.message_id as u64;
+
+    // React against the REAL live server (`http://34.46.77.133:8080`)
+    let rx_resp = client
+        .react_to_message(target_chat_id as i64, mid as i64, "👍", Some("add"))
+        .await
+        .expect("react_to_message against live server must succeed");
+    assert!(rx_resp.pts > 0);
+
+    // Reload history from live server and verify 👍 reaction is present
+    let hist = client
+        .get_chat_messages(target_chat_id, Some(20))
+        .await
+        .expect("get_chat_messages on live server");
+    let target_hm = hist
+        .iter()
+        .find(|m| m.message_id == mid)
+        .expect("sent message in history");
+    assert!(
+        target_hm
+            .reactions
+            .iter()
+            .any(|r| r.emoji == "👍" && r.chosen),
+        "Reloaded history from live server must retain 👍 reaction"
+    );
+
+    let tok_for_revoke = auth.token.clone();
+    let sess_for_revoke = auth.session_id.clone();
+    tokio::task::spawn_blocking(move || drop(client))
+        .await
+        .unwrap();
+
+    // Reopen fresh `TelegramClient::open_with_dir` on same directory (app restart!) and reload history
+    let reopened = gpui_telegram_client::TelegramClient::open_with_dir(cfg, temp_dir.path())
+        .expect("reopen durable client");
+    reopened.set_token(Some(tok_for_revoke.clone()));
+    let hist_restarted = reopened
+        .get_chat_messages(target_chat_id, Some(20))
+        .await
+        .expect("get_chat_messages after restart");
+    let restarted_hm = hist_restarted
+        .iter()
+        .find(|m| m.message_id == mid)
+        .expect("sent message after restart");
+    assert!(
+        restarted_hm
+            .reactions
+            .iter()
+            .any(|r| r.emoji == "👍" && r.chosen),
+        "Reaction against live default server must survive app restart via SQLite cache"
+    );
+
+    // Toggle OFF (`remove`) against the live default server and verify empty state persists across reload
+    let rm_resp = reopened
+        .react_to_message(target_chat_id as i64, mid as i64, "👍", Some("remove"))
+        .await
+        .expect("remove reaction against live server must succeed");
+    assert!(rm_resp.pts >= rx_resp.pts);
+    let hist_after_remove = reopened
+        .get_chat_messages(target_chat_id, Some(20))
+        .await
+        .expect("get_chat_messages after remove");
+    let removed_hm = hist_after_remove
+        .iter()
+        .find(|m| m.message_id == mid)
+        .expect("sent message after remove");
+    assert!(
+        !removed_hm.reactions.iter().any(|r| r.emoji == "👍" && r.chosen),
+        "Removing 👍 reaction against live server must clear chosen reaction on reload"
+    );
+
+    let _ = reopened
+        .http_client
+        .revoke_session(&tok_for_revoke, &sess_for_revoke)
+        .await;
+    tokio::task::spawn_blocking(move || drop(reopened))
+        .await
+        .unwrap();
+}

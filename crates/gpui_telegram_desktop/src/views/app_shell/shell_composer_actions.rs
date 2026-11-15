@@ -79,8 +79,8 @@ impl AppShell {
         let lang = self.active_lang_id();
         let active_chat = resolve_active_target_chat_id(self.stage.read(cx).active_chat_id, self.sidebar.read(cx).active_chat_id);
         let is_authenticated = self.is_authenticated;
-        let session_token = self.session_token.clone();
-        let user_id = self.user_id;
+        let session_token = self.session_sync.session_token.clone();
+        let user_id = self.session_sync.user_id;
         let submitted = self.sidebar.update(cx, |sb, sb_cx| {
             self.stage.update(sb_cx, |st, st_cx| {
                 self.composer.update(st_cx, |c, _| {
@@ -114,13 +114,13 @@ impl AppShell {
             )
         });
 
-        if is_rec_ui && !self.voice_recorder.is_recording() {
+        if is_rec_ui && !self.rtc_talk.voice_recorder.is_recording() {
             self.toggle_voice_recording(true, cx);
-        } else if !is_rec_ui && self.voice_recorder.is_recording() {
+        } else if !is_rec_ui && self.rtc_talk.voice_recorder.is_recording() {
             if is_rec_done {
                 self.toggle_voice_recording(false, cx);
             } else {
-                let _ = self.voice_recorder.stop();
+                let _ = self.rtc_talk.voice_recorder.stop();
             }
         }
         if let Some(text) = submitted { self.append_outgoing_text(text, cx); }

@@ -37,6 +37,7 @@ pub struct SidebarDialogMeta {
     pub media_badge: DialogMessageMediaBadge,
     pub topics: Option<DialogsTopicsViewUi>,
     pub is_topics_expanded: bool,
+    pub folder_tags: Vec<String>,
 }
 
 fn delivery_svg(
@@ -94,7 +95,7 @@ pub fn render_dialog_row_item<V: 'static>(
     let mut row_model = DialogsRow::new(entry, index, 0);
     row_model.set_selected(is_selected);
     row_model.recount_height(if is_narrow { 1.0 } else { 0.0 });
-    let row_height = row_model.height.max(62) as f32;
+    let row_height = palette.scaled_px(row_model.height.max(62) as f32);
 
     let mut preview_ui = if let Some(ref draft) = meta.draft_text {
         DialogsMessageViewUi::as_draft(draft.clone())
@@ -121,7 +122,8 @@ pub fn render_dialog_row_item<V: 'static>(
     };
     let badge_fg = if is_selected { rgb(palette.accent) } else { rgb(palette.unread_badge_fg) };
     let avatar_bg = if meta.is_saved_messages { palette.accent } else { item.avatar_color };
-    let avatar_size = DialogsLayoutUi::AVATAR_SIZE;
+    let avatar_size = px(palette.scaled_px(46.0));
+    let _ = DialogsLayoutUi::AVATAR_SIZE;
 
     let root = div()
         .id(("sidebar-dialog-row", item.id))
@@ -129,13 +131,13 @@ pub fn render_dialog_row_item<V: 'static>(
         .h(px(row_height))
         .flex_shrink_0()
         .w_full()
-        .px(px(10.0))
-        .py(px(8.0))
+        .px(px(palette.scaled_px(10.0)))
+        .py(px(palette.scaled_px(8.0)))
         .bg(row_bg)
         .hover(move |s| if is_selected { s } else { s.bg(hover_bg) })
         .flex()
         .items_center()
-        .gap(px(12.0))
+        .gap(px(palette.scaled_px(12.0)))
         .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
             on_select(this, cx);
         }))
@@ -155,70 +157,99 @@ pub fn render_dialog_row_item<V: 'static>(
         .justify_center()
         .text_color(rgb(0xFFFFFF))
         .font_weight(FontWeight::BOLD)
-        .text_size(px(15.0));
+        .text_size(px(palette.scaled_px(15.0)));
     avatar = if meta.is_saved_messages {
-        avatar.child(tg_icon(IconName::SavedMessages, 22.0, 0xFFFFFF))
+        avatar.child(tg_icon(IconName::SavedMessages, palette.scaled_px(22.0), 0xFFFFFF))
     } else if meta.is_bot && item.avatar_initials.chars().all(|c| !c.is_ascii_alphanumeric()) {
-        avatar.child(tg_icon(IconName::BotRobot, 20.0, 0xFFFFFF))
+        avatar.child(tg_icon(IconName::BotRobot, palette.scaled_px(20.0), 0xFFFFFF))
     } else {
         avatar.child(item.avatar_initials.clone())
     };
     if item.is_online && !meta.is_saved_messages {
         avatar = avatar.child(
-            div().absolute().bottom_0().right_0().w(px(11.0)).h(px(11.0))
+            div().absolute().bottom_0().right_0().w(px(palette.scaled_px(11.0))).h(px(palette.scaled_px(11.0)))
                 .rounded_full().bg(rgb(palette.online_dot_fg)).border_2().border_color(row_bg),
         );
     }
 
-    let mut title_row = div().flex().items_center().gap(px(4.0)).overflow_hidden();
+    let mut title_row = div().flex().items_center().gap(px(palette.scaled_px(4.0))).overflow_hidden();
     title_row = title_row.child(
-        div().text_size(px(14.0)).font_weight(FontWeight::SEMIBOLD).text_color(name_fg).child(item.peer_name.clone()),
+        div().text_size(px(palette.scaled_px(14.0))).font_weight(FontWeight::SEMIBOLD).text_color(name_fg).child(item.peer_name.clone()),
     );
     if meta.is_verified {
-        title_row = title_row.child(tg_icon(IconName::Verified, 14.0, if is_selected { palette.active_button_fg } else { palette.accent }));
+        title_row = title_row.child(tg_icon(IconName::Verified, palette.scaled_px(14.0), if is_selected { palette.active_button_fg } else { palette.accent }));
     }
     if meta.is_premium {
-        title_row = title_row.child(tg_icon(IconName::PremiumStar, 13.0, if is_selected { palette.active_button_fg } else { palette.accent }));
+        title_row = title_row.child(tg_icon(IconName::PremiumStar, palette.scaled_px(13.0), if is_selected { palette.active_button_fg } else { palette.accent }));
     }
     if item.is_muted {
-        title_row = title_row.child(tg_icon(IconName::Mute, 12.0, icon_hex));
+        title_row = title_row.child(tg_icon(IconName::Mute, palette.scaled_px(12.0), icon_hex));
     }
 
+    let preview_font = px(palette.scaled_px(13.0));
     let preview_line: AnyElement = if preview_ui.is_draft {
         div().flex().items_center().gap(px(3.0)).overflow_hidden()
-            .child(div().text_size(px(13.0)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(palette.danger)).child(tr_str(lang_id, "草稿:", "Draft:")))
-            .child(div().text_size(px(13.0)).text_color(rgb(sub_fg_hex)).child(preview_ui.text))
+            .child(div().text_size(preview_font).font_weight(FontWeight::SEMIBOLD).text_color(rgb(palette.danger)).child(tr_str(lang_id, "草稿:", "Draft:")))
+            .child(div().text_size(preview_font).text_color(rgb(sub_fg_hex)).child(preview_ui.text))
             .into_any_element()
     } else if let Some(ref typing) = item.typing_indicator {
-        div().text_size(px(13.0)).text_color(if is_selected { rgb(palette.active_button_fg) } else { rgb(palette.accent) }).child(typing.clone()).into_any_element()
+        div().text_size(preview_font).text_color(if is_selected { rgb(palette.active_button_fg) } else { rgb(palette.accent) }).child(typing.clone()).into_any_element()
     } else {
         let mut line = div().flex().items_center().gap(px(4.0)).overflow_hidden();
         if let Some(icon) = media_badge_svg(preview_ui.media_badge, sub_fg_hex) {
             line = line.child(icon);
         }
-        line.child(div().text_size(px(13.0)).text_color(rgb(sub_fg_hex)).child(preview_ui.text)).into_any_element()
+        line.child(div().text_size(preview_font).text_color(rgb(sub_fg_hex)).child(preview_ui.text)).into_any_element()
     };
 
-    let mut right_badges = div().flex().items_center().gap(px(5.0)).flex_shrink_0();
+    let mut right_badges = div().flex().items_center().gap(px(palette.scaled_px(5.0))).flex_shrink_0();
+    for (tag_idx, tag_label) in meta.folder_tags.iter().enumerate() {
+        let display_tag = crate::views::sidebar::dialogs_overlays::localize_folder_label(tag_label, lang_id);
+        let tag_bg = if is_selected {
+            TdesktopThemePalette::rgba_with_alpha(palette.active_button_fg, 0.22)
+        } else {
+            TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.16)
+        };
+        let tag_fg = if is_selected {
+            rgb(palette.active_button_fg)
+        } else {
+            rgb(palette.accent)
+        };
+        right_badges = right_badges.child(
+            div()
+                .id(("dialog-folder-tag", item.id.saturating_mul(10) + tag_idx as u64))
+                .px(px(palette.scaled_px(5.0)))
+                .py(px(palette.scaled_px(1.5)))
+                .rounded(px(palette.scaled_px(4.0)))
+                .bg(tag_bg)
+                .text_size(px(palette.scaled_px(10.0)))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(tag_fg)
+                .child(display_tag),
+        );
+    }
     if item.is_pinned && item.unread_count == 0 && !meta.is_unread_marked {
-        right_badges = right_badges.child(tg_icon(IconName::Pin, 14.0, icon_hex));
+        right_badges = right_badges.child(tg_icon(IconName::Pin, palette.scaled_px(14.0), icon_hex));
     }
     if item.unread_count > 0 {
+        let pill_h = px(palette.scaled_px(19.0));
+        let pill_pad = px(palette.scaled_px(5.0));
+        let _ = (DialogsPillUi::HEIGHT, DialogsPillUi::PADDING);
         right_badges = right_badges.child(
-            div().h(DialogsPillUi::HEIGHT).min_w(DialogsPillUi::HEIGHT).px(DialogsPillUi::PADDING)
+            div().h(pill_h).min_w(pill_h).px(pill_pad)
                 .rounded_full().bg(badge_bg).flex().items_center().justify_center()
-                .text_size(px(11.5)).font_weight(FontWeight::BOLD).text_color(badge_fg)
+                .text_size(px(palette.scaled_px(11.5))).font_weight(FontWeight::BOLD).text_color(badge_fg)
                 .child(format!("{}", pill.count)),
         );
     } else if meta.is_unread_marked {
-        right_badges = right_badges.child(div().w(px(10.0)).h(px(10.0)).rounded_full().bg(badge_bg));
+        right_badges = right_badges.child(div().w(px(palette.scaled_px(10.0))).h(px(palette.scaled_px(10.0))).rounded_full().bg(badge_bg));
     }
 
     let top_row = div().w_full().flex().items_center().justify_between().gap(px(6.0))
         .child(title_row)
         .child(div().flex().items_center().gap(px(3.0)).flex_shrink_0()
             .when(item.unread_count == 0 && meta.draft_text.is_none(), |el| el.child(delivery_svg(item.delivery_status, palette, is_selected)))
-            .child(div().text_size(px(12.0)).text_color(time_fg).child(item.timestamp.clone())));
+            .child(div().text_size(px(palette.scaled_px(12.0))).text_color(time_fg).child(item.timestamp.clone())));
 
     let mut bottom_row = div().w_full().flex().items_center().justify_between().gap(px(6.0))
         .child(div().flex_1().overflow_hidden().child(preview_line))

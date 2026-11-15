@@ -75,4 +75,7 @@ pub mod stage_bars;
 pub mod stage_context_menu;
 pub mod stage_bubble;
 pub mod media_viewer_ui;
+pub mod stage_demo_fixtures;
+pub mod stage_message_ops;
+pub mod stage_action_handlers;
 

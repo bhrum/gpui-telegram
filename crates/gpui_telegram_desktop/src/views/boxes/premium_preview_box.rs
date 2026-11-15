@@ -69,7 +69,7 @@ impl PremiumFeature {
             Self::TagsForMessages => "Tags for Saved Messages",
             Self::LastSeen => "Last Seen & Read Times",
             Self::MessagePrivacy => "Message Privacy Controls",
-            Self::Business => "Telegram Business Suite",
+            Self::Business => "Business Suite",
             Self::Effects => "Message Effects & Animations",
             Self::FilterTags => "Chat Filter Tags",
             Self::TodoLists => "Interactive To-Do Lists",
@@ -78,7 +78,7 @@ impl PremiumFeature {
             Self::NoForwards => "Restricted Forward Protections",
             Self::AiCompose => "AI Smart Writing Assistant",
             Self::RichFormatting => "Rich Markdown & Code Formatting",
-            _ => "Telegram Business Capability",
+            _ => "Business Capability",
         }
     }
 }
@@ -162,7 +162,7 @@ impl Render for PremiumPreviewBox {
                     div()
                         .text_size(px(13.0))
                         .text_color(rgb(0x6B7280))
-                        .child("Subscribe to Telegram Premium to unlock this feature."),
+                        .child("Subscribe to Premium to unlock this feature."),
                 ),
         );
 

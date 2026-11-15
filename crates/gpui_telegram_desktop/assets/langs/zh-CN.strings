@@ -1,5 +1,5 @@
-/* Authentic Telegram Desktop Simplified Chinese strings pack */
-"lng_app_name" = "Telegram Desktop";
+/* Desktop Simplified Chinese strings pack */
+"lng_app_name" = "AI Chat";
 "lng_cancel" = "取消";
 "lng_close" = "关闭";
 "lng_box_ok" = "确定";
@@ -13,14 +13,14 @@
 "lng_skip" = "跳过";
 "lng_search" = "搜索";
 
-"lng_intro_title" = "Telegram Desktop";
-"lng_intro_about" = "欢迎使用官方 Telegram 桌面端，快速且安全。";
+"lng_intro_title" = "AI Chat";
+"lng_intro_about" = "欢迎使用桌面端，快速且安全。";
 "lng_intro_start_messaging" = "开始聊天";
 "lng_intro_next" = "下一步";
 "lng_intro_finish" = "注册";
 "lng_intro_submit" = "提交";
-"lng_intro_qr_title" = "使用手机端 Telegram 扫码登录";
-"lng_intro_qr_step1" = "在手机上打开 Telegram";
+"lng_intro_qr_title" = "使用手机端扫码登录";
+"lng_intro_qr_step1" = "在手机上打开客户端";
 "lng_intro_qr_step2" = "前往 设置 > 设备 > 关联桌面设备";
 "lng_intro_qr_step3" = "扫描此二维码以登录";
 "lng_intro_qr_skip" = "或使用手机号登录";

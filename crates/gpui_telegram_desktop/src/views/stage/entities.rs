@@ -68,8 +68,41 @@ pub struct StyledSegment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RichBlock {
     Paragraph(Vec<StyledSegment>),
-    PreCode { language: String, code: String },
-    Blockquote { lines: Vec<String>, collapsed_default: bool, block_id: usize },
+    Heading {
+        level: u8,
+        segments: Vec<StyledSegment>,
+    },
+    Divider,
+    ListItem {
+        bullet: String,
+        indent: u8,
+        segments: Vec<StyledSegment>,
+    },
+    PreCode {
+        language: String,
+        code: String,
+    },
+    Blockquote {
+        lines: Vec<Vec<StyledSegment>>,
+        collapsed_default: bool,
+        block_id: usize,
+    },
+}
+
+pub fn push_sanitized_no_breaks(out: &mut String, input: &str) {
+    for ch in input.chars() {
+        if ch != '\r' && ch != '\n' {
+            out.push(ch);
+        }
+    }
+}
+
+pub fn plain_text_of_segments(segs: &[StyledSegment]) -> String {
+    let mut out = String::new();
+    for seg in segs {
+        push_sanitized_no_breaks(&mut out, &seg.text);
+    }
+    out
 }
 
 pub fn utf16_to_byte_range(text: &str, offset_utf16: usize, length_utf16: usize) -> Option<(usize, usize)> {
@@ -149,9 +182,28 @@ fn build_blocks_from_explicit(text: &str, explicit: &[RichEntity]) -> Vec<RichBl
                 code: text[s..e].trim_matches('\n').to_string(),
             });
         } else {
-            let lines = text[s..e].lines().map(|l| l.to_string()).collect();
+            let mut q_lines = Vec::new();
+            let trimmed_slice = text[s..e].trim_end_matches(|c| c == '\n' || c == '\r');
+            let mut rel = 0usize;
+            for raw_line in trimmed_slice.split('\n') {
+                let line_byte_len = raw_line.len();
+                let trimmed_line = raw_line.trim_end_matches('\r');
+                let abs_start = s + rel;
+                let abs_end = abs_start + trimmed_line.len();
+                q_lines.push(slice_inline_with_entities(
+                    text,
+                    abs_start,
+                    abs_end,
+                    explicit,
+                    &mut spoiler_id,
+                ));
+                rel += line_byte_len + 1;
+            }
+            if q_lines.is_empty() {
+                q_lines.push(Vec::new());
+            }
             blocks.push(RichBlock::Blockquote {
-                lines,
+                lines: q_lines,
                 collapsed_default: collapsed,
                 block_id: quote_id,
             });
@@ -289,6 +341,81 @@ fn slice_inline_with_entities(
     out
 }
 
+fn is_markdown_divider(trimmed: &str) -> bool {
+    let mut marker: Option<char> = None;
+    let mut count = 0usize;
+    for ch in trimmed.chars() {
+        if ch == ' ' || ch == '\t' {
+            continue;
+        }
+        if matches!(ch, '-' | '*' | '_') {
+            if let Some(m) = marker {
+                if m != ch {
+                    return false;
+                }
+            } else {
+                marker = Some(ch);
+            }
+            count += 1;
+        } else {
+            return false;
+        }
+    }
+    count >= 3
+}
+
+fn parse_markdown_heading(line: &str) -> Option<(u8, &str)> {
+    let trimmed_start = line.trim_start();
+    let hashes = trimmed_start.bytes().take_while(|&b| b == b'#').count();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    let rest = &trimmed_start[hashes..];
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut body = rest.trim();
+    let no_trailing = body.trim_end_matches('#');
+    if no_trailing.len() < body.len()
+        && (no_trailing.is_empty() || no_trailing.ends_with(char::is_whitespace))
+    {
+        body = no_trailing.trim_end();
+    }
+    if body.is_empty() {
+        return None;
+    }
+    Some((hashes as u8, body))
+}
+
+fn parse_markdown_list_item(line: &str) -> Option<(String, u8, &str)> {
+    let leading_spaces = line.bytes().take_while(|&b| b == b' ').count();
+    let indent = (leading_spaces / 2).min(4) as u8;
+    let trimmed_start = line.trim_start();
+    if let Some(rest) = trimmed_start
+        .strip_prefix("- ")
+        .or_else(|| trimmed_start.strip_prefix("* "))
+        .or_else(|| trimmed_start.strip_prefix("+ "))
+        .or_else(|| trimmed_start.strip_prefix("• "))
+    {
+        return Some(("•".to_string(), indent, rest));
+    }
+    let digit_len = trimmed_start
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if (1..=3).contains(&digit_len) {
+        let after_digits = &trimmed_start[digit_len..];
+        if let Some(rest) = after_digits
+            .strip_prefix(". ")
+            .or_else(|| after_digits.strip_prefix(") "))
+        {
+            let bullet = format!("{}.", &trimmed_start[..digit_len]);
+            return Some((bullet, indent, rest));
+        }
+    }
+    None
+}
+
 fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
     let mut blocks = Vec::new();
     let lines: Vec<&str> = text.split('\n').collect();
@@ -298,11 +425,14 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
 
     while i < lines.len() {
         let line = lines[i].trim_end_matches('\r');
-        if let Some(rest) = line.strip_prefix("```") {
+        let trimmed = line.trim();
+        if let Some(rest) = line.trim_start().strip_prefix("```") {
             let language = rest.trim().to_string();
             let mut code_lines = Vec::new();
             i += 1;
-            while i < lines.len() && !lines[i].trim_end_matches('\r').starts_with("```") {
+            while i < lines.len()
+                && !lines[i].trim_end_matches('\r').trim_start().starts_with("```")
+            {
                 code_lines.push(lines[i].trim_end_matches('\r'));
                 i += 1;
             }
@@ -315,18 +445,31 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
             });
             continue;
         }
-        if line.starts_with("> ") || line == ">" {
+        if trimmed.is_empty() {
+            let prev_is_empty =
+                matches!(blocks.last(), Some(RichBlock::Paragraph(s)) if s.is_empty());
+            if !blocks.is_empty() && !prev_is_empty {
+                blocks.push(RichBlock::Paragraph(Vec::new()));
+            }
+            i += 1;
+            continue;
+        }
+        if line.trim_start().starts_with('>') {
             let mut q_lines = Vec::new();
             while i < lines.len() {
-                let q = lines[i].trim_end_matches('\r');
-                if q.starts_with("> ") || q == ">" {
-                    q_lines.push(q.strip_prefix("> ").unwrap_or("").to_string());
-                    i += 1;
-                } else {
+                let raw_q = lines[i].trim_end_matches('\r');
+                let trimmed_q = raw_q.trim_start();
+                if !trimmed_q.starts_with('>') {
                     break;
                 }
+                let mut clean_q = trimmed_q;
+                while let Some(after_gt) = clean_q.strip_prefix('>') {
+                    clean_q = after_gt.strip_prefix(' ').unwrap_or(after_gt);
+                }
+                q_lines.push(parse_inline_markdown(clean_q, &mut spoiler_id));
+                i += 1;
             }
-            let collapsed_default = q_lines.len() > 3;
+            let collapsed_default = q_lines.len() > 4;
             blocks.push(RichBlock::Blockquote {
                 lines: q_lines,
                 collapsed_default,
@@ -335,18 +478,32 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
             quote_id += 1;
             continue;
         }
-        if line.trim().is_empty() {
-            let prev_is_empty =
-                matches!(blocks.last(), Some(RichBlock::Paragraph(s)) if s.is_empty());
-            if !blocks.is_empty() && !prev_is_empty {
-                blocks.push(RichBlock::Paragraph(Vec::new()));
-            }
-        } else {
-            blocks.push(RichBlock::Paragraph(parse_inline_markdown(
-                line,
-                &mut spoiler_id,
-            )));
+        if is_markdown_divider(trimmed) {
+            blocks.push(RichBlock::Divider);
+            i += 1;
+            continue;
         }
+        if let Some((level, body)) = parse_markdown_heading(line) {
+            blocks.push(RichBlock::Heading {
+                level,
+                segments: parse_inline_markdown(body, &mut spoiler_id),
+            });
+            i += 1;
+            continue;
+        }
+        if let Some((bullet, indent, body)) = parse_markdown_list_item(line) {
+            blocks.push(RichBlock::ListItem {
+                bullet,
+                indent,
+                segments: parse_inline_markdown(body, &mut spoiler_id),
+            });
+            i += 1;
+            continue;
+        }
+        blocks.push(RichBlock::Paragraph(parse_inline_markdown(
+            line,
+            &mut spoiler_id,
+        )));
         i += 1;
     }
     if blocks.is_empty() {
@@ -355,12 +512,101 @@ fn parse_markdown_and_tokens(text: &str) -> Vec<RichBlock> {
     blocks
 }
 
+fn try_parse_markdown_link(rem: &str) -> Option<(&str, String, usize)> {
+    let after_open = rem.strip_prefix('[')?;
+    let close_bracket = after_open.find(']')?;
+    let label = &after_open[..close_bracket];
+    if label.is_empty() {
+        return None;
+    }
+    let after_close = &after_open[close_bracket + 1..];
+    let after_paren = after_close.strip_prefix('(')?;
+    let mut depth = 1usize;
+    let mut end_paren = None;
+    for (idx, ch) in after_paren.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end_paren = Some(idx);
+                    break;
+                }
+            }
+            c if c.is_whitespace() => return None,
+            _ => {}
+        }
+    }
+    let close_paren = end_paren?;
+    let url = after_paren[..close_paren].trim();
+    if !(url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("tg://")
+        || url.starts_with("mailto:"))
+    {
+        return None;
+    }
+    let consumed = 1 + close_bracket + 2 + close_paren + 1;
+    Some((label, url.to_string(), consumed))
+}
+
+fn find_closing_single_asterisk(after: &str) -> Option<usize> {
+    let first = after.chars().next()?;
+    if first.is_whitespace() || first == '*' {
+        return None;
+    }
+    let bytes = after.as_bytes();
+    let mut idx = 0usize;
+    let mut prev_ws = false;
+    while idx < bytes.len() {
+        if bytes[idx] == b'*' {
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'*' {
+                idx += 2;
+                prev_ws = false;
+                continue;
+            }
+            if idx > 0 && !prev_ws {
+                return Some(idx);
+            }
+        }
+        let ch = after[idx..].chars().next()?;
+        prev_ws = ch.is_whitespace();
+        idx += ch.len_utf8();
+    }
+    None
+}
+
+fn push_segment_coalesced(segs: &mut Vec<StyledSegment>, seg: StyledSegment) {
+    if seg.text.is_empty() {
+        return;
+    }
+    if seg.spoiler_id.is_none() {
+        if let Some(last) = segs.last_mut() {
+            if last.spoiler_id.is_none() && last.flags == seg.flags {
+                last.text.push_str(&seg.text);
+                return;
+            }
+        }
+    }
+    segs.push(seg);
+}
+
 fn parse_inline_markdown(text: &str, spoiler_id: &mut usize) -> Vec<StyledSegment> {
     let mut segs = Vec::new();
     let mut pos = 0usize;
     let bytes = text.as_bytes();
     while pos < bytes.len() {
         let rem = &text[pos..];
+        if rem.starts_with('[') {
+            if let Some((label, url, consumed)) = try_parse_markdown_link(rem) {
+                for mut inner_seg in parse_inline_markdown(label, spoiler_id) {
+                    inner_seg.flags.link_url = Some(url.clone());
+                    push_segment_coalesced(&mut segs, inner_seg);
+                }
+                pos += consumed;
+                continue;
+            }
+        }
         let matched = [("**", 0), ("__", 1), ("~~", 2), ("||", 3), ("`", 4)]
             .into_iter()
             .find_map(|(delim, kind)| {
@@ -372,38 +618,88 @@ fn parse_inline_markdown(text: &str, spoiler_id: &mut usize) -> Vec<StyledSegmen
             });
         if let Some((dlen, inner_len, kind)) = matched {
             let inner = &rem[dlen..dlen + inner_len];
-            let mut flags = InlineStyleFlags::default();
-            let mut sp = None;
             match kind {
-                0 => flags.bold = true,
-                1 => flags.italic = true,
-                2 => flags.strike = true,
-                3 => {
-                    flags.spoiler = true;
-                    sp = Some(*spoiler_id);
-                    *spoiler_id += 1;
+                0 | 1 | 2 => {
+                    for mut inner_seg in parse_inline_markdown(inner, spoiler_id) {
+                        match kind {
+                            0 => inner_seg.flags.bold = true,
+                            1 => inner_seg.flags.italic = true,
+                            _ => inner_seg.flags.strike = true,
+                        }
+                        push_segment_coalesced(&mut segs, inner_seg);
+                    }
                 }
-                _ => flags.code = true,
+                3 => {
+                    let mut flags = InlineStyleFlags::default();
+                    flags.spoiler = true;
+                    let sp = Some(*spoiler_id);
+                    *spoiler_id += 1;
+                    segs.push(StyledSegment {
+                        text: inner.to_string(),
+                        flags,
+                        spoiler_id: sp,
+                    });
+                }
+                _ => {
+                    let mut flags = InlineStyleFlags::default();
+                    flags.code = true;
+                    push_segment_coalesced(
+                        &mut segs,
+                        StyledSegment {
+                            text: inner.to_string(),
+                            flags,
+                            spoiler_id: None,
+                        },
+                    );
+                }
             }
-            segs.push(StyledSegment { text: inner.to_string(), flags, spoiler_id: sp });
             pos += dlen * 2 + inner_len;
             continue;
         }
+        if rem.starts_with('*') && !rem.starts_with("**") {
+            if let Some(inner_len) = find_closing_single_asterisk(&rem[1..]) {
+                let inner = &rem[1..1 + inner_len];
+                for mut inner_seg in parse_inline_markdown(inner, spoiler_id) {
+                    inner_seg.flags.italic = true;
+                    push_segment_coalesced(&mut segs, inner_seg);
+                }
+                pos += 2 + inner_len;
+                continue;
+            }
+        }
         if rem.starts_with("http://") || rem.starts_with("https://") {
             let end = rem.find(char::is_whitespace).unwrap_or(rem.len());
-            let clean = rem[..end].trim_end_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ')' | ';'));
+            let clean = rem[..end].trim_end_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | ',' | '!' | '?' | ')' | ';' | '。' | '，' | '）' | '；' | '：' | '！' | '？' | '、'
+                )
+            });
             let clean_len = clean.len().max(1);
             let mut flags = InlineStyleFlags::default();
             flags.link_url = Some(rem[..clean_len].to_string());
-            segs.push(StyledSegment { text: rem[..clean_len].to_string(), flags, spoiler_id: None });
+            push_segment_coalesced(
+                &mut segs,
+                StyledSegment {
+                    text: rem[..clean_len].to_string(),
+                    flags,
+                    spoiler_id: None,
+                },
+            );
             pos += clean_len;
             continue;
         }
-        if (rem.starts_with('@') || rem.starts_with('#') || (rem.starts_with('/') && (pos == 0 || text[..pos].ends_with(char::is_whitespace))))
+        if (rem.starts_with('@')
+            || rem.starts_with('#')
+            || (rem.starts_with('/')
+                && (pos == 0
+                    || text[..pos].ends_with(|c: char| c.is_whitespace() || c == '(' || c == '（'))))
             && rem.len() > 1
         {
             let prefix = rem.chars().next().unwrap();
-            let token_len = 1 + rem[1..].find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rem.len() - 1);
+            let token_len = 1 + rem[1..]
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rem.len() - 1);
             if token_len > 1 {
                 let tok = rem[..token_len].to_string();
                 let mut flags = InlineStyleFlags::default();
@@ -412,25 +708,28 @@ fn parse_inline_markdown(text: &str, spoiler_id: &mut usize) -> Vec<StyledSegmen
                     '#' => flags.hashtag = Some(tok.clone()),
                     _ => flags.bot_command = Some(tok.clone()),
                 }
-                segs.push(StyledSegment { text: tok, flags, spoiler_id: None });
+                push_segment_coalesced(
+                    &mut segs,
+                    StyledSegment {
+                        text: tok,
+                        flags,
+                        spoiler_id: None,
+                    },
+                );
                 pos += token_len;
                 continue;
             }
         }
         let ch = rem.chars().next().unwrap();
         let next = pos + ch.len_utf8();
-        if let Some(last) = segs.last_mut() {
-            if last.flags == InlineStyleFlags::default() {
-                last.text.push(ch);
-                pos = next;
-                continue;
-            }
-        }
-        segs.push(StyledSegment {
-            text: ch.to_string(),
-            flags: InlineStyleFlags::default(),
-            spoiler_id: None,
-        });
+        push_segment_coalesced(
+            &mut segs,
+            StyledSegment {
+                text: ch.to_string(),
+                flags: InlineStyleFlags::default(),
+                spoiler_id: None,
+            },
+        );
         pos = next;
     }
     segs

@@ -78,7 +78,26 @@ pub struct ReactionDetailDto {
     pub user_ids: Vec<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReactionHttpResponseWire {
+    #[serde(default = "default_true")]
+    success: bool,
+    #[serde(default)]
+    chat_id: i64,
+    #[serde(default)]
+    message_id: i64,
+    #[serde(default)]
+    pts: u64,
+    #[serde(default)]
+    reactions: Option<Vec<ReactionCount>>,
+    #[serde(default)]
+    details: Option<Vec<ReactionDetailDto>>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ReactionHttpResponseWire")]
 pub struct ReactionHttpResponse {
     pub success: bool,
     pub chat_id: i64,
@@ -87,6 +106,42 @@ pub struct ReactionHttpResponse {
     pub reactions: Vec<ReactionCount>,
     #[serde(default)]
     pub details: Vec<ReactionDetailDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip)]
+    pub reactions_authoritative: bool,
+}
+
+impl ReactionHttpResponse {
+    pub fn has_authoritative_reactions(&self) -> bool {
+        self.reactions_authoritative
+    }
+}
+
+impl From<ReactionHttpResponseWire> for ReactionHttpResponse {
+    fn from(wire: ReactionHttpResponseWire) -> Self {
+        let (reactions, details, reactions_authoritative) = match (wire.reactions, wire.details) {
+            (Some(rx), det) => (rx, det.unwrap_or_default(), true),
+            (None, Some(det)) => {
+                let derived = det
+                    .iter()
+                    .map(|d| ReactionCount::new(d.emoji.clone(), d.count, d.chosen))
+                    .collect();
+                (derived, det, true)
+            }
+            (None, None) => (Vec::new(), Vec::new(), false),
+        };
+        Self {
+            success: wire.success,
+            chat_id: wire.chat_id,
+            message_id: wire.message_id,
+            pts: wire.pts,
+            reactions,
+            details,
+            status: wire.status,
+            reactions_authoritative,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

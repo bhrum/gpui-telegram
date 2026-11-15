@@ -847,11 +847,21 @@ fn test_stress_reconnection_catchup_state_machine_transition_fuzzing() {
 
 #[test]
 fn test_stress_appshell_reconnection_source_contract_ast_oracle() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let shell_path = manifest_dir.join("src").join("views").join("shell.rs");
-    assert!(shell_path.exists(), "shell.rs must exist at {:?}", shell_path);
-
-    let content = fs::read_to_string(&shell_path).expect("Failed to read shell.rs");
+    let views_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("views");
+    let mut content = String::new();
+    for rel in [
+        "shell.rs",
+        "app_shell/shell_observers.rs",
+        "app_shell/shell_ws_sync.rs",
+    ] {
+        let path = views_dir.join(rel);
+        assert!(path.exists(), "{rel} must exist at {:?}", path);
+        content.push('\n');
+        content.push_str(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e)),
+        );
+    }
 
     // 1. Assert rising edge condition `is_connected && !was_connected`
     assert!(
@@ -867,8 +877,10 @@ fn test_stress_appshell_reconnection_source_contract_ast_oracle() {
 
     // 3. Assert `shell.load_historical_messages` is invoked for active chat
     assert!(
-        content.contains("shell.load_historical_messages(active_chat_id, cx)"),
-        "shell.rs must trigger `shell.load_historical_messages(active_chat_id, cx)` for active chat"
+        content.contains("shell.load_historical_messages(active_chat_id, cx)")
+            || (content.contains("shell.stage.read(cx).active_chat_id")
+                && content.contains("shell.load_historical_messages(cid, cx)")),
+        "shell must trigger `shell.load_historical_messages(..., cx)` for active chat"
     );
 
     // 4. Assert NavRail connection indicator is updated

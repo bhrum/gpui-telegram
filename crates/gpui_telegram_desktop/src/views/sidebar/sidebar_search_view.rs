@@ -6,7 +6,8 @@ use gpui::*;
 use crate::i18n::tr_str;
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use crate::views::chat_sidebar::{
-    CategorizedSearchResult, TELEGRAM_SEARCH_CATEGORIES, TELEGRAM_SEARCH_TAGS,
+    CategorizedSearchResult, SidebarCatalogAppItem, TELEGRAM_SEARCH_CATEGORIES,
+    TELEGRAM_SEARCH_TAGS,
 };
 use crate::views::sidebar::ui::chat_search_empty::ChatSearchEmptyUi;
 use crate::views::sidebar::ui::chat_search_in::ChatSearchInUi;
@@ -196,6 +197,282 @@ pub fn render_search_panel<V: 'static>(
         .into_any_element()
 }
 
+pub fn render_apps_catalog_section<V: 'static>(
+    query: &str,
+    apps: &[SidebarCatalogAppItem],
+    palette: &TdesktopThemePalette,
+    lang_id: &str,
+    cx: &mut Context<V>,
+    on_open_botfather: impl Fn(&mut V, &mut Context<V>) + Clone + 'static,
+    on_install_open_app: impl Fn(&mut V, SidebarCatalogAppItem, &mut Context<V>) + Clone + 'static,
+    on_open_app_only: impl Fn(&mut V, SidebarCatalogAppItem, &mut Context<V>) + Clone + 'static,
+) -> Vec<AnyElement> {
+    let q_trim = query.trim().to_lowercase();
+    let hover = rgb(palette.dialogs_hover_bg);
+    let mut out: Vec<AnyElement> = Vec::new();
+
+    let show_botfather = q_trim.is_empty()
+        || "botfather".contains(&q_trim)
+        || "机器人之父".contains(query.trim())
+        || q_trim.contains("bot")
+        || q_trim.contains("app")
+        || query.trim().contains("机器人")
+        || query.trim().contains("小程序");
+
+    if show_botfather {
+        let bf_open_row = on_open_botfather.clone();
+        let bf_open_btn = on_open_botfather;
+        out.push(
+            div()
+                .id("apps-catalog-botfather-card")
+                .cursor_pointer()
+                .w_full()
+                .px(px(10.0))
+                .py(px(9.0))
+                .bg(rgb(palette.dialogs_bg))
+                .hover(move |s| s.bg(hover))
+                .border_b_1()
+                .border_color(rgb(palette.border_fg))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    bf_open_row(this, cx);
+                }))
+                .child(
+                    div()
+                        .w(px(40.0))
+                        .h(px(40.0))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(rgb(palette.accent))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(18.0))
+                        .child("🤖"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(palette.text_primary))
+                                        .child(tr_str(lang_id, "BotFather (机器人之父)", "BotFather")),
+                                )
+                                .child(tg_icon(IconName::Verified, 13.0, palette.accent)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(palette.text_secondary))
+                                .child(tr_str(
+                                    lang_id,
+                                    "@BotFather · 创建 AI 机器人与小程序",
+                                    "@BotFather · Create Bots & Mini Apps",
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("apps-catalog-open-botfather-btn")
+                        .cursor_pointer()
+                        .flex_shrink_0()
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(999.0))
+                        .bg(rgb(palette.accent))
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(0xFFFFFF))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            bf_open_btn(this, cx);
+                        }))
+                        .child(tr_str(lang_id, "打开", "Open")),
+                )
+                .into_any_element(),
+        );
+    }
+
+    let filtered: Vec<&SidebarCatalogAppItem> = apps
+        .iter()
+        .filter(|app| {
+            q_trim.is_empty()
+                || app.title.to_lowercase().contains(&q_trim)
+                || app.short_name.to_lowercase().contains(&q_trim)
+                || app.bot_username.to_lowercase().contains(&q_trim)
+                || app.description.to_lowercase().contains(&q_trim)
+        })
+        .collect();
+
+    if !filtered.is_empty() {
+        out.push(
+            div()
+                .w_full()
+                .px(px(12.0))
+                .py(px(6.0))
+                .bg(rgb(palette.composer_bg))
+                .border_b_1()
+                .border_color(rgb(palette.border_fg))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(palette.text_secondary))
+                .child(format!(
+                    "{} ({})",
+                    tr_str(lang_id, "发现小程序 · 全局应用市场", "Mini Apps Directory"),
+                    filtered.len()
+                ))
+                .into_any_element(),
+        );
+    }
+
+    for app in filtered {
+        let app_row = app.clone();
+        let app_btn = app.clone();
+        let cb_row = on_open_app_only.clone();
+        let cb_btn = on_install_open_app.clone();
+        let icon_col = if app.avatar_color != 0 { app.avatar_color } else { palette.accent };
+        let initials = if app.icon_initials.is_empty() {
+            app.title.chars().take(2).collect::<String>().to_uppercase()
+        } else {
+            app.icon_initials.clone()
+        };
+        let status_label = if app.is_mine {
+            Some(tr_str(lang_id, "已创建", "Created"))
+        } else if app.is_installed {
+            Some(tr_str(lang_id, "已添加", "Added"))
+        } else {
+            None
+        };
+        let cta_label = if app.is_installed {
+            tr_str(lang_id, "打开", "Open")
+        } else {
+            tr_str(lang_id, "+ 添加并打开", "+ Add & Open")
+        };
+
+        out.push(
+            div()
+                .id(SharedString::from(format!("apps-catalog-card-{}", app.short_name)))
+                .cursor_pointer()
+                .w_full()
+                .px(px(10.0))
+                .py(px(9.0))
+                .bg(rgb(palette.dialogs_bg))
+                .hover(move |s| s.bg(hover))
+                .border_b_1()
+                .border_color(rgb(palette.border_fg))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                    cb_row(this, app_row.clone(), cx);
+                }))
+                .child(
+                    div()
+                        .w(px(40.0))
+                        .h(px(40.0))
+                        .flex_shrink_0()
+                        .rounded(px(12.0))
+                        .bg(rgb(icon_col))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.5))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0xFFFFFF))
+                        .child(if initials.is_empty() { "MA".to_string() } else { initials }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(palette.text_primary))
+                                        .child(app.title.clone()),
+                                )
+                                .when_some(status_label, |row, badge| {
+                                    row.child(
+                                        div()
+                                            .px(px(5.0))
+                                            .py(px(1.0))
+                                            .rounded(px(4.0))
+                                            .bg(rgb(palette.composer_bg))
+                                            .text_size(px(10.0))
+                                            .text_color(rgb(palette.success))
+                                            .child(badge),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(palette.text_secondary))
+                                .child(format!(
+                                    "@{} · {}: {}",
+                                    app.bot_username.trim_start_matches('@'),
+                                    tr_str(lang_id, "安装量", "Installs"),
+                                    app.installs_count
+                                )),
+                        )
+                        .when(!app.description.is_empty(), |col| {
+                            col.child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(palette.msg_in_date_fg))
+                                    .child(app.description.clone()),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("apps-catalog-action-{}", app.short_name)))
+                        .cursor_pointer()
+                        .flex_shrink_0()
+                        .px(px(9.0))
+                        .py(px(5.0))
+                        .rounded(px(999.0))
+                        .bg(rgb(if app.is_installed { palette.input_bg } else { palette.accent }))
+                        .border_1()
+                        .border_color(rgb(if app.is_installed { palette.border_fg } else { palette.accent }))
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(if app.is_installed { palette.text_link } else { 0xFFFFFF }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            cb_btn(this, app_btn.clone(), cx);
+                        }))
+                        .child(cta_label),
+                )
+                .into_any_element(),
+        );
+    }
+
+    out
+}
+
 pub fn render_search_results_list<V: 'static>(
     query: &str,
     results: Vec<CategorizedSearchResult>,
@@ -204,7 +481,8 @@ pub fn render_search_results_list<V: 'static>(
     cx: &mut Context<V>,
     on_select: impl Fn(&mut V, u64, &mut Context<V>) + Clone + 'static,
 ) -> Vec<AnyElement> {
-    if query.trim().is_empty() || results.is_empty() {
+    let has_apps = results.iter().any(|r| r.category.eq_ignore_ascii_case("Apps"));
+    if (query.trim().is_empty() && !has_apps) || results.is_empty() {
         let empty = if query.trim().is_empty() {
             ChatSearchEmptyUi::new()
         } else {

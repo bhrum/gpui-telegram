@@ -607,21 +607,87 @@ fn fus_d004_send_guard_rejects_unselected_or_unauthenticated_sends_and_preserves
 
 #[test]
 fn fus_d004_shell_source_contract_eliminates_unwrap_or_1_and_fixed_chat_4_routing() {
-    let shell_src = include_str!("../src/views/shell.rs");
+    let views_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views");
+    let mut shell_files = vec![views_dir.join("shell.rs")];
+    let mut app_shell_files: Vec<_> = std::fs::read_dir(views_dir.join("app_shell"))
+        .expect("Failed to read views/app_shell")
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("shell_") && n.ends_with(".rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+    app_shell_files.sort();
     assert!(
-        !shell_src.contains("active_chat_id.unwrap_or(1)"),
-        "shell.rs must not route outgoing messages or updates to fallback chat_id 1"
+        !app_shell_files.is_empty(),
+        "Expected views/app_shell/shell_*.rs files"
     );
-    assert!(
-        !shell_src.contains("user_id.unwrap_or(1)"),
-        "shell.rs must not fabricate sender user_id 1"
-    );
-    assert!(
-        !shell_src.contains("active_chat_id == 4"),
-        "shell.rs must not hardcode chat_id 4 as an AI bot"
-    );
-    assert!(
-        !shell_src.contains("\"last seen recently\""),
-        "shell.rs must not fabricate 'last seen recently' subtitles"
-    );
+    shell_files.extend(app_shell_files);
+
+    for path in shell_files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unknown>");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {}", name, e));
+        assert!(
+            !src.contains("active_chat_id.unwrap_or(1)"),
+            "{name} must not route outgoing messages or updates to fallback chat_id 1"
+        );
+        assert!(
+            !src.contains("user_id.unwrap_or(1)"),
+            "{name} must not fabricate sender user_id 1"
+        );
+        assert!(
+            !src.contains("active_chat_id == 4"),
+            "{name} must not hardcode chat_id 4 as an AI bot"
+        );
+        assert!(
+            !src.contains("\"last seen recently\""),
+            "{name} must not fabricate 'last seen recently' subtitles"
+        );
+    }
+}
+
+#[test]
+fn fus_d004_authoritative_chat_list_strips_markdown_preview_noise() {
+    let mut sidebar = ChatSidebar::new();
+    let mut stage = ConversationStage::new();
+    let mut inspector = ContextInspector::new();
+
+    let chats = vec![
+        ChatSummary {
+            chat_id: 901,
+            title: "BotFather".to_string(),
+            chat_type: 0,
+            last_message: Some("🤖 欢迎来到官方 **@BotFather**（机器人之父）！".to_string()),
+            unread_count: 0,
+            is_group: Some(false),
+            is_bot: Some(true),
+            avatar_color: Some(0xF39C12),
+            updated_at: Some(1_730_000_000),
+        },
+        ChatSummary {
+            chat_id: 902,
+            title: "AA 记账分账助手".to_string(),
+            chat_type: 0,
+            last_message: Some("💼 **AA 记账分账助手**（`@SplitBillBot`）".to_string()),
+            unread_count: 1,
+            is_group: Some(false),
+            is_bot: Some(true),
+            avatar_color: Some(0x2AABEE),
+            updated_at: Some(1_730_000_100),
+        },
+    ];
+
+    apply_authoritative_chat_list(&mut sidebar, &mut stage, &mut inspector, &chats);
+    assert_eq!(sidebar.dialogs.len(), 2);
+    assert!(!sidebar.dialogs[0].last_message.contains("**"));
+    assert!(sidebar.dialogs[0].last_message.contains("@BotFather"));
+    assert!(!sidebar.dialogs[1].last_message.contains("**"));
+    assert!(!sidebar.dialogs[1].last_message.contains('`'));
+    assert!(sidebar.dialogs[1].last_message.contains("@SplitBillBot"));
 }

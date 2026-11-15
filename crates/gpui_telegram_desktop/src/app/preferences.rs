@@ -29,6 +29,20 @@ pub struct NotificationPreferences {
     pub flash_taskbar: bool,
     pub badge_count_messages: bool,
     pub include_muted_in_badge: bool,
+    #[serde(default = "default_true")]
+    pub reaction_notifications: bool,
+    #[serde(default = "default_true")]
+    pub story_reaction_notifications: bool,
+    #[serde(default)]
+    pub reaction_contacts_only: bool,
+    #[serde(default = "default_true")]
+    pub reaction_sound_enabled: bool,
+    #[serde(default = "default_true")]
+    pub type_alerts_enabled: bool,
+    #[serde(default = "default_true")]
+    pub type_preview_enabled: bool,
+    #[serde(default = "default_true")]
+    pub type_sound_enabled: bool,
 }
 
 impl Default for NotificationPreferences {
@@ -42,6 +56,13 @@ impl Default for NotificationPreferences {
             flash_taskbar: true,
             badge_count_messages: true,
             include_muted_in_badge: false,
+            reaction_notifications: true,
+            story_reaction_notifications: true,
+            reaction_contacts_only: false,
+            reaction_sound_enabled: true,
+            type_alerts_enabled: true,
+            type_preview_enabled: true,
+            type_sound_enabled: true,
         }
     }
 }
@@ -65,11 +86,17 @@ impl Default for AutoDownloadPreferences {
     }
 }
 
+fn default_bubble_radius() -> u32 {
+    12
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatAppearancePreferences {
     pub theme_mode: ThemeMode,
     pub chat_preset: String,
     pub font_size: u32,
+    #[serde(default = "default_bubble_radius")]
+    pub bubble_radius: u32,
     pub animations_enabled: bool,
     pub send_on_enter: bool,
     pub suggest_stickers_by_emoji: bool,
@@ -85,6 +112,7 @@ impl Default for ChatAppearancePreferences {
             theme_mode: ThemeMode::Dark,
             chat_preset: "Day".to_string(),
             font_size: 13,
+            bubble_radius: default_bubble_radius(),
             animations_enabled: true,
             send_on_enter: true,
             suggest_stickers_by_emoji: true,
@@ -108,6 +136,31 @@ impl Default for LocalizationPreferences {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+fn default_max_cache_gb() -> u64 {
+    16
+}
+fn default_retention_weeks() -> u32 {
+    4
+}
+fn default_auto_lock_seconds() -> u64 {
+    3600
+}
+fn default_power_saving_threshold() -> u32 {
+    20
+}
+fn default_audio_input() -> String {
+    "Default Microphone".to_string()
+}
+fn default_audio_output() -> String {
+    "Default Output Device".to_string()
+}
+fn default_camera_device() -> String {
+    "Default Camera".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppPreferences {
     pub theme_mode: ThemeMode,
@@ -117,6 +170,54 @@ pub struct AppPreferences {
     pub localization: LocalizationPreferences,
     pub interface_scale_pct: u32,
     pub power_saving_enabled: bool,
+    #[serde(default = "default_max_cache_gb")]
+    pub max_cache_gb: u64,
+    #[serde(default = "default_retention_weeks")]
+    pub retention_weeks: u32,
+    #[serde(default)]
+    pub ask_download_path: bool,
+    #[serde(default = "default_true")]
+    pub opengl_enabled: bool,
+    #[serde(default)]
+    pub native_window_frame: bool,
+    #[serde(default = "default_true")]
+    pub tray_icon_enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_update_enabled: bool,
+    #[serde(default)]
+    pub local_passcode_hash: Option<String>,
+    #[serde(default = "default_auto_lock_seconds")]
+    pub auto_lock_seconds: u64,
+    #[serde(default = "default_power_saving_threshold")]
+    pub power_saving_threshold_pct: u32,
+    #[serde(default = "default_true")]
+    pub animate_stickers_chat: bool,
+    #[serde(default = "default_true")]
+    pub animate_stickers_panel: bool,
+    #[serde(default = "default_true")]
+    pub animate_emoji_panel: bool,
+    #[serde(default = "default_true")]
+    pub autoplay_gifs: bool,
+    #[serde(default = "default_true")]
+    pub autoplay_videos: bool,
+    #[serde(default = "default_audio_input")]
+    pub audio_input_device: String,
+    #[serde(default = "default_audio_output")]
+    pub audio_output_device: String,
+    #[serde(default = "default_camera_device")]
+    pub camera_device: String,
+    #[serde(default)]
+    pub folder_tags_enabled: bool,
+    #[serde(default)]
+    pub passkey_names: Vec<String>,
+    #[serde(default)]
+    pub connected_website_domains: Vec<String>,
+    #[serde(default)]
+    pub shortcuts_filter: String,
+    #[serde(default = "default_true")]
+    pub shortcuts_enabled: bool,
+    #[serde(default)]
+    pub business_configured_tools: Vec<String>,
 }
 
 impl Default for AppPreferences {
@@ -129,6 +230,30 @@ impl Default for AppPreferences {
             localization: LocalizationPreferences::default(),
             interface_scale_pct: 100,
             power_saving_enabled: false,
+            max_cache_gb: default_max_cache_gb(),
+            retention_weeks: default_retention_weeks(),
+            ask_download_path: false,
+            opengl_enabled: true,
+            native_window_frame: false,
+            tray_icon_enabled: true,
+            auto_update_enabled: true,
+            local_passcode_hash: None,
+            auto_lock_seconds: default_auto_lock_seconds(),
+            power_saving_threshold_pct: default_power_saving_threshold(),
+            animate_stickers_chat: true,
+            animate_stickers_panel: true,
+            animate_emoji_panel: true,
+            autoplay_gifs: true,
+            autoplay_videos: true,
+            audio_input_device: default_audio_input(),
+            audio_output_device: default_audio_output(),
+            camera_device: default_camera_device(),
+            folder_tags_enabled: false,
+            passkey_names: Vec::new(),
+            connected_website_domains: Vec::new(),
+            shortcuts_filter: String::new(),
+            shortcuts_enabled: true,
+            business_configured_tools: Vec::new(),
         }
     }
 }

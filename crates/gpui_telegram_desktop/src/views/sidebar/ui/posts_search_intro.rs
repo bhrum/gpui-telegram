@@ -15,7 +15,7 @@ impl PostsSearchIntroUi {
     pub fn new() -> Self {
         Self {
             title: "Public Channel Posts".to_string(),
-            description: "Find messages and posts across public Telegram channels.".to_string(),
+            description: "Find messages and posts across public channels.".to_string(),
         }
     }
 }

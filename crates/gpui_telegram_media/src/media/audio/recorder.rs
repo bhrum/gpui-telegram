@@ -1,6 +1,7 @@
 use super::media_audio_capture::{CaptureUpdate, CAPTURE_FREQUENCY};
 use super::wav::{compute_pcm_rms_level, encode_wav_i16, waveform_from_pcm_i16};
 use gpui_telegram_core::error::{Result, TelegramError};
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
@@ -240,4 +241,173 @@ impl Drop for VoiceRecorder {
         #[cfg(target_os = "macos")]
         if let Some(aq) = self.active.take() { macos_aq::stop_queue(aq, &self.shared); }
     }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_devices {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        m_selector: u32,
+        m_scope: u32,
+        m_element: u32,
+    }
+
+    #[repr(C)]
+    struct CFRange {
+        location: isize,
+        length: isize,
+    }
+
+    type CFStringRef = *const c_void;
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectGetPropertyDataSize(
+            in_object_id: u32,
+            in_address: *const AudioObjectPropertyAddress,
+            in_qualifier_data_size: u32,
+            in_qualifier_data: *const c_void,
+            out_data_size: *mut u32,
+        ) -> i32;
+        fn AudioObjectGetPropertyData(
+            in_object_id: u32,
+            in_address: *const AudioObjectPropertyAddress,
+            in_qualifier_data_size: u32,
+            in_qualifier_data: *const c_void,
+            io_data_size: *mut u32,
+            out_data: *mut c_void,
+        ) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFStringGetLength(the_string: CFStringRef) -> isize;
+        fn CFStringGetCharacters(the_string: CFStringRef, range: CFRange, buffer: *mut u16);
+        fn CFRelease(cf: *const c_void);
+    }
+
+    fn device_stream_bytes(dev_id: u32, scope: u32) -> u32 {
+        let addr = AudioObjectPropertyAddress {
+            m_selector: u32::from_be_bytes(*b"stm#"),
+            m_scope: scope,
+            m_element: 0,
+        };
+        let mut size = 0u32;
+        let st = unsafe {
+            AudioObjectGetPropertyDataSize(dev_id, &addr, 0, std::ptr::null(), &mut size)
+        };
+        if st == 0 { size } else { 0 }
+    }
+
+    fn device_name(dev_id: u32) -> Option<String> {
+        let addr = AudioObjectPropertyAddress {
+            m_selector: u32::from_be_bytes(*b"lnam"),
+            m_scope: u32::from_be_bytes(*b"glob"),
+            m_element: 0,
+        };
+        let mut cf_str: CFStringRef = std::ptr::null();
+        let mut size = std::mem::size_of::<CFStringRef>() as u32;
+        let st = unsafe {
+            AudioObjectGetPropertyData(
+                dev_id,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut size,
+                (&mut cf_str as *mut CFStringRef).cast::<c_void>(),
+            )
+        };
+        if st != 0 || cf_str.is_null() {
+            return None;
+        }
+        let len = unsafe { CFStringGetLength(cf_str) };
+        let name = if len > 0 && len < 512 {
+            let mut utf16 = vec![0u16; len as usize];
+            unsafe {
+                CFStringGetCharacters(
+                    cf_str,
+                    CFRange { location: 0, length: len },
+                    utf16.as_mut_ptr(),
+                );
+            }
+            String::from_utf16_lossy(&utf16).trim().to_string()
+        } else {
+            String::new()
+        };
+        unsafe { CFRelease(cf_str) };
+        if name.is_empty() { None } else { Some(name) }
+    }
+
+    pub fn query_host_devices() -> (Vec<String>, Vec<String>) {
+        let sys_obj = 1u32;
+        let addr = AudioObjectPropertyAddress {
+            m_selector: u32::from_be_bytes(*b"dev#"),
+            m_scope: u32::from_be_bytes(*b"glob"),
+            m_element: 0,
+        };
+        let mut byte_size = 0u32;
+        let st = unsafe {
+            AudioObjectGetPropertyDataSize(sys_obj, &addr, 0, std::ptr::null(), &mut byte_size)
+        };
+        if st != 0 || byte_size < 4 {
+            return (Vec::new(), Vec::new());
+        }
+        let count = (byte_size as usize) / std::mem::size_of::<u32>();
+        let mut ids = vec![0u32; count];
+        let st2 = unsafe {
+            AudioObjectGetPropertyData(
+                sys_obj,
+                &addr,
+                0,
+                std::ptr::null(),
+                &mut byte_size,
+                ids.as_mut_ptr().cast::<c_void>(),
+            )
+        };
+        if st2 != 0 {
+            return (Vec::new(), Vec::new());
+        }
+        let in_scope = u32::from_be_bytes(*b"inpt");
+        let out_scope = u32::from_be_bytes(*b"outp");
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        for id in ids {
+            if id == 0 {
+                continue;
+            }
+            let has_in = device_stream_bytes(id, in_scope) > 0;
+            let has_out = device_stream_bytes(id, out_scope) > 0;
+            if !has_in && !has_out {
+                continue;
+            }
+            if let Some(name) = device_name(id) {
+                if has_in && !inputs.contains(&name) {
+                    inputs.push(name.clone());
+                }
+                if has_out && !outputs.contains(&name) {
+                    outputs.push(name);
+                }
+            }
+        }
+        (inputs, outputs)
+    }
+}
+
+/// Enumerates real host audio input (microphone) and output (speaker/headphone) devices,
+/// with graceful fallback defaults when running in headless CI without audio hardware.
+pub fn enumerate_audio_devices() -> (Vec<String>, Vec<String>) {
+    #[cfg(target_os = "macos")]
+    let (mut inputs, mut outputs) = macos_devices::query_host_devices();
+    #[cfg(not(target_os = "macos"))]
+    let (mut inputs, mut outputs): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+
+    if inputs.is_empty() {
+        inputs.push("System Default Microphone".to_string());
+    }
+    if outputs.is_empty() {
+        outputs.push("System Default Output".to_string());
+    }
+    (inputs, outputs)
 }

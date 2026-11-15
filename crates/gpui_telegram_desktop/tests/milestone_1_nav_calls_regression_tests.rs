@@ -695,19 +695,45 @@ fn test_adversarial_talk_mode_overlay_lifecycle_and_dismissal_sync() {
 /// 4.3: Anti-regression source scan ensuring all "← Back to Chats" handlers use `set_active_destination`.
 #[test]
 fn test_adversarial_source_oracle_all_back_to_chats_use_set_active_destination() {
-    let crate_dir = env!("CARGO_MANIFEST_DIR");
-    let shell_path = Path::new(crate_dir).join("src/views/shell.rs");
+    let views_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views");
+    let shell_path = views_dir.join("shell.rs");
     if !shell_path.exists() {
         eprintln!("Skipping static source check: shell.rs not found at {:?}", shell_path);
         return;
     }
 
-    let content = fs::read_to_string(&shell_path).expect("Failed to read shell.rs");
+    let mut source_paths = vec![
+        shell_path,
+        views_dir.join("app_shell/shell_observers.rs"),
+        views_dir.join("app_shell/shell_overlays_render.rs"),
+        views_dir.join("app_shell/shell_shortcuts.rs"),
+    ];
+    let mut router_paths: Vec<_> = fs::read_dir(views_dir.join("settings"))
+        .expect("Failed to read views/settings")
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("settings_router") && n.ends_with(".rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+    router_paths.sort();
+    source_paths.extend(router_paths);
+
+    let mut content = String::new();
+    for path in source_paths {
+        content.push('\n');
+        content.push_str(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e)),
+        );
+    }
 
     // 1. Observer guard must inspect BOTH trigger_counter AND active_destination
     assert!(
         content.contains("shell.last_handled_nav_trigger == trigger && shell.last_handled_nav_dest == Some(dest)"),
-        "CRITICAL REGRESSION: `shell.rs` must guard on BOTH last_handled_nav_trigger AND last_handled_nav_dest!"
+        "CRITICAL REGRESSION: `shell_observers.rs` must guard on BOTH last_handled_nav_trigger AND last_handled_nav_dest!"
     );
 
     // 2. NavDestination::Calls must map to ActiveWorkspacePanel::Calls, NOT show_talk_mode
@@ -723,10 +749,10 @@ fn test_adversarial_source_oracle_all_back_to_chats_use_set_active_destination()
     );
 
     // 3. Subpanel back-to-chats buttons must use `set_active_destination(NavDestination::Chats)`
-    let count = content.matches("r.set_active_destination(NavDestination::Chats);").count();
+    let count = content.matches("r.set_active_destination(NavDestination::Chats)").count();
     assert!(
         count >= 5,
-        "CRITICAL REGRESSION: Expected at least 5 instances of `r.set_active_destination(NavDestination::Chats);` (Calls, Settings, TaskCenter, McpTools, Overlay Dismissal), found {}",
+        "CRITICAL REGRESSION: Expected at least 5 instances of `r.set_active_destination(NavDestination::Chats)` (Calls, Settings, TaskCenter, McpTools, Overlay Dismissal), found {}",
         count
     );
 }

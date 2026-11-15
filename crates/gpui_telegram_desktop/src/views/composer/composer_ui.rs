@@ -16,6 +16,7 @@ pub enum ComposerBarAction {
     ToggleAttachments,
     ToggleFormatting,
     ToggleEmojiPicker,
+    OpenBotMenu,
     FocusInput,
     SendOrSave,
     OpenSendOptions,
@@ -151,6 +152,45 @@ pub fn render_text_input_strip<V: 'static>(
     cx: &mut Context<V>,
     on_action: impl Fn(&mut V, ComposerBarAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
+    render_text_input_strip_with_bot_menu(
+        text,
+        cursor,
+        selection,
+        preedit,
+        is_focused,
+        is_editing,
+        has_attachments,
+        is_formatting_open,
+        is_emoji_open,
+        content_height,
+        overflow_scroll,
+        None,
+        palette,
+        lang_id,
+        cx,
+        on_action,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_text_input_strip_with_bot_menu<V: 'static>(
+    text: &str,
+    cursor: usize,
+    selection: Option<(usize, usize)>,
+    preedit: Option<&str>,
+    is_focused: bool,
+    is_editing: bool,
+    has_attachments: bool,
+    is_formatting_open: bool,
+    is_emoji_open: bool,
+    content_height: Pixels,
+    overflow_scroll: bool,
+    bot_menu_view: Option<AnyElement>,
+    palette: &TdesktopThemePalette,
+    lang_id: &str,
+    cx: &mut Context<V>,
+    on_action: impl Fn(&mut V, ComposerBarAction, &mut Context<V>) + Clone + 'static,
+) -> AnyElement {
     let is_empty = text.is_empty() && preedit.map_or(true, |p| p.is_empty());
     let show_send = !is_empty || is_editing || has_attachments;
     let a_att = on_action.clone();
@@ -165,9 +205,10 @@ pub fn render_text_input_strip<V: 'static>(
     let before = &text[..cur];
     let after = &text[cur..];
 
+    let composer_font = px(palette.scaled_px(palette.font_size_px as f32));
     let text_el = if is_empty {
         div()
-            .text_size(px(palette.font_size_px as f32))
+            .text_size(composer_font)
             .text_color(rgb(palette.text_secondary))
             .child(tr_key_or(lang_id, "lng_message_ph", "Write a message..."))
             .into_any_element()
@@ -179,7 +220,7 @@ pub fn render_text_input_strip<V: 'static>(
             .flex()
             .flex_wrap()
             .items_center()
-            .text_size(px(palette.font_size_px as f32))
+            .text_size(composer_font)
             .text_color(rgb(palette.text_primary))
             .child(text[..s].to_string())
             .child(div().bg(TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.35)).child(text[s..e].to_string()))
@@ -191,33 +232,37 @@ pub fn render_text_input_strip<V: 'static>(
             .flex()
             .flex_wrap()
             .items_center()
-            .text_size(px(palette.font_size_px as f32))
+            .text_size(composer_font)
             .text_color(rgb(palette.text_primary))
             .when(!before.is_empty(), |el| el.child(before.to_string()))
             .when_some(preedit.filter(|p| !p.is_empty()), |el, p| {
                 el.child(div().underline().text_color(rgb(palette.accent)).child(p.to_string()))
             })
-            .when(is_focused, |el| el.child(div().w(px(1.5)).h(px(17.0)).bg(rgb(palette.accent))))
+            .when(is_focused, |el| el.child(div().w(px(1.5)).h(px(palette.scaled_px(17.0))).bg(rgb(palette.accent))))
             .when(!after.is_empty(), |el| el.child(after.to_string()))
             .into_any_element()
     };
 
+    let scaled_content_h = px(palette.scaled_px(f32::from(content_height)));
     div()
         .w_full()
-        .min_h(px(46.0))
-        .px(px(10.0))
-        .py(px(6.0))
+        .min_h(px(palette.scaled_px(46.0)))
+        .px(px(palette.scaled_px(10.0)))
+        .py(px(palette.scaled_px(6.0)))
         .bg(rgb(palette.composer_bg))
         .border_t_1()
         .border_color(rgb(palette.border_fg))
         .flex()
         .items_end()
-        .gap(px(6.0))
+        .gap(px(palette.scaled_px(6.0)))
+        .when_some(bot_menu_view, |el, btn| {
+            el.child(div().pb(px(5.0)).flex_shrink_0().child(btn))
+        })
         .child(
             div()
                 .id("cmp-attach-btn")
-                .w(px(36.0))
-                .h(px(44.0))
+                .w(px(palette.scaled_px(36.0)))
+                .h(px(palette.scaled_px(44.0)))
                 .rounded_full()
                 .cursor_pointer()
                 .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
@@ -225,17 +270,17 @@ pub fn render_text_input_strip<V: 'static>(
                 .items_center()
                 .justify_center()
                 .on_click(cx.listener(move |this, _, _, cx| a_att(this, ComposerBarAction::ToggleAttachments, cx)))
-                .child(tg_icon(IconName::Paperclip, 20.0, palette.icon_fg)),
+                .child(tg_icon(IconName::Paperclip, palette.scaled_px(20.0), palette.icon_fg)),
         )
         .child(
             div()
                 .id("cmp-input-wrap")
                 .flex_1()
-                .min_h(px(44.0))
-                .h(content_height)
-                .px(px(12.0))
-                .py(px(10.0))
-                .rounded(px(14.0))
+                .min_h(px(palette.scaled_px(44.0)))
+                .h(scaled_content_h)
+                .px(px(palette.scaled_px(12.0)))
+                .py(px(palette.scaled_px(10.0)))
+                .rounded(px(palette.scaled_px(14.0)))
                 .bg(rgb(palette.input_bg))
                 .border_1()
                 .border_color(rgb(if is_focused { palette.accent } else { palette.border_fg }))

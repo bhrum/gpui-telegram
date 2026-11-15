@@ -1,10 +1,11 @@
 use crate::net::http_client::{HttpClient, HttpClientError};
 use crate::net::http_helpers::percent_encode_rfc3986;
 use gpui_telegram_proto::contracts::{
-    AuthResponse as ProtoAuthResponse, ContactDto, PhoneSendCodeRequest, PhoneSendCodeResponse,
-    PhoneVerifyRequest, QrPairAcceptRequest, QrPairInitResponse, QrPairPollResponse, SessionDto,
-    StatusResponse, TwoFactorSetRequest, TwoFactorStatusResponse, TwoFactorVerifyRequest,
-    UpdateProfileRequest as ProtoUpdateProfileRequest, UserProfileDto,
+    AuthResponse as ProtoAuthResponse, BlockedUserDto, ContactDto, PhoneSendCodeRequest,
+    PhoneSendCodeResponse, PhoneVerifyRequest, QrPairAcceptRequest, QrPairInitResponse,
+    QrPairPollResponse, SessionDto, StatusResponse, TwoFactorSetRequest, TwoFactorStatusResponse,
+    TwoFactorVerifyRequest, UpdateProfileRequest as ProtoUpdateProfileRequest,
+    UserPrivacySettingsDto, UserProfileDto,
 };
 use reqwest::Method;
 use serde::Serialize;
@@ -103,7 +104,7 @@ impl HttpClient {
     }
 
     pub async fn get_2fa_status(&self, token: &str) -> Result<TwoFactorStatusResponse, HttpClientError> {
-        self.request_json(Method::GET, "/api/v1/auth/2fa", Some(token), None::<&()>)
+        self.request_json(Method::GET, "/api/v1/auth/2fa/status", Some(token), None::<&()>)
             .await
     }
 
@@ -112,7 +113,7 @@ impl HttpClient {
         token: &str,
         req: &TwoFactorSetRequest,
     ) -> Result<TwoFactorStatusResponse, HttpClientError> {
-        self.request_json(Method::POST, "/api/v1/auth/2fa", Some(token), Some(req))
+        self.request_json(Method::POST, "/api/v1/auth/2fa/set", Some(token), Some(req))
             .await
     }
 
@@ -122,7 +123,7 @@ impl HttpClient {
         current_password: Option<&str>,
     ) -> Result<(), HttpClientError> {
         let body = DisableTwoFactorBody { current_password };
-        self.request_empty(Method::DELETE, "/api/v1/auth/2fa", Some(token), Some(&body))
+        self.request_empty(Method::POST, "/api/v1/auth/2fa/disable", Some(token), Some(&body))
             .await
     }
 
@@ -234,6 +235,62 @@ impl HttpClient {
     pub async fn delete_contact(&self, token: &str, user_id: u64) -> Result<(), HttpClientError> {
         let path = format!("/api/v1/contacts/{}", user_id);
         self.request_empty(Method::DELETE, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn get_my_profile(&self, token: &str) -> Result<UserProfileDto, HttpClientError> {
+        self.request_json(Method::GET, "/api/v1/users/me", Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn revoke_other_sessions(&self, token: &str) -> Result<(), HttpClientError> {
+        self.request_empty(Method::DELETE, "/api/v1/auth/sessions/others", Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn list_blocked_users(
+        &self,
+        token: &str,
+    ) -> Result<Vec<BlockedUserDto>, HttpClientError> {
+        self.request_vec_or_field(
+            Method::GET,
+            "/api/v1/users/blocked",
+            Some(token),
+            &["blocked", "users", "items"],
+        )
+        .await
+    }
+
+    pub async fn block_user(
+        &self,
+        token: &str,
+        user_id: u64,
+    ) -> Result<BlockedUserDto, HttpClientError> {
+        let path = format!("/api/v1/users/{}/block", user_id);
+        self.request_json(Method::POST, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn unblock_user(&self, token: &str, user_id: u64) -> Result<(), HttpClientError> {
+        let path = format!("/api/v1/users/{}/block", user_id);
+        self.request_empty(Method::DELETE, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn get_my_settings(
+        &self,
+        token: &str,
+    ) -> Result<UserPrivacySettingsDto, HttpClientError> {
+        self.request_json(Method::GET, "/api/v1/users/me/settings", Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn save_my_settings(
+        &self,
+        token: &str,
+        settings: &UserPrivacySettingsDto,
+    ) -> Result<UserPrivacySettingsDto, HttpClientError> {
+        self.request_json(Method::PUT, "/api/v1/users/me/settings", Some(token), Some(settings))
             .await
     }
 }

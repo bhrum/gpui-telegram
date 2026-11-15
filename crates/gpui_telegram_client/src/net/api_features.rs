@@ -313,8 +313,11 @@ impl HttpClient {
         amount_stars: i64,
     ) -> Result<WalletBalanceDto, HttpClientError> {
         let body = WalletTopupBody { amount_stars };
-        self.request_json(Method::POST, "/api/v1/wallet/topup", Some(token), Some(&body))
-            .await
+        let val: serde_json::Value = self
+            .request_json(Method::POST, "/api/v1/wallet/topup", Some(token), Some(&body))
+            .await?;
+        let target = val.get("balance").cloned().unwrap_or(val);
+        Ok(serde_json::from_value(target)?)
     }
 
     pub async fn wallet_gift_stars(
@@ -322,7 +325,10 @@ impl HttpClient {
         token: &str,
         req: &StarGiftRequest,
     ) -> Result<WalletBalanceDto, HttpClientError> {
-        self.request_json(Method::POST, "/api/v1/wallet/gift", Some(token), Some(req))
-            .await
+        let val: serde_json::Value = self
+            .request_json(Method::POST, "/api/v1/wallet/gift", Some(token), Some(req))
+            .await?;
+        let target = val.get("balance").cloned().unwrap_or(val);
+        Ok(serde_json::from_value(target)?)
     }
 }

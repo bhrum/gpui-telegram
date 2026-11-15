@@ -56,7 +56,7 @@ pub fn render_telegram_hero_logo(size: f32, palette: &TdesktopThemePalette) -> D
         .items_center()
         .justify_center()
         .child(tg_icon(
-            IconName::TelegramPlaneLogo,
+            IconName::BotRobot,
             size * 0.54,
             0xFFFFFF,
         ))

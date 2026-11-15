@@ -25,6 +25,7 @@ pub struct SettingsNotificationsTypeSections {
     pub message_preview: bool,
     pub sound_enabled: bool,
     pub exceptions: Vec<PeerNotificationException>,
+    pub pending_sync: bool,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
 }
@@ -37,6 +38,7 @@ impl SettingsNotificationsTypeSections {
             message_preview: true,
             sound_enabled: true,
             exceptions: Vec::new(),
+            pending_sync: false,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
         }
@@ -44,19 +46,24 @@ impl SettingsNotificationsTypeSections {
 
     pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
     pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
-    pub fn toggle_alerts(&mut self) { self.alerts_enabled = !self.alerts_enabled; }
-    pub fn toggle_preview(&mut self) { self.message_preview = !self.message_preview; }
-    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; }
+    pub fn toggle_alerts(&mut self) { self.alerts_enabled = !self.alerts_enabled; self.pending_sync = true; }
+    pub fn toggle_preview(&mut self) { self.message_preview = !self.message_preview; self.pending_sync = true; }
+    pub fn toggle_sound(&mut self) { self.sound_enabled = !self.sound_enabled; self.pending_sync = true; }
 
     pub fn add_exception(&mut self, peer_id: u64, name: impl Into<String>, is_muted: bool, custom_sound: Option<String>) {
         self.exceptions.retain(|e| e.peer_id != peer_id);
         self.exceptions.push(PeerNotificationException { peer_id, name: name.into(), is_muted, custom_sound });
+        self.pending_sync = true;
     }
 
     pub fn remove_exception(&mut self, peer_id: u64) -> bool {
         let initial_len = self.exceptions.len();
         self.exceptions.retain(|e| e.peer_id != peer_id);
-        self.exceptions.len() < initial_len
+        let removed = self.exceptions.len() < initial_len;
+        if removed {
+            self.pending_sync = true;
+        }
+        removed
     }
 }
 
@@ -70,10 +77,15 @@ impl Render for SettingsNotificationsTypeSections {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = self.palette;
         let lang = &self.language_id;
+        let header_title = if self.chat_type_name == "All Chats" || self.chat_type_name == "Private Chats" {
+            tr_str(lang, "对话通知详情", &self.chat_type_name)
+        } else {
+            &self.chat_type_name
+        };
 
         settings_container(pal)
             .child(settings_card(pal)
-                .child(settings_section_header(IconName::Speaker, &self.chat_type_name, Some(tr_str(lang, "对话类型通知设置", "Chat type notifications")), pal))
+                .child(settings_section_header(IconName::Speaker, header_title, Some(tr_str(lang, "对话类型通知设置", "Chat type notifications")), pal))
                 .child(settings_toggle_row(IconName::Speaker, tr_str(lang, "弹出通知提醒", "Show Notifications"), None, self.alerts_enabled, pal, Self::toggle_alerts, cx))
                 .child(settings_toggle_row(IconName::FileDoc, tr_str(lang, "显示消息预览", "Message Preview"), None, self.message_preview, pal, Self::toggle_preview, cx))
                 .child(settings_toggle_row(IconName::Speaker, tr_str(lang, "播放提示音", "Play Sound"), None, self.sound_enabled, pal, Self::toggle_sound, cx)))
@@ -83,9 +95,14 @@ impl Render for SettingsNotificationsTypeSections {
                     if self.exceptions.is_empty() {
                         el.child(settings_empty_state(IconName::Mute, tr_str(lang, "暂无例外对话", "No notification exceptions"), pal))
                     } else {
-                        el.children(self.exceptions.clone().into_iter().map(|ex| {
+                        let lang_owned = lang.clone();
+                        el.children(self.exceptions.clone().into_iter().map(move |ex| {
                             let pid = ex.peer_id;
-                            let status = if ex.is_muted { "Muted" } else { "Custom" };
+                            let status = if ex.is_muted {
+                                tr_str(&lang_owned, "已静音", "Muted")
+                            } else {
+                                tr_str(&lang_owned, "自定义", "Custom")
+                            };
                             settings_action_row(IconName::ContactsUsers, &ex.name, status, pal, false, move |this| {
                                 this.remove_exception(pid);
                             }, cx)

@@ -21,7 +21,7 @@ impl SuggestionPremiumOfferSuggestions {
         SuggestionItem {
             priority: SuggestionPriority::PremiumOffer,
             key: Self::KEY.to_string(),
-            title: "Telegram Premium".to_string(),
+            title: "Premium".to_string(),
             description: format!("Subscribe now and save {}% on annual billing.", self.discount_percent),
             button_text: Some("View Offer".to_string()),
             action_url: Some("internal:premium_offer".to_string()),

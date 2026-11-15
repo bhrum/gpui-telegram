@@ -154,7 +154,7 @@ impl Render for SettingsWorkspaceView {
             (SettingsPageId::AdvancedStorage, IconName::SettingsGear, "高级与存储", "Advanced & Storage"),
             (SettingsPageId::CallDevices, IconName::PhoneCall, "通话与音视频", "Calls"),
             (SettingsPageId::LanguageTranslate, IconName::Translate, "语言与翻译", "Language"),
-            (SettingsPageId::PremiumStars, IconName::PremiumStar, "Premium 与星币", "Telegram Premium"),
+            (SettingsPageId::PremiumStars, IconName::PremiumStar, "Premium 与星币", "Premium & Stars"),
             (SettingsPageId::TonWallet, IconName::WalletStars, "TON 钱包", "TON Wallet"),
             (SettingsPageId::BusinessPassport, IconName::BotRobot, "商业版与 Passport", "Business & Passport"),
         ];

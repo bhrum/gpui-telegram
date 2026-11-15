@@ -1,8 +1,12 @@
-use crate::routes::{broadcast_chat_event, check_active_membership, err_resp, map_telegram_err, parse_json_object};
+use crate::routes::{
+    broadcast_chat_event, check_active_membership, enforce_ttl_expiry, err_resp, map_telegram_err,
+    parse_json_object,
+};
 use crate::server::{ensure_user_welcome_bot, AppState, AuthBearer};
 use axum::{body::Bytes, extract::{Path, Query, State}, http::StatusCode, response::{IntoResponse, Json, Response}};
-use gpui_telegram_core::types::{ChatId, MsgId};
+use gpui_telegram_core::types::{ChatId, MsgId, PeerId};
 use gpui_telegram_proto::contracts::UpsertFolderRequest;
+use gpui_telegram_proto::message::DeleteTombstone;
 use gpui_telegram_proto::sync::UpdateEvent;
 use serde_json::json;
 use std::collections::HashMap;
@@ -229,6 +233,119 @@ pub async fn draft_delete(auth: AuthBearer, State(state): State<Arc<AppState>>, 
                 chat_id: ChatId(chat_id), topic_id: if topic_id > 0 { Some(topic_id) } else { None }, draft,
             }));
             (StatusCode::OK, Json(json!({ "chat_id": chat_id, "cleared": true }))).into_response()
+        }
+        Err(e) => map_telegram_err(e),
+    }
+}
+
+pub async fn chat_clear_history(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(chat_id): Path<i64>,
+) -> Response {
+    if let Err(r) = check_active_membership(&state, ChatId(chat_id), auth.user_id) {
+        return r;
+    }
+    match state.db.clear_chat_history_with_ids(ChatId(chat_id), auth.user_id) {
+        Ok(deleted_ids) => {
+            let deleted_count = deleted_ids.len();
+            if deleted_count > 0 {
+                let _ = state.search_indexer.delete_chat(chat_id.to_string()).await;
+                let _ = state.search_indexer.commit().await;
+                let tombstone = DeleteTombstone::new(PeerId::Chat(ChatId(chat_id)), deleted_ids, true);
+                broadcast_chat_event(
+                    &state,
+                    ChatId(chat_id),
+                    UpdateEvent::DeleteMessages(tombstone),
+                );
+            }
+            broadcast_chat_event(
+                &state,
+                ChatId(chat_id),
+                UpdateEvent::PinnedMessagesChanged {
+                    chat_id: ChatId(chat_id),
+                    pinned_ids: Vec::new(),
+                },
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "chat_id": chat_id,
+                    "cleared": true,
+                    "deleted_count": deleted_count,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => map_telegram_err(e),
+    }
+}
+
+pub async fn chat_leave_or_delete(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(chat_id): Path<i64>,
+) -> Response {
+    if let Err(r) = check_active_membership(&state, ChatId(chat_id), auth.user_id) {
+        return r;
+    }
+    match state.db.leave_or_delete_chat(ChatId(chat_id), auth.user_id) {
+        Ok(true) => {
+            if state.db.get_chat(ChatId(chat_id)).ok().flatten().is_none() {
+                let _ = state.search_indexer.delete_chat(chat_id.to_string()).await;
+                let _ = state.search_indexer.commit().await;
+            }
+            (
+                StatusCode::OK,
+                Json(json!({ "chat_id": chat_id, "deleted": true })),
+            )
+                .into_response()
+        }
+        Ok(false) => err_resp(StatusCode::NOT_FOUND, "not_found", "Chat not found"),
+        Err(e) => map_telegram_err(e),
+    }
+}
+
+pub async fn chat_set_ttl(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(chat_id): Path<i64>,
+    body: Bytes,
+) -> Response {
+    let (_chat, _m, is_admin) = match check_active_membership(&state, ChatId(chat_id), auth.user_id) {
+        Ok(c) => c,
+        Err(r) => return r,
+    };
+    if !matches!(_chat.chat_type, 0 | 4 | 5) && !is_admin {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Admin rights required to set auto-delete timer",
+        );
+    }
+    let payload = if body.is_empty() {
+        json!({ "ttl_seconds": 0 })
+    } else {
+        match parse_json_object(&body) {
+            Ok(v) => v,
+            Err(r) => return r,
+        }
+    };
+    let ttl_seconds = payload
+        .get("ttl_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .min(31_536_000) as u32;
+    match state.db.set_chat_ttl(ChatId(chat_id), ttl_seconds) {
+        Ok(saved_ttl) => {
+            if saved_ttl > 0 {
+                enforce_ttl_expiry(&state).await;
+            }
+            (
+                StatusCode::OK,
+                Json(json!({ "chat_id": chat_id, "ttl_seconds": saved_ttl })),
+            )
+                .into_response()
         }
         Err(e) => map_telegram_err(e),
     }

@@ -12,10 +12,24 @@ use crate::views::sidebar::ui::dialogs_quick_action::QuickDialogActionType;
 use crate::views::sidebar::ui::dialogs_quick_action_context::DialogsQuickActionContextUi;
 use crate::views::sidebar::ui::dialogs_topics_view::DialogsTopicsViewUi;
 
+pub fn localize_folder_label(folder: &str, lang_id: &str) -> String {
+    match folder {
+        "All" => tr_str(lang_id, "全部", "All").to_string(),
+        "Bots" => tr_str(lang_id, "机器人", "Bots").to_string(),
+        "Groups" => tr_str(lang_id, "群组", "Groups").to_string(),
+        "Channels" => tr_str(lang_id, "频道", "Channels").to_string(),
+        "Personal" => tr_str(lang_id, "私聊", "Personal").to_string(),
+        "Work" => tr_str(lang_id, "工作", "Work").to_string(),
+        "Unread" => tr_str(lang_id, "未读", "Unread").to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn render_folder_tabs_strip<V: 'static>(
     folders: &[(String, u32)],
     active_folder: &str,
     palette: &TdesktopThemePalette,
+    lang_id: &str,
     cx: &mut Context<V>,
     on_select_folder: impl Fn(&mut V, String, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
@@ -27,6 +41,7 @@ pub fn render_folder_tabs_strip<V: 'static>(
             let is_active = folder == active_folder;
             let _state_key = icon_states.select(is_active, false);
             let fname = folder.clone();
+            let display_label = localize_folder_label(folder, lang_id);
             let cb = on_select_folder.clone();
             let text_hover = rgb(palette.text_primary);
             div()
@@ -37,26 +52,26 @@ pub fn render_folder_tabs_strip<V: 'static>(
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .gap(px(4.0))
-                .px(px(6.0))
-                .text_size(px(13.0))
+                .gap(px(palette.scaled_px(4.0)))
+                .px(px(palette.scaled_px(6.0)))
+                .text_size(px(palette.scaled_px(13.0)))
                 .font_weight(if is_active { FontWeight::BOLD } else { FontWeight::NORMAL })
                 .text_color(if is_active { rgb(palette.accent) } else { rgb(palette.text_secondary) })
                 .hover(move |s| if is_active { s } else { s.text_color(text_hover) })
                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
                     cb(this, fname.clone(), cx);
                 }))
-                .child(folder.clone())
+                .child(display_label)
                 .when(*unread > 0, |el| {
                     el.child(
                         div()
-                            .h(px(16.0))
-                            .min_w(px(16.0))
-                            .px(px(4.0))
+                            .h(px(palette.scaled_px(16.0)))
+                            .min_w(px(palette.scaled_px(16.0)))
+                            .px(px(palette.scaled_px(4.0)))
                             .rounded_full()
                             .bg(if is_active { rgb(palette.accent) } else { rgb(palette.muted_badge_bg) })
                             .text_color(rgb(palette.unread_badge_fg))
-                            .text_size(px(10.0))
+                            .text_size(px(palette.scaled_px(10.0)))
                             .font_weight(FontWeight::BOLD)
                             .flex()
                             .items_center()
@@ -72,15 +87,16 @@ pub fn render_folder_tabs_strip<V: 'static>(
         .collect();
 
     div()
-        .h(px(36.0))
+        .h(px(palette.scaled_px(36.0)))
         .flex_shrink_0()
         .w_full()
-        .px(px(8.0))
+        .px(px(palette.scaled_px(8.0)))
         .flex()
         .items_center()
-        .gap(px(10.0))
+        .gap(px(palette.scaled_px(10.0)))
         .border_b_1()
         .border_color(rgb(palette.border_fg))
+        .overflow_x_hidden()
         .children(tabs)
         .into_any_element()
 }

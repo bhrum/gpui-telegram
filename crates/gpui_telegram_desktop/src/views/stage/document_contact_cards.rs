@@ -29,6 +29,8 @@ pub fn render_webpage_preview_card<V: 'static>(
     let has_iv = wp.has_instant_view;
 
     div()
+        .w_full()
+        .min_w(px(0.0))
         .mt(px(6.0))
         .pl(px(10.0))
         .pr(px(8.0))
@@ -51,6 +53,7 @@ pub fn render_webpage_preview_card<V: 'static>(
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w(px(0.0))
                         .gap(px(2.0))
                         .child(
                             div()

@@ -727,9 +727,27 @@ pub struct HermesRichChatDto {
     #[serde(default)]
     pub peer_bio: Option<String>,
     #[serde(default)]
+    pub is_archived: bool,
+    #[serde(default)]
+    pub is_pinned: bool,
+    #[serde(default)]
+    pub is_muted: bool,
+    #[serde(default)]
+    pub is_blocked: bool,
+    #[serde(default)]
+    pub message_ttl_seconds: u32,
+    #[serde(default)]
     pub pts: u64,
     #[serde(default)]
     pub members_count: usize,
+    #[serde(default)]
+    pub menu_button_text: Option<String>,
+    #[serde(default)]
+    pub menu_button_url: Option<String>,
+    #[serde(default)]
+    pub bot_short_name: Option<String>,
+    #[serde(default)]
+    pub has_mini_app: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

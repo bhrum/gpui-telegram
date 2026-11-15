@@ -1043,13 +1043,29 @@ impl PromptBuilder {
         Self
     }
 
+    /// Build the 3-tier system prompt.
+    ///
+    /// Prompt Caching Invariant: `tier1_stable` and `tier2_context` MUST remain strictly
+    /// byte-stable across iterations within a session — never embed per-second wall-clock
+    /// timestamps or transient loop counters here. All volatile runtime fields belong in
+    /// `tier3_volatile`.
     pub fn build(&self, input: PromptBuildInput<'_>) -> AssembledPrompt {
         let default_soul = SoulProfile::default();
         let soul = input.soul.unwrap_or(&default_soul);
 
-        // Tier 1: Stable Identity + Tooling + Progressive Skill Index
+        // Tier 1: Stable Identity + Operational Doctrine + Tooling + Progressive Skill Index
         let mut t1_parts = Vec::new();
         t1_parts.push(format!("# System Identity\n{}", soul.render_prompt_block()));
+
+        t1_parts.push(
+            "## Autonomous Execution & Self-Learning Doctrine\n\
+             - Multi-step execution loop: follow `inspect -> execute -> verify -> report`. Chain tool calls iteratively across steps until the actual state is verified rather than guessing or stopping mid-task.\n\
+             - Proactive tool usage: actively inspect and verify via `computer_*` (`computer_list`, `computer_status`, `computer_exec`, `computer_file`, `computer_screen`, `computer_use`), `terminal`, file tools (`read_file`, `write_file`, `patch`, `search_files`), web/browser tools, `memory`, and `skill_list` / `skill_view` / `skill_manage` instead of asking the user to run manual checks.\n\
+             - Frictionless computer control: in authorized/`Yolo` sessions or bound online computers, invoke `computer_exec`, `computer_file`, `computer_screen`, or `computer_use` directly—control leases are acquired automatically when omitted.\n\
+             - Resilient error recovery: when any tool returns a non-fatal error envelope (`{\"ok\": false, ...}`), inspect `error` and `hint`, adjust parameters or switch strategy, and continue.\n\
+             - Self-learning loop: after complex multi-step workflows (5+ tool calls) or when discovering durable facts/preferences/procedures, persist facts via `memory` and create or refine reusable procedural skills via `skill_list` / `skill_view` / `skill_manage`."
+                .to_string(),
+        );
 
         if !input.active_toolsets.is_empty() {
             t1_parts.push(format!(
@@ -1062,7 +1078,7 @@ impl PromptBuilder {
             let idx = skills_mgr.render_progressive_index();
             if !idx.is_empty() {
                 t1_parts.push(format!(
-                    "## Progressive Skills Index\nLoad full instructions via `skill_view` only when a skill matches the task:\n{idx}"
+                    "## Progressive Skills Index\nLoad full instructions via `skill_view` (or `skill_manage` with `action=\"view\"`) only when a skill matches the task:\n{idx}"
                 ));
             }
         }
@@ -1192,5 +1208,87 @@ impl PromptBuilder {
             tier1_hash,
             estimated_tokens,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prompt_builder_tier1_byte_stable_across_timestamps() {
+        let builder = PromptBuilder::new();
+        let toolsets = vec![
+            "core".to_string(),
+            "file".to_string(),
+            "computer_use".to_string(),
+            "browser".to_string(),
+        ];
+
+        let p1 = builder.build(PromptBuildInput {
+            active_toolsets: &toolsets,
+            volatile: VolatileRuntimeContext {
+                session_id: "sess_cache_1".into(),
+                source: "telegram".into(),
+                model: "gpt-4o".into(),
+                timestamp_utc: Some("2026-11-15T10:00:00Z".into()),
+                ..Default::default()
+            },
+            enable_prompt_caching: true,
+            ..Default::default()
+        });
+
+        let p2 = builder.build(PromptBuildInput {
+            active_toolsets: &toolsets,
+            volatile: VolatileRuntimeContext {
+                session_id: "sess_cache_1".into(),
+                source: "telegram".into(),
+                model: "gpt-4o".into(),
+                timestamp_utc: Some("2026-11-15T10:00:05Z".into()),
+                ..Default::default()
+            },
+            enable_prompt_caching: true,
+            ..Default::default()
+        });
+
+        assert_eq!(p1.tier1_stable.content, p2.tier1_stable.content);
+        assert_eq!(p1.tier2_context.content, p2.tier2_context.content);
+        assert_eq!(p1.tier1_hash, p2.tier1_hash);
+        assert_ne!(p1.tier3_volatile.content, p2.tier3_volatile.content);
+        assert!(!p1.tier1_stable.content.contains("2026-11-15T10:00:00Z"));
+    }
+
+    #[test]
+    fn test_prompt_builder_preserves_hermes_doctrine_with_custom_soul() {
+        let builder = PromptBuilder::new();
+        let custom_soul = SoulProfile::parse("# Bot Alpha\nYou are a Telegram ops assistant.");
+        let toolsets = vec!["computer_use".to_string(), "skills".to_string()];
+
+        let prompt = builder.build(PromptBuildInput {
+            soul: Some(&custom_soul),
+            active_toolsets: &toolsets,
+            volatile: VolatileRuntimeContext {
+                session_id: "sess_doctrine".into(),
+                source: "telegram".into(),
+                model: "mock".into(),
+                timestamp_utc: Some("2026-11-15T10:00:00Z".into()),
+                ..Default::default()
+            },
+            enable_prompt_caching: true,
+            ..Default::default()
+        });
+
+        assert!(prompt.tier1_stable.content.contains("Telegram ops assistant"));
+        assert!(prompt
+            .tier1_stable
+            .content
+            .contains("Autonomous Execution & Self-Learning Doctrine"));
+        assert!(prompt
+            .tier1_stable
+            .content
+            .contains("inspect -> execute -> verify -> report"));
+        assert!(prompt.tier1_stable.content.contains("computer_exec"));
+        assert!(prompt.tier1_stable.content.contains("skill_manage"));
+        assert!(prompt.tier1_stable.content.contains("5+ tool calls"));
     }
 }

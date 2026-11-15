@@ -1,6 +1,9 @@
 //! Submodule: crates/gpui_telegram_desktop/src/components/bots
 pub mod bot_attach_web_view;
 pub use bot_attach_web_view::BotAttachWebView;
+pub mod webview_chrome_render;
+pub mod webview_inspector_render;
+pub mod webview_widget_renderer;
 pub mod inline_bot_confirm_prepared;
 pub use inline_bot_confirm_prepared::InlineBotConfirmPrepared;
 pub mod inline_bot_downloads;

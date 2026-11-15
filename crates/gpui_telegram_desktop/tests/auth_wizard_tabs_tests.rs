@@ -240,8 +240,31 @@ fn test_alipay_qr_state_transitions() {
 
 #[test]
 fn test_shell_source_ast_tab_compliance() {
-    let shell_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views/shell.rs");
-    let content = fs::read_to_string(&shell_path).expect("Failed to read shell.rs");
+    let views_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views");
+    let mut content =
+        fs::read_to_string(views_dir.join("shell.rs")).expect("Failed to read shell.rs");
+    let mut auth_paths: Vec<_> = fs::read_dir(views_dir.join("auth"))
+        .expect("Failed to read views/auth")
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("auth_wizard_") && n.ends_with(".rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+    auth_paths.sort();
+    assert!(
+        !auth_paths.is_empty(),
+        "Expected auth_wizard_*.rs files under views/auth"
+    );
+    for path in auth_paths {
+        content.push('\n');
+        content.push_str(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e)),
+        );
+    }
 
     // 1. Enum AuthWizardTab exists with all 3 variants
     assert!(content.contains("pub enum AuthWizardTab"), "shell.rs must define pub enum AuthWizardTab");

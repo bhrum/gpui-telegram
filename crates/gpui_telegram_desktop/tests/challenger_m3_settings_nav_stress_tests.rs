@@ -416,18 +416,51 @@ fn test_chaos_random_walk_fuzzing_10000_steps() {
 
 #[test]
 fn test_ast_shell_settings_router_contract_and_keybindings() {
-    let shell_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views/shell.rs");
-    let content = fs::read_to_string(&shell_path)
-        .unwrap_or_else(|e| panic!("Failed to read shell.rs at {:?}: {}", shell_path, e));
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/views");
+    let mut source_paths = vec![
+        src_dir.join("shell.rs"),
+        src_dir.join("app_shell/shell_shortcuts.rs"),
+        src_dir.join("app_shell/shell_input_ime.rs"),
+    ];
+    let mut router_paths: Vec<_> = fs::read_dir(src_dir.join("settings"))
+        .unwrap_or_else(|e| panic!("Failed to read views/settings: {}", e))
+        .filter_map(|e| e.ok().map(|entry| entry.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("settings_router") && n.ends_with(".rs"))
+                .unwrap_or(false)
+        })
+        .collect();
+    router_paths.sort();
+    assert!(
+        !router_paths.is_empty(),
+        "Expected settings_router*.rs files under views/settings"
+    );
+    source_paths.extend(router_paths);
 
-    // 1. Core Fields in AppShell struct
+    let mut content = String::new();
+    for path in source_paths {
+        content.push('\n');
+        content.push_str(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {:?}: {}", path, e)),
+        );
+    }
+    let normalized = content
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".");
+
+    // 1. Core Fields in SettingsRouter / AppShell
     assert!(
         content.contains("pub settings_section: SettingsSectionType"),
-        "AppShell must declare settings_section: SettingsSectionType"
+        "Settings router must declare settings_section: SettingsSectionType"
     );
     assert!(
         content.contains("pub settings_stack: Vec<SettingsSectionType>"),
-        "AppShell must declare settings_stack: Vec<SettingsSectionType>"
+        "Settings router must declare settings_stack: Vec<SettingsSectionType>"
     );
 
     // 2. Navigation State Methods
@@ -461,11 +494,13 @@ fn test_ast_shell_settings_router_contract_and_keybindings() {
     // 4. Back Unwind Logic
     assert!(
         content.contains("if let Some(prev) = self.settings_stack.pop() {"),
-        "navigate_settings_back must pop previous section from stack"
+        "navigate_back must pop previous section from stack"
     );
     assert!(
-        content.contains("let parent = self.settings_section.parent_section().unwrap_or(SettingsSectionType::Main);"),
-        "navigate_settings_back must fallback to parent_section() on empty stack"
+        normalized.contains(
+            "let parent = self.settings_section.parent_section().unwrap_or(SettingsSectionType::Main);"
+        ),
+        "navigate_back must fallback to parent_section() on empty stack"
     );
     assert!(
         content.contains("self.close_settings(cx);"),
@@ -478,12 +513,16 @@ fn test_ast_shell_settings_router_contract_and_keybindings() {
         "render_settings_panel must invoke breadcrumb_path() for breadcrumb UI"
     );
     assert!(
-        content.contains("this.navigate_settings_back(cx)"),
-        "Settings back button must bind to navigate_settings_back"
+        content.contains("this.navigate_settings_back(cx)")
+            || (content.contains("this.navigate_back(cx)")
+                && content.contains("r.navigate_back(rcx)")),
+        "Settings back button must bind to navigate_settings_back / navigate_back"
     );
     assert!(
-        content.contains("this.close_settings(cx)"),
-        "Settings close button must bind to close_settings"
+        content.contains("this.close_settings(cx)")
+            || (content.contains("this.close(cx)")
+                && content.contains("pub fn close_settings(&mut self, cx: &mut Context<Self>)")),
+        "Settings close button must bind to close_settings / SettingsRouter::close"
     );
 
     // 6. Keyboard Shortcut Bindings

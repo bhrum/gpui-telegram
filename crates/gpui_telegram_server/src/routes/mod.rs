@@ -10,6 +10,8 @@ pub mod users;
 pub mod analytics_wallet;
 pub mod acp;
 pub mod hermes;
+pub mod bots_miniapps;
+pub mod computers;
 
 use crate::db::schema::{ChatMemberRecord, ChatRecord, UserRecord};
 use crate::server::AppState;
@@ -19,8 +21,9 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use gpui_telegram_core::error::TelegramError;
-use gpui_telegram_core::types::{ChatId, UserId};
+use gpui_telegram_core::types::{ChatId, PeerId, UserId};
 use gpui_telegram_proto::contracts::UserProfileDto;
+use gpui_telegram_proto::message::DeleteTombstone;
 use gpui_telegram_proto::sync::{PtsUpdate, UpdateEvent};
 use gpui_telegram_proto::ws::WsServerFrame;
 use serde_json::{json, Value};
@@ -43,6 +46,9 @@ pub fn parse_json_object(bytes: &Bytes) -> Result<Value, Response> {
 
 pub fn map_telegram_err(err: TelegramError) -> Response {
     match err {
+        TelegramError::Auth(m) | TelegramError::AuthFailed(m) => {
+            err_resp(StatusCode::UNAUTHORIZED, "unauthorized", &m)
+        }
         TelegramError::NotFound(m) => err_resp(StatusCode::NOT_FOUND, "not_found", &m),
         TelegramError::PermissionDenied(m) => err_resp(StatusCode::FORBIDDEN, "forbidden", &m),
         TelegramError::Validation(m) => {
@@ -95,9 +101,34 @@ pub fn broadcast_chat_event(state: &AppState, chat_id: ChatId, ev: UpdateEvent) 
     state.gateway_hub.broadcast_to_chat_and_members(chat_id, None, WsServerFrame::Update(ev));
 }
 
+pub async fn enforce_ttl_expiry(state: &AppState) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let Ok(purged) = state.db.purge_expired_ttl_messages(now_ms) else {
+        return;
+    };
+    if purged.is_empty() {
+        return;
+    }
+    for (chat_id, msg_ids) in purged {
+        for &mid in &msg_ids {
+            state
+                .search_indexer
+                .delete_chat_message_nonblocking(chat_id.0.to_string(), mid.0.to_string());
+        }
+        let tombstone = DeleteTombstone::new(PeerId::Chat(chat_id), msg_ids, true);
+        broadcast_chat_event(state, chat_id, UpdateEvent::DeleteMessages(tombstone));
+    }
+    let _ = state.search_indexer.commit().await;
+}
+
 pub fn user_record_to_profile(state: &AppState, u: &UserRecord) -> UserProfileDto {
     let emoji_status = state.db.get_user_emoji_status(u.user_id).ok().flatten();
     let online = state.gateway_hub.user_connection_count(u.user_id) > 0;
+    let is_premium = state
+        .db
+        .get_user_privacy_settings(u.user_id)
+        .map(|s| s.is_premium)
+        .unwrap_or(false);
     UserProfileDto {
         user_id: u.user_id.raw(),
         username: u.username.clone(),
@@ -110,7 +141,7 @@ pub fn user_record_to_profile(state: &AppState, u: &UserRecord) -> UserProfileDt
         emoji_status,
         is_bot: u.is_bot,
         is_verified: u.is_verified,
-        is_premium: false,
+        is_premium,
         status: if online { "online".into() } else { "offline".into() },
         last_seen_ms: Some(u.updated_at_ms),
     }

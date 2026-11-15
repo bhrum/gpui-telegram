@@ -164,7 +164,7 @@ impl IntroQr {
 
         let has_passkey = WebauthnCommon::new().security_key_present();
         let steps = [
-            tr_str(lang_id, "1. 在手机上打开 Telegram", "1. Open Telegram on your phone"),
+            tr_str(lang_id, "1. 在手机上打开客户端", "1. Open the app on your phone"),
             tr_str(
                 lang_id,
                 "2. 前往 设置 > 设备 > 连接桌面设备",
@@ -188,7 +188,7 @@ impl IntroQr {
                     .text_size(px(20.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(palette.text_primary))
-                    .child(tr_str(lang_id, "扫码快速登录", "Log in to Telegram by QR Code")),
+                    .child(tr_str(lang_id, "扫码快速登录", "Log in by QR Code")),
             )
             .child(
                 div()
@@ -265,7 +265,7 @@ fn render_real_qr_grid(code: &QrCode, palette: &TdesktopThemePalette) -> Div {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(tg_icon(IconName::TelegramPlaneLogo, 22.0, 0xFFFFFF)),
+                .child(tg_icon(IconName::BotRobot, 22.0, 0xFFFFFF)),
         )
 }
 
@@ -283,7 +283,7 @@ fn render_waiting_qr_box(palette: &TdesktopThemePalette, lang_id: &str) -> Div {
         .justify_center()
         .gap(px(10.0))
         .p(px(16.0))
-        .child(tg_icon(IconName::TelegramPlaneLogo, 34.0, palette.accent))
+        .child(tg_icon(IconName::BotRobot, 34.0, palette.accent))
         .child(
             div()
                 .text_size(px(12.0))

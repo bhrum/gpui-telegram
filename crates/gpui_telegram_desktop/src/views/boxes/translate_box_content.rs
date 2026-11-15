@@ -18,7 +18,7 @@ pub struct TranslateBoxContent {
 impl Default for TranslateBoxContent {
     fn default() -> Self {
         Self {
-            provider_name: "Telegram AI Translate".into(),
+            provider_name: "AI Translate".into(),
             character_count: 142,
             is_expanded: false,
             lines_count: 4,

@@ -92,7 +92,7 @@ async fn reaction_impl(state: &AppState, auth: &AuthBearer, chat_id: i64, msg_id
             broadcast_chat_pts(state, ChatId(chat_id), PtsUpdate::new(
                 ChatId(chat_id), pts, 1, ev, chrono::Utc::now().timestamp_millis(),
             ));
-            (StatusCode::OK, Json(ReactionHttpResponse { success: true, chat_id, message_id: msg_id, pts, reactions: counts, details })).into_response()
+            (StatusCode::OK, Json(ReactionHttpResponse { success: true, chat_id, message_id: msg_id, pts, reactions: counts, details, status: None, reactions_authoritative: true })).into_response()
         }
         Err(e) => map_telegram_err(e),
     }

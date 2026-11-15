@@ -1,11 +1,11 @@
 use crate::client::TelegramClient;
 use crate::net::{
-    AddContactHttpRequest, AddContactHttpResponse, AuthResponse, ContactDto, EmailRegisterRequest,
-    EmailSendCodeResponse, HttpClientError, LoginRequest, PhoneSendCodeRequest,
-    PhoneSendCodeResponse, PhoneVerifyRequest, ProtoAuthResponse, ProtoUpdateProfileRequest,
-    QrPairInitResponse, QrPairPollResponse, RegisterRequest, SessionDto, StatusResponse,
-    TwoFactorSetRequest, TwoFactorStatusResponse, TwoFactorVerifyRequest, UserMeResponse,
-    UserProfileDto,
+    AddContactHttpRequest, AddContactHttpResponse, AuthResponse, BlockedUserDto, ContactDto,
+    EmailRegisterRequest, EmailSendCodeResponse, HttpClientError, LoginRequest,
+    PhoneSendCodeRequest, PhoneSendCodeResponse, PhoneVerifyRequest, ProtoAuthResponse,
+    ProtoUpdateProfileRequest, QrPairInitResponse, QrPairPollResponse, RegisterRequest,
+    SessionDto, StatusResponse, TwoFactorSetRequest, TwoFactorStatusResponse,
+    TwoFactorVerifyRequest, UserMeResponse, UserPrivacySettingsDto, UserProfileDto,
 };
 
 pub(crate) fn auth_from_proto(p: ProtoAuthResponse) -> AuthResponse {
@@ -253,5 +253,78 @@ impl TelegramClient {
     pub async fn delete_contact(&self, user_id: u64) -> std::result::Result<(), HttpClientError> {
         let token = self.require_token()?;
         self.http_client.delete_contact(&token, user_id).await
+    }
+
+    pub async fn get_my_profile(&self) -> std::result::Result<UserProfileDto, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.get_my_profile(&token).await
+    }
+
+    pub async fn revoke_other_sessions(&self) -> std::result::Result<(), HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.revoke_other_sessions(&token).await
+    }
+
+    pub async fn list_blocked_users(
+        &self,
+    ) -> std::result::Result<Vec<BlockedUserDto>, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.list_blocked_users(&token).await
+    }
+
+    pub async fn block_user(&self, user_id: u64) -> std::result::Result<BlockedUserDto, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.block_user(&token, user_id).await
+    }
+
+    pub async fn unblock_user(&self, user_id: u64) -> std::result::Result<(), HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.unblock_user(&token, user_id).await
+    }
+
+    pub async fn get_my_settings(
+        &self,
+    ) -> std::result::Result<UserPrivacySettingsDto, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.get_my_settings(&token).await
+    }
+
+    pub async fn save_my_settings(
+        &self,
+        settings: &UserPrivacySettingsDto,
+    ) -> std::result::Result<UserPrivacySettingsDto, HttpClientError> {
+        let token = self.require_token()?;
+        self.http_client.save_my_settings(&token, settings).await
+    }
+
+    pub async fn upsert_proxy(
+        &self,
+        proxy: crate::session_persistence::ProxyEndpointRecord,
+    ) -> std::result::Result<(), HttpClientError> {
+        let mut bridge = crate::session_persistence::SessionPersistenceBridge::new(
+            self.http_client.base_url.clone(),
+        );
+        if proxy.enabled {
+            for existing in &mut bridge.state.proxies {
+                existing.enabled = false;
+            }
+        }
+        if let Some(slot) = bridge.state.proxies.iter_mut().find(|p| p.id == proxy.id) {
+            *slot = proxy;
+        } else {
+            bridge.state.proxies.push(proxy);
+        }
+        bridge.save_to_disk();
+        Ok(())
+    }
+
+    pub async fn list_proxies(
+        &self,
+    ) -> std::result::Result<Vec<crate::session_persistence::ProxyEndpointRecord>, HttpClientError>
+    {
+        let bridge = crate::session_persistence::SessionPersistenceBridge::new(
+            self.http_client.base_url.clone(),
+        );
+        Ok(bridge.state.proxies)
     }
 }

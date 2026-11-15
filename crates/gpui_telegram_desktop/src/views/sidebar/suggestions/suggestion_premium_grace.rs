@@ -22,7 +22,7 @@ impl SuggestionPremiumGraceSuggestions {
             priority: SuggestionPriority::PremiumGrace,
             key: Self::KEY.to_string(),
             title: "Premium Subscription Paused".to_string(),
-            description: "Update payment method to keep Telegram Premium active.".to_string(),
+            description: "Update payment method to keep Premium active.".to_string(),
             button_text: Some("Renew".to_string()),
             action_url: Some("https://t.me/premiumbot?start=status".to_string()),
             can_close: true,

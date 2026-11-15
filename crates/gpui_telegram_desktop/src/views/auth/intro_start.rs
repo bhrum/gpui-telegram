@@ -117,7 +117,7 @@ impl IntroStart {
                     .text_size(px(23.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(palette.text_primary))
-                    .child("Telegram Desktop"),
+                    .child("AI Chat"),
             )
             .child(
                 div()
@@ -127,8 +127,8 @@ impl IntroStart {
                     .text_center()
                     .child(tr_str(
                         lang_id,
-                        "欢迎使用官方桌面端。\n快速、安全、开源的云原生即时通讯应用。",
-                        "Welcome to the official Telegram Desktop app.\nIt's fast, secure, and synced in real time.",
+                        "欢迎使用桌面端。\n快速、安全、开源的云原生即时通讯应用。",
+                        "Welcome to the AI Chat desktop app.\nIt's fast, secure, and synced in real time.",
                     )),
             )
             .child(div().mt(px(8.0)).child(cta))

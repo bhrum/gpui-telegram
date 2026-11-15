@@ -90,6 +90,13 @@ pub enum ModalDialogKind {
         title: String,
         body: String,
     },
+    ClearChatHistory {
+        peer_name: String,
+    },
+    LeaveOrDeleteChat {
+        peer_name: String,
+        is_group: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +195,10 @@ pub enum ModalActionOutcome {
         peer_name: String,
         text: String,
     },
+    ConfirmClearChatHistory {
+        also_for_peer: bool,
+    },
+    ConfirmLeaveOrDeleteChat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -78,33 +78,43 @@ impl Render for SettingsPremiumSections {
         let premium_accent = 0x9b51e0_u32;
 
         let perks = [
-            (IconName::Paperclip, "4 GB Uploads", "Send documents and media up to 4 GB each"),
-            (IconName::SendPlane, "Faster Download Speed", "Priority media and file CDN delivery"),
-            (IconName::Mic, "Voice-to-Text Transcription", "Instant transcripts for voice and video notes"),
-            (IconName::PremiumStar, "Infinite Custom Reactions", "Animated emoji status and extended reactions"),
-            (IconName::FolderAll, "Advanced Chat Management", "Default folders and unlimited Saved Messages tags"),
+            (IconName::Paperclip, tr_str(&lang, "4 GB 超大文件上传", "4 GB Uploads"), tr_str(&lang, "单个文档与媒体体积上限提升至 4 GB", "Send documents and media up to 4 GB each")),
+            (IconName::SendPlane, tr_str(&lang, "极速下载通道", "Faster Download Speed"), tr_str(&lang, "优先调度全球媒体与文件 CDN 节点", "Priority media and file CDN delivery")),
+            (IconName::Mic, tr_str(&lang, "语音转文字实时识别", "Voice-to-Text Transcription"), tr_str(&lang, "语音与视频圆圈消息一键转写文本", "Instant transcripts for voice and video notes")),
+            (IconName::PremiumStar, tr_str(&lang, "无限自定义表情回应", "Infinite Custom Reactions"), tr_str(&lang, "动态表情状态徽章与扩展互动贴纸", "Animated emoji status and extended reactions")),
+            (IconName::FolderAll, tr_str(&lang, "高级对话分组管理", "Advanced Chat Management"), tr_str(&lang, "自定义默认分组与无限收藏夹标签", "Default folders and unlimited Saved Messages tags")),
         ];
 
         settings_container(pal.clone())
             .child(settings_section_header(
                 IconName::PremiumStar,
-                tr_str(&lang, "Telegram Premium 会员", "Telegram Premium"),
-                Some(if is_active { "Active Subscriber" } else { "Subscribe to unlock exclusive features" }),
+                tr_str(&lang, "高级会员", "Premium"),
+                Some(if is_active { tr_str(&lang, "会员特权已生效", "Active Subscriber") } else { tr_str(&lang, "订阅解锁全部专属功能与更高配额", "Subscribe to unlock exclusive features") }),
                 pal.clone(),
             ))
             .child(div().flex().flex_row().gap(px(8.0)).children(self.tiers.iter().map(|tier| {
                 let months = tier.months;
                 let is_sel = months == selected;
+                let tier_title = if lang.starts_with("zh") {
+                    match tier.title {
+                        "Annual" => "年度方案",
+                        "Semi-Annual" => "半年方案",
+                        "Monthly" => "月度方案",
+                        _ => tier.title,
+                    }
+                } else {
+                    tier.title
+                };
                 div().flex_1().p(px(12.0)).rounded(px(10.0))
                     .bg(rgb(if is_sel { pal.dialogs_hover_bg } else { pal.card_bg }))
                     .border_1().border_color(rgb(if is_sel { premium_accent } else { pal.border_fg })).cursor_pointer()
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.select_tier(months); cx.notify(); }))
                     .child(div().flex().flex_col().gap(px(4.0))
                         .child(div().flex().flex_row().items_center().justify_between()
-                            .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(tier.title))
+                            .child(div().text_sm().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(tier_title))
                             .when(tier.discount_pct > 0, |el| el.child(div().px(px(5.0)).py(px(1.0)).rounded(px(4.0)).bg(rgb(pal.success)).text_xs().text_color(rgb(pal.active_button_fg)).child(format!("-{}%", tier.discount_pct)))))
-                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(premium_accent)).child(format!("${:.2}/mo", tier.price_per_month)))
-                        .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(format!("${:.2} total", tier.total_price))))
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(premium_accent)).child(if lang.starts_with("zh") { format!("${:.2}/月", tier.price_per_month) } else { format!("${:.2}/mo", tier.price_per_month) }))
+                        .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(if lang.starts_with("zh") { format!("合计 ${:.2}", tier.total_price) } else { format!("${:.2} total", tier.total_price) })))
             })))
             .child(settings_subsection_title(tr_str(&lang, "专属特权", "Included Features"), pal.clone()))
             .child(settings_card(pal.clone()).children(perks.into_iter().map(|(icon, title, desc)| {
@@ -116,7 +126,13 @@ impl Render for SettingsPremiumSections {
                 div().w_full().py(px(10.0)).rounded(px(8.0)).bg(rgb(premium_accent)).flex().items_center().justify_center()
                     .text_sm().font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg)).cursor_pointer()
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.subscribe(selected); cx.notify(); }))
-                    .child(if is_active { format!("Switch Plan ({} mo)", selected) } else { format!("Subscribe ({} mo)", selected) }),
+                    .child(if lang.starts_with("zh") {
+                        if is_active { format!("切换订阅周期 ({} 个月)", selected) } else { format!("立即开通会员 ({} 个月)", selected) }
+                    } else if is_active {
+                        format!("Switch Plan ({} mo)", selected)
+                    } else {
+                        format!("Subscribe ({} mo)", selected)
+                    }),
             )
             .into_any_element()
     }

@@ -2,7 +2,9 @@ pub mod acp_store;
 pub mod analytics_store;
 pub mod auth_store;
 pub mod chat_extras;
+pub mod computer_store;
 pub mod migrations;
+pub mod miniapp_store;
 pub mod poll_store;
 pub mod pool;
 pub mod rich_store;
@@ -177,6 +179,19 @@ impl ServerDatabase {
             let max_id: Option<i64> = conn
                 .query_row(
                     "SELECT MAX(user_id) FROM users",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_db()?;
+            Ok(max_id.unwrap_or(100_000) as u64)
+        })
+    }
+
+    pub fn get_max_human_user_id(&self) -> Result<u64> {
+        self.pool.with_conn(|conn| {
+            let max_id: Option<i64> = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(user_id), 100000) FROM users WHERE is_bot = 0 AND user_id < 500000",
                     [],
                     |row| row.get(0),
                 )

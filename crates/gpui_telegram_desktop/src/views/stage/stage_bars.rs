@@ -3,7 +3,7 @@
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 
-use crate::i18n::{tr_fmt, tr_key_or};
+use crate::i18n::{tr_fmt, tr_key_or, tr_str};
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use super::rich_meta::resolve_image_source;
 
@@ -15,8 +15,17 @@ pub enum TopBarUiAction {
     SearchClear,
     StartCall { video: bool },
     ToggleTopMoreMenu,
+    DismissTopMoreMenu,
+    ToggleTtlSubmenu,
+    SetMessageTtl(u32),
+    ViewProfile,
+    ChangeWallpaper,
+    TogglePinChat,
+    ToggleBlockPeer,
+    DeleteOrLeaveChat,
     JumpPinned,
     UnpinCurrent,
+    EnterSelectMode,
     ClearSelection,
     ForwardSelected,
     CopySelected,
@@ -27,13 +36,28 @@ pub enum TopBarUiAction {
     ToggleMuteChat,
 }
 
+fn format_ttl_badge(ttl_seconds: u32, lang_id: &str) -> String {
+    match ttl_seconds {
+        0 => tr_str(lang_id, "关闭", "Off").to_string(),
+        86_400 => tr_str(lang_id, "1 天", "1 day").to_string(),
+        604_800 => tr_str(lang_id, "1 周", "1 week").to_string(),
+        2_592_000 | 2_678_400 => tr_str(lang_id, "1 个月", "1 month").to_string(),
+        secs if secs >= 86_400 => format!("{}d", secs / 86_400),
+        secs if secs >= 3600 => format!("{}h", secs / 3600),
+        secs => format!("{}s", secs),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn render_stage_top_bar<V: 'static>(
     chat_id: Option<u64>,
     title: &str,
     subtitle: &str,
     initials: &str,
     avatar_url: Option<&str>,
+    select_mode_active: bool,
     selected_count: usize,
+    message_ttl_seconds: u32,
     search_open: bool,
     search_query: &str,
     search_match_cursor: usize,
@@ -45,14 +69,98 @@ pub fn render_stage_top_bar<V: 'static>(
     cx: &mut Context<V>,
     on_action: impl Fn(&mut V, TopBarUiAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
-    if selected_count > 0 {
+    let bar_h = px(palette.scaled_px(54.0));
+    if select_mode_active || selected_count > 0 {
         let count_str = selected_count.to_string();
         let a_fwd = on_action.clone();
         let a_cpy = on_action.clone();
         let a_del = on_action.clone();
         let a_clr = on_action.clone();
+        let left_controls = if selected_count == 0 {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(tg_icon(IconName::SelectCheck, palette.scaled_px(16.0), palette.accent))
+                .child(
+                    div()
+                        .text_size(px(palette.scaled_px(13.0)))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(palette.text_primary))
+                        .child(tr_str(lang_id, "点击消息进行多选", "Click messages to select")),
+                )
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .id("ms-fwd-btn")
+                        .px(px(14.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
+                        .bg(rgb(palette.accent))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| a_fwd(this, TopBarUiAction::ForwardSelected, cx)))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(tg_icon(IconName::Forward, 14.0, 0xFFFFFF))
+                        .child(
+                            div()
+                                .text_size(px(palette.scaled_px(12.0)))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xFFFFFF))
+                                .child(format!("{} {}", tr_key_or(lang_id, "lng_context_forward_msg", "Forward"), count_str)),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("ms-copy-btn")
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
+                        .bg(TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.14))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| a_cpy(this, TopBarUiAction::CopySelected, cx)))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(tg_icon(IconName::Copy, 14.0, palette.accent))
+                        .child(
+                            div()
+                                .text_size(px(palette.scaled_px(12.0)))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(palette.accent))
+                                .child(tr_key_or(lang_id, "lng_copy", "Copy")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("ms-del-btn")
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(6.0))
+                        .bg(TdesktopThemePalette::rgba_with_alpha(palette.danger, 0.16))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| a_del(this, TopBarUiAction::DeleteSelected, cx)))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(tg_icon(IconName::DeleteTrash, 14.0, palette.danger))
+                        .child(
+                            div()
+                                .text_size(px(palette.scaled_px(12.0)))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(palette.danger))
+                                .child(tr_key_or(lang_id, "lng_context_delete_msg", "Delete")),
+                        ),
+                )
+        };
         return div()
-            .h(px(54.0))
+            .id("stage-multiselect-bar")
+            .h(bar_h)
             .w_full()
             .px(px(14.0))
             .bg(rgb(palette.topbar_bg))
@@ -61,75 +169,7 @@ pub fn render_stage_top_bar<V: 'static>(
             .flex()
             .items_center()
             .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("ms-fwd-btn")
-                            .px(px(14.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(rgb(palette.accent))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| a_fwd(this, TopBarUiAction::ForwardSelected, cx)))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(tg_icon(IconName::Forward, 14.0, 0xFFFFFF))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(0xFFFFFF))
-                                    .child(format!("{} {}", tr_key_or(lang_id, "lng_context_forward_msg", "Forward"), count_str)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("ms-copy-btn")
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.14))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| a_cpy(this, TopBarUiAction::CopySelected, cx)))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(tg_icon(IconName::Copy, 14.0, palette.accent))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(palette.accent))
-                                    .child(tr_key_or(lang_id, "lng_copy", "Copy")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("ms-del-btn")
-                            .px(px(12.0))
-                            .py(px(6.0))
-                            .rounded(px(6.0))
-                            .bg(TdesktopThemePalette::rgba_with_alpha(palette.danger, 0.16))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| a_del(this, TopBarUiAction::DeleteSelected, cx)))
-                            .flex()
-                            .items_center()
-                            .gap(px(5.0))
-                            .child(tg_icon(IconName::DeleteTrash, 14.0, palette.danger))
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(rgb(palette.danger))
-                                    .child(tr_key_or(lang_id, "lng_context_delete_msg", "Delete")),
-                            ),
-                    ),
-            )
+            .child(left_controls)
             .child(
                 div()
                     .id("ms-cancel-btn")
@@ -139,7 +179,7 @@ pub fn render_stage_top_bar<V: 'static>(
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
                     .on_click(cx.listener(move |this, _, _, cx| a_clr(this, TopBarUiAction::ClearSelection, cx)))
-                    .text_size(px(12.0))
+                    .text_size(px(palette.scaled_px(12.0)))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(palette.accent))
                     .child(tr_key_or(lang_id, "lng_cancel", "Cancel")),
@@ -157,10 +197,11 @@ pub fn render_stage_top_bar<V: 'static>(
     let a_acall = on_action.clone();
     let a_vcall = on_action.clone();
     let a_more = on_action.clone();
+    let ttl_header_label = (message_ttl_seconds > 0).then(|| format_ttl_badge(message_ttl_seconds, lang_id));
 
-    let mut bar = div()
+    let bar = div()
         .relative()
-        .h(px(54.0))
+        .h(bar_h)
         .w_full()
         .px(px(14.0))
         .bg(rgb(palette.topbar_bg))
@@ -174,7 +215,7 @@ pub fn render_stage_top_bar<V: 'static>(
                 .id("topbar-peer-header")
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(palette.scaled_px(10.0)))
                 .flex_1()
                 .overflow_hidden()
                 .when(has_chat, |el| {
@@ -185,15 +226,15 @@ pub fn render_stage_top_bar<V: 'static>(
                 .when(has_chat, |el| {
                     el.child(
                         div()
-                            .w(px(40.0))
-                            .h(px(40.0))
+                            .w(px(palette.scaled_px(40.0)))
+                            .h(px(palette.scaled_px(40.0)))
                             .rounded_full()
                             .overflow_hidden()
                             .bg(rgb(grad_top))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(14.0))
+                            .text_size(px(palette.scaled_px(14.0)))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
                             .when_some(img_src, |av, src| av.child(img(src).size_full().object_fit(ObjectFit::Cover)))
@@ -209,16 +250,43 @@ pub fn render_stage_top_bar<V: 'static>(
                         .overflow_hidden()
                         .child(
                             div()
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(palette.text_primary))
-                                .child(title.to_string()),
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    div()
+                                        .text_size(px(palette.scaled_px(14.0)))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(palette.text_primary))
+                                        .child(title.to_string()),
+                                )
+                                .when_some(ttl_header_label, |row, ttl_lbl| {
+                                    row.child(
+                                        div()
+                                            .id("topbar-ttl-badge")
+                                            .px(px(palette.scaled_px(6.0)))
+                                            .py(px(palette.scaled_px(1.5)))
+                                            .rounded_full()
+                                            .bg(TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.16))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(3.0))
+                                            .child(tg_icon(IconName::ClockSending, palette.scaled_px(11.0), palette.accent))
+                                            .child(
+                                                div()
+                                                    .text_size(px(palette.scaled_px(10.5)))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(rgb(palette.accent))
+                                                    .child(ttl_lbl),
+                                            ),
+                                    )
+                                }),
                         )
                         .when(!subtitle.is_empty(), |el| {
                             let is_live = subtitle == "online" || subtitle.contains("typing");
                             el.child(
                                 div()
-                                    .text_size(px(12.0))
+                                    .text_size(px(palette.scaled_px(12.0)))
                                     .text_color(rgb(if is_live { palette.online_dot_fg } else { palette.text_secondary }))
                                     .child(subtitle.to_string()),
                             )
@@ -249,136 +317,416 @@ pub fn render_stage_top_bar<V: 'static>(
             )
         });
 
-    if search_open {
-        let a_prev = on_action.clone();
-        let a_next = on_action.clone();
-        let a_close = on_action.clone();
-        let match_lbl = if search_query.is_empty() {
-            tr_key_or(lang_id, "lng_dlg_filter", "Search").to_string()
-        } else if search_match_total == 0 {
-            "0 / 0".to_string()
-        } else {
-            format!("{} of {}", search_match_cursor + 1, search_match_total)
-        };
-        bar = bar.child(
+    let _ = (search_query, search_match_cursor, search_match_total, tr_fmt);
+    bar.into_any_element()
+}
+
+pub fn render_stage_search_bar<V: 'static>(
+    search_query: &str,
+    search_match_cursor: usize,
+    search_match_total: usize,
+    palette: &TdesktopThemePalette,
+    lang_id: &str,
+    cx: &mut Context<V>,
+    on_action: impl Fn(&mut V, TopBarUiAction, &mut Context<V>) + Clone + 'static,
+) -> AnyElement {
+    let a_prev = on_action.clone();
+    let a_next = on_action.clone();
+    let a_close = on_action;
+    let match_lbl = if search_query.is_empty() {
+        tr_str(lang_id, "输入关键词搜索", "Type to search").to_string()
+    } else if search_match_total == 0 {
+        tr_str(lang_id, "无匹配结果", "0 / 0").to_string()
+    } else {
+        format!("{} / {}", search_match_cursor + 1, search_match_total)
+    };
+    let display_text = if search_query.is_empty() {
+        tr_str(lang_id, "| 搜索当前对话消息…", "| Search messages in this chat…").to_string()
+    } else {
+        format!("{}|", search_query)
+    };
+
+    div()
+        .id("stage-in-chat-search-bar")
+        .h(px(44.0))
+        .w_full()
+        .flex_shrink_0()
+        .px(px(14.0))
+        .bg(rgb(palette.topbar_bg))
+        .border_b_1()
+        .border_color(rgb(palette.border_fg))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .child(
             div()
-                .absolute()
-                .top(px(54.0))
-                .left_0()
-                .right_0()
-                .h(px(44.0))
-                .px(px(14.0))
-                .bg(rgb(palette.topbar_bg))
-                .border_b_1()
-                .border_color(rgb(palette.border_fg))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .flex_1()
+                .child(tg_icon(IconName::Search, 15.0, palette.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(8.0))
+                        .bg(rgb(palette.input_bg))
+                        .border_1()
+                        .border_color(rgb(palette.accent))
+                        .text_size(px(13.0))
+                        .text_color(if search_query.is_empty() {
+                            rgb(palette.text_secondary)
+                        } else {
+                            rgb(palette.text_primary)
+                        })
+                        .child(display_text),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(palette.text_secondary))
+                        .child(match_lbl),
+                )
+                .child(
+                    div()
+                        .id("search-prev-btn")
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                a_prev(this, TopBarUiAction::SearchStep(-1), cx);
+                            }),
+                        )
+                        .text_size(px(12.0))
+                        .text_color(rgb(palette.icon_fg))
+                        .child("▲"),
+                )
+                .child(
+                    div()
+                        .id("search-next-btn")
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                a_next(this, TopBarUiAction::SearchStep(1), cx);
+                            }),
+                        )
+                        .text_size(px(12.0))
+                        .text_color(rgb(palette.icon_fg))
+                        .child("▼"),
+                )
+                .child(
+                    div()
+                        .id("search-close-btn")
+                        .p(px(5.0))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                a_close(this, TopBarUiAction::SearchClear, cx);
+                            }),
+                        )
+                        .child(tg_icon(IconName::Close, 14.0, palette.icon_fg)),
+                ),
+        )
+        .into_any_element()
+}
+
+pub fn render_stage_more_menu_overlay<V: 'static>(
+    is_group_chat: bool,
+    can_block_peer: bool,
+    is_muted_chat: bool,
+    is_pinned_chat: bool,
+    is_peer_blocked: bool,
+    message_ttl_seconds: u32,
+    ttl_submenu_open: bool,
+    palette: &TdesktopThemePalette,
+    lang_id: &str,
+    cx: &mut Context<V>,
+    on_action: impl Fn(&mut V, TopBarUiAction, &mut Context<V>) + Clone + 'static,
+) -> AnyElement {
+    let a_dismiss = on_action.clone();
+    let a_mute = on_action.clone();
+    let a_prof = on_action.clone();
+    let a_srch = on_action.clone();
+    let a_sel = on_action.clone();
+    let a_ttl_toggle = on_action.clone();
+    let a_wall = on_action.clone();
+    let a_pin = on_action.clone();
+    let a_exp = on_action.clone();
+    let a_clr = on_action.clone();
+    let a_blk = on_action.clone();
+    let a_del = on_action.clone();
+
+    let mute_label = if is_muted_chat {
+        tr_str(lang_id, "开启通知", "Unmute notifications")
+    } else {
+        tr_str(lang_id, "静音通知", "Mute notifications")
+    };
+    let profile_label = if is_group_chat {
+        tr_str(lang_id, "查看群组信息", "View group info")
+    } else {
+        tr_str(lang_id, "查看个人资料", "View profile")
+    };
+    let pin_label = if is_pinned_chat {
+        tr_str(lang_id, "取消置顶对话", "Unpin chat")
+    } else {
+        tr_str(lang_id, "置顶对话", "Pin chat")
+    };
+    let block_label = if is_peer_blocked {
+        tr_str(lang_id, "取消屏蔽用户", "Unblock user")
+    } else {
+        tr_str(lang_id, "屏蔽用户", "Block user")
+    };
+    let delete_label = if is_group_chat {
+        tr_str(lang_id, "退出并删除群组", "Leave group")
+    } else {
+        tr_str(lang_id, "删除对话", "Delete chat")
+    };
+    let ttl_badge = format_ttl_badge(message_ttl_seconds, lang_id);
+    let hover_bg = palette.menu_hover_bg;
+    let pal = *palette;
+
+    let ttl_options: [(u32, &'static str, &'static str); 4] = [
+        (0, "关闭", "Off"),
+        (86_400, "1 天", "1d"),
+        (604_800, "1 周", "1w"),
+        (2_592_000, "1 月", "1m"),
+    ];
+
+    let dropdown = div()
+        .id("topbar-more-dropdown")
+        .absolute()
+        .top(px(50.0))
+        .right(px(12.0))
+        .w(px(238.0))
+        .p(px(6.0))
+        .rounded(px(12.0))
+        .bg(rgb(pal.menu_bg))
+        .border_1()
+        .border_color(rgb(pal.border_fg))
+        .shadow_xl()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+            }),
+        )
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(more_menu_item(
+            "tb-menu-mute",
+            if is_muted_chat { IconName::Speaker } else { IconName::Mute },
+            mute_label,
+            false,
+            palette,
+            cx,
+            move |this, cx| a_mute(this, TopBarUiAction::ToggleMuteChat, cx),
+        ))
+        .child(more_menu_item(
+            "tb-menu-profile",
+            IconName::ContactsUsers,
+            profile_label,
+            false,
+            palette,
+            cx,
+            move |this, cx| a_prof(this, TopBarUiAction::ViewProfile, cx),
+        ))
+        .child(more_menu_item(
+            "tb-menu-search",
+            IconName::Search,
+            tr_str(lang_id, "搜索聊天记录", "Search in chat"),
+            false,
+            palette,
+            cx,
+            move |this, cx| a_srch(this, TopBarUiAction::ToggleSearch, cx),
+        ))
+        .child(more_menu_item(
+            "tb-menu-select",
+            IconName::SelectCheck,
+            tr_str(lang_id, "选择消息", "Select messages"),
+            false,
+            palette,
+            cx,
+            move |this, cx| a_sel(this, TopBarUiAction::EnterSelectMode, cx),
+        ))
+        .child(
+            div()
+                .id("tb-menu-ttl")
+                .w_full()
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(rgb(hover_bg)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        a_ttl_toggle(this, TopBarUiAction::ToggleTtlSubmenu, cx);
+                    }),
+                )
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(px(8.0))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .flex_1()
-                        .child(tg_icon(IconName::Search, 15.0, palette.icon_fg))
+                        .gap(px(10.0))
+                        .child(tg_icon(IconName::ClockSending, 15.0, pal.icon_fg))
                         .child(
                             div()
-                                .flex_1()
-                                .px(px(10.0))
-                                .py(px(5.0))
-                                .rounded(px(8.0))
-                                .bg(rgb(palette.input_bg))
                                 .text_size(px(13.0))
-                                .text_color(if search_query.is_empty() {
-                                    rgb(palette.text_secondary)
-                                } else {
-                                    rgb(palette.text_primary)
-                                })
-                                .child(if search_query.is_empty() {
-                                    "Search in chat... (type to filter)".to_string()
-                                } else {
-                                    search_query.to_string()
-                                }),
+                                .text_color(rgb(pal.text_primary))
+                                .child(tr_str(lang_id, "自动删除消息", "Auto-delete").to_string()),
                         ),
                 )
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(div().text_size(px(11.0)).text_color(rgb(palette.text_secondary)).child(match_lbl))
-                        .child(
-                            div()
-                                .id("search-prev-btn")
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
-                                .on_click(cx.listener(move |this, _, _, cx| a_prev(this, TopBarUiAction::SearchStep(-1), cx)))
-                                .text_size(px(12.0))
-                                .text_color(rgb(palette.icon_fg))
-                                .child("▲"),
-                        )
-                        .child(
-                            div()
-                                .id("search-next-btn")
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .rounded(px(4.0))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
-                                .on_click(cx.listener(move |this, _, _, cx| a_next(this, TopBarUiAction::SearchStep(1), cx)))
-                                .text_size(px(12.0))
-                                .text_color(rgb(palette.icon_fg))
-                                .child("▼"),
-                        )
-                        .child(
-                            div()
-                                .id("search-close-btn")
-                                .p(px(5.0))
-                                .rounded_full()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(rgb(palette.menu_hover_bg)))
-                                .on_click(cx.listener(move |this, _, _, cx| a_close(this, TopBarUiAction::SearchClear, cx)))
-                                .child(tg_icon(IconName::Close, 14.0, palette.icon_fg)),
-                        ),
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(pal.accent))
+                        .child(ttl_badge),
                 ),
-        );
-    }
+        )
+        .when(ttl_submenu_open, |el| {
+            el.child(
+                div()
+                    .w_full()
+                    .px(px(6.0))
+                    .py(px(4.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(pal.input_bg))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .children(ttl_options.into_iter().map(|(secs, zh_lbl, en_lbl)| {
+                        let is_sel = message_ttl_seconds == secs;
+                        let a_set = on_action.clone();
+                        let lbl = tr_str(lang_id, zh_lbl, en_lbl).to_string();
+                        div()
+                            .cursor_pointer()
+                            .flex_1()
+                            .py(px(4.0))
+                            .rounded(px(6.0))
+                            .bg(if is_sel { rgb(pal.accent) } else { rgb(pal.card_bg) })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(if is_sel {
+                                rgb(pal.active_button_fg)
+                            } else {
+                                rgb(pal.text_primary)
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    a_set(this, TopBarUiAction::SetMessageTtl(secs), cx);
+                                }),
+                            )
+                            .child(lbl)
+                    })),
+            )
+        })
+        .child(more_menu_item(
+            "tb-menu-wallpaper",
+            IconName::SunDay,
+            tr_str(lang_id, "更换聊天背景", "Change wallpaper"),
+            false,
+            palette,
+            cx,
+            move |this, cx| a_wall(this, TopBarUiAction::ChangeWallpaper, cx),
+        ))
+        .child(more_menu_item(
+            "tb-menu-pin-chat",
+            IconName::Pin,
+            pin_label,
+            false,
+            palette,
+            cx,
+            move |this, cx| a_pin(this, TopBarUiAction::TogglePinChat, cx),
+        ))
+        .child(more_menu_item(
+            "tb-menu-export",
+            IconName::FileDoc,
+            tr_str(lang_id, "导出聊天记录", "Export chat history"),
+            false,
+            palette,
+            cx,
+            move |this, cx| a_exp(this, TopBarUiAction::ExportChat, cx),
+        ))
+        .child(div().h(px(1.0)).my(px(3.0)).bg(rgb(pal.border_fg)))
+        .child(more_menu_item(
+            "tb-menu-clear",
+            IconName::Edit,
+            tr_str(lang_id, "清空聊天记录", "Clear history"),
+            false,
+            palette,
+            cx,
+            move |this, cx| a_clr(this, TopBarUiAction::ClearHistory, cx),
+        ))
+        .when(can_block_peer, |el| {
+            el.child(more_menu_item(
+                "tb-menu-block",
+                IconName::Lock,
+                block_label,
+                !is_peer_blocked,
+                palette,
+                cx,
+                move |this, cx| a_blk(this, TopBarUiAction::ToggleBlockPeer, cx),
+            ))
+        })
+        .child(more_menu_item(
+            "tb-menu-delete-chat",
+            IconName::DeleteTrash,
+            delete_label,
+            true,
+            palette,
+            cx,
+            move |this, cx| a_del(this, TopBarUiAction::DeleteOrLeaveChat, cx),
+        ));
 
-    if more_menu_open {
-        let a_mute = on_action.clone();
-        let a_srch = on_action.clone();
-        let a_exp = on_action.clone();
-        let a_clr = on_action.clone();
-        bar = bar.child(
-            div()
-                .id("topbar-more-dropdown")
-                .absolute()
-                .top(px(52.0))
-                .right(px(14.0))
-                .w(px(208.0))
-                .p(px(6.0))
-                .rounded(px(10.0))
-                .bg(rgb(palette.menu_bg))
-                .border_1()
-                .border_color(rgb(palette.border_fg))
-                .shadow_lg()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(more_menu_item("tb-menu-search", IconName::Search, tr_key_or(lang_id, "lng_dlg_filter", "Search"), false, palette, cx, move |this, cx| a_srch(this, TopBarUiAction::ToggleSearch, cx)))
-                .child(more_menu_item("tb-menu-mute", IconName::Mute, tr_key_or(lang_id, "lng_profile_mute_notifications", "Mute / Unmute"), false, palette, cx, move |this, cx| a_mute(this, TopBarUiAction::ToggleMuteChat, cx)))
-                .child(more_menu_item("tb-menu-export", IconName::FileDoc, tr_key_or(lang_id, "lng_profile_export_chat", "Export chat history"), false, palette, cx, move |this, cx| a_exp(this, TopBarUiAction::ExportChat, cx)))
-                .child(div().h(px(1.0)).my(px(3.0)).bg(rgb(palette.border_fg)))
-                .child(more_menu_item("tb-menu-clear", IconName::DeleteTrash, tr_key_or(lang_id, "lng_profile_clear_history", "Clear history"), true, palette, cx, move |this, cx| a_clr(this, TopBarUiAction::ClearHistory, cx))),
-        );
-    }
-
-    let _ = tr_fmt;
-    bar.into_any_element()
+    div()
+        .id("topbar-more-backdrop")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                a_dismiss(this, TopBarUiAction::DismissTopMoreMenu, cx);
+            }),
+        )
+        .child(deferred(dropdown).with_priority(40))
+        .into_any_element()
 }
 
 fn more_menu_item<V: 'static>(
@@ -401,7 +749,13 @@ fn more_menu_item<V: 'static>(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(move |s| s.bg(rgb(hover_bg)))
-        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                on_click(this, cx);
+            }),
+        )
         .flex()
         .items_center()
         .gap(px(10.0))
@@ -430,7 +784,13 @@ fn top_icon_btn<V: 'static>(
         .justify_center()
         .cursor_pointer()
         .hover(move |s| s.bg(rgb(hover_bg)))
-        .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                on_click(this, cx);
+            }),
+        )
         .child(tg_icon(icon, 18.0, color))
         .into_any_element()
 }

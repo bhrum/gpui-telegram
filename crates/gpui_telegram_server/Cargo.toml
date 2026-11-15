@@ -38,6 +38,12 @@ subtle = "2.6"
 futures = { workspace = true }
 tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+zeroize = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
+gpui_telegram_client = { workspace = true }
+tempfile = "3"

@@ -61,13 +61,13 @@ impl IntroStep {
     pub fn new(step_type: IntroStepType) -> Self {
         let (title, description, has_cover) = match step_type {
             IntroStepType::Start => (
-                "Telegram Desktop".to_string(),
+                "AI Chat".to_string(),
                 "The world's fastest messaging app. Free and secure.".to_string(),
                 true,
             ),
             IntroStepType::Qr => (
-                "Log in to Telegram by QR Code".to_string(),
-                "Scan from Telegram on your phone".to_string(),
+                "Log in by QR Code".to_string(),
+                "Scan from the app on your phone".to_string(),
                 false,
             ),
             IntroStepType::Phone => (

@@ -22,6 +22,7 @@ pub struct SettingsBlockedPeersSections {
     pub blocked_list: Vec<BlockedPeerItem>,
     pub search_query: String,
     pub is_loading: bool,
+    pub pending_unblock_user_id: Option<u64>,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
 }
@@ -32,6 +33,7 @@ impl SettingsBlockedPeersSections {
             blocked_list: Vec::new(),
             search_query: String::new(),
             is_loading: false,
+            pending_unblock_user_id: None,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
         }
@@ -50,7 +52,11 @@ impl SettingsBlockedPeersSections {
     pub fn unblock_peer(&mut self, user_id: u64) -> bool {
         let initial_len = self.blocked_list.len();
         self.blocked_list.retain(|p| p.user_id != user_id);
-        self.blocked_list.len() < initial_len
+        let removed = self.blocked_list.len() < initial_len;
+        if removed {
+            self.pending_unblock_user_id = Some(user_id);
+        }
+        removed
     }
 
     pub fn set_search_query(&mut self, query: impl Into<String>) {
@@ -81,9 +87,15 @@ impl Render for SettingsBlockedPeersSections {
         let lang = &self.language_id;
         let peers: Vec<BlockedPeerItem> = self.filtered_peers().into_iter().cloned().collect();
 
+        let count_desc = if lang.starts_with("zh") {
+            format!("{} 位用户", peers.len())
+        } else {
+            format!("{} users", peers.len())
+        };
+
         settings_container(pal)
             .child(settings_card(pal)
-                .child(settings_section_header(IconName::Close, tr_str(lang, "已屏蔽用户", "Blocked Users"), Some(&format!("{} users", peers.len())), pal))
+                .child(settings_section_header(IconName::Close, tr_str(lang, "已屏蔽用户", "Blocked Users"), Some(&count_desc), pal))
                 .map(|el| {
                     if peers.is_empty() {
                         el.child(settings_empty_state(IconName::ContactsUsers, tr_str(lang, "暂无屏蔽用户", "No blocked users yet"), pal))

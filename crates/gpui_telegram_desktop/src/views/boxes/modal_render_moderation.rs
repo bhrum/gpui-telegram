@@ -123,7 +123,15 @@ pub fn render_pin_message<V: 'static>(
             div()
                 .text_size(px(13.5))
                 .text_color(rgb(pal.text_primary))
-                .child(pin_box.confirmation_text()),
+                .child(if lang.starts_with("zh") {
+                    if is_group {
+                        "确定要在该群组中置顶此消息吗？".to_string()
+                    } else {
+                        "确定要在此对话中置顶这条消息吗？".to_string()
+                    }
+                } else {
+                    pin_box.confirmation_text()
+                }),
         )
         .child(modal_toggle_chip(
             if is_group {
@@ -246,7 +254,20 @@ pub fn render_report_message<V: 'static>(
                             12.0,
                             if active { pal.danger } else { pal.text_secondary },
                         ))
-                        .child(reason.title())
+                        .child(if lang.starts_with("zh") {
+                            match reason {
+                                ReportReason::Spam => "垃圾广告",
+                                ReportReason::Violence => "暴力内容",
+                                ReportReason::Pornography => "色情低俗",
+                                ReportReason::ChildAbuse => "未成年人不当内容",
+                                ReportReason::Copyright => "侵犯版权",
+                                ReportReason::IllegalDrugs => "违禁物品",
+                                ReportReason::PersonalDetails => "泄露个人隐私",
+                                ReportReason::Other => "其他原因",
+                            }
+                        } else {
+                            reason.title()
+                        })
                 })),
         )
         .child(modal_field(
@@ -286,7 +307,9 @@ pub fn render_report_message<V: 'static>(
                                 }
                                 rb.set_comment(&d.primary_input);
                                 if !rb.can_submit() {
-                                    d.validation_error = Some("Select a report reason (and comment for Other)".into());
+                                    d.validation_error = Some(
+                                        tr_str(&d.language_id, "请选择举报原因（若选“其他”请填写说明）", "Select a report reason (and comment for Other)").into(),
+                                    );
                                     cx.notify();
                                     return;
                                 }
@@ -301,6 +324,156 @@ pub fn render_report_message<V: 'static>(
                             }),
                         )
                         .child(tr_str(lang, "提交举报", "Report").to_string()),
+                ),
+        )
+        .into_any_element()
+}
+
+pub fn render_clear_chat_history<V: 'static>(
+    dlg: &ActiveModalDialog,
+    peer_name: String,
+    access: DialogMut<V>,
+    on_close: DialogClose<V>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let pal = dlg.palette;
+    let lang = &dlg.language_id;
+    let also_for_peer = dlg.flag_a;
+
+    modal_card(390.0, pal)
+        .child(modal_header(
+            IconName::DeleteTrash,
+            tr_str(lang, "清空聊天记录", "Clear History"),
+            pal,
+            on_close,
+            cx,
+        ))
+        .child(
+            div()
+                .text_size(px(13.5))
+                .text_color(rgb(pal.text_primary))
+                .child(if lang.starts_with("zh") {
+                    format!("确定要清空与「{}」的所有聊天记录吗？此操作无法撤销。", peer_name)
+                } else {
+                    format!("Are you sure you want to clear all message history with \"{}\"?", peer_name)
+                }),
+        )
+        .child(modal_toggle_chip(
+            &format!("{} {}", tr_str(lang, "同时为对方清空", "Also clear for"), peer_name),
+            also_for_peer,
+            pal,
+            move |this| {
+                let d = access(this);
+                d.flag_a = !d.flag_a;
+            },
+            cx,
+        ))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(modal_footer_cancel(lang, pal, on_close, cx))
+                .child(
+                    div()
+                        .id("modal-confirm-clear-history-btn")
+                        .cursor_pointer()
+                        .px(px(16.0))
+                        .py(px(7.0))
+                        .rounded(px(8.0))
+                        .bg(rgb(pal.danger))
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(pal.active_button_fg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                let d = access(this);
+                                d.pending_outcome = Some(ModalActionOutcome::ConfirmClearChatHistory {
+                                    also_for_peer: d.flag_a,
+                                });
+                                on_close(this);
+                                cx.notify();
+                            }),
+                        )
+                        .child(tr_str(lang, "清空", "Clear").to_string()),
+                ),
+        )
+        .into_any_element()
+}
+
+pub fn render_leave_or_delete_chat<V: 'static>(
+    dlg: &ActiveModalDialog,
+    peer_name: String,
+    is_group: bool,
+    access: DialogMut<V>,
+    on_close: DialogClose<V>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let pal = dlg.palette;
+    let lang = &dlg.language_id;
+    let header_title = if is_group {
+        tr_str(lang, "退出并删除群组", "Leave Group")
+    } else {
+        tr_str(lang, "删除对话", "Delete Chat")
+    };
+    let confirm_label = if is_group {
+        tr_str(lang, "退出群组", "Leave")
+    } else {
+        tr_str(lang, "删除", "Delete")
+    };
+
+    modal_card(390.0, pal)
+        .child(modal_header(
+            IconName::DeleteTrash,
+            header_title,
+            pal,
+            on_close,
+            cx,
+        ))
+        .child(
+            div()
+                .text_size(px(13.5))
+                .text_color(rgb(pal.text_primary))
+                .child(if lang.starts_with("zh") {
+                    if is_group {
+                        format!("确定要退出群组「{}」并从会话列表移除吗？", peer_name)
+                    } else {
+                        format!("确定要删除与「{}」的对话及全部消息记录吗？", peer_name)
+                    }
+                } else if is_group {
+                    format!("Are you sure you want to leave \"{}\"?", peer_name)
+                } else {
+                    format!("Are you sure you want to delete the chat with \"{}\"?", peer_name)
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(px(8.0))
+                .child(modal_footer_cancel(lang, pal, on_close, cx))
+                .child(
+                    div()
+                        .id("modal-confirm-delete-chat-btn")
+                        .cursor_pointer()
+                        .px(px(16.0))
+                        .py(px(7.0))
+                        .rounded(px(8.0))
+                        .bg(rgb(pal.danger))
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(pal.active_button_fg))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                let d = access(this);
+                                d.pending_outcome = Some(ModalActionOutcome::ConfirmLeaveOrDeleteChat);
+                                on_close(this);
+                                cx.notify();
+                            }),
+                        )
+                        .child(confirm_label.to_string()),
                 ),
         )
         .into_any_element()

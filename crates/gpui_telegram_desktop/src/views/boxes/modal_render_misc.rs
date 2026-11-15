@@ -294,8 +294,8 @@ pub fn render_about_telegram<V: 'static>(
 
     modal_card(400.0, pal)
         .child(modal_header(
-            IconName::TelegramPlaneLogo,
-            tr_str(lang, "关于 Telegram GPUI", "About Telegram Desktop"),
+            IconName::BotRobot,
+            tr_str(lang, "关于 AI Chat", "About AI Chat"),
             pal,
             on_close,
             cx,
@@ -305,7 +305,7 @@ pub fn render_about_telegram<V: 'static>(
                 .flex()
                 .items_center()
                 .gap(px(12.0))
-                .child(tg_icon(IconName::TelegramPlaneLogo, 40.0, pal.accent))
+                .child(tg_icon(IconName::BotRobot, 40.0, pal.accent))
                 .child(
                     div()
                         .flex()
@@ -315,7 +315,7 @@ pub fn render_about_telegram<V: 'static>(
                                 .text_size(px(15.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(rgb(pal.text_primary))
-                                .child("Telegram Desktop GPUI"),
+                                .child("AI Chat Desktop"),
                         )
                         .child(
                             div()

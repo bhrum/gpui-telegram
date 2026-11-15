@@ -29,7 +29,7 @@ pub struct SendCreditsBox {
 impl Default for SendCreditsBox {
     fn default() -> Self {
         Self {
-            invoice_title: "Purchase with Telegram Stars".to_string(),
+            invoice_title: "Purchase with Stars".to_string(),
             stars_amount: 50,
             user_balance_stars: 200,
             paid_media: None,

@@ -2,7 +2,8 @@ use crate::db::{ServerDatabase, SqliteResultExt};
 use gpui_telegram_core::error::{Result, TelegramError};
 use gpui_telegram_core::types::{ChatId, MsgId, UserId};
 use gpui_telegram_proto::contracts::{
-    ContactDto, DraftDto, FolderDto, InviteLinkDto, UpsertFolderRequest,
+    BlockedUserDto, ContactDto, DraftDto, FolderDto, InviteLinkDto, UpsertFolderRequest,
+    UserPrivacySettingsDto,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
@@ -339,6 +340,318 @@ impl ServerDatabase {
                     reply_to_msg_id: r.get(2)?, date_ms: r.get(3)?,
                 }),
             ).optional().map_db()
+        })
+    }
+
+    pub fn clear_chat_history(&self, chat_id: ChatId, user_id: UserId) -> Result<usize> {
+        self.clear_chat_history_with_ids(chat_id, user_id)
+            .map(|ids| ids.len())
+    }
+
+    pub fn clear_chat_history_with_ids(
+        &self,
+        chat_id: ChatId,
+        user_id: UserId,
+    ) -> Result<Vec<MsgId>> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_transaction(|tx| {
+            let ids: Vec<MsgId> = {
+                let mut stmt = tx
+                    .prepare("SELECT message_id FROM messages WHERE chat_id = ?1 ORDER BY message_id ASC")
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![chat_id.0], |r| Ok(MsgId(r.get(0)?)))
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| TelegramError::Database(e.to_string()))?
+            };
+            tx.execute("DELETE FROM messages WHERE chat_id = ?1", params![chat_id.0])
+                .map_err(|e| TelegramError::Database(e.to_string()))?;
+            let _ = tx.execute(
+                "DELETE FROM message_reactions WHERE chat_id = ?1",
+                params![chat_id.0],
+            );
+            let _ = tx.execute(
+                "DELETE FROM pinned_messages WHERE chat_id = ?1",
+                params![chat_id.0],
+            );
+            tx.execute(
+                "UPDATE chats SET last_message_id = 0, last_message_date_ms = 0, pinned_message_id = NULL, unread_count = 0, updated_at_ms = ?1 WHERE chat_id = ?2",
+                params![now_ms, chat_id.0],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            let _ = tx.execute(
+                "UPDATE read_states SET unread_count = 0, updated_at_ms = ?1 WHERE chat_id = ?2 AND user_id = ?3",
+                params![now_ms, chat_id.0, user_id.0 as i64],
+            );
+            Ok(ids)
+        })
+    }
+
+    pub fn purge_expired_ttl_messages(&self, now_ms: i64) -> Result<Vec<(ChatId, Vec<MsgId>)>> {
+        let expired_pairs: Vec<(i64, i64)> = self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"SELECT m.chat_id, m.message_id
+                       FROM messages m
+                       JOIN chats c ON c.chat_id = m.chat_id
+                       WHERE c.message_ttl_seconds > 0
+                         AND (m.date_ms + (c.message_ttl_seconds * 1000)) <= ?1
+                       ORDER BY m.chat_id ASC, m.message_id ASC"#,
+                )
+                .map_db()?;
+            let rows = stmt
+                .query_map(params![now_ms], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_db()?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_db()
+        })?;
+
+        if expired_pairs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.pool.with_transaction(|tx| {
+            let mut grouped: Vec<(ChatId, Vec<MsgId>)> = Vec::new();
+            for (cid, mid) in expired_pairs {
+                let n = tx
+                    .execute(
+                        "DELETE FROM messages WHERE chat_id = ?1 AND message_id = ?2",
+                        params![cid, mid],
+                    )
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                if n > 0 {
+                    let _ = tx.execute(
+                        "DELETE FROM message_reactions WHERE chat_id = ?1 AND message_id = ?2",
+                        params![cid, mid],
+                    );
+                    let _ = tx.execute(
+                        "DELETE FROM pinned_messages WHERE chat_id = ?1 AND message_id = ?2",
+                        params![cid, mid],
+                    );
+                    if let Some((last_cid, list)) = grouped.last_mut() {
+                        if last_cid.0 == cid {
+                            list.push(MsgId(mid));
+                            continue;
+                        }
+                    }
+                    grouped.push((ChatId(cid), vec![MsgId(mid)]));
+                }
+            }
+
+            for (chat_id, _) in &grouped {
+                let latest: Option<(i64, i64)> = tx
+                    .query_row(
+                        r#"SELECT message_id, date_ms
+                           FROM messages
+                           WHERE chat_id = ?1 AND deleted_at_ms IS NULL
+                           ORDER BY message_id DESC
+                           LIMIT 1"#,
+                        params![chat_id.0],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                let (last_mid, last_date) = latest.unwrap_or((0, 0));
+                let pinned_ids = Self::query_pinned_ids_tx(tx, *chat_id)?;
+                let latest_pin = pinned_ids.first().copied();
+                tx.execute(
+                    "UPDATE chats SET last_message_id = ?1, last_message_date_ms = ?2, pinned_message_id = ?3, updated_at_ms = ?4 WHERE chat_id = ?5",
+                    params![last_mid, last_date, latest_pin, now_ms, chat_id.0],
+                )
+                .map_err(|e| TelegramError::Database(e.to_string()))?;
+            }
+
+            Ok(grouped)
+        })
+    }
+
+    pub fn leave_or_delete_chat(&self, chat_id: ChatId, user_id: UserId) -> Result<bool> {
+        self.pool.with_transaction(|tx| {
+            let chat_info: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT chat_type, creator_id FROM chats WHERE chat_id = ?1",
+                    params![chat_id.0],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| TelegramError::Database(e.to_string()))?;
+            let Some((chat_type, creator_id)) = chat_info else {
+                return Ok(false);
+            };
+            if matches!(chat_type, 0 | 4 | 5) || creator_id == user_id.0 as i64 {
+                let n = tx
+                    .execute("DELETE FROM chats WHERE chat_id = ?1", params![chat_id.0])
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                Ok(n > 0)
+            } else {
+                let n = tx
+                    .execute(
+                        "DELETE FROM chat_members WHERE chat_id = ?1 AND user_id = ?2",
+                        params![chat_id.0, user_id.0 as i64],
+                    )
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+                let _ = tx.execute(
+                    "DELETE FROM user_chat_settings WHERE chat_id = ?1 AND user_id = ?2",
+                    params![chat_id.0, user_id.0 as i64],
+                );
+                Ok(n > 0)
+            }
+        })
+    }
+
+    pub fn set_chat_ttl(&self, chat_id: ChatId, ttl_seconds: u32) -> Result<u32> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "UPDATE chats SET message_ttl_seconds = ?1, updated_at_ms = ?2 WHERE chat_id = ?3",
+                params![ttl_seconds as i64, now_ms, chat_id.0],
+            )
+            .map_db()?;
+            Ok(ttl_seconds)
+        })
+    }
+
+    pub fn get_chat_ttl(&self, chat_id: ChatId) -> Result<u32> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT message_ttl_seconds FROM chats WHERE chat_id = ?1",
+                params![chat_id.0],
+                |r| Ok(r.get::<_, i64>(0)?.max(0) as u32),
+            )
+            .optional()
+            .map_db()
+            .map(|o| o.unwrap_or(0))
+        })
+    }
+
+    pub fn block_user(&self, owner: UserId, target: UserId) -> Result<BlockedUserDto> {
+        if owner == target {
+            return Err(TelegramError::Validation("Cannot block yourself".into()));
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM users WHERE user_id = ?1)",
+                    params![target.0 as i64],
+                    |r| r.get(0),
+                )
+                .map_db()?;
+            if !exists {
+                return Err(TelegramError::NotFound("Target user not found".into()));
+            }
+            conn.execute(
+                r#"INSERT INTO blocked_users (owner_user_id, blocked_user_id, blocked_at_ms)
+                   VALUES (?1, ?2, ?3)
+                   ON CONFLICT(owner_user_id, blocked_user_id) DO UPDATE SET blocked_at_ms = excluded.blocked_at_ms"#,
+                params![owner.0 as i64, target.0 as i64, now_ms],
+            )
+            .map_db()?;
+            conn.query_row(
+                r#"SELECT u.user_id, u.first_name, u.last_name, u.username, u.phone, b.blocked_at_ms
+                   FROM blocked_users b JOIN users u ON u.user_id = b.blocked_user_id
+                   WHERE b.owner_user_id = ?1 AND b.blocked_user_id = ?2"#,
+                params![owner.0 as i64, target.0 as i64],
+                |r| {
+                    Ok(BlockedUserDto {
+                        user_id: r.get::<_, i64>(0)? as u64,
+                        first_name: r.get(1)?,
+                        last_name: r.get(2)?,
+                        username: r.get(3)?,
+                        phone: r.get(4)?,
+                        blocked_at_ms: r.get(5)?,
+                    })
+                },
+            )
+            .map_db()
+        })
+    }
+
+    pub fn unblock_user(&self, owner: UserId, target: UserId) -> Result<bool> {
+        self.pool.with_conn(|conn| {
+            let n = conn
+                .execute(
+                    "DELETE FROM blocked_users WHERE owner_user_id = ?1 AND blocked_user_id = ?2",
+                    params![owner.0 as i64, target.0 as i64],
+                )
+                .map_db()?;
+            Ok(n > 0)
+        })
+    }
+
+    pub fn is_user_blocked(&self, owner: UserId, target: UserId) -> Result<bool> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM blocked_users WHERE owner_user_id = ?1 AND blocked_user_id = ?2)",
+                params![owner.0 as i64, target.0 as i64],
+                |r| r.get(0),
+            )
+            .map_db()
+        })
+    }
+
+    pub fn list_blocked_users(&self, owner: UserId) -> Result<Vec<BlockedUserDto>> {
+        self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"SELECT u.user_id, u.first_name, u.last_name, u.username, u.phone, b.blocked_at_ms
+                       FROM blocked_users b JOIN users u ON u.user_id = b.blocked_user_id
+                       WHERE b.owner_user_id = ?1
+                       ORDER BY b.blocked_at_ms DESC"#,
+                )
+                .map_db()?;
+            let rows = stmt
+                .query_map(params![owner.0 as i64], |r| {
+                    Ok(BlockedUserDto {
+                        user_id: r.get::<_, i64>(0)? as u64,
+                        first_name: r.get(1)?,
+                        last_name: r.get(2)?,
+                        username: r.get(3)?,
+                        phone: r.get(4)?,
+                        blocked_at_ms: r.get(5)?,
+                    })
+                })
+                .map_db()?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_db()
+        })
+    }
+
+    pub fn get_user_privacy_settings(&self, user_id: UserId) -> Result<UserPrivacySettingsDto> {
+        self.pool.with_conn(|conn| {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT settings_json FROM user_privacy_settings WHERE user_id = ?1",
+                    params![user_id.0 as i64],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_db()?;
+            match raw {
+                Some(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+                None => Ok(UserPrivacySettingsDto::default()),
+            }
+        })
+    }
+
+    pub fn save_user_privacy_settings(
+        &self,
+        user_id: UserId,
+        settings: &UserPrivacySettingsDto,
+    ) -> Result<UserPrivacySettingsDto> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let raw = serde_json::to_string(settings)
+            .map_err(|e| TelegramError::Validation(e.to_string()))?;
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO user_privacy_settings (user_id, settings_json, updated_at_ms)
+                   VALUES (?1, ?2, ?3)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       settings_json = excluded.settings_json,
+                       updated_at_ms = excluded.updated_at_ms"#,
+                params![user_id.0 as i64, raw, now_ms],
+            )
+            .map_db()?;
+            Ok(settings.clone())
         })
     }
 }

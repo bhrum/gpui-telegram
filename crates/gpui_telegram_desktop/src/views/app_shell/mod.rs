@@ -29,12 +29,26 @@ pub mod session;
 pub mod shell_actions;
 pub mod shell_calls_rtc;
 pub mod shell_composer_actions;
+pub mod shell_computers_sync;
+pub mod shell_dialogs_fetch;
+pub mod shell_hermes_studio_sync;
+pub mod shell_input_ime;
+pub mod shell_miniapp_catalog;
+pub mod shell_miniapps_bots;
 pub mod shell_modals;
+pub mod shell_observers;
+pub mod shell_overlays_render;
 pub mod shell_panels;
 pub mod shell_panels_sync;
+pub mod shell_pts_updates;
+pub mod shell_reactions_sync;
+pub mod shell_settings_sync;
+pub mod shell_shortcuts;
 pub mod shell_stage_actions;
+pub mod shell_state;
 pub mod shell_theme;
 pub mod shell_truth;
+pub mod shell_ws_sync;
 pub mod support_autocomplete;
 pub mod support_common;
 pub mod support_helper;
@@ -108,13 +122,19 @@ pub use shell_panels::{
     render_empty_panel_notice, render_panel_header, ShellAcpTaskRow, ShellMcpServerRow,
     ShellMcpToolRow, ShellPanelState,
 };
+pub use shell_state::{
+    reconcile_stage_message_list, should_switch_to_chats_on_sidebar_selection, ShellComputersState,
+    ShellMiniAppState, ShellOverlayState, ShellRtcTalkState, ShellSessionSyncState,
+    ShellThemeVisualState,
+};
 pub use shell_theme::{
     compute_shell_palette, propagate_theme_and_locale, resolve_mode_from_preferences,
     tdesktop_mode_to_app_theme, toggle_desktop_theme_mode, ShellThemeTargets,
 };
 pub use shell_truth::{
     apply_authoritative_chat_list, apply_fenced_chat_list_response,
-    apply_fenced_history_response, format_authoritative_timestamp, historical_message_to_model,
+    apply_fenced_history_response, apply_fenced_history_response_preserving,
+    format_authoritative_timestamp, historical_message_to_model,
     peer_subtitle_for_dialog, reset_account_conversation_views, select_authoritative_dialog,
     try_consume_composer_for_send, validate_selected_send_target, SessionRequestFence,
     VerifiedSendTarget,

@@ -23,7 +23,7 @@ impl SettingsIntro {
 
     pub fn new() -> Self {
         Self {
-            title: "Telegram Settings Overview".into(),
+            title: "Settings Overview".into(),
             features: vec![
                 SettingsIntroFeature {
                     icon: "👤",
@@ -42,7 +42,7 @@ impl SettingsIntro {
                 },
                 SettingsIntroFeature {
                     icon: "⭐",
-                    title: "Telegram Stars & Premium",
+                    title: "Stars & Premium",
                     description: "Unlock 4GB uploads, faster speeds, animated emoji statuses and support digital creators.",
                 },
             ],

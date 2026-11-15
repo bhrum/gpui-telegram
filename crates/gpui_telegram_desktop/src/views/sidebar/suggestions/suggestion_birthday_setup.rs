@@ -22,7 +22,7 @@ impl SuggestionBirthdaySetupSuggestions {
             priority: SuggestionPriority::BirthdaySetup,
             key: Self::KEY.to_string(),
             title: "Add Your Birthday".to_string(),
-            description: "Receive birthday wishes and gifts from friends on Telegram.".to_string(),
+            description: "Receive birthday wishes and gifts from friends.".to_string(),
             button_text: Some("Add".to_string()),
             action_url: Some("internal:edit_birthday:add_privacy".to_string()),
             can_close: true,

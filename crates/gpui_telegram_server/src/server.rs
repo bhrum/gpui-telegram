@@ -45,6 +45,7 @@ pub struct AppState {
     pub talk_coordinator: Arc<RwLock<gpui_telegram_agent::TalkCoordinator>>,
     pub acp_runner: Arc<gpui_telegram_agent::acp::AcpRunner>,
     pub hermes: Arc<gpui_telegram_agent::hermes::HermesEngine>,
+    pub computers: Arc<crate::routes::computers::ComputerControlService>,
     pub task_registry: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::TaskFsm>>>,
     pub approval_gates: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::ApprovalGate>>>,
 }
@@ -84,8 +85,8 @@ impl AppState {
         let session_manager = Arc::new(SessionManager::new());
         let gateway_hub = Arc::new(GatewayHub::new());
 
-        // Monotonically align user_id with SQLite database
-        if let Ok(max_id) = db.get_max_user_id() {
+        // Monotonically align human user_id with SQLite database (keep bots >= 500_000 separate)
+        if let Ok(max_id) = db.get_max_human_user_id() {
             session_manager.set_next_user_id(std::cmp::max(100_001, max_id + 1));
         }
 
@@ -120,29 +121,25 @@ impl AppState {
                     .expect("Failed to initialize in-memory HermesEngine")
             }),
         );
+        let computers = Arc::new(crate::routes::computers::ComputerControlService::new(
+            db.clone(),
+        ));
+        hermes.set_computer_provider(computers.clone());
 
-        if !cfg!(test)
-            && !config.is_in_memory()
-            && std::env::var("GPUI_OFFLINE_TEST").is_err()
-            && std::env::var("HERMES_ENABLE_PUBLIC_CLOUD_FALLBACK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-            && hermes.providers().active_info().0 == "local_hermes"
-        {
-            let mut cloud_cfg =
-                gpui_telegram_agent::hermes::providers::ProviderConfig::openai_compatible(
-                    "dacheng_cloud",
-                    "Dacheng Cloud DeepSeek",
-                    "https://ai.ombhrum.com/codex-deepseek/v1",
-                    "deepseek-chat",
-                    "public",
-                );
-            cloud_cfg.api_mode = gpui_telegram_agent::hermes::providers::ApiMode::CodexResponses;
-            hermes.providers().register_provider(cloud_cfg);
-            let _ = hermes
-                .providers()
-                .set_active("dacheng_cloud", Some("deepseek-chat"));
-        }
+        let provider_snap = hermes.providers().snapshot();
+        let active_api_mode = provider_snap
+            .providers
+            .get(&provider_snap.active_provider_id)
+            .map(|p| p.api_mode.as_str())
+            .unwrap_or("local_hermes");
+        tracing::info!(
+            active_provider = %provider_snap.active_provider_id,
+            default_model = %provider_snap.active_model,
+            api_mode = %active_api_mode,
+            allow_local_fallback = provider_snap.allow_local_fallback,
+            configured_providers = provider_snap.providers.len(),
+            "Hermes provider router initialized"
+        );
 
         let acp_runner = Arc::new(
             gpui_telegram_agent::acp::AcpRunner::new(&config.default_agent_model)
@@ -243,6 +240,7 @@ impl AppState {
             }
         }
         let _ = db.seed_default_catalog_if_empty();
+        let _ = db.seed_botfather_and_flagship_apps();
 
         let signaling_hub = Arc::new(crate::webrtc::signaling_hub::SignalingHub::new());
         let pts_engine = Arc::new(crate::sync::pts_engine::PtsEngine::new(db.clone()));
@@ -260,6 +258,7 @@ impl AppState {
             let db_weak = Arc::downgrade(&db);
             let pipeline_weak = Arc::downgrade(&message_pipeline);
             let hub_weak = Arc::downgrade(&gateway_hub);
+            let search_weak = Arc::downgrade(&search_indexer);
             rt_handle.spawn(async move {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -270,6 +269,35 @@ impl AppState {
                     let Some(db) = db_weak.upgrade() else { return; };
                     let Some(pipeline) = pipeline_weak.upgrade() else { return; };
                     let Some(hub) = hub_weak.upgrade() else { return; };
+                    if let Ok(purged) = db.purge_expired_ttl_messages(chrono::Utc::now().timestamp_millis()) {
+                        if !purged.is_empty() {
+                            if let Some(idx) = search_weak.upgrade() {
+                                for (cid, mids) in &purged {
+                                    for mid in mids {
+                                        idx.delete_chat_message_nonblocking(
+                                            cid.0.to_string(),
+                                            mid.0.to_string(),
+                                        );
+                                    }
+                                }
+                                let _ = idx.commit().await;
+                            }
+                            for (cid, mids) in purged {
+                                let tombstone = gpui_telegram_proto::message::DeleteTombstone::new(
+                                    gpui_telegram_core::types::PeerId::Chat(cid),
+                                    mids,
+                                    true,
+                                );
+                                hub.broadcast_to_chat_and_members(
+                                    cid,
+                                    None,
+                                    gpui_telegram_proto::ws::WsServerFrame::Update(
+                                        gpui_telegram_proto::sync::UpdateEvent::DeleteMessages(tombstone),
+                                    ),
+                                );
+                            }
+                        }
+                    }
 
                     if let Ok(outcomes) = hermes.run_due_cron_jobs().await {
                         for out in outcomes {
@@ -332,6 +360,7 @@ impl AppState {
             talk_coordinator: Arc::new(RwLock::new(gpui_telegram_agent::TalkCoordinator::new())),
             acp_runner,
             hermes,
+            computers,
             task_registry,
             approval_gates,
         }
@@ -513,9 +542,10 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/login", post(auth_login))
         .route("/api/v1/auth/phone/send-code", post(routes::auth_factors::phone_send_code))
         .route("/api/v1/auth/phone/verify", post(routes::auth_factors::phone_verify))
+        .route("/api/v1/auth/2fa", get(routes::auth_factors::two_factor_status).post(routes::auth_factors::two_factor_set).delete(routes::auth_factors::two_factor_disable))
         .route("/api/v1/auth/2fa/status", get(routes::auth_factors::two_factor_status))
         .route("/api/v1/auth/2fa/set", post(routes::auth_factors::two_factor_set))
-        .route("/api/v1/auth/2fa/disable", post(routes::auth_factors::two_factor_disable))
+        .route("/api/v1/auth/2fa/disable", post(routes::auth_factors::two_factor_disable).delete(routes::auth_factors::two_factor_disable))
         .route("/api/v1/auth/2fa/verify", post(routes::auth_factors::two_factor_verify))
         // --- Auth Extension Routes (Email & Alipay) ---
         .route("/api/v1/auth/email/send-code", post(auth_email_send_code))
@@ -551,7 +581,11 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         // --- Protected Profile, Peer Resolve & Sessions ---
         .route("/api/v1/auth/me", get(routes::users::get_me_profile))
         .route("/api/v1/auth/profile", put(routes::users::update_me_profile))
-        .route("/api/v1/users/me", get(routes::users::get_me_profile).put(routes::users::update_me_profile))
+        .route("/api/v1/users/me", get(routes::users::get_me_profile).put(routes::users::update_me_profile).patch(routes::users::update_me_profile))
+        .route("/api/v1/users/me/settings", get(routes::users::get_my_settings).put(routes::users::put_my_settings).patch(routes::users::put_my_settings))
+        .route("/api/v1/users/blocked", get(routes::users::blocked_users_list))
+        .route("/api/v1/users/{user_id}/block", post(routes::users::block_user_handler).delete(routes::users::unblock_user_handler))
+        .route("/api/v1/users/{user_id}/unblock", post(routes::users::unblock_user_handler))
         .route("/api/v1/users/{user_id}", get(routes::users::get_user_by_id))
         .route("/api/v1/peers/resolve", get(routes::users::resolve_peer))
         .route("/api/v1/auth/sessions", get(routes::auth_advanced::auth_sessions_list))
@@ -564,7 +598,10 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/messages/delete", post(routes::sync_polls::messages_delete_legacy))
         .route("/api/v1/messages/reaction", post(routes::sync_polls::messages_reaction_legacy))
         .route("/api/v1/messages/read", post(routes::sync_polls::messages_read_legacy))
-        .route("/api/v1/chats/{chat_id}/messages", get(routes::messages::chats_messages_history).post(routes::messages::chats_messages_send))
+        .route("/api/v1/chats/{chat_id}/messages", get(routes::messages::chats_messages_history).post(routes::messages::chats_messages_send).delete(routes::chat_extras::chat_clear_history))
+        .route("/api/v1/chats/{chat_id}/clear", post(routes::chat_extras::chat_clear_history))
+        .route("/api/v1/chats/{chat_id}/leave", post(routes::chat_extras::chat_leave_or_delete))
+        .route("/api/v1/chats/{chat_id}/ttl", post(routes::chat_extras::chat_set_ttl))
         .route("/api/v1/chats/{chat_id}/messages/{msg_id}", put(routes::sync_polls::messages_edit_path).delete(routes::sync_polls::messages_delete_path))
         .route("/api/v1/chats/{chat_id}/messages/{msg_id}/reactions", post(routes::sync_polls::messages_reaction_path))
         .route("/api/v1/chats/{chat_id}/read", post(routes::sync_polls::chats_read_path))
@@ -692,6 +729,105 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/talk/session", post(routes::acp::talk_session_create))
         .route("/api/v1/talk/barge_in", post(talk_barge_in))
         .route("/api/v1/talk/audio", post(talk_audio_enqueue))
+        // --- Remote Computers, Cloud Servers & Cloud Sandbox Control Plane ---
+        .route("/api/v1/computers", get(routes::computers::computers_list))
+        .route(
+            "/api/v1/computers/local/register",
+            post(routes::computers::computers_local_register),
+        )
+        .route(
+            "/api/v1/computers/local/poll",
+            get(routes::computers::computers_local_poll),
+        )
+        .route(
+            "/api/v1/computers/commands/{command_id}/approve",
+            post(routes::computers::computers_command_approve),
+        )
+        .route(
+            "/api/v1/computers/commands/{command_id}/complete",
+            post(routes::computers::computers_command_complete)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/computers/cloud",
+            post(routes::computers::computers_cloud_upsert),
+        )
+        .route(
+            "/api/v1/computers/{node_id}/policy",
+            patch(routes::computers::computers_policy_patch),
+        )
+        .route(
+            "/api/v1/computers/{node_id}",
+            delete(routes::computers::computers_delete),
+        )
+        .route(
+            "/api/v1/computers/{node_id}/test",
+            post(routes::computers::computers_test),
+        )
+        .route(
+            "/api/v1/computers/exec",
+            post(routes::computers::computers_exec)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/bots/{bot_id}/computer",
+            get(routes::computers::bot_computer_get).put(routes::computers::bot_computer_put),
+        )
+        .route(
+            "/api/v1/computer-agent/exec",
+            post(routes::computers::computer_agent_exec)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        // --- BotFather, Companion AI Bots & Telegram Mini Apps (1:1 + Beyond) ---
+        .route(
+            "/api/v1/miniapps",
+            get(routes::bots_miniapps::miniapps_list).post(routes::bots_miniapps::miniapps_create),
+        )
+        .route(
+            "/api/v1/miniapps/installed",
+            get(routes::bots_miniapps::miniapps_installed),
+        )
+        .route(
+            "/api/v1/miniapps/{bot_username}/{short_name}/install",
+            post(routes::bots_miniapps::miniapps_install)
+                .delete(routes::bots_miniapps::miniapps_uninstall),
+        )
+        .route(
+            "/api/v1/miniapps/{bot_username}/{short_name}/launch",
+            post(routes::bots_miniapps::miniapps_launch),
+        )
+        .route(
+            "/api/v1/miniapps/{bot_username}/{short_name}/validate-init-data",
+            post(routes::bots_miniapps::miniapps_validate_init_data),
+        )
+        .route(
+            "/api/v1/miniapps/{bot_username}/{short_name}/action",
+            post(routes::bots_miniapps::miniapps_action),
+        )
+        .route(
+            "/api/v1/miniapps/{bot_username}/{short_name}/storage",
+            get(routes::bots_miniapps::miniapps_storage_get)
+                .put(routes::bots_miniapps::miniapps_storage_put)
+                .delete(routes::bots_miniapps::miniapps_storage_delete),
+        )
+        .route("/api/v1/bots", post(routes::bots_miniapps::bots_create))
+        .route("/api/v1/bots/my", get(routes::bots_miniapps::bots_my))
+        .route(
+            "/api/v1/bots/attach-menu",
+            get(routes::bots_miniapps::bots_attach_menu),
+        )
+        .route(
+            "/api/v1/botfather/nl-create",
+            post(routes::bots_miniapps::botfather_nl_create),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/callback",
+            post(routes::bots_miniapps::chat_callback),
+        )
+        .route(
+            "/miniapps/{bot_username}/{short_name}",
+            get(routes::bots_miniapps::serve_miniapp_html),
+        )
         // --- WebSocket Upgrade Route ---
         .route("/api/v1/ws", get(ws_upgrade_handler))
         // --- Tower Middleware Stack ---
@@ -2507,71 +2643,14 @@ pub(crate) async fn maybe_trigger_bot_reply(
         return;
     };
 
-    crate::routes::broadcast_chat_event(
+    crate::routes::bots_miniapps::handle_ai_bot_reply(
         state,
         chat_id,
-        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
-            gpui_telegram_proto::sync::TypingEvent::new(
-                chat_id,
-                bot_user_id,
-                gpui_telegram_proto::sync::TypingAction::Typing,
-            ),
-        ),
-    );
-
-    let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(state, bot_user_id);
-    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(text)
-        .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
-    req.bot_name = crate::routes::hermes::resolve_bot_display_name(state, bot_user_id);
-    req.user_id = Some(sender_id.0.to_string());
-    req.source = "telegram_bot".to_string();
-    req.model = bot_model;
-    req.system_prompt = bot_sp;
-
-    let turn_res = state.hermes.run_turn(req).await;
-
-    crate::routes::broadcast_chat_event(
-        state,
-        chat_id,
-        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
-            gpui_telegram_proto::sync::TypingEvent::new(
-                chat_id,
-                bot_user_id,
-                gpui_telegram_proto::sync::TypingAction::Cancel,
-            ),
-        ),
-    );
-
-    let Ok(res) = turn_res else {
-        return;
-    };
-    let trimmed = res.response_text.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-
-    let kb_rows = crate::routes::hermes::build_default_bot_quick_actions(&res, text);
-    let mut bot_msg = MessageItem::new(
-        MsgId(0),
-        chat_id,
+        sender_id,
         bot_user_id,
-        PeerId::Chat(chat_id),
-        MessageContent::plain_text(trimmed),
-    );
-    bot_msg.flags.is_out = false;
-
-    if let Ok(pts_update) = state.message_pipeline.process_incoming_message(bot_msg) {
-        if let gpui_telegram_proto::sync::UpdateEvent::NewMessage(saved) = &pts_update.event {
-            if !kb_rows.is_empty() {
-                if let Ok(kb_json) = serde_json::to_string(&kb_rows) {
-                    let _ = state
-                        .db
-                        .save_message_extras(chat_id, saved.id, Some(&kb_json), None);
-                }
-            }
-        }
-        crate::routes::broadcast_chat_pts(state, chat_id, pts_update);
-    }
+        text,
+    )
+    .await;
 }
 
 /// Returns true if `chat_id` is in the reserved `700_000_000..750_000_000` range for per-user
@@ -3973,61 +4052,76 @@ async fn chats_agent_runs(
         .or_else(|| detect_bot_in_chat(&state.db, chat_id, auth.user_id, &prompt))
         .unwrap_or_else(|| ensure_default_ai_bot(&state.db));
 
-    crate::routes::broadcast_chat_event(
-        &state,
-        chat_id,
-        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
-            gpui_telegram_proto::sync::TypingEvent::new(
-                chat_id,
-                bot_user_id,
-                gpui_telegram_proto::sync::TypingAction::Typing,
-            ),
-        ),
-    );
+    let typing_guard =
+        crate::routes::hermes::BotTypingGuard::start(Arc::clone(&state), chat_id, bot_user_id);
 
     let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(&state, bot_user_id);
-    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&prompt)
-        .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
-    req.bot_name = crate::routes::hermes::resolve_bot_display_name(&state, bot_user_id);
-    if let Some(sid) = payload
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        req.session_id = Some(sid.to_string());
-    }
-    req.user_id = Some(auth.user_id.0.to_string());
-    req.source = "chat_agent_run".to_string();
-    req.model = payload
-        .get("model")
-        .or_else(|| payload.get("model_id"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .or(bot_model);
-    req.system_prompt = payload
+    let explicit_model = crate::routes::hermes::sanitize_model_override(
+        &state,
+        payload
+            .get("model")
+            .or_else(|| payload.get("model_id"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+    );
+    let sanitized_bot_model = crate::routes::hermes::sanitize_model_override(&state, bot_model);
+    let explicit_sp = payload
         .get("system_prompt")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .or(bot_sp);
+    let bot_display_name = crate::routes::hermes::resolve_bot_display_name(&state, bot_user_id);
+    let (enriched_sp, effective_model) = crate::routes::hermes::build_enriched_bot_turn_context(
+        &state,
+        auth.user_id.0,
+        Some(bot_user_id.0),
+        bot_display_name.as_deref(),
+        explicit_sp,
+        explicit_model,
+        sanitized_bot_model,
+        &[],
+        false,
+    );
+    let explicit_sid = payload
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let explicit_yolo = payload
+        .get("yolo_mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let resolved_sid = crate::routes::hermes::resolve_and_apply_bot_session_policy(
+        &state,
+        auth.user_id.0,
+        bot_user_id,
+        Some(chat_id),
+        explicit_sid.as_deref(),
+        "chat_agent_run",
+        effective_model.as_deref(),
+        explicit_yolo,
+    )
+    .ok()
+    .map(|(sid, _)| sid)
+    .or(explicit_sid);
+
+    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&prompt)
+        .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
+    req.bot_name = bot_display_name;
+    if let Some(sid) = resolved_sid {
+        req.session_id = Some(sid);
+    }
+    req.user_id = Some(auth.user_id.0.to_string());
+    req.source = "chat_agent_run".to_string();
+    req.preset = Some(gpui_telegram_agent::hermes::toolsets::ToolsetPreset::HermesTelegram);
+    req.model = effective_model;
+    req.system_prompt = enriched_sp;
 
     let turn_res = state.hermes.run_turn(req).await;
-
-    crate::routes::broadcast_chat_event(
-        &state,
-        chat_id,
-        gpui_telegram_proto::sync::UpdateEvent::UserTyping(
-            gpui_telegram_proto::sync::TypingEvent::new(
-                chat_id,
-                bot_user_id,
-                gpui_telegram_proto::sync::TypingAction::Cancel,
-            ),
-        ),
-    );
+    typing_guard.finish();
 
     let res = match turn_res {
         Ok(r) => r,

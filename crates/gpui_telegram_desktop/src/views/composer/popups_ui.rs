@@ -3,9 +3,10 @@
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 
-use crate::i18n::tr_key_or;
+use crate::components::bots::bot_attach_web_view::peer_matches_types;
+use crate::i18n::{tr_key_or, tr_str};
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
-use super::attachments_drawer::AttachmentKind;
+use super::attachments_drawer::{AttachmentKind, ComposerAttachMiniApp};
 use super::field_autocomplete::{AutocompleteType, FieldAutocomplete};
 use super::formatting_bar::{FormattingBar, TextStyleKind};
 
@@ -13,6 +14,7 @@ use super::formatting_bar::{FormattingBar, TextStyleKind};
 pub enum ComposerPopupAction {
     ChooseAutocomplete(String),
     ChooseAttachment(AttachmentKind),
+    ChooseMiniApp(ComposerAttachMiniApp),
     ApplyFormat(TextStyleKind),
     SendSilent,
     ScheduleMessage,
@@ -120,6 +122,17 @@ pub fn render_attachments_drawer<V: 'static>(
     cx: &mut Context<V>,
     on_action: impl Fn(&mut V, ComposerPopupAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
+    render_attachments_drawer_with_apps(&[], 0, palette, lang_id, cx, on_action)
+}
+
+pub fn render_attachments_drawer_with_apps<V: 'static>(
+    attach_apps: &[ComposerAttachMiniApp],
+    current_peer_type_mask: u8,
+    palette: &TdesktopThemePalette,
+    lang_id: &str,
+    cx: &mut Context<V>,
+    on_action: impl Fn(&mut V, ComposerPopupAction, &mut Context<V>) + Clone + 'static,
+) -> AnyElement {
     let entries = [
         (AttachmentKind::PhotoOrVideo, IconName::Camera, tr_key_or(lang_id, "lng_attach_photo_video", "Photo or Video")),
         (AttachmentKind::DocumentOrFile, IconName::FileDoc, tr_key_or(lang_id, "lng_attach_file", "File")),
@@ -128,9 +141,19 @@ pub fn render_attachments_drawer<V: 'static>(
         (AttachmentKind::ShareContact, IconName::ContactsUsers, tr_key_or(lang_id, "lng_attach_contact", "Contact")),
     ];
     let hbg = palette.menu_hover_bg;
+    let filtered_apps: Vec<ComposerAttachMiniApp> = attach_apps
+        .iter()
+        .filter(|app| {
+            current_peer_type_mask == 0
+                || app.peer_types_mask == 0
+                || peer_matches_types(current_peer_type_mask, app.peer_types_mask)
+        })
+        .cloned()
+        .collect();
+
     let mut box_el = div()
         .id("composer-attachments-popup")
-        .w(px(210.0))
+        .w(px(236.0))
         .mb(px(8.0))
         .p(px(6.0))
         .rounded(px(10.0))
@@ -161,6 +184,70 @@ pub fn render_attachments_drawer<V: 'static>(
                 .child(tg_icon(icon, 16.0, palette.accent))
                 .child(div().text_size(px(13.0)).text_color(rgb(palette.text_primary)).child(label.to_string())),
         );
+    }
+
+    if !filtered_apps.is_empty() {
+        box_el = box_el
+            .child(div().w_full().h(px(1.0)).my(px(4.0)).bg(rgb(palette.border_fg)))
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(2.0))
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(rgb(palette.text_secondary))
+                    .child(tr_str(lang_id, "已安装小程序", "Mini Apps")),
+            );
+        for app in filtered_apps {
+            let act = on_action.clone();
+            let app_owned = app.clone();
+            let badge: String = app
+                .title
+                .chars()
+                .take(1)
+                .collect::<String>()
+                .to_uppercase();
+            let icon_col = if app.icon_color != 0 { app.icon_color } else { palette.accent };
+            box_el = box_el.child(
+                div()
+                    .id(SharedString::from(format!("att-miniapp-{}", app.short_name)))
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(rgb(hbg)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        act(this, ComposerPopupAction::ChooseMiniApp(app_owned.clone()), cx);
+                    }))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .w(px(20.0))
+                            .h(px(20.0))
+                            .rounded_full()
+                            .bg(rgb(icon_col))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .child(if badge.is_empty() { "M".to_string() } else { badge }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(rgb(palette.text_primary)).child(app.title))
+                            .when(!app.bot_username.is_empty(), |col| {
+                                col.child(div().text_size(px(10.5)).text_color(rgb(palette.text_secondary)).child(format!("@{}", app.bot_username.trim_start_matches('@'))))
+                            }),
+                    ),
+            );
+        }
     }
 
     box_el.into_any_element()

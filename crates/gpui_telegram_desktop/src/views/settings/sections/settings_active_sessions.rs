@@ -27,6 +27,9 @@ pub struct SessionRowData {
 #[derive(Debug, Clone)]
 pub struct SettingsActiveSessionsSections {
     pub sessions: Vec<SessionRowData>,
+    pub session_ids_by_hash: std::collections::HashMap<u64, String>,
+    pub pending_terminate_session_id: Option<String>,
+    pub pending_terminate_all_other: bool,
     pub poll_timeout_ms: u64,
     pub is_visible: bool,
     pub has_divider: bool,
@@ -40,7 +43,7 @@ impl SettingsActiveSessionsSections {
             sessions: vec![
                 SessionRowData {
                     hash: 1001,
-                    app_name: "Telegram Desktop 5.6".into(),
+                    app_name: "AI Chat Desktop 1.0".into(),
                     device_model: "MacBook Pro".into(),
                     platform: "macOS".into(),
                     ip: "192.168.1.100".into(),
@@ -49,7 +52,7 @@ impl SettingsActiveSessionsSections {
                 },
                 SessionRowData {
                     hash: 1002,
-                    app_name: "Telegram iOS 10.9".into(),
+                    app_name: "Mobile Client 1.0".into(),
                     device_model: "iPhone 15 Pro".into(),
                     platform: "iOS".into(),
                     ip: "10.0.0.12".into(),
@@ -57,6 +60,9 @@ impl SettingsActiveSessionsSections {
                     is_current: false,
                 },
             ],
+            session_ids_by_hash: std::collections::HashMap::new(),
+            pending_terminate_session_id: None,
+            pending_terminate_all_other: false,
             poll_timeout_ms: K_SHORT_POLL_TIMEOUT_MS,
             is_visible: true,
             has_divider: true,
@@ -97,11 +103,18 @@ impl SettingsActiveSessionsSections {
     pub fn terminate_session(&mut self, hash: u64) -> bool {
         let before = self.sessions.len();
         self.sessions.retain(|s| s.is_current || s.hash != hash);
-        self.sessions.len() < before
+        let removed = self.sessions.len() < before;
+        if removed {
+            if let Some(sid) = self.session_ids_by_hash.remove(&hash) {
+                self.pending_terminate_session_id = Some(sid);
+            }
+        }
+        removed
     }
 
     pub fn terminate_all_other(&mut self) {
         self.sessions.retain(|s| s.is_current);
+        self.pending_terminate_all_other = true;
     }
 
     pub fn lng_settings_rename_device_title(&self) -> &'static str { "Rename Device" }
@@ -122,7 +135,7 @@ impl Render for SettingsActiveSessionsSections {
 
         settings_container(pal)
             .child(settings_card(pal)
-                .child(settings_section_header(IconName::ComputerDesktop, tr_str(lang, "活跃设备与会话", "Active Sessions"), Some(tr_str(lang, "当前登录的设备列表", "Devices logged into your Telegram account")), pal))
+                .child(settings_section_header(IconName::ComputerDesktop, tr_str(lang, "活跃设备与会话", "Active Sessions"), Some(tr_str(lang, "当前登录的设备列表", "Devices logged into your account")), pal))
                 .when(has_others, |el| {
                     el.child(settings_action_row(IconName::DeleteTrash, tr_str(lang, "注销所有其他设备", "Terminate All Other Sessions"), "", pal, true, Self::terminate_all_other, cx))
                 }))

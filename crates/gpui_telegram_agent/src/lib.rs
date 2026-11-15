@@ -10,7 +10,12 @@ pub use acp::{
     AcpRunner, AgentTurnInput, AgentTurnOutput, HostSubagentLineage, SubagentArtifactReceipt,
     SubagentLifecycleStatus, SubagentLineage, SubagentNode, SubagentTreeNode, TextDeltaCallback,
 };
-pub use computer::{ComputerControlLease, ComputerLeaseBroker, CuaAction, CuaExecutor, LeaseState};
+pub use computer::{
+    parse_cloud_credentials_from_prompt, redact_cloud_secrets, AgentCloudServerConfigInput,
+    AgentComputerExecInput, AgentComputerExecOutput, AgentComputerNodeSummary,
+    ComputerCloudProvider, ComputerControlLease, ComputerLeaseBroker, CuaAction, CuaExecutor,
+    LeaseState,
+};
 pub use hermes::commands::{
     CommandDescriptor, CommandExecutionOutcome, CommandUiEffect, InlineActionButton,
     SlashCommandParser, SlashCommandRegistry,

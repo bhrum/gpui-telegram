@@ -114,7 +114,7 @@ impl IntroCode {
             } else {
                 format!(
                     "{} ({})",
-                    tr_str(lang_id, "语音/短信重发倒计时", "Telegram call in"),
+                    tr_str(lang_id, "语音/短信重发倒计时", "Resend call in"),
                     timer_text
                 )
             },
@@ -179,8 +179,8 @@ impl IntroCode {
                     .child(if self.is_by_telegram {
                         tr_str(
                             lang_id,
-                            "我们已向您其他设备上的 Telegram 应用发送验证码，请直接输入。",
-                            "We have sent the code to the Telegram app on your other device.",
+                            "我们已向您其他设备上的应用发送验证码，请直接输入。",
+                            "We have sent the code to the app on your other device.",
                         )
                     } else {
                         tr_str(

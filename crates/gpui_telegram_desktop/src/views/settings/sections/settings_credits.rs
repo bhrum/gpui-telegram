@@ -38,7 +38,7 @@ impl SettingsCreditsSections {
             currency_code: "XTR".into(),
             transactions: vec![
                 StarsTransaction { id: "tx_1".into(), title: "Bot Payment (@ShopBot)".into(), date: "Today, 14:20".into(), amount: -250, is_outgoing: true },
-                StarsTransaction { id: "tx_2".into(), title: "Purchased Telegram Stars".into(), date: "Yesterday, 10:15".into(), amount: 1000, is_outgoing: false },
+                StarsTransaction { id: "tx_2".into(), title: "Purchased Stars".into(), date: "Yesterday, 10:15".into(), amount: 1000, is_outgoing: false },
                 StarsTransaction { id: "tx_3".into(), title: "Creator Channel Subscription".into(), date: "Oct 12, 2024".into(), amount: -100, is_outgoing: true },
             ],
             ton_balance: 12.45,
@@ -81,10 +81,11 @@ impl SettingsCreditsSections {
     pub fn topup(&mut self, amount: u64) {
         self.balance_stars += amount;
         self.pending_topup_stars = Some(amount);
+        let lang = self.language_id.as_str();
         self.transactions.insert(0, StarsTransaction {
             id: format!("tx_{}", self.transactions.len() + 1),
-            title: "Stars Top-Up".into(),
-            date: "Just now".into(),
+            title: tr_str(lang, "星币充值", "Stars Top-Up").into(),
+            date: tr_str(lang, "刚刚", "Just now").into(),
             amount: amount as i64,
             is_outgoing: false,
         });
@@ -107,7 +108,7 @@ impl Render for SettingsCreditsSections {
         let txs = self.transactions.clone();
 
         settings_container(pal.clone())
-            .child(settings_section_header(IconName::WalletStars, tr_str(&lang, "Telegram 星币", "Telegram Stars"), Some("Digital goods, channel subscriptions, and creator rewards"), pal.clone()))
+            .child(settings_section_header(IconName::WalletStars, tr_str(&lang, "星币", "Stars"), Some(tr_str(&lang, "数字商品支付、频道订阅与创作者激励", "Digital goods, channel subscriptions, and creator rewards")), pal.clone()))
             .child(
                 settings_card(pal.clone()).child(
                     div().flex().flex_row().items_center().justify_between()
@@ -125,11 +126,15 @@ impl Render for SettingsCreditsSections {
                 settings_card(pal.clone()).child(
                     div().flex().flex_row().items_center().justify_between()
                         .child(div().flex().flex_col()
-                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.text_primary)).child("Creator Rewards (TON)"))
-                            .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(format!("{:.2} TON available", self.ton_balance))))
+                            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.text_primary)).child(tr_str(&lang, "创作者收益 (TON)", "Creator Rewards (TON)")))
+                            .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(if lang.starts_with("zh") {
+                                format!("可提取 {:.2} TON", self.ton_balance)
+                            } else {
+                                format!("{:.2} TON available", self.ton_balance)
+                            })))
                         .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(if self.can_withdraw() { pal.text_link } else { pal.text_secondary })).cursor_pointer()
                             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { if this.can_withdraw() { this.pending_withdraw = true; cx.notify(); } }))
-                            .child("Withdraw ›")),
+                            .child(tr_str(&lang, "提现 ›", "Withdraw ›"))),
                 ),
             )
             .child(settings_subsection_title(tr_str(&lang, "交易记录", "Transaction History"), pal.clone()))

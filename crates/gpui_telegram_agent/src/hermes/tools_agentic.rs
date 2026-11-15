@@ -2,10 +2,14 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use crate::acp::{SubagentLifecycleStatus, SubagentLineage};
-use crate::computer::{CuaAction, CuaExecutor};
+use crate::computer::{
+    redact_cloud_secrets, AgentCloudServerConfigInput, AgentComputerExecInput,
+    AgentComputerExecOutput, ComputerCloudProvider, CuaAction, CuaExecutor,
+};
 use crate::mcp::{ToolPermissionDock, ToolRiskLevel};
 use crate::talk::TalkSessionState;
 use crate::tasks::{CronExecutionRecord, CronRoutine};
@@ -161,6 +165,12 @@ pub async fn execute_agentic_tool(
         "desktop_ui_inspect" => tool_desktop_ui_inspect(ctx),
         "desktop_ui_act" => tool_desktop_ui_act(args, ctx).await,
         "computer_use" => tool_computer_use(args, ctx),
+        "computer_list" => tool_computer_list(ctx).await,
+        "computer_bind" => tool_computer_bind(args, ctx).await,
+        "computer_configure_cloud" => tool_computer_configure_cloud(args, ctx).await,
+        "computer_exec" => tool_computer_exec(args, ctx).await,
+        "computer_file" => tool_computer_file(args, ctx).await,
+        "computer_screen" => tool_computer_screen(args, ctx).await,
         "voice_session" => tool_voice_session(args, ctx),
         "manage_connections" => tool_manage_connections(args, ctx),
         "think" | "reason" => tool_reasoning(name, args),
@@ -1170,6 +1180,478 @@ fn tool_computer_use(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
             }
         }
         other => HermesToolResult::err("computer_use", format!("Unknown computer_use action '{other}'")),
+    }
+}
+
+fn require_computer_provider_and_user(
+    tool_name: &str,
+    ctx: &HermesToolContext,
+) -> Result<(Arc<dyn ComputerCloudProvider>, u64, Option<u64>), HermesToolResult> {
+    let Some(provider) = ctx.computer_provider.as_ref().map(Arc::clone) else {
+        return Err(HermesToolResult::err(
+            tool_name,
+            "ComputerCloudProvider is not configured in HermesToolContext",
+        ));
+    };
+    let Some(user_id) = ctx.user_id else {
+        return Err(HermesToolResult::err(
+            tool_name,
+            "Missing user_id in HermesToolContext for computer operation",
+        ));
+    };
+    let bot_id = ctx.bot_id.and_then(|id| u64::try_from(id).ok());
+    Ok((provider, user_id, bot_id))
+}
+
+async fn tool_computer_list(ctx: &HermesToolContext) -> HermesToolResult {
+    let Some(provider) = ctx.computer_provider.as_ref().map(Arc::clone) else {
+        let lease = tool_computer_use(json!({ "action": "lease_status" }), ctx);
+        let payload = json!({
+            "fallback": "lease_status",
+            "computers": [],
+            "lease": lease.structured,
+        });
+        return HermesToolResult::ok(
+            "computer_list",
+            format!("ComputerCloudProvider unavailable; fallback lease status: {}", lease.output),
+            Some(payload),
+        );
+    };
+
+    let Some(user_id) = ctx.user_id else {
+        return HermesToolResult::err(
+            "computer_list",
+            "Missing user_id in HermesToolContext for computer_list",
+        );
+    };
+    let bot_id = ctx.bot_id.and_then(|id| u64::try_from(id).ok());
+
+    match provider.list_computers(user_id, bot_id).await {
+        Ok(nodes) => {
+            let payload = json!({
+                "count": nodes.len(),
+                "computers": nodes,
+            });
+            HermesToolResult::ok("computer_list", payload.to_string(), Some(payload))
+        }
+        Err(err) => HermesToolResult::err("computer_list", redact_cloud_secrets(&err.to_string())),
+    }
+}
+
+async fn tool_computer_bind(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let (provider, user_id, bot_id) = match require_computer_provider_and_user("computer_bind", ctx) {
+        Ok(v) => v,
+        Err(err_res) => return err_res,
+    };
+    let Some(bot_id) = bot_id else {
+        return HermesToolResult::err(
+            "computer_bind",
+            "Missing active bot_id in HermesToolContext; cannot bind computer",
+        );
+    };
+
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    match provider.bind_bot_computer(user_id, bot_id, node_id).await {
+        Ok(node) => {
+            let payload = json!({
+                "bound": true,
+                "bot_id": bot_id,
+                "node": node,
+            });
+            HermesToolResult::ok("computer_bind", payload.to_string(), Some(payload))
+        }
+        Err(err) => HermesToolResult::err("computer_bind", redact_cloud_secrets(&err.to_string())),
+    }
+}
+
+async fn tool_computer_configure_cloud(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let (provider, user_id, bot_id) =
+        match require_computer_provider_and_user("computer_configure_cloud", ctx) {
+            Ok(v) => v,
+            Err(err_res) => return err_res,
+        };
+
+    let agent_endpoint_url = args
+        .get("agent_endpoint_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let host_arg = args
+        .get("host")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            agent_endpoint_url.as_deref().and_then(|url| {
+                let no_scheme = url
+                    .strip_prefix("https://")
+                    .or_else(|| url.strip_prefix("http://"))?;
+                let auth = no_scheme.split(['/', '?', '#']).next()?;
+                let host_port = auth.rsplit('@').next().unwrap_or(auth);
+                Some(
+                    host_port
+                        .rsplit_once(':')
+                        .map(|(h, _)| h)
+                        .unwrap_or(host_port)
+                        .to_string(),
+                )
+            })
+        });
+
+    let Some(host) = host_arg else {
+        return HermesToolResult::err(
+            "computer_configure_cloud",
+            "Missing required 'host' parameter",
+        );
+    };
+
+    let Some(secret) = args
+        .get("secret")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(ToString::to_string)
+    else {
+        return HermesToolResult::err(
+            "computer_configure_cloud",
+            "Missing required non-empty 'secret' parameter",
+        );
+    };
+
+    let auth_method = args
+        .get("auth_method")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if agent_endpoint_url.is_some() {
+                "agent_http_token".to_string()
+            } else if secret.contains("-----BEGIN ") && secret.contains("PRIVATE KEY-----") {
+                "ssh_private_key".to_string()
+            } else {
+                "ssh_password".to_string()
+            }
+        });
+
+    let port = args
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .or_else(|| {
+            agent_endpoint_url.as_deref().and_then(|url| {
+                let no_scheme = url
+                    .strip_prefix("https://")
+                    .or_else(|| url.strip_prefix("http://"))?;
+                let auth = no_scheme.split(['/', '?', '#']).next()?;
+                let host_port = auth.rsplit('@').next().unwrap_or(auth);
+                host_port
+                    .rsplit_once(':')
+                    .and_then(|(_, p)| p.parse::<u16>().ok())
+            })
+        })
+        .unwrap_or_else(|| {
+            if auth_method == "agent_http_token" {
+                8080
+            } else {
+                22
+            }
+        });
+
+    let username = args
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "root".to_string());
+
+    let display_name = args
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("Cloud-{host}"));
+
+    let workdir = args
+        .get("workdir")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let bind_to_bot = args
+        .get("bind_to_bot")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let cfg = AgentCloudServerConfigInput {
+        node_id,
+        display_name,
+        host,
+        port,
+        username,
+        auth_method,
+        secret,
+        agent_endpoint_url,
+        workdir,
+        bind_to_bot,
+    };
+
+    match provider.configure_cloud_server(user_id, bot_id, cfg).await {
+        Ok(node) => {
+            let payload = json!({
+                "node": node,
+                "node_id": node.node_id,
+                "display_name": node.display_name,
+                "host": node.host,
+                "online": node.online,
+                "bound_to_this_bot": node.bound_to_this_bot,
+                "run_policy": node.run_policy,
+                "secret_redacted": true,
+            });
+            HermesToolResult::ok("computer_configure_cloud", payload.to_string(), Some(payload))
+        }
+        Err(err) => HermesToolResult::err(
+            "computer_configure_cloud",
+            redact_cloud_secrets(&err.to_string()),
+        ),
+    }
+}
+
+async fn tool_computer_exec(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let (provider, user_id, bot_id) = match require_computer_provider_and_user("computer_exec", ctx) {
+        Ok(v) => v,
+        Err(err_res) => return err_res,
+    };
+
+    let Some(command) = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return HermesToolResult::err("computer_exec", "Missing required 'command' parameter");
+    };
+
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let cwd = args
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let req = AgentComputerExecInput {
+        node_id,
+        caller_bot_id: bot_id,
+        op: "shell_exec".to_string(),
+        command: Some(command),
+        cwd,
+        ..Default::default()
+    };
+
+    match provider.execute_on_computer(user_id, req).await {
+        Ok(out) => exec_output_to_tool_result("computer_exec", out),
+        Err(err) => HermesToolResult::err("computer_exec", redact_cloud_secrets(&err.to_string())),
+    }
+}
+
+async fn tool_computer_file(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let (provider, user_id, bot_id) = match require_computer_provider_and_user("computer_file", ctx) {
+        Ok(v) => v,
+        Err(err_res) => return err_res,
+    };
+
+    let op_raw = args
+        .get("op")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let op = match op_raw.as_str() {
+        "read" | "read_file" => "read_file",
+        "write" | "write_file" => "write_file",
+        "list" | "list_dir" => "list_dir",
+        other => {
+            return HermesToolResult::err(
+                "computer_file",
+                format!("Unsupported computer_file op '{other}'; expected read|write|list"),
+            );
+        }
+    };
+
+    let Some(path) = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return HermesToolResult::err("computer_file", "Missing required 'path' parameter");
+    };
+
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    if op == "write_file" && content.is_none() {
+        return HermesToolResult::err(
+            "computer_file",
+            "Missing required 'content' parameter for write operation",
+        );
+    }
+
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let req = AgentComputerExecInput {
+        node_id,
+        caller_bot_id: bot_id,
+        op: op.to_string(),
+        path: Some(path),
+        content,
+        ..Default::default()
+    };
+
+    match provider.execute_on_computer(user_id, req).await {
+        Ok(out) => exec_output_to_tool_result("computer_file", out),
+        Err(err) => HermesToolResult::err("computer_file", redact_cloud_secrets(&err.to_string())),
+    }
+}
+
+async fn tool_computer_screen(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let (provider, user_id, bot_id) =
+        match require_computer_provider_and_user("computer_screen", ctx) {
+            Ok(v) => v,
+            Err(err_res) => return err_res,
+        };
+
+    let op_raw = args
+        .get("op")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let op = match op_raw.as_str() {
+        "capture" | "capture_screen" => "capture_screen",
+        "click" => "click",
+        "move" => "move",
+        "type" => "type",
+        "key" => "key",
+        other => {
+            return HermesToolResult::err(
+                "computer_screen",
+                format!(
+                    "Unsupported computer_screen op '{other}'; expected capture|click|move|type|key"
+                ),
+            );
+        }
+    };
+
+    let x = args
+        .get("x")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    let y = args
+        .get("y")
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if op == "type" && text.as_ref().is_none_or(|t| t.is_empty()) {
+        return HermesToolResult::err(
+            "computer_screen",
+            "Missing required 'text' parameter for 'type' operation",
+        );
+    }
+    if op == "key" && key.is_none() {
+        return HermesToolResult::err(
+            "computer_screen",
+            "Missing required 'key' parameter for 'key' operation",
+        );
+    }
+
+    let node_id = args
+        .get("node_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let req = AgentComputerExecInput {
+        node_id,
+        caller_bot_id: bot_id,
+        op: op.to_string(),
+        x,
+        y,
+        text,
+        key,
+        ..Default::default()
+    };
+
+    match provider.execute_on_computer(user_id, req).await {
+        Ok(out) => exec_output_to_tool_result("computer_screen", out),
+        Err(err) => HermesToolResult::err("computer_screen", redact_cloud_secrets(&err.to_string())),
+    }
+}
+
+fn exec_output_to_tool_result(tool_name: &str, out: AgentComputerExecOutput) -> HermesToolResult {
+    let safe_out = AgentComputerExecOutput {
+        node_id: out.node_id,
+        ok: out.ok,
+        exit_code: out.exit_code,
+        stdout: redact_cloud_secrets(&out.stdout),
+        stderr: redact_cloud_secrets(&out.stderr),
+        entries: out.entries,
+        frame_data_url: out.frame_data_url,
+        executed_by: out.executed_by,
+    };
+    let payload = serde_json::to_value(&safe_out).unwrap_or_else(|_| {
+        json!({
+            "node_id": safe_out.node_id,
+            "ok": safe_out.ok,
+            "exit_code": safe_out.exit_code,
+        })
+    });
+
+    if safe_out.ok {
+        HermesToolResult::ok(tool_name, payload.to_string(), Some(payload))
+    } else {
+        let err_msg = if !safe_out.stderr.trim().is_empty() {
+            format!(
+                "exit_code={} on {}: {}",
+                safe_out.exit_code,
+                safe_out.node_id,
+                safe_out.stderr.trim()
+            )
+        } else {
+            format!(
+                "Command/operation failed on {} with exit_code={}",
+                safe_out.node_id, safe_out.exit_code
+            )
+        };
+        let mut res = HermesToolResult::err(tool_name, err_msg);
+        res.structured = Some(payload);
+        res
     }
 }
 

@@ -4,6 +4,7 @@
 //!
 //! Hosts webview runtime, theme synchronization bridges, fullscreen mode, and bottom sheet chrome.
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 /// AttachBotWebviewChatAttach component. Target symbol required by ledger: `AttachBotWebviewChatAttach`.
@@ -42,25 +43,52 @@ impl Default for AttachBotWebviewChatAttach {
 impl Render for AttachBotWebviewChatAttach {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .id("attach-bot-webview-sheet")
             .w_full()
             .h_full()
+            .when(!self.is_fullscreen, |el| el.rounded_t(px(14.0)))
+            .overflow_hidden()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .h(px(40.0))
+                    .h(px(44.0))
                     .w_full()
-                    .px(px(12.0))
+                    .px(px(14.0))
                     .bg(self.header_color)
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(self.bot_name.clone())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(self.bot_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .opacity(0.75)
+                                    .child(self.webview_url.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(999.0))
+                            .text_size(px(10.5))
+                            .child(if self.is_fullscreen { "Fullscreen" } else { "Sheet" }),
+                    ),
             )
             .child(
                 div()
                     .flex_1()
-                    .bg(hsla(0.0, 0.0, 0.98, 1.0))
+                    .bg(hsla(0.0, 0.0, 0.98, 1.0)),
             )
     }
 }

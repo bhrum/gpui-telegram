@@ -20,7 +20,7 @@ pub mod tools_web_media;
 pub mod toolsets;
 pub mod trajectory;
 
-use crate::computer::ComputerLeaseBroker;
+use crate::computer::{ComputerCloudProvider, ComputerLeaseBroker};
 use crate::mcp::McpRegistry;
 use crate::talk::TalkCoordinator;
 use crate::tasks::CronRoutine;
@@ -65,7 +65,7 @@ use tools_file::{FileCheckpointManager, RollbackReport, TodoStore};
 use tools_terminal::{ProcessRegistry, TerminalBackendConfig};
 use toolsets::{
     BoxFuture, HermesInlineButton, HermesStateBridge, HermesToolCall, HermesToolContext,
-    HermesToolExecutor, HermesToolSpec, HermesUiAction, SubagentDelegationOutcome,
+    HermesToolExecutor, HermesToolResult, HermesToolSpec, HermesUiAction, SubagentDelegationOutcome,
     SubagentDelegationRequest, ToolsetId, ToolsetPreset, ToolsetRegistry,
 };
 use trajectory::{
@@ -99,7 +99,7 @@ impl Default for HermesEngineConfig {
             workspace_root,
             data_dir: None,
             default_model: "hermes-local-v1".to_string(),
-            max_iterations: 12,
+            max_iterations: 30,
             default_preset: ToolsetPreset::Full,
             default_approval_mode: ApprovalMode::Prompt,
             context_compression: CompressionConfig::default(),
@@ -122,6 +122,9 @@ pub struct HermesTurnRequest {
     pub source: String,
     pub prompt: String,
     pub model: Option<String>,
+    /// Optional persona / bot instructions override for this turn (persisted into session settings
+    /// when non-empty). Preserves Hermes Tier-1 operational doctrine, active toolsets, and the
+    /// progressive skills index rather than stripping tool/multi-step execution rules.
     pub system_prompt: Option<String>,
     pub thinking_budget_tokens: Option<usize>,
     pub preset: Option<ToolsetPreset>,
@@ -283,6 +286,8 @@ pub struct SessionRuntimeSettings {
     pub debug_mode: bool,
     pub browser_attached: bool,
     pub active_goal: Option<String>,
+    /// Optional custom persona / bot instructions override. Customizes the session `SoulProfile`
+    /// while preserving Hermes base operational directives and Tier-1 toolset/self-learning doctrine.
     pub system_prompt_override: Option<String>,
     pub thinking_budget_tokens: Option<usize>,
     pub config_overrides: HashMap<String, String>,
@@ -2716,6 +2721,7 @@ struct HermesEngineInner {
     mcp_registry: Arc<RwLock<McpRegistry>>,
     talk_coordinator: Arc<Mutex<TalkCoordinator>>,
     computer_broker: Arc<Mutex<ComputerLeaseBroker>>,
+    computer_provider: RwLock<Option<Arc<dyn ComputerCloudProvider>>>,
     todos: Arc<Mutex<TodoStore>>,
     agentic_store: Arc<Mutex<LocalAgenticStore>>,
     commands: SlashCommandRegistry,
@@ -2729,6 +2735,18 @@ struct HermesEngineInner {
 #[derive(Clone)]
 pub struct HermesEngine {
     inner: Arc<HermesEngineInner>,
+}
+
+fn parse_numeric_user_id(raw: Option<&str>) -> Option<u64> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed
+        .strip_prefix("user_")
+        .unwrap_or(trimmed)
+        .parse::<u64>()
+        .ok()
 }
 
 impl HermesEngine {
@@ -2751,7 +2769,13 @@ impl HermesEngine {
         };
         let honcho = HonchoDialectics::with_store(store.clone());
 
-        let providers = ProviderRouter::from_env();
+        let force_live_providers =
+            std::env::var("HERMES_FORCE_LIVE_PROVIDERS").ok().as_deref() == Some("1");
+        let providers = if config.data_dir.is_some() || force_live_providers {
+            ProviderRouter::from_env()
+        } else {
+            ProviderRouter::new()
+        };
         if providers.active_info().0 == "local_hermes" {
             if let Ok(Some(raw)) = store.kv_get("runtime", "providers_state") {
                 if let Ok(saved) =
@@ -2770,17 +2794,17 @@ impl HermesEngine {
                 }
             }
         }
-        if config.default_model.trim() != ""
-            && config.default_model != "hermes-local-v1"
+        let trimmed_default_model = config.default_model.trim();
+        if !is_placeholder_default_model(trimmed_default_model)
             && providers.active_info().1 == "hermes-local-v1"
         {
             // Keep local_hermes unless another provider was configured by env,
-            // while honoring configured model metadata when present.
+            // while honoring explicit non-placeholder configured model metadata when present.
             let snap = providers.snapshot();
-            if snap.model_profiles.contains_key(&config.default_model)
+            if snap.model_profiles.contains_key(trimmed_default_model)
                 || snap.providers.values().any(|p| p.id != "local_hermes" && p.enabled)
             {
-                let _ = providers.set_active_model(&config.default_model);
+                let _ = providers.set_active_model(trimmed_default_model);
             }
         }
 
@@ -2802,6 +2826,7 @@ impl HermesEngine {
             mcp_registry: Arc::new(RwLock::new(McpRegistry::new())),
             talk_coordinator: Arc::new(Mutex::new(TalkCoordinator::new())),
             computer_broker: Arc::new(Mutex::new(ComputerLeaseBroker::new())),
+            computer_provider: RwLock::new(None),
             todos: Arc::new(Mutex::new(TodoStore::new())),
             agentic_store: Arc::new(Mutex::new(LocalAgenticStore::new())),
             commands: SlashCommandRegistry::new(),
@@ -2880,6 +2905,20 @@ impl HermesEngine {
 
     pub fn computer_broker(&self) -> &Arc<Mutex<ComputerLeaseBroker>> {
         &self.inner.computer_broker
+    }
+
+    pub fn set_computer_provider(&self, provider: Arc<dyn ComputerCloudProvider>) {
+        if let Ok(mut guard) = self.inner.computer_provider.write() {
+            *guard = Some(provider);
+        }
+    }
+
+    pub fn computer_provider(&self) -> Option<Arc<dyn ComputerCloudProvider>> {
+        self.inner
+            .computer_provider
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     pub fn todos(&self) -> &Arc<Mutex<TodoStore>> {
@@ -3089,9 +3128,40 @@ impl HermesEngine {
         caller_depth: usize,
         cancellation: Arc<AtomicBool>,
     ) -> HermesToolContext {
-        let user_id = chat_id
-            .map(|c| format!("chat_{c}"))
-            .unwrap_or_else(|| "default_user".to_string());
+        self.build_tool_context_with_user(
+            session_id,
+            chat_id,
+            bot_id,
+            None,
+            turn_index,
+            preset,
+            caller_depth,
+            cancellation,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_tool_context_with_user(
+        &self,
+        session_id: &str,
+        chat_id: Option<i64>,
+        bot_id: Option<&str>,
+        raw_user_id: Option<&str>,
+        turn_index: u64,
+        preset: Option<ToolsetPreset>,
+        caller_depth: usize,
+        cancellation: Arc<AtomicBool>,
+    ) -> HermesToolContext {
+        let user_id = raw_user_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                chat_id
+                    .map(|c| format!("chat_{c}"))
+                    .unwrap_or_else(|| "default_user".to_string())
+            });
+        let parsed_user_id = parse_numeric_user_id(raw_user_id);
         let bridge = Arc::new(ToolContextBridge {
             engine: Arc::downgrade(&self.inner),
             store: self.inner.store.clone(),
@@ -3120,6 +3190,7 @@ impl HermesEngine {
         let mut ctx = HermesToolContext::new(self.inner.config.workspace_root.clone())
             .with_session(session_id, turn_index)
             .with_chat_and_bot(chat_id, bot_id_i64)
+            .with_user_id(parsed_user_id)
             .with_state_bridge(bridge)
             .with_mcp_registry(Arc::clone(&self.inner.mcp_registry));
 
@@ -3129,6 +3200,7 @@ impl HermesEngine {
         ctx.processes = Arc::clone(&self.inner.processes);
         ctx.talk_coordinator = Arc::clone(&self.inner.talk_coordinator);
         ctx.computer_broker = Arc::clone(&self.inner.computer_broker);
+        ctx.computer_provider = self.computer_provider();
         ctx.todos = Arc::clone(&self.inner.todos);
         ctx.agentic_store = Arc::clone(&self.inner.agentic_store);
         ctx.caller_depth = caller_depth;
@@ -4019,10 +4091,11 @@ impl HermesEngine {
             .count()
             .max(1) as u64;
 
-        let tool_ctx = self.build_tool_context(
+        let tool_ctx = self.build_tool_context_with_user(
             session_id,
             req.chat_id.or(sess.chat_id),
             req.bot_id.as_deref().or(sess.bot_id.as_deref()),
+            req.user_id.as_deref(),
             turn_index,
             req.preset,
             req.caller_depth,
@@ -4131,7 +4204,7 @@ impl HermesEngine {
         let max_iters = req
             .max_iterations
             .unwrap_or(self.inner.config.max_iterations)
-            .clamp(1, 32);
+            .clamp(1, 64);
 
         let mut total_usage = TokenUsage::default();
         let mut collected_buttons: Vec<Vec<InlineActionButton>> = Vec::new();
@@ -4139,6 +4212,9 @@ impl HermesEngine {
         let mut final_response_text = String::new();
         let mut combined_reasoning: Option<String> = None;
         let mut iterations_executed = 0usize;
+        let mut guardrails = ToolGuardrailTracker::default();
+        let mut empty_recovery_attempted = false;
+        let mut grace_synthesis_reason: Option<&'static str> = None;
 
         for iter in 1..=max_iters {
             if cancel_flag.load(Ordering::SeqCst) {
@@ -4166,7 +4242,6 @@ impl HermesEngine {
 
             let mut prov_req = ProviderRequest::new(chosen_model.clone(), llm_messages.clone());
             prov_req.system_tiers = tiers_from_assembled(&assembled);
-            // Allow tools unless this is a final forced synthesis pass on the last iteration with prior calls
             prov_req.tools = provider_tools.clone();
             prov_req.temperature = req.temperature.or(self.inner.config.default_temperature);
             prov_req.max_tokens = req.max_tokens.or(self.inner.config.default_max_tokens);
@@ -4237,6 +4312,22 @@ impl HermesEngine {
             }
 
             if resp.tool_calls.is_empty() {
+                // Empty-Response Continuation Recovery: if tools ran previously in this turn and
+                // the model returned empty text with zero tool calls, issue ONE recovery nudge.
+                if resp.content.trim().is_empty()
+                    && iter > 1
+                    && tool_calls_count > 0
+                    && !empty_recovery_attempted
+                {
+                    empty_recovery_attempted = true;
+                    llm_messages.push(ProviderChatMessage::user(EMPTY_RESPONSE_RECOVERY_NUDGE));
+                    if iter < max_iters {
+                        continue;
+                    }
+                    grace_synthesis_reason = Some("empty_response_after_tools");
+                    break;
+                }
+
                 final_response_text = resp.content.clone();
                 let _ = self.inner.store.append_message(AppendMessageRequest {
                     id: None,
@@ -4253,8 +4344,17 @@ impl HermesEngine {
                 break;
             }
 
+            // Fill empty/blank tool call IDs deterministically (`call_<iter>_<idx>`) before persisting
+            // the assistant message so assistant `tool_calls` and tool responses stay paired.
+            let mut normalized_calls = resp.tool_calls.clone();
+            for (idx, tc) in normalized_calls.iter_mut().enumerate() {
+                if tc.id.trim().is_empty() {
+                    tc.id = format!("call_{iter}_{idx}");
+                }
+            }
+
             // Persist assistant message containing tool calls
-            let tool_calls_json = serde_json::to_string(&resp.tool_calls).ok();
+            let tool_calls_json = serde_json::to_string(&normalized_calls).ok();
             let _ = self.inner.store.append_message(AppendMessageRequest {
                 id: None,
                 session_id: session_id.to_string(),
@@ -4269,33 +4369,93 @@ impl HermesEngine {
             });
             llm_messages.push(ProviderChatMessage::assistant_with_tools(
                 resp.content.clone(),
-                resp.tool_calls.clone(),
+                normalized_calls.clone(),
                 resp.reasoning.clone(),
             ));
 
-            // Execute each requested tool with Security/TIR checks and checkpointing
-            for tc in &resp.tool_calls {
+            // Execute each requested tool with JSON repair, non-fatal error envelope, and stall/cycle guardrails.
+            let mut short_circuit_after_batch = false;
+            for tc in &normalized_calls {
                 if cancel_flag.load(Ordering::SeqCst) {
                     break;
                 }
                 tool_calls_count += 1;
-                let args_val = tc.arguments_json();
+
+                if short_circuit_after_batch {
+                    let skipped_msg = build_non_fatal_tool_error_envelope(
+                        &tc.name,
+                        "Tool execution skipped: stall/cycle guardrail short-circuited the loop.",
+                    );
+                    let _ = self.inner.store.append_message(AppendMessageRequest {
+                        id: None,
+                        session_id: session_id.to_string(),
+                        role: "tool".into(),
+                        content: skipped_msg.clone(),
+                        reasoning: None,
+                        tool_calls_json: None,
+                        tool_call_id: Some(tc.id.clone()),
+                        tool_name: Some(tc.name.clone()),
+                        token_count: estimate_tokens(&skipped_msg) as i64,
+                        created_at: None,
+                    });
+                    llm_messages.push(ProviderChatMessage::tool_result(
+                        tc.id.clone(),
+                        tc.name.clone(),
+                        skipped_msg,
+                    ));
+                    continue;
+                }
+
+                let repaired = repair_tool_call_arguments(&tc.arguments);
+                let start_args_val = match &repaired {
+                    Ok(v) => v.clone(),
+                    Err(_) => Value::String(tc.arguments.clone()),
+                };
+
                 let start_ev = HermesEvent::ToolStart {
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
-                    arguments: args_val.clone(),
+                    arguments: start_args_val,
                 };
                 recorded.push(start_ev.clone());
                 let _ = tx.send(start_ev).await;
 
-                let call = HermesToolCall {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    arguments: args_val,
+                let (result, canonical_args) = match repaired {
+                    Ok(args_val) if args_val.is_object() => {
+                        let canonical = canonicalize_json(&args_val);
+                        let call = HermesToolCall {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            arguments: args_val,
+                        };
+                        let res = HermesToolExecutor::execute_call(&call, &tool_ctx).await;
+                        (res, canonical)
+                    }
+                    Ok(non_obj) => {
+                        let canonical = canonicalize_json(&non_obj);
+                        let res = HermesToolResult::err(
+                            &tc.name,
+                            "Tool arguments must be a JSON object.",
+                        )
+                        .with_call_id(tc.id.clone());
+                        (res, canonical)
+                    }
+                    Err(parse_err) => {
+                        let res = HermesToolResult::err(
+                            &tc.name,
+                            format!("Invalid tool arguments JSON: {parse_err}"),
+                        )
+                        .with_call_id(tc.id.clone());
+                        (res, tc.arguments.trim().to_string())
+                    }
                 };
-                let result = HermesToolExecutor::execute_call(&call, &tool_ctx).await;
 
-                let mut output_for_model = result.output.clone();
+                let mut output_for_model = if result.success {
+                    result.output.clone()
+                } else {
+                    build_non_fatal_tool_error_envelope(&tc.name, &result.output)
+                };
+
                 if let Ok(sec) = self.inner.security.read() {
                     let scan = sec.scan_output(&output_for_model);
                     if scan.flagged {
@@ -4311,6 +4471,27 @@ impl HermesEngine {
                             scan.sanitized_text
                         );
                     }
+                }
+
+                // Evaluate stall streaks, period 2..=4 cycles, and >= 512 char duplicate output stubs.
+                let guardrail_eval = guardrails.record_and_evaluate(
+                    &tc.id,
+                    &tc.name,
+                    &canonical_args,
+                    &output_for_model,
+                );
+                if let Some(stub) = guardrail_eval.stubbed_output {
+                    output_for_model = stub;
+                }
+                for warn in guardrail_eval.warning_messages {
+                    if !output_for_model.is_empty() {
+                        output_for_model.push('\n');
+                    }
+                    output_for_model.push_str(&warn);
+                }
+                if guardrail_eval.short_circuit {
+                    grace_synthesis_reason = Some("guardrail_short_circuit");
+                    short_circuit_after_batch = true;
                 }
 
                 // Surface approval prompt / inline buttons when a tool requested confirmation
@@ -4385,10 +4566,125 @@ impl HermesEngine {
                 ));
             }
 
-            if iter == max_iters && final_response_text.is_empty() {
-                final_response_text = format!(
-                    "Reached max iterations ({max_iters}) after executing {tool_calls_count} tool call(s)."
-                );
+            if grace_synthesis_reason.is_some() {
+                break;
+            }
+
+            if iter == max_iters
+                && final_response_text.is_empty()
+                && !cancel_flag.load(Ordering::SeqCst)
+            {
+                grace_synthesis_reason = Some("max_iterations");
+            }
+        }
+
+        // Grace Synthesis Final Call: whenever max_iterations or a stall/cycle guardrail short-circuits
+        // while tool calls were still occurring, run ONE final tool-less completion call (`tools: vec![]`)
+        // to synthesize everything accomplished and observed so far instead of dumping a raw error.
+        if !cancel_flag.load(Ordering::SeqCst) && final_response_text.is_empty() {
+            if let Some(reason) = grace_synthesis_reason {
+                if reason != "empty_response_after_tools" {
+                    llm_messages.push(ProviderChatMessage::user(GRACE_SYNTHESIS_NOTICE));
+                }
+
+                let mut final_req = ProviderRequest::new(chosen_model.clone(), llm_messages.clone());
+                final_req.system_tiers = tiers_from_assembled(&assembled);
+                final_req.tools = Vec::new();
+                final_req.temperature = req.temperature.or(self.inner.config.default_temperature);
+                final_req.max_tokens = req.max_tokens.or(self.inner.config.default_max_tokens);
+                final_req.thinking_budget_tokens = req
+                    .thinking_budget_tokens
+                    .or(active_settings.thinking_budget_tokens)
+                    .or(if active_settings.reasoning_mode { Some(1024) } else { None });
+                final_req.stream = true;
+                final_req.metadata = meta_json.clone();
+
+                let (ptx, mut prx) = mpsc::channel::<ProviderStreamEvent>(64);
+                let tx_stream = tx.clone();
+                let forwarder = tokio::spawn(async move {
+                    let mut stream_events = Vec::new();
+                    let mut acc = String::new();
+                    while let Some(sev) = prx.recv().await {
+                        match sev {
+                            ProviderStreamEvent::ThinkingDelta(t) => {
+                                let ev = HermesEvent::ThinkingDelta { text: t };
+                                stream_events.push(ev.clone());
+                                let _ = tx_stream.send(ev).await;
+                            }
+                            ProviderStreamEvent::TextDelta(t) => {
+                                acc.push_str(&t);
+                                let ev = HermesEvent::TextDelta {
+                                    text: t,
+                                    accumulated: acc.clone(),
+                                };
+                                stream_events.push(ev.clone());
+                                let _ = tx_stream.send(ev).await;
+                            }
+                            ProviderStreamEvent::ToolCallReady(_)
+                            | ProviderStreamEvent::Usage(_) => {}
+                        }
+                    }
+                    stream_events
+                });
+
+                let synth_res = self.inner.providers.complete(final_req, Some(ptx)).await;
+                let streamed_evs = forwarder.await.unwrap_or_default();
+                recorded.extend(streamed_evs);
+
+                match synth_res {
+                    Ok(synth_resp) => {
+                        iterations_executed += 1;
+                        total_usage.accumulate(&synth_resp.usage);
+                        let _ = self.inner.store.record_token_usage(
+                            session_id,
+                            synth_resp.usage.input_tokens as i64,
+                            synth_resp.usage.output_tokens as i64,
+                            synth_resp.usage.estimated_cost_usd,
+                        );
+                        if let Some(ref r_text) = synth_resp.reasoning {
+                            combined_reasoning = Some(match combined_reasoning {
+                                Some(prev) => format!("{prev}\n{r_text}"),
+                                None => r_text.clone(),
+                            });
+                        }
+                        final_response_text = if synth_resp.content.trim().is_empty() {
+                            format!(
+                                "Completed {tool_calls_count} tool call(s) across {iterations_executed} step(s)."
+                            )
+                        } else {
+                            synth_resp.content.clone()
+                        };
+                        let _ = self.inner.store.append_message(AppendMessageRequest {
+                            id: None,
+                            session_id: session_id.to_string(),
+                            role: "assistant".into(),
+                            content: final_response_text.clone(),
+                            reasoning: synth_resp.reasoning.clone(),
+                            tool_calls_json: None,
+                            tool_call_id: None,
+                            tool_name: None,
+                            token_count: estimate_tokens(&final_response_text) as i64,
+                            created_at: None,
+                        });
+                    }
+                    Err(err) => {
+                        final_response_text = format!(
+                            "Completed {tool_calls_count} tool call(s); grace synthesis encountered an upstream error: {err}"
+                        );
+                        let _ = self.inner.store.append_message(AppendMessageRequest {
+                            id: None,
+                            session_id: session_id.to_string(),
+                            role: "assistant".into(),
+                            content: final_response_text.clone(),
+                            reasoning: None,
+                            tool_calls_json: None,
+                            tool_call_id: None,
+                            tool_name: None,
+                            token_count: estimate_tokens(&final_response_text) as i64,
+                            created_at: None,
+                        });
+                    }
+                }
             }
         }
 
@@ -4442,7 +4738,13 @@ impl HermesEngine {
             .ok();
 
         let mut soul = if let Some(override_txt) = persona_override.map(str::trim).filter(|s| !s.is_empty()) {
-            SoulProfile::parse(override_txt)
+            let mut parsed = SoulProfile::parse(override_txt);
+            // Preserve base Hermes directives when override only customizes bot persona/instructions;
+            // Tier-1 Operational & Self-Learning Doctrine is also injected unconditionally by PromptBuilder.
+            if parsed.directives.is_empty() {
+                parsed.directives = SoulProfile::default().directives;
+            }
+            parsed
         } else {
             let stored = self.inner.memory.read_soul().ok();
             let ws_soul = ws_ctx
@@ -4769,12 +5071,14 @@ impl HermesEngine {
             }
             "tools/call" => {
                 let sid = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("default_session");
+                let uid = params.get("user_id").and_then(|v| v.as_str());
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                let ctx = self.build_tool_context(
+                let ctx = self.build_tool_context_with_user(
                     sid,
                     None,
                     None,
+                    uid,
                     1,
                     None,
                     0,
@@ -4909,6 +5213,390 @@ fn records_to_provider_messages(
         }
     }
     out
+}
+
+const GRACE_SYNTHESIS_NOTICE: &str = "[System Notice] Tool iteration budget reached. Do NOT call any more tools; synthesize a thorough, accurate final response summarizing everything accomplished and observed so far.";
+const EMPTY_RESPONSE_RECOVERY_NUDGE: &str = "You just completed tool execution above; now provide a clear, complete final response based on the results.";
+
+fn is_placeholder_default_model(model: &str) -> bool {
+    let trimmed = model.trim();
+    trimmed.is_empty()
+        || matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "deepseek-flash" | "hermes-local-v1" | "default" | "auto"
+        )
+        || trimmed == "默认模型"
+}
+
+fn sha256_hex(input: &str) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(input.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn build_non_fatal_tool_error_envelope(tool_name: &str, err_msg: &str) -> String {
+    json!({
+        "ok": false,
+        "tool": tool_name,
+        "error": err_msg,
+        "hint": "Fix the arguments or choose another approach and continue."
+    })
+    .to_string()
+}
+
+fn strip_markdown_code_fence(input: &str) -> &str {
+    let trimmed = input.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let after_lang = rest
+            .find('\n')
+            .map(|idx| &rest[idx + 1..])
+            .unwrap_or(rest);
+        if let Some(end_idx) = after_lang.rfind("```") {
+            return after_lang[..end_idx].trim();
+        }
+        return after_lang.trim();
+    }
+    if let Some(fence_start) = trimmed.find("```") {
+        let after_open = &trimmed[fence_start + 3..];
+        if let Some(nl_idx) = after_open.find('\n') {
+            let body = &after_open[nl_idx + 1..];
+            if let Some(end_idx) = body.rfind("```") {
+                return body[..end_idx].trim();
+            }
+        }
+    }
+    trimmed
+}
+
+fn extract_outer_json_span(input: &str) -> Option<&str> {
+    let mut start_byte: Option<usize> = None;
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (byte_idx, ch) in input.char_indices() {
+        if start_byte.is_none() {
+            if ch == '{' {
+                start_byte = Some(byte_idx);
+                stack.push('}');
+            } else if ch == '[' {
+                start_byte = Some(byte_idx);
+                stack.push(']');
+            }
+            continue;
+        }
+
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' => {
+                if stack.last().copied() == Some(ch) {
+                    stack.pop();
+                    if stack.is_empty() {
+                        if let Some(start) = start_byte {
+                            return Some(&input[start..byte_idx + ch.len_utf8()]);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fallback to widest open..close span if braces were slightly imbalanced.
+    if let Some(start) = start_byte {
+        let first_ch = input[start..].chars().next()?;
+        let close_ch = if first_ch == '{' { '}' } else { ']' };
+        if let Some(end) = input.rfind(close_ch) {
+            if end > start {
+                return Some(&input[start..=end]);
+            }
+        }
+    }
+    None
+}
+
+fn strip_trailing_json_commas(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && matches!(chars[j], '}' | ']') {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+
+    out
+}
+
+fn repair_tool_call_arguments_with_depth(
+    raw: &str,
+    depth: usize,
+) -> std::result::Result<Value, String> {
+    if depth > 2 {
+        return Err("Nested JSON string exceeded repair depth limit".to_string());
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(json!({}));
+    }
+
+    let resolve_parsed = |val: Value| -> std::result::Result<Value, String> {
+        match val {
+            Value::Null => Ok(json!({})),
+            Value::String(inner) => {
+                let inner_trimmed = inner.trim();
+                if inner_trimmed.is_empty() {
+                    Ok(json!({}))
+                } else if inner_trimmed.starts_with('{')
+                    || inner_trimmed.starts_with('[')
+                    || inner_trimmed.starts_with("```")
+                {
+                    repair_tool_call_arguments_with_depth(inner_trimmed, depth + 1)
+                } else {
+                    Err("Tool arguments string did not contain a JSON object".to_string())
+                }
+            }
+            other => Ok(other),
+        }
+    };
+
+    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+        return resolve_parsed(v);
+    }
+
+    let unfenced = strip_markdown_code_fence(trimmed);
+    if let Ok(v) = serde_json::from_str::<Value>(unfenced) {
+        return resolve_parsed(v);
+    }
+
+    let cleaned_unfenced = strip_trailing_json_commas(unfenced);
+    if let Ok(v) = serde_json::from_str::<Value>(&cleaned_unfenced) {
+        return resolve_parsed(v);
+    }
+
+    if let Some(span) = extract_outer_json_span(unfenced) {
+        if let Ok(v) = serde_json::from_str::<Value>(span) {
+            return resolve_parsed(v);
+        }
+        let cleaned_span = strip_trailing_json_commas(span);
+        if let Ok(v) = serde_json::from_str::<Value>(&cleaned_span) {
+            return resolve_parsed(v);
+        }
+    }
+
+    Err(serde_json::from_str::<Value>(trimmed)
+        .expect_err("failed parse after repair fallback")
+        .to_string())
+}
+
+pub(crate) fn repair_tool_call_arguments(raw: &str) -> std::result::Result<Value, String> {
+    repair_tool_call_arguments_with_depth(raw, 0)
+}
+
+fn write_canonical_json(val: &Value, out: &mut String) {
+    match val {
+        Value::Object(map) => {
+            out.push('{');
+            let mut entries: Vec<(&str, &Value)> =
+                map.iter().map(|(k, v)| (k.as_str(), v)).collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (idx, (k, v)) in entries.into_iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| format!("\"{k}\"")));
+                out.push(':');
+                write_canonical_json(v, out);
+            }
+            out.push('}');
+        }
+        Value::Array(arr) => {
+            out.push('[');
+            for (idx, item) in arr.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                write_canonical_json(item, out);
+            }
+            out.push(']');
+        }
+        scalar => {
+            out.push_str(&serde_json::to_string(scalar).unwrap_or_else(|_| "null".into()));
+        }
+    }
+}
+
+pub(crate) fn canonicalize_json(val: &Value) -> String {
+    let mut out = String::new();
+    write_canonical_json(val, &mut out);
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolCallSignature {
+    tool_name: String,
+    canonical_args: String,
+    result_hash: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GuardrailEval {
+    stubbed_output: Option<String>,
+    warning_messages: Vec<String>,
+    short_circuit: bool,
+}
+
+#[derive(Debug, Default)]
+struct ToolGuardrailTracker {
+    history: Vec<ToolCallSignature>,
+    seen_large_outputs: HashMap<String, (String, usize)>,
+}
+
+impl ToolGuardrailTracker {
+    fn record_and_evaluate(
+        &mut self,
+        call_id: &str,
+        tool_name: &str,
+        canonical_args: &str,
+        raw_output: &str,
+    ) -> GuardrailEval {
+        let mut eval = GuardrailEval::default();
+        let result_hash = sha256_hex(raw_output);
+        let char_count = raw_output.chars().count();
+
+        if char_count >= 512 {
+            if let Some((orig_call_id, orig_chars)) = self.seen_large_outputs.get(&result_hash) {
+                let short_hash = &result_hash[..12.min(result_hash.len())];
+                eval.stubbed_output = Some(format!(
+                    "[Duplicate output stub: {orig_chars} chars identical to earlier call_id `{orig_call_id}` (sha256:{short_hash}). Refer to `{orig_call_id}` above.]"
+                ));
+            } else {
+                self.seen_large_outputs
+                    .insert(result_hash.clone(), (call_id.to_string(), char_count));
+            }
+        }
+
+        self.history.push(ToolCallSignature {
+            tool_name: tool_name.to_string(),
+            canonical_args: canonical_args.to_string(),
+            result_hash,
+        });
+
+        let last_sig = self.history.last().expect("pushed signature");
+        let streak = self
+            .history
+            .iter()
+            .rev()
+            .take_while(|sig| *sig == last_sig)
+            .count();
+
+        if streak >= 5 {
+            eval.warning_messages.push(
+                "[Guardrail Warning: Identical tool call repeated 5 times with identical results. Stopping tool loop and synthesizing final response.]"
+                    .to_string(),
+            );
+            eval.short_circuit = true;
+            return eval;
+        }
+
+        if streak == 3 {
+            eval.warning_messages.push(
+                "[Guardrail Warning: You called this exact tool with identical arguments and got the same result 3 times. Change approach or finish your answer.]"
+                    .to_string(),
+            );
+        }
+
+        if let Some((period, repeats)) = detect_multi_tool_cycle(&self.history) {
+            if repeats >= 3 {
+                eval.warning_messages.push(format!(
+                    "[Guardrail Warning: Detected a repeating {period}-step tool call cycle ({repeats} repetitions). Stopping runaway loop and synthesizing final response.]"
+                ));
+                eval.short_circuit = true;
+            } else {
+                eval.warning_messages.push(format!(
+                    "[Guardrail Warning: Detected a repeating {period}-step tool call cycle ({repeats} repetitions). Break the cycle by changing approach or finishing your answer.]"
+                ));
+            }
+        }
+
+        eval
+    }
+}
+
+fn detect_multi_tool_cycle(history: &[ToolCallSignature]) -> Option<(usize, usize)> {
+    let n = history.len();
+    for period in 2..=4 {
+        if n < period * 2 {
+            continue;
+        }
+        let pattern = &history[n - period..n];
+        if pattern.iter().all(|sig| sig == &pattern[0]) {
+            continue;
+        }
+        let mut repeats = 1usize;
+        let mut offset = period;
+        while n >= offset + period {
+            if &history[n - offset - period..n - offset] == pattern {
+                repeats += 1;
+                offset += period;
+            } else {
+                break;
+            }
+        }
+        if repeats >= 2 {
+            return Some((period, repeats));
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -5096,5 +5784,505 @@ mod tests {
             .acp_json_rpc(json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }))
             .await;
         assert_eq!(rpc["result"]["serverInfo"]["name"], "hermes-rust-agent");
+    }
+
+    async fn spawn_mock_openai_server(
+        responses: Vec<Value>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<std::sync::Mutex<Vec<Value>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use std::collections::VecDeque;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock openai listener");
+        let addr = listener.local_addr().expect("local addr");
+        let captured = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let captured_clone = captured.clone();
+        let queue = Arc::new(std::sync::Mutex::new(VecDeque::from(responses)));
+
+        let handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let next_resp = {
+                    let mut q = queue.lock().unwrap();
+                    q.pop_front()
+                };
+                let Some(resp_json) = next_resp else {
+                    break;
+                };
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 4096];
+                let mut header_end: Option<usize> = None;
+                let mut content_len: usize = 0;
+
+                loop {
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if header_end.is_none() {
+                        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                            header_end = Some(pos);
+                            let headers = String::from_utf8_lossy(&raw[..pos]);
+                            for line in headers.lines() {
+                                if let Some((k, v)) = line.split_once(':') {
+                                    if k.trim().eq_ignore_ascii_case("content-length") {
+                                        content_len = v.trim().parse::<usize>().unwrap_or(0);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(hend) = header_end {
+                        if raw.len() >= hend + 4 + content_len {
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(hend) = header_end {
+                    let body_end = (hend + 4 + content_len).min(raw.len());
+                    if let Ok(req_val) = serde_json::from_slice::<Value>(&raw[hend + 4..body_end]) {
+                        captured_clone.lock().unwrap().push(req_val);
+                    }
+                }
+
+                let body = resp_json.to_string();
+                let http = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(http.as_bytes()).await;
+                let _ = stream.shutdown().await;
+
+                if queue.lock().unwrap().is_empty() {
+                    break;
+                }
+            }
+        });
+
+        (addr, captured, handle)
+    }
+
+    fn openai_text_response(text: &str) -> Value {
+        json!({
+            "id": "chatcmpl-mock",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": { "role": "assistant", "content": text }
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        })
+    }
+
+    fn openai_tool_call_response(calls: Vec<(&str, &str, &str)>) -> Value {
+        let tc_json: Vec<Value> = calls
+            .into_iter()
+            .map(|(id, name, args)| {
+                json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": args }
+                })
+            })
+            .collect();
+        json!({
+            "id": "chatcmpl-mock-tc",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": tc_json
+                }
+            }],
+            "usage": { "prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20 }
+        })
+    }
+
+    #[test]
+    fn test_repair_tool_call_arguments_quirks_and_canonical_json() {
+        assert_eq!(HermesEngineConfig::default().max_iterations, 30);
+
+        assert_eq!(repair_tool_call_arguments("").unwrap(), json!({}));
+        assert_eq!(repair_tool_call_arguments("   \n\t ").unwrap(), json!({}));
+
+        let fenced = "Here you go:\n```json\n{\"b\": [1, 2,], \"a\": \"hi,}\",}\n```\nDone.";
+        let parsed = repair_tool_call_arguments(fenced).expect("fence + trailing comma repaired");
+        assert_eq!(parsed, json!({ "a": "hi,}", "b": [1, 2] }));
+        assert_eq!(
+            canonicalize_json(&parsed),
+            r#"{"a":"hi,}","b":[1,2]}"#.to_string()
+        );
+
+        let array_wrapped = "prefix [\"x\", \"y\",] suffix";
+        assert_eq!(
+            repair_tool_call_arguments(array_wrapped).expect("outer array repaired"),
+            json!(["x", "y"])
+        );
+
+        assert!(repair_tool_call_arguments("{unterminated: nope").is_err());
+    }
+
+    #[test]
+    fn test_tool_guardrail_tracker_streaks_cycles_and_large_output_stubs() {
+        let mut tracker = ToolGuardrailTracker::default();
+        let big_output = "Z".repeat(600);
+
+        // Call 1: large output cached under c_1
+        let e1 = tracker.record_and_evaluate("c_1", "read_file", r#"{"path":"a.txt"}"#, &big_output);
+        assert!(e1.stubbed_output.is_none());
+        assert!(e1.warning_messages.is_empty());
+        assert!(!e1.short_circuit);
+
+        // Call 2: duplicate large output replaced with compact stub pointing to c_1
+        let e2 = tracker.record_and_evaluate("c_2", "read_file", r#"{"path":"a.txt"}"#, &big_output);
+        let stub = e2.stubbed_output.expect("duplicate >=512 chars must stub");
+        assert!(stub.contains("c_1"));
+        assert!(stub.contains("600 chars"));
+
+        // Call 3: streak == 3 warning appended
+        let e3 = tracker.record_and_evaluate("c_3", "read_file", r#"{"path":"a.txt"}"#, &big_output);
+        assert!(e3.stubbed_output.is_some());
+        assert!(!e3.short_circuit);
+        assert!(e3
+            .warning_messages
+            .iter()
+            .any(|w| w.contains("got the same result 3 times")));
+
+        // Call 4 & 5: streak >= 5 short-circuits cleanly
+        let _ = tracker.record_and_evaluate("c_4", "read_file", r#"{"path":"a.txt"}"#, &big_output);
+        let e5 = tracker.record_and_evaluate("c_5", "read_file", r#"{"path":"a.txt"}"#, &big_output);
+        assert!(e5.short_circuit);
+
+        // Separate tracker: period-2 repeating cycle (A, B, A, B, A, B)
+        let mut cycle_tracker = ToolGuardrailTracker::default();
+        for i in 1..=3 {
+            let ea = cycle_tracker.record_and_evaluate(&format!("a{i}"), "tool_a", "{}", "out_a");
+            assert!(!ea.short_circuit);
+            let eb = cycle_tracker.record_and_evaluate(&format!("b{i}"), "tool_b", "{}", "out_b");
+            if i == 2 {
+                assert!(
+                    eb.warning_messages
+                        .iter()
+                        .any(|w| w.contains("2-step tool call cycle")),
+                    "expected cycle warning at 2nd repetition"
+                );
+                assert!(!eb.short_circuit);
+            } else if i == 3 {
+                assert!(eb.short_circuit, "expected clean loop break on 3rd repetition");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_turn_loop_json_repair_unknown_tool_non_fatal_and_empty_call_id() {
+        let (_dir, engine) = test_engine();
+        let (addr, captured, server) = spawn_mock_openai_server(vec![
+            // Iter 1: empty call_id, malformed JSON + trailing comma + fence for UNKNOWN tool
+            openai_tool_call_response(vec![(
+                "",
+                "nonexistent_tool_xyz",
+                "```json\n{\"foo\": 1,}\n```",
+            )]),
+            // Iter 2: LLM recovers using error envelope and calls valid `think` with empty "" args
+            openai_tool_call_response(vec![("", "think", "")]),
+            // Iter 3: final answer
+            openai_text_response("Recovered from unknown tool error cleanly."),
+        ])
+        .await;
+
+        engine.providers().register_provider(providers::ProviderConfig::openai_compatible(
+            "mock_openai",
+            "Mock OpenAI",
+            format!("http://{addr}/v1"),
+            "mock-gpt",
+            "k",
+        ));
+        let _ = engine.providers().set_active("mock_openai", Some("mock-gpt"));
+        engine.providers().set_allow_local_fallback(false);
+
+        let res = engine
+            .run_turn(HermesTurnRequest::new("Test unknown tool recovery").with_session("s_repair"))
+            .await
+            .expect("turn must not fail on unknown tool");
+        let _ = server.await;
+
+        assert_eq!(res.response_text, "Recovered from unknown tool error cleanly.");
+        assert_eq!(res.tool_calls.len(), 2);
+        assert_eq!(res.tool_calls[0].tool_name, "nonexistent_tool_xyz");
+        assert!(!res.tool_calls[0].success);
+
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        let msgs2 = reqs[1]["messages"].as_array().unwrap();
+        let tool_msg = msgs2
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("tool envelope passed back to LLM");
+        assert_eq!(tool_msg["tool_call_id"], "call_1_0");
+        let env: Value = serde_json::from_str(tool_msg["content"].as_str().unwrap()).unwrap();
+        assert_eq!(env["ok"], false);
+        assert_eq!(env["tool"], "nonexistent_tool_xyz");
+        assert!(env["hint"].as_str().unwrap().contains("Fix the arguments"));
+    }
+
+    #[tokio::test]
+    async fn test_turn_loop_empty_response_recovery() {
+        let (_dir, engine) = test_engine();
+        let (addr, captured, server) = spawn_mock_openai_server(vec![
+            openai_tool_call_response(vec![("c1", "think", "{\"thought\":\"checking\"}")]),
+            // Iter 2: model returns empty content and 0 tool calls
+            openai_text_response("   "),
+            // Iter 3: after recovery nudge, model provides complete text
+            openai_text_response("Synthesized final response after recovery nudge."),
+        ])
+        .await;
+
+        engine.providers().register_provider(providers::ProviderConfig::openai_compatible(
+            "mock_openai",
+            "Mock OpenAI",
+            format!("http://{addr}/v1"),
+            "mock-gpt",
+            "k",
+        ));
+        let _ = engine.providers().set_active("mock_openai", Some("mock-gpt"));
+        engine.providers().set_allow_local_fallback(false);
+
+        let res = engine
+            .run_turn(HermesTurnRequest::new("Do work").with_session("s_empty_rec"))
+            .await
+            .expect("turn ok");
+        let _ = server.await;
+
+        assert_eq!(
+            res.response_text,
+            "Synthesized final response after recovery nudge."
+        );
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        let last_msgs = reqs[2]["messages"].as_array().unwrap();
+        assert!(last_msgs.iter().any(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("You just completed tool execution above"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_turn_loop_grace_synthesis_on_max_iterations() {
+        let (_dir, engine) = test_engine();
+        let (addr, captured, server) = spawn_mock_openai_server(vec![
+            openai_tool_call_response(vec![("t1", "think", "{\"thought\":\"step1\"}")]),
+            openai_tool_call_response(vec![("t2", "think", "{\"thought\":\"step2\"}")]),
+            // 3rd call is the Grace Synthesis Final Call (`tools` empty)
+            openai_text_response("Graceful synthesis summarizing steps 1 and 2."),
+        ])
+        .await;
+
+        engine.providers().register_provider(providers::ProviderConfig::openai_compatible(
+            "mock_openai",
+            "Mock OpenAI",
+            format!("http://{addr}/v1"),
+            "mock-gpt",
+            "k",
+        ));
+        let _ = engine.providers().set_active("mock_openai", Some("mock-gpt"));
+        engine.providers().set_allow_local_fallback(false);
+
+        let mut req = HermesTurnRequest::new("Keep digging").with_session("s_grace");
+        req.max_iterations = Some(2);
+        let res = engine.run_turn(req).await.expect("grace synthesis ok");
+        let _ = server.await;
+
+        assert_eq!(
+            res.response_text,
+            "Graceful synthesis summarizing steps 1 and 2."
+        );
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 3);
+        let final_req = &reqs[2];
+        assert!(
+            !final_req["tools"]
+                .as_array()
+                .is_some_and(|arr| !arr.is_empty()),
+            "grace synthesis call must send zero tools: {:?}",
+            final_req["tools"]
+        );
+        assert!(final_req["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Tool iteration budget reached"))));
+    }
+
+    #[tokio::test]
+    async fn test_turn_loop_guardrail_streak_five_short_circuits_into_grace_synthesis() {
+        let (dir, engine) = test_engine();
+        std::fs::write(dir.path().join("big.txt"), "A".repeat(600)).expect("seed big file");
+
+        let (addr, captured, server) = spawn_mock_openai_server(vec![
+            openai_tool_call_response(vec![("r1", "read_file", "{\"path\":\"big.txt\"}")]),
+            openai_tool_call_response(vec![("r2", "read_file", "{\"path\":\"big.txt\"}")]),
+            openai_tool_call_response(vec![("r3", "read_file", "{\"path\":\"big.txt\"}")]),
+            openai_tool_call_response(vec![("r4", "read_file", "{\"path\":\"big.txt\"}")]),
+            openai_tool_call_response(vec![("r5", "read_file", "{\"path\":\"big.txt\"}")]),
+            // Short-circuits immediately after 5th call into Grace Synthesis (`tools: []`)
+            openai_text_response("Halted runaway read loop and summarized file."),
+        ])
+        .await;
+
+        engine.providers().register_provider(providers::ProviderConfig::openai_compatible(
+            "mock_openai",
+            "Mock OpenAI",
+            format!("http://{addr}/v1"),
+            "mock-gpt",
+            "k",
+        ));
+        let _ = engine.providers().set_active("mock_openai", Some("mock-gpt"));
+        engine.providers().set_allow_local_fallback(false);
+
+        let mut req = HermesTurnRequest::new("Read big.txt").with_session("s_streak");
+        req.max_iterations = Some(20);
+        let res = engine.run_turn(req).await.expect("short-circuit turn ok");
+        let _ = server.await;
+
+        assert_eq!(
+            res.response_text,
+            "Halted runaway read loop and summarized file."
+        );
+        assert_eq!(res.tool_calls.len(), 5);
+
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 6, "5 tool iterations + 1 grace synthesis call");
+        assert!(!reqs[5]["tools"]
+            .as_array()
+            .is_some_and(|arr| !arr.is_empty()));
+
+        let stored = engine
+            .store()
+            .get_messages(&res.session_id, None)
+            .expect("messages persisted");
+        let tool_msgs: Vec<_> = stored.iter().filter(|m| m.role == "tool").collect();
+        assert_eq!(tool_msgs.len(), 5);
+        assert!(tool_msgs[1].content.contains("Duplicate output stub"));
+        assert!(tool_msgs[1].content.contains("`r1`"));
+        assert!(tool_msgs[2]
+            .content
+            .contains("got the same result 3 times"));
+    }
+
+    #[test]
+    fn test_system_prompt_override_preserves_hermes_doctrine_and_tier1_cache() {
+        let (_dir, engine) = test_engine();
+        let a1 = engine.assemble_prompt_for_session_with_name(
+            "s_override",
+            Some(99),
+            Some("7"),
+            Some("OpsBot"),
+            Some("You are OpsBot, managing GCP-Free-e2-micro."),
+            &[],
+        );
+        let a2 = engine.assemble_prompt_for_session_with_name(
+            "s_override",
+            Some(99),
+            Some("7"),
+            Some("OpsBot"),
+            Some("You are OpsBot, managing GCP-Free-e2-micro."),
+            &[],
+        );
+
+        assert_eq!(a1.tier1_stable.content, a2.tier1_stable.content);
+        assert_eq!(a1.tier1_hash, a2.tier1_hash);
+        assert!(a1
+            .tier1_stable
+            .content
+            .contains("You are OpsBot, managing GCP-Free-e2-micro."));
+        assert!(a1
+            .tier1_stable
+            .content
+            .contains("Autonomous Execution & Self-Learning Doctrine"));
+        assert!(a1
+            .tier1_stable
+            .content
+            .contains("Respect workspace boundaries"));
+    }
+
+    #[test]
+    fn test_in_memory_provider_isolation_and_placeholder_default_model_skip() {
+        for placeholder in [
+            "",
+            "deepseek-flash",
+            "DeepSeek-Flash",
+            "hermes-local-v1",
+            "default",
+            "auto",
+            "默认模型",
+        ] {
+            assert!(
+                is_placeholder_default_model(placeholder),
+                "expected placeholder: {placeholder}"
+            );
+        }
+        assert!(!is_placeholder_default_model("auto/gemini-3.8-flash"));
+        assert!(!is_placeholder_default_model("gpt-4o"));
+
+        let dir = TempDir::new().expect("temp dir");
+
+        // `:memory:` engine (data_dir: None) uses offline ProviderRouter::new() unless forced live
+        let mem_engine = HermesEngine::new(HermesEngineConfig {
+            workspace_root: dir.path().to_path_buf(),
+            data_dir: None,
+            default_model: "deepseek-flash".into(),
+            ..Default::default()
+        })
+        .expect("init :memory: engine");
+        let (mem_pid, mem_model, mem_mode) = mem_engine.providers().active_info();
+        assert_eq!(mem_pid, "local_hermes");
+        assert_eq!(mem_model, "hermes-local-v1");
+        assert_eq!(mem_mode, ApiMode::LocalHermes);
+        assert!(mem_engine.providers().snapshot().allow_local_fallback);
+
+        // Disk-backed engine with saved magpie_local preserves discovered/saved model despite "deepseek-flash"
+        let data_dir = dir.path().join(".hermes_data");
+        {
+            let disk_engine =
+                HermesEngine::open(&data_dir, dir.path()).expect("init disk engine");
+            disk_engine
+                .providers()
+                .register_provider(providers::ProviderConfig::openai_compatible(
+                    "magpie_local",
+                    "Magpie Local",
+                    "http://127.0.0.1:3425/v1",
+                    "auto/gemini-3.8-flash",
+                    "magpie-key",
+                ));
+            let _ = disk_engine
+                .providers()
+                .set_active("magpie_local", Some("auto/gemini-3.8-flash"));
+            disk_engine.persist_providers_state();
+        }
+
+        let reopened = HermesEngine::new(HermesEngineConfig {
+            workspace_root: dir.path().to_path_buf(),
+            data_dir: Some(data_dir),
+            default_model: "deepseek-flash".into(),
+            ..Default::default()
+        })
+        .expect("reopen disk engine");
+        let (re_pid, re_model, _) = reopened.providers().active_info();
+        assert_eq!(re_pid, "magpie_local");
+        assert_eq!(re_model, "auto/gemini-3.8-flash");
     }
 }

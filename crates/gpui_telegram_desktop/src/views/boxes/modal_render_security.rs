@@ -21,6 +21,8 @@ pub fn render_connection_proxy<V: 'static>(
 ) -> AnyElement {
     let pal = dlg.palette;
     let lang = &dlg.language_id;
+    let lang_owned = lang.clone();
+    let is_direct_active = !dlg.proxies.iter().any(|p| p.enabled);
 
     modal_card(450.0, pal)
         .child(modal_header(
@@ -30,14 +32,52 @@ pub fn render_connection_proxy<V: 'static>(
             on_close,
             cx,
         ))
+        .child(
+            div()
+                .id("conn-proxy-direct-row")
+                .cursor_pointer()
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .bg(rgb(pal.input_bg))
+                .border_1()
+                .border_color(rgb(if is_direct_active { pal.accent } else { pal.border_fg }))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, _w, cx| {
+                        let d = access(this);
+                        for item in &mut d.proxies {
+                            item.enabled = false;
+                        }
+                        d.pending_outcome = Some(ModalActionOutcome::SelectProxy { proxy_id: 0 });
+                        on_close(this);
+                        cx.notify();
+                    }),
+                )
+                .child(tg_icon(
+                    IconName::SelectCheck,
+                    14.0,
+                    if is_direct_active { pal.accent } else { pal.text_secondary },
+                ))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(if is_direct_active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                        .text_color(rgb(pal.text_primary))
+                        .child(tr_str(lang, "直连 (默认，不使用代理)", "Direct Connection (No Proxy)").to_string()),
+                ),
+        )
         .map(|el| {
             if dlg.proxies.is_empty() {
                 el.child(
                     div()
-                        .py(px(12.0))
+                        .py(px(6.0))
                         .text_size(px(12.5))
                         .text_color(rgb(pal.text_secondary))
-                        .child(tr_str(lang, "尚未添加任何代理服务器", "No proxies configured")),
+                        .child(tr_str(lang, "尚未添加自定义代理服务器", "No custom proxies configured")),
                 )
             } else {
                 el.children(dlg.proxies.iter().cloned().map(|p| {
@@ -68,6 +108,8 @@ pub fn render_connection_proxy<V: 'static>(
                         .py(px(8.0))
                         .rounded(px(8.0))
                         .bg(rgb(pal.input_bg))
+                        .border_1()
+                        .border_color(rgb(if p.enabled { pal.accent } else { pal.border_fg }))
                         .flex()
                         .items_center()
                         .justify_between()
@@ -85,6 +127,7 @@ pub fn render_connection_proxy<V: 'static>(
                                             item.enabled = item.id == pid;
                                         }
                                         d.pending_outcome = Some(ModalActionOutcome::SelectProxy { proxy_id: pid });
+                                        on_close(this);
                                         cx.notify();
                                     }),
                                 )
@@ -108,6 +151,7 @@ pub fn render_connection_proxy<V: 'static>(
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _e, _w, cx| {
+                                        cx.stop_propagation();
                                         access(this).pending_outcome =
                                             Some(ModalActionOutcome::CopyToClipboard(tg_link.clone()));
                                         cx.notify();
@@ -197,16 +241,20 @@ pub fn render_connection_proxy<V: 'static>(
                                 let host = d.primary_input.trim().to_string();
                                 let port_val = d.secondary_input.trim().parse::<u16>();
                                 let Some(port) = port_val.ok().filter(|&p| p > 0) else {
-                                    d.validation_error = Some("Valid port (1-65535) is required".into());
+                                    d.validation_error = Some(
+                                        tr_str(&lang_owned, "请输入有效端口 (1-65535)", "Valid port (1-65535) is required").into(),
+                                    );
                                     cx.notify();
                                     return;
                                 };
                                 if host.is_empty() {
-                                    d.validation_error = Some("Server host is required".into());
+                                    d.validation_error = Some(
+                                        tr_str(&lang_owned, "请输入服务器地址", "Server host is required").into(),
+                                    );
                                     cx.notify();
                                     return;
                                 }
-                                let next_id = (d.proxies.len() as u32) + 1;
+                                let next_id = d.proxies.iter().map(|p| p.id).max().unwrap_or(0) + 1;
                                 let rec = ProxyEndpointRecord {
                                     id: next_id,
                                     kind: d.new_proxy_kind.clone(),
@@ -222,10 +270,11 @@ pub fn render_connection_proxy<V: 'static>(
                                 d.proxies.push(rec.clone());
                                 d.pending_outcome = Some(ModalActionOutcome::AddProxy(rec));
                                 d.validation_error = None;
+                                on_close(this);
                                 cx.notify();
                             }),
                         )
-                        .child(tr_str(lang, "添加代理", "Add Proxy").to_string()),
+                        .child(tr_str(lang, "保存并启用", "Save Proxy").to_string()),
                 ),
         )
         .into_any_element()
@@ -319,7 +368,17 @@ pub fn render_passcode_setup<V: 'static>(
                                         pb.set_new_passcode(d.primary_input.clone());
                                         pb.set_reenter_passcode(d.secondary_input.clone());
                                         if let Err(err) = pb.validate() {
-                                            d.validation_error = Some(err.to_string());
+                                            let localized = if d.language_id.starts_with("zh") {
+                                                let es = err.to_string();
+                                                if es.contains("match") {
+                                                    "两次输入的密码不一致".to_string()
+                                                } else {
+                                                    "密码长度至少需要 4 位字符".to_string()
+                                                }
+                                            } else {
+                                                err.to_string()
+                                            };
+                                            d.validation_error = Some(localized);
                                             cx.notify();
                                             return;
                                         }

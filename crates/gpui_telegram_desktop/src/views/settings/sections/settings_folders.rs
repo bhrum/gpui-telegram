@@ -29,6 +29,11 @@ pub struct SettingsFoldersSections {
     pub palette: TdesktopThemePalette,
     pub language_id: String,
     pub pending_create_folder: bool,
+    pub new_folder_title: String,
+    pub is_editing_title: bool,
+    pub pending_created_folder: Option<(i32, String)>,
+    pub pending_deleted_folder_id: Option<i32>,
+    pub pending_prefs_sync: bool,
 }
 
 impl SettingsFoldersSections {
@@ -46,6 +51,11 @@ impl SettingsFoldersSections {
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x3390ec, 14, 12),
             language_id: "en".into(),
             pending_create_folder: false,
+            new_folder_title: String::new(),
+            is_editing_title: false,
+            pending_created_folder: None,
+            pending_deleted_folder_id: None,
+            pending_prefs_sync: false,
         }
     }
 
@@ -59,6 +69,11 @@ impl SettingsFoldersSections {
             palette,
             language_id: language_id.to_string(),
             pending_create_folder: false,
+            new_folder_title: String::new(),
+            is_editing_title: false,
+            pending_created_folder: None,
+            pending_deleted_folder_id: None,
+            pending_prefs_sync: false,
         }
     }
 
@@ -70,7 +85,16 @@ impl SettingsFoldersSections {
     }
 
     pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
-    pub fn set_language(&mut self, language_id: impl Into<String>) { self.language_id = language_id.into(); }
+    pub fn set_language(&mut self, language_id: impl Into<String>) {
+        let lang = language_id.into();
+        self.context_description = tr_str(
+            &lang,
+            "为不同聊天分组创建文件夹，并在它们之间快速切换。",
+            "Create folders for different groups of chats and quickly switch between them.",
+        )
+        .to_string();
+        self.language_id = lang;
+    }
     pub fn toggle_visibility(&mut self) { self.is_visible = !self.is_visible; }
     pub fn text_context(&self) -> &str { &self.context_description }
 
@@ -104,21 +128,81 @@ impl Render for SettingsFoldersSections {
         let active: Vec<ChatFolderItem> = self.folders.iter().filter(|f| !f.is_removed).cloned().collect();
         let sel = self.selected_folder_id;
 
+        let is_editing_title = self.is_editing_title;
+        let draft_title = self.new_folder_title.clone();
+
         settings_container(pal.clone())
             .child(settings_section_header(IconName::FolderAll, tr_str(&lang, "聊天文件夹", "Chat Folders"), Some(&self.context_description), pal.clone()))
             .child(
-                div().flex().flex_row().justify_between().items_center()
-                    .child(settings_subsection_title(tr_str(&lang, "文件夹", "Folders"), pal.clone()))
+                settings_card(pal.clone())
+                    .child(settings_subsection_title(tr_str(&lang, "新建文件夹", "New Folder"), pal.clone()))
                     .child(
-                        div().px(px(12.0)).py(px(6.0)).rounded(px(8.0)).bg(rgb(pal.accent)).text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.active_button_fg)).cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                                let next_id = this.folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
-                                this.folders.push(ChatFolderItem { id: next_id, title: format!("Folder {}", next_id), icon_name: "folder".into(), included_peers_count: 0, excluded_peers_count: 0, unread_count: 0, is_removed: false });
-                                this.selected_folder_id = Some(next_id);
-                                this.pending_create_folder = true;
-                                cx.notify();
-                            }))
-                            .child(format!("+ {}", tr_str(&lang, "创建新文件夹", "Create Folder"))),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px(px(10.0))
+                                    .py(px(7.0))
+                                    .rounded(px(8.0))
+                                    .bg(rgb(pal.input_bg))
+                                    .border_1()
+                                    .border_color(rgb(if is_editing_title { pal.accent } else { pal.border_fg }))
+                                    .cursor_text()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.is_editing_title = true;
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .text_color(rgb(if draft_title.is_empty() && !is_editing_title {
+                                                pal.text_secondary
+                                            } else {
+                                                pal.text_primary
+                                            }))
+                                            .child(if draft_title.is_empty() {
+                                                if is_editing_title {
+                                                    "|".to_string()
+                                                } else {
+                                                    tr_str(&lang, "输入文件夹名称…", "Folder name...").to_string()
+                                                }
+                                            } else if is_editing_title {
+                                                format!("{}|", draft_title)
+                                            } else {
+                                                draft_title
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div().px(px(12.0)).py(px(7.0)).rounded(px(8.0)).bg(rgb(pal.accent)).text_xs().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.active_button_fg)).cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
+                                        let next_id = this.folders.iter().map(|f| f.id).max().unwrap_or(0) + 1;
+                                        let title = if this.new_folder_title.trim().is_empty() {
+                                            if this.language_id.starts_with("zh") {
+                                                format!("分组 {}", next_id)
+                                            } else {
+                                                format!("Folder {}", next_id)
+                                            }
+                                        } else {
+                                            this.new_folder_title.trim().to_string()
+                                        };
+                                        this.folders.push(ChatFolderItem { id: next_id, title: title.clone(), icon_name: "folder".into(), included_peers_count: 0, excluded_peers_count: 0, unread_count: 0, is_removed: false });
+                                        this.selected_folder_id = Some(next_id);
+                                        this.new_folder_title.clear();
+                                        this.is_editing_title = false;
+                                        this.pending_create_folder = true;
+                                        this.pending_created_folder = Some((next_id, title));
+                                        cx.notify();
+                                    }))
+                                    .child(format!("+ {}", tr_str(&lang, "创建", "Create"))),
+                            ),
                     ),
             )
             .child(if active.is_empty() {
@@ -134,12 +218,16 @@ impl Render for SettingsFoldersSections {
                             .child(tg_icon(IconName::FolderChat, 16.0, pal.accent))
                             .child(div().flex().flex_col()
                                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(rgb(pal.text_primary)).child(folder.title))
-                                .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(format!("{} chats", folder.included_peers_count)))))
+                                .child(div().text_xs().text_color(rgb(pal.text_secondary)).child(if lang.starts_with("zh") {
+                                    format!("{} 个对话", folder.included_peers_count)
+                                } else {
+                                    format!("{} chats", folder.included_peers_count)
+                                }))))
                         .child(div().flex().flex_row().items_center().gap(px(8.0))
                             .when(folder.unread_count > 0, |el| el.child(div().px(px(7.0)).py(px(2.0)).rounded_full().bg(rgb(pal.muted_badge_bg)).text_xs().text_color(rgb(pal.text_primary)).child(format!("{}", folder.unread_count))))
-                            .child(div().p(px(4.0)).rounded(px(6.0)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.set_removed(fid); cx.notify(); })).child(tg_icon(IconName::DeleteTrash, 14.0, pal.danger))))
+                            .child(div().p(px(4.0)).rounded(px(6.0)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| { this.set_removed(fid); this.pending_deleted_folder_id = Some(fid); cx.notify(); })).child(tg_icon(IconName::DeleteTrash, 14.0, pal.danger))))
                 })).into_any_element()
             })
-            .child(settings_card(pal.clone()).child(settings_toggle_row(IconName::FolderWork, tr_str(&lang, "显示文件夹标签", "Show Folder Tags"), Some("Display folder names on chat list items"), self.tags_enabled, pal, |this| this.tags_enabled = !this.tags_enabled, cx)))
+            .child(settings_card(pal.clone()).child(settings_toggle_row(IconName::FolderWork, tr_str(&lang, "显示文件夹标签", "Show Folder Tags"), Some(tr_str(&lang, "在对话列表每行显示所属分组标签", "Display folder names on chat list items")), self.tags_enabled, pal, |this| { this.tags_enabled = !this.tags_enabled; this.pending_prefs_sync = true; }, cx)))
     }
 }

@@ -41,6 +41,25 @@ pub enum HttpClientError {
     Serialization(#[from] serde_json::Error),
 }
 
+impl From<HttpClientError> for gpui_telegram_core::error::TelegramError {
+    fn from(err: HttpClientError) -> Self {
+        use gpui_telegram_core::error::TelegramError;
+        match err {
+            HttpClientError::Unauthorized(msg) => TelegramError::Auth(msg),
+            HttpClientError::Conflict(msg) => TelegramError::Validation(msg),
+            HttpClientError::Serialization(e) => TelegramError::Serialization(e.to_string()),
+            HttpClientError::Network(e) => TelegramError::Network(e.to_string()),
+            HttpClientError::Api { status, message } => match status {
+                401 => TelegramError::Auth(message),
+                403 => TelegramError::PermissionDenied(message),
+                404 => TelegramError::NotFound(message),
+                400 | 422 => TelegramError::Validation(message),
+                _ => TelegramError::Network(format!("HTTP {}: {}", status, message)),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStatusResponse {
     pub server: String,
@@ -295,15 +314,15 @@ pub struct AddContactHttpResponse {
     pub avatar_color: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchResultItemDto {
-    #[serde(alias = "id")]
+    #[serde(default, alias = "id")]
     pub chat_id: u64,
     #[serde(default)]
     pub message_id: u64,
     #[serde(default, alias = "peer_name")]
     pub title: String,
-    #[serde(default, alias = "text", alias = "subtitle", alias = "preview")]
+    #[serde(default, alias = "text", alias = "subtitle", alias = "preview", alias = "description")]
     pub snippet: String,
     #[serde(default)]
     pub category: String,
@@ -313,6 +332,26 @@ pub struct SearchResultItemDto {
     pub avatar_color: Option<u32>,
     #[serde(default)]
     pub is_bot: bool,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub bot_user_id: Option<i64>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub app_id: Option<String>,
+    #[serde(default)]
+    pub bot_username: Option<String>,
+    #[serde(default)]
+    pub short_name: Option<String>,
+    #[serde(default)]
+    pub web_url: Option<String>,
+    #[serde(default)]
+    pub icon_emoji: Option<String>,
+    #[serde(default)]
+    pub is_installed: Option<bool>,
+    #[serde(default)]
+    pub install_count: Option<i64>,
 }
 
 /// Percent-encodes a query component strictly according to RFC 3986 unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`).
@@ -386,15 +425,6 @@ where
     }
 }
 
-fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    T: Default + Deserialize<'de>,
-    D: serde::Deserializer<'de>,
-{
-    let opt = Option::deserialize(deserializer)?;
-    Ok(opt.unwrap_or_default())
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoricalReplyToInfo {
     #[serde(default)]
@@ -441,7 +471,29 @@ pub struct HistoricalReaction {
     pub user_ids: Vec<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoricalMessageWire {
+    message_id: u64,
+    #[serde(default)]
+    sender_id: u64,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_flexible_date")]
+    date: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_flexible_reply_to")]
+    reply_to: Option<u64>,
+    #[serde(default)]
+    is_outgoing: Option<bool>,
+    #[serde(default)]
+    reply_to_info: Option<HistoricalReplyToInfo>,
+    #[serde(default)]
+    reactions: Option<Vec<HistoricalReaction>>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(from = "HistoricalMessageWire")]
 pub struct HistoricalMessage {
     pub message_id: u64,
     #[serde(default)]
@@ -450,16 +502,43 @@ pub struct HistoricalMessage {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
-    #[serde(default, deserialize_with = "deserialize_flexible_date")]
     pub date: Option<i64>,
-    #[serde(default, deserialize_with = "deserialize_flexible_reply_to")]
     pub reply_to: Option<u64>,
     #[serde(default)]
     pub is_outgoing: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to_info: Option<HistoricalReplyToInfo>,
-    #[serde(default, deserialize_with = "deserialize_null_default")]
+    #[serde(default)]
     pub reactions: Vec<HistoricalReaction>,
+    #[serde(skip)]
+    pub reactions_authoritative: bool,
+}
+
+impl HistoricalMessage {
+    pub fn has_authoritative_reactions(&self) -> bool {
+        self.reactions_authoritative || !self.reactions.is_empty()
+    }
+}
+
+impl From<HistoricalMessageWire> for HistoricalMessage {
+    fn from(wire: HistoricalMessageWire) -> Self {
+        let (reactions, reactions_authoritative) = match wire.reactions {
+            Some(rx) => (rx, true),
+            None => (Vec::new(), false),
+        };
+        Self {
+            message_id: wire.message_id,
+            sender_id: wire.sender_id,
+            text: wire.text,
+            content: wire.content,
+            date: wire.date,
+            reply_to: wire.reply_to,
+            is_outgoing: wire.is_outgoing,
+            reply_to_info: wire.reply_to_info,
+            reactions,
+            reactions_authoritative,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -703,10 +782,62 @@ pub struct SyncDifferenceResponse {
     pub snapshot_required: bool,
 }
 
+static DEVICE_ID_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn generate_default_device_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let seq = DEVICE_ID_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("dev-{:x}-{:x}-{:x}", nanos, std::process::id(), seq)
+}
+
+#[derive(Clone)]
+pub(crate) struct DeviceHttpClient {
+    inner: Client,
+    device_id: std::sync::Arc<parking_lot::RwLock<String>>,
+}
+
+impl DeviceHttpClient {
+    pub(crate) fn new(
+        inner: Client,
+        device_id: std::sync::Arc<parking_lot::RwLock<String>>,
+    ) -> Self {
+        Self { inner, device_id }
+    }
+
+    pub(crate) fn request<U: reqwest::IntoUrl>(
+        &self,
+        method: reqwest::Method,
+        url: U,
+    ) -> reqwest::RequestBuilder {
+        let did = self.device_id.read().clone();
+        self.inner.request(method, url).header("X-Device-Id", did)
+    }
+
+    pub(crate) fn get<U: reqwest::IntoUrl>(&self, url: U) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, url)
+    }
+
+    pub(crate) fn post<U: reqwest::IntoUrl>(&self, url: U) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::POST, url)
+    }
+
+    pub(crate) fn put<U: reqwest::IntoUrl>(&self, url: U) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::PUT, url)
+    }
+
+    pub(crate) fn delete<U: reqwest::IntoUrl>(&self, url: U) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::DELETE, url)
+    }
+}
+
 #[derive(Clone)]
 pub struct HttpClient {
     pub base_url: String,
-    pub(crate) client: Client,
+    pub(crate) client: DeviceHttpClient,
+    device_id: std::sync::Arc<parking_lot::RwLock<String>>,
     runtime_handle: Handle,
     fabushi_alipay_states:
         std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>>,
@@ -731,14 +862,18 @@ impl HttpClient {
     ) -> Self {
         let handle = ensure_runtime_handle(runtime_handle);
         let _guard = handle.enter();
-        let client = Client::builder()
+        let raw_client = Client::builder()
             .timeout(timeout)
             .build()
             .unwrap_or_else(|_| Client::new());
+        let device_id =
+            std::sync::Arc::new(parking_lot::RwLock::new(generate_default_device_id()));
+        let client = DeviceHttpClient::new(raw_client, device_id.clone());
 
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            device_id,
             runtime_handle: handle,
             fabushi_alipay_states: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -746,6 +881,19 @@ impl HttpClient {
             fabushi_completed_identities: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+        }
+    }
+
+    /// Returns the active client device identifier sent via `X-Device-Id` on outgoing HTTP calls.
+    pub fn device_id(&self) -> String {
+        self.device_id.read().clone()
+    }
+
+    /// Overrides the client device identifier sent via `X-Device-Id` on outgoing HTTP calls.
+    pub fn set_device_id(&self, id: impl Into<String>) {
+        let trimmed = id.into().trim().to_string();
+        if !trimmed.is_empty() {
+            *self.device_id.write() = trimmed;
         }
     }
 
@@ -1800,15 +1948,92 @@ impl HttpClient {
             let status = resp.status();
             if status.is_success() {
                 let val: serde_json::Value = resp.json().await?;
-                if let Some(arr) = val.get("results").and_then(|v| v.as_array()) {
-                    let parsed: Vec<SearchResultItemDto> = arr
-                        .iter()
-                        .filter_map(|item| serde_json::from_value(item.clone()).ok())
-                        .collect();
-                    Ok(parsed)
-                } else {
-                    Ok(Vec::new())
+                let mut parsed: Vec<SearchResultItemDto> = val
+                    .get("results")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let has_mini_app_rows = parsed
+                    .iter()
+                    .any(|r| r.kind.as_deref() == Some("mini_app") || r.short_name.is_some());
+                if !has_mini_app_rows {
+                    if let Some(apps_arr) = val.get("apps").and_then(|v| v.as_array()) {
+                        for app_val in apps_arr {
+                            if let Ok(app) = serde_json::from_value::<
+                                gpui_telegram_proto::miniapp_contracts::MiniAppEntry,
+                            >(app_val.clone())
+                            {
+                                parsed.push(SearchResultItemDto {
+                                    chat_id: app.direct_chat_id.unwrap_or(0).max(0) as u64,
+                                    message_id: 0,
+                                    title: app.title,
+                                    snippet: app.description,
+                                    category: if app.category.is_empty() {
+                                        "apps".to_string()
+                                    } else {
+                                        app.category
+                                    },
+                                    date: Some(app.updated_at),
+                                    avatar_color: Some(0x2AABEE),
+                                    is_bot: true,
+                                    kind: Some("mini_app".to_string()),
+                                    bot_user_id: Some(app.bot_user_id),
+                                    username: Some(app.bot_username.clone()),
+                                    app_id: Some(app.app_id),
+                                    bot_username: Some(app.bot_username),
+                                    short_name: Some(app.short_name),
+                                    web_url: Some(app.web_url),
+                                    icon_emoji: Some(app.icon_emoji),
+                                    is_installed: Some(app.is_installed),
+                                    install_count: Some(app.install_count),
+                                });
+                            }
+                        }
+                    }
                 }
+                let has_bot_rows = parsed
+                    .iter()
+                    .any(|r| r.kind.as_deref() == Some("bot") || r.bot_user_id.is_some());
+                if !has_bot_rows {
+                    if let Some(bots_arr) = val.get("bots").and_then(|v| v.as_array()) {
+                        for bot_val in bots_arr {
+                            if let Ok(bot) = serde_json::from_value::<
+                                gpui_telegram_proto::miniapp_contracts::BotRegistryEntry,
+                            >(bot_val.clone())
+                            {
+                                parsed.push(SearchResultItemDto {
+                                    chat_id: 0,
+                                    message_id: 0,
+                                    title: bot.display_name,
+                                    snippet: bot.description,
+                                    category: "bots".to_string(),
+                                    date: Some(bot.created_at),
+                                    avatar_color: Some(0x2481CC),
+                                    is_bot: true,
+                                    kind: Some("bot".to_string()),
+                                    bot_user_id: Some(bot.bot_user_id),
+                                    username: Some(bot.username.clone()),
+                                    app_id: None,
+                                    bot_username: Some(bot.username),
+                                    short_name: None,
+                                    web_url: if bot.menu_button_url.is_empty() {
+                                        None
+                                    } else {
+                                        Some(bot.menu_button_url)
+                                    },
+                                    icon_emoji: None,
+                                    is_installed: None,
+                                    install_count: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                Ok(parsed)
             } else if status == StatusCode::UNAUTHORIZED {
                 Err(HttpClientError::Unauthorized(resp.text().await.unwrap_or_default()))
             } else {

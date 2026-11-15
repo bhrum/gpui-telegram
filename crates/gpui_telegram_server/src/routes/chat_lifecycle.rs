@@ -75,6 +75,7 @@ fn resolve_direct_peer_and_bot(
 }
 
 pub async fn chats_list_clean(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
+    crate::routes::enforce_ttl_expiry(&state).await;
     let chats = match state.db.list_user_chats(auth.user_id) {
         Ok(c) => c,
         Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "database_error", &e.to_string()),
@@ -95,6 +96,11 @@ pub async fn chats_list_clean(auth: AuthBearer, State(state): State<Arc<AppState
         let peer_display_name = peer.as_ref().map(format_peer_display_name);
         let peer_phone = peer.as_ref().and_then(|u| u.phone.clone());
         let peer_bio = peer.as_ref().and_then(|u| u.bio.clone());
+        let is_blocked = peer
+            .as_ref()
+            .and_then(|u| state.db.is_user_blocked(auth.user_id, u.user_id).ok())
+            .unwrap_or(false);
+        let ttl_seconds = state.db.get_chat_ttl(c.chat_id).unwrap_or(0);
         let mut obj = Map::new();
         obj.insert("chat_id".into(), json!(c.chat_id.0));
         obj.insert("id".into(), json!(c.chat_id.0));
@@ -112,6 +118,8 @@ pub async fn chats_list_clean(auth: AuthBearer, State(state): State<Arc<AppState
         obj.insert("peer_display_name".into(), json!(peer_display_name));
         obj.insert("peer_phone".into(), json!(peer_phone));
         obj.insert("peer_bio".into(), json!(peer_bio));
+        obj.insert("is_blocked".into(), json!(is_blocked));
+        obj.insert("message_ttl_seconds".into(), json!(ttl_seconds));
         obj.insert("is_forum".into(), json!(c.is_forum));
         obj.insert("is_archived".into(), json!(is_archived));
         obj.insert("is_pinned".into(), json!(is_pinned));
@@ -135,7 +143,11 @@ pub async fn chats_list_clean(auth: AuthBearer, State(state): State<Arc<AppState
 
 pub async fn chats_create_strict(auth: AuthBearer, State(state): State<Arc<AppState>>, body: Bytes) -> Response {
     let payload = match parse_json_object(&body) { Ok(v) => v, Err(r) => return r };
-    let peer_user_id = payload.get("peer_user_id").and_then(|v| v.as_u64()).map(UserId);
+    let peer_user_id = payload
+        .get("peer_user_id")
+        .or_else(|| payload.get("user_id"))
+        .and_then(|v| v.as_u64())
+        .map(UserId);
     let mut chat_type: u8 = match payload.get("chat_type").or_else(|| payload.get("kind")) {
         None | Some(Value::Null) => if let Some(p) = peer_user_id { if p == auth.user_id { 5 } else { 0 } } else { 1 },
         Some(Value::Number(n)) => match n.as_u64() { Some(v @ 0..=5) => v as u8, _ => return err_resp(StatusCode::BAD_REQUEST, "invalid_chat_type", "chat_type must be 0..=5") },
@@ -206,11 +218,7 @@ pub async fn chats_create_strict(auth: AuthBearer, State(state): State<Arc<AppSt
                         _ => false,
                     };
                     if matches {
-                        return (StatusCode::CREATED, Json(json!({
-                            "chat_id": ch.chat_id.0, "id": ch.chat_id.0, "title": ch.title, "about": ch.about,
-                            "chat_type": ch.chat_type, "kind": chat_kind_str(ch.chat_type, ch.chat_type == 4),
-                            "creator_id": ch.creator_id.0, "is_group": false, "is_channel": false, "is_forum": ch.is_forum, "created_at_ms": ch.created_at_ms,
-                        }))).into_response();
+                        return (StatusCode::CREATED, Json(chat_detail_json(&state, auth.user_id, &ch))).into_response();
                     }
                 }
             }
@@ -242,6 +250,13 @@ pub async fn chats_create_strict(auth: AuthBearer, State(state): State<Arc<AppSt
     if let Err(e) = state.db.create_chat_with_members(&rec, &members_to_insert) {
         return map_telegram_err(e);
     }
+    if chat_type != 5 {
+        if let Ok(priv_settings) = state.db.get_user_privacy_settings(auth.user_id) {
+            if priv_settings.global_ttl_seconds > 0 {
+                let _ = state.db.set_chat_ttl(chat_id, priv_settings.global_ttl_seconds);
+            }
+        }
+    }
     state.gateway_hub.subscribe_chat(chat_id.0, auth.user_id);
     for &m in &member_ids {
         state.gateway_hub.subscribe_chat(chat_id.0, m);
@@ -264,6 +279,11 @@ pub(crate) fn chat_detail_json(state: &AppState, user_id: UserId, chat: &ChatRec
     let peer_display_name = peer.as_ref().map(format_peer_display_name);
     let peer_phone = peer.as_ref().and_then(|u| u.phone.clone());
     let peer_bio = peer.as_ref().and_then(|u| u.bio.clone());
+    let is_blocked = peer
+        .as_ref()
+        .and_then(|u| state.db.is_user_blocked(user_id, u.user_id).ok())
+        .unwrap_or(false);
+    let ttl_seconds = state.db.get_chat_ttl(chat.chat_id).unwrap_or(0);
     json!({
         "chat_id": chat.chat_id.0, "id": chat.chat_id.0, "title": chat.title, "about": chat.about, "username": exposed_chat_username(chat),
         "chat_type": chat.chat_type, "kind": chat_kind_str(chat.chat_type, is_bot), "creator_id": chat.creator_id.0,
@@ -271,6 +291,7 @@ pub(crate) fn chat_detail_json(state: &AppState, user_id: UserId, chat: &ChatRec
         "is_group": matches!(chat.chat_type, 1 | 2), "is_channel": chat.chat_type == 3, "is_bot": is_bot,
         "peer_user_id": peer_user_id, "peer_username": peer_username, "peer_display_name": peer_display_name,
         "peer_phone": peer_phone, "peer_bio": peer_bio,
+        "is_blocked": is_blocked, "message_ttl_seconds": ttl_seconds,
         "is_archived": is_archived, "is_pinned": is_pinned, "is_muted": is_muted, "mute_until_ms": mute_until_ms,
         "pts": chat.pts, "last_message_id": chat.last_message_id.0, "last_message_date_ms": chat.last_message_date_ms,
         "unread_count": rs.as_ref().map(|r| r.unread_count).unwrap_or(0),

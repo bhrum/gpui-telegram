@@ -2906,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_agent"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_client"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "aes",
  "argon2",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_core"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "aes",
  "cbc",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_desktop"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_media"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_proto"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",
@@ -3039,29 +3039,34 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_server"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "argon2",
  "axum",
  "base64 0.22.1",
+ "chacha20poly1305",
  "chrono",
  "ed25519-dalek",
  "fabushi-messaging-core",
  "futures",
  "gpui_telegram_agent",
+ "gpui_telegram_client",
  "gpui_telegram_core",
  "gpui_telegram_media",
  "gpui_telegram_proto",
  "gpui_telegram_webrtc",
+ "hkdf",
  "mahayana-host-runtime",
  "mahayana-node-agent-coordinator",
  "parking_lot",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
  "tantivy",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -3071,11 +3076,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
 name = "gpui_telegram_test_harness"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3105,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "gpui_telegram_webrtc"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "fabushi-messaging-core",

@@ -14,6 +14,17 @@ pub enum AttachmentKind {
     SendLocation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposerAttachMiniApp {
+    pub bot_id: u64,
+    pub title: String,
+    pub short_name: String,
+    pub bot_username: String,
+    pub webview_url: String,
+    pub peer_types_mask: u8,
+    pub icon_color: u32,
+}
+
 pub struct AttachmentsDrawer {
     pub is_open: bool,
 }

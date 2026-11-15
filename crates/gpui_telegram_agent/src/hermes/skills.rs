@@ -565,6 +565,45 @@ impl SkillsManager {
         })
     }
 
+    /// Minimum multi-step tool call count in a turn before self-learning distillation is encouraged.
+    pub const SELF_LEARNING_TOOL_CALL_THRESHOLD: usize = 5;
+
+    /// Returns `true` when a multi-step turn executed enough tool calls (`>= 5`) to check whether
+    /// durable facts or reusable procedures should be persisted to `memory` / `skill_manage`.
+    pub fn should_consider_self_learning(tool_calls_count: usize) -> bool {
+        tool_calls_count >= Self::SELF_LEARNING_TOOL_CALL_THRESHOLD
+    }
+
+    /// Renders a deterministic self-learning prompt reminder for complex multi-step workflows
+    /// (`>= 5` tool calls) without breaking Tier-1/Tier-2 system prompt caching.
+    pub fn render_self_learning_nudge(
+        tool_calls_count: usize,
+        observed_tools: &[String],
+    ) -> Option<String> {
+        if !Self::should_consider_self_learning(tool_calls_count) {
+            return None;
+        }
+        let mut unique_tools = Vec::new();
+        for tool in observed_tools {
+            let trimmed = tool.trim();
+            if !trimmed.is_empty() && !unique_tools.iter().any(|existing| existing == trimmed) {
+                unique_tools.push(trimmed.to_string());
+            }
+        }
+        unique_tools.sort();
+        let tools_summary = if unique_tools.is_empty() {
+            "none recorded".to_string()
+        } else {
+            unique_tools.join(", ")
+        };
+        Some(format!(
+            "[Self-Learning Check: Completed {tool_calls_count} tool calls ({tools_summary}). \
+             If you discovered durable environment details, host quirks, or user preferences, save them via `memory`; \
+             if you established a reusable multi-step procedure, inspect existing skills with `skill_list` / `skill_view` \
+             and distill or update one with `skill_manage`.]"
+        ))
+    }
+
     // =========================================================================
     // Untrusted Skill Write-Approval Queue
     // =========================================================================
@@ -1157,3 +1196,41 @@ origin: bundled
 3. Eliminate filler and verify all paths, commands, and code snippets.
 "#,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_self_learning_threshold_and_nudge() {
+        assert!(!SkillsManager::should_consider_self_learning(0));
+        assert!(!SkillsManager::should_consider_self_learning(4));
+        assert!(SkillsManager::should_consider_self_learning(5));
+        assert!(SkillsManager::should_consider_self_learning(12));
+
+        assert!(SkillsManager::render_self_learning_nudge(4, &["computer_exec".into()]).is_none());
+        let nudge = SkillsManager::render_self_learning_nudge(
+            5,
+            &[
+                "computer_exec".into(),
+                "computer_file".into(),
+                "computer_exec".into(),
+            ],
+        )
+        .expect("nudge present at 5+ tool calls");
+        assert!(nudge.contains("5 tool calls"));
+        assert!(nudge.contains("computer_exec, computer_file"));
+        assert!(nudge.contains("memory"));
+        assert!(nudge.contains("skill_manage"));
+    }
+
+    #[test]
+    fn test_progressive_index_is_deterministic_and_sorted() {
+        let mgr = SkillsManager::in_memory();
+        let idx1 = mgr.render_progressive_index();
+        let idx2 = mgr.render_progressive_index();
+        assert_eq!(idx1, idx2);
+        assert!(idx1.contains("hermes-debug"));
+        assert!(idx1.contains("hermes-research"));
+    }
+}

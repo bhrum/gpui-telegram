@@ -1,6 +1,7 @@
 //! Authentic Telegram Desktop Chat Wallpaper & Empty-State Rendering.
 
 use gpui::*;
+use gpui::prelude::FluentBuilder;
 use crate::i18n::tr_key_or;
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 
@@ -14,6 +15,8 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
         palette.wallpaper_pattern,
         if palette.mode.is_dark() { 0.14 } else { 0.10 },
     );
+
+    let pattern_opacity = if palette.blur_wallpaper { 0.16 } else { 0.45 };
 
     // Seamless full-area diagonal gradient + subtle geometric Telegram pattern motif
     div()
@@ -37,8 +40,15 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
                         .items_center()
                         .justify_around()
                         .pl(px(offset_left))
-                        .opacity(0.45)
-                        .child(tg_icon(IconName::TelegramPlaneLogo, 22.0, palette.wallpaper_pattern))
+                        .opacity(pattern_opacity)
+                        .child(
+                            div()
+                                .w(px(12.0))
+                                .h(px(12.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(pattern_rgba),
+                        )
                         .child(
                             div()
                                 .w(px(14.0))
@@ -49,10 +59,29 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
                         )
                         .child(tg_icon(IconName::HeartReaction, 16.0, palette.wallpaper_pattern))
                         .child(tg_icon(IconName::SmileEmoji, 18.0, palette.wallpaper_pattern))
-                        .child(tg_icon(IconName::TelegramPlaneLogo, 18.0, palette.wallpaper_pattern))
+                        .child(
+                            div()
+                                .w(px(8.0))
+                                .h(px(8.0))
+                                .rounded_full()
+                                .bg(pattern_rgba),
+                        )
                         .child(tg_icon(IconName::PremiumStar, 14.0, palette.wallpaper_pattern))
                 })),
         )
+        .when(palette.blur_wallpaper, |el| {
+            let veil = TdesktopThemePalette::rgba_with_alpha(
+                palette.window_bg,
+                if palette.mode.is_dark() { 0.42 } else { 0.34 },
+            );
+            el.child(
+                div()
+                    .id("stage-wallpaper-blur-veil")
+                    .absolute()
+                    .inset_0()
+                    .bg(veil),
+            )
+        })
         .into_any_element()
 }
 
@@ -105,7 +134,7 @@ pub fn render_empty_history_placeholder(
                 .py(px(20.0))
                 .rounded(px(16.0))
                 .bg(palette.service_pill_rgba())
-                .child(tg_icon(IconName::TelegramPlaneLogo, 38.0, palette.accent))
+                .child(tg_icon(IconName::FolderChat, 38.0, palette.accent))
                 .child(
                     div()
                         .text_size(px(14.0))

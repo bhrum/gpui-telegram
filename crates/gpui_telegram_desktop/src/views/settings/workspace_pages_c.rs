@@ -17,7 +17,7 @@ pub fn render_premium_stars_page(
 ) -> AnyElement {
     div().flex().flex_col().gap(px(12.0))
         .child(settings_card(pal)
-            .child(settings_section_header(IconName::PremiumStar, tr_str(lang, "Telegram Premium 与星币", "Telegram Premium & Stars"), None, pal))
+            .child(settings_section_header(IconName::PremiumStar, tr_str(lang, "高级会员与星币", "Premium & Stars"), None, pal))
             .child(settings_info_row(tr_str(lang, "当前 Stars 余额", "Stars Balance"), &format!("{} Stars", view.state_snapshot.stars_balance), pal))
             .child(settings_action_row(IconName::WalletStars, tr_str(lang, "充值 100 Stars", "Top Up 100 Stars"), "+100", pal, false, |this| {
                 this.pending_mutation = Some(SettingsMutation::BuyOrTopUpStars(100));
@@ -64,11 +64,11 @@ pub fn render_business_passport_page(
 ) -> AnyElement {
     div().flex().flex_col().gap(px(12.0))
         .child(settings_card(pal)
-            .child(settings_section_header(IconName::BotRobot, tr_str(lang, "商业版与 Passport", "Telegram Business & Passport"), None, pal))
+            .child(settings_section_header(IconName::BotRobot, tr_str(lang, "商业版与通行证", "Business & Passport"), None, pal))
             .child(settings_toggle_row(IconName::ClockSending, tr_str(lang, "展示营业时间", "Business Opening Hours"), None, view.business_hours_enabled, pal, |this| {
                 this.business_hours_enabled = !this.business_hours_enabled;
             }, cx))
             .child(settings_info_row(tr_str(lang, "快捷回复模板", "Quick Replies"), &format!("{}", view.business_quick_replies), pal))
-            .child(settings_info_row(tr_str(lang, "Telegram Passport 已验证证件", "Verified Passport Documents"), &format!("{}", view.passport_verified_docs), pal)))
+            .child(settings_info_row(tr_str(lang, "已验证通行证件", "Verified Passport Documents"), &format!("{}", view.passport_verified_docs), pal)))
         .into_any_element()
 }

@@ -196,6 +196,35 @@ impl ActiveModalDialog {
         self.open(kind, forward_targets);
     }
 
+    pub fn active_field_text(&self) -> String {
+        match self.active_field {
+            ActiveTextField::Primary => self.primary_input.clone(),
+            ActiveTextField::Secondary => self.secondary_input.clone(),
+            ActiveTextField::Tertiary => self.tertiary_input.clone(),
+            ActiveTextField::OptionIndex(idx) => self
+                .poll_options
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| self.primary_input.clone()),
+        }
+    }
+
+    pub fn clear_active_field(&mut self) {
+        match self.active_field {
+            ActiveTextField::Primary => self.primary_input.clear(),
+            ActiveTextField::Secondary => self.secondary_input.clear(),
+            ActiveTextField::Tertiary => self.tertiary_input.clear(),
+            ActiveTextField::OptionIndex(idx) => {
+                if let Some(opt) = self.poll_options.get_mut(idx) {
+                    opt.clear();
+                } else {
+                    self.primary_input.clear();
+                }
+            }
+        }
+        self.validation_error = None;
+    }
+
     pub fn handle_key_input(&mut self, key: &str, key_char: Option<&str>) -> bool {
         if self.kind.is_none() {
             return false;

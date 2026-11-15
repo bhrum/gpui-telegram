@@ -180,7 +180,11 @@ pub fn render_media_editor<V: 'static>(
                                 cx.notify();
                             }),
                         )
-                        .child(format!("Rotate {}°", dlg.rotation_deg)),
+                        .child(if lang.starts_with("zh") {
+                            format!("旋转 {}°", dlg.rotation_deg)
+                        } else {
+                            format!("Rotate {}°", dlg.rotation_deg)
+                        }),
                 ),
         )
         .child(

@@ -44,6 +44,11 @@ pub mod rows_scroll_cache;
 pub use rows_scroll_cache::RowsScrollCache;
 pub mod search_field_controller;
 pub use search_field_controller::SearchFieldController;
+pub mod text_input_controller;
+pub use text_input_controller::{
+    delete_prev_word, pop_last_char, sanitize_paste_text, utf16_len, utf16_offset_to_utf8,
+    TextInputController,
+};
 pub mod top_background_gradient;
 pub use top_background_gradient::TopBackgroundGradient;
 pub mod ui_pch;

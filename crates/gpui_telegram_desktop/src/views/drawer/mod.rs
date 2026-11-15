@@ -50,10 +50,11 @@ pub use profile_back_button::ProfileBackButton;
 pub use profile_block_widget::ProfileBlockWidget;
 pub use profile_cover_drop_area::ProfileCoverDropArea;
 
+pub mod bot_computer_inspector;
 pub mod inspector_panels;
 pub mod inspector_tabs;
 pub use inspector_tabs::{
-    InspectorAction, InspectorTab, InspectorTabsView, MemberItem, MembersTabModel,
-    ProfileTabModel, SharedFileItem, SharedLinkItem, SharedMediaItem, SharedMediaSubTab,
-    SharedMediaTabModel, SharedVoiceItem, SettingsTabModel,
+    BotConfigFocusField, InspectorAction, InspectorSubpage, InspectorTab, InspectorTabsView,
+    MemberItem, MembersTabModel, ProfileTabModel, SharedFileItem, SharedLinkItem, SharedMediaItem,
+    SharedMediaSubTab, SharedMediaTabModel, SharedVoiceItem, SettingsTabModel,
 };

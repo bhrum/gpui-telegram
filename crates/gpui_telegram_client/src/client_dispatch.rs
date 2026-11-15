@@ -105,6 +105,7 @@ pub(crate) fn peer_id_to_chat_id(peer: PeerId) -> ChatId {
 pub(crate) fn apply_update_event(
     store: &LocalStore,
     fallback_chat_id: Option<ChatId>,
+    viewer_user_id: Option<UserId>,
     event: UpdateEvent,
     out_events: &mut Vec<ClientDomainEvent>,
 ) {
@@ -167,9 +168,23 @@ pub(crate) fn apply_update_event(
             }
         }
         UpdateEvent::MessageReactions(ev) | UpdateEvent::ReactionUpdated(ev) => {
-            store.update_reactions(ev.chat_id, ev.message_id, ev.reactions.clone());
+            let cid = if ev.chat_id.0 > 0 {
+                ev.chat_id
+            } else {
+                fallback_chat_id
+                    .filter(|c| c.0 > 0)
+                    .or_else(|| store.find_chat_id_for_message(ev.message_id))
+                    .unwrap_or(ev.chat_id)
+            };
+            store.update_reactions_for_actor(
+                cid,
+                ev.message_id,
+                ev.user_id,
+                viewer_user_id,
+                ev.reactions.clone(),
+            );
             out_events.push(ClientDomainEvent::ReactionsUpdated {
-                chat_id: ev.chat_id,
+                chat_id: cid,
                 message_id: ev.message_id,
                 user_id: ev.user_id,
                 reactions: ev.reactions,
@@ -222,20 +237,21 @@ pub(crate) fn apply_update_event(
 pub(crate) fn apply_ws_frame(
     store: &LocalStore,
     sync: &ClientSyncCoordinator,
+    viewer_user_id: Option<UserId>,
     frame: WsServerFrame,
     out_events: &mut Vec<ClientDomainEvent>,
 ) -> Vec<ChatId> {
     let mut gaps = Vec::new();
     match frame {
         WsServerFrame::Pong { nonce } => out_events.push(ClientDomainEvent::Pong { nonce }),
-        WsServerFrame::Update(ev) => apply_update_event(store, None, ev, out_events),
+        WsServerFrame::Update(ev) => apply_update_event(store, None, viewer_user_id, ev, out_events),
         WsServerFrame::PtsPush(update) => match sync.evaluate_update(&update) {
             SyncOutcome::Contiguous => {
                 let cid = update.chat_id;
-                apply_update_event(store, Some(cid), update.event, out_events);
+                apply_update_event(store, Some(cid), viewer_user_id, update.event, out_events);
                 for buffered in sync.drain_contiguous_buffer(cid) {
                     let bcid = buffered.chat_id;
-                    apply_update_event(store, Some(bcid), buffered.event, out_events);
+                    apply_update_event(store, Some(bcid), viewer_user_id, buffered.event, out_events);
                 }
             }
             SyncOutcome::Duplicate => {}
@@ -252,12 +268,12 @@ pub(crate) fn apply_ws_frame(
         WsServerFrame::SyncDiff(diff) => {
             store.upsert_messages(diff.new_messages);
             for ev in diff.other_updates {
-                apply_update_event(store, Some(diff.chat_id), ev, out_events);
+                apply_update_event(store, Some(diff.chat_id), viewer_user_id, ev, out_events);
             }
             for pts_up in diff.updates {
                 let cid = pts_up.chat_id;
                 let _ = sync.apply_update(pts_up.clone());
-                apply_update_event(store, Some(cid), pts_up.event, out_events);
+                apply_update_event(store, Some(cid), viewer_user_id, pts_up.event, out_events);
             }
             let target_pts = diff.pts.max(diff.current_pts);
             if target_pts > sync.last_pts(diff.chat_id) {
@@ -265,7 +281,7 @@ pub(crate) fn apply_ws_frame(
             }
             for buffered in sync.drain_contiguous_buffer(diff.chat_id) {
                 let bcid = buffered.chat_id;
-                apply_update_event(store, Some(bcid), buffered.event, out_events);
+                apply_update_event(store, Some(bcid), viewer_user_id, buffered.event, out_events);
             }
         }
         WsServerFrame::Ack { correlation_id, client_nonce, message_id, pts } => {

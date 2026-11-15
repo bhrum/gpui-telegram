@@ -514,9 +514,9 @@ pub fn render_inline_bot_keyboard<V: 'static>(
     cx: &mut Context<V>,
     on_action: impl Fn(&mut V, InteractiveCardAction, &mut Context<V>) + Clone + 'static,
 ) -> AnyElement {
-    let mut grid = div().flex().flex_col().gap(px(4.0)).mt(px(4.0)).w_full();
+    let mut grid = div().flex().flex_col().flex_shrink_0().gap(px(4.0)).mt(px(4.0)).w_full();
     for (r_idx, row) in rows.iter().enumerate() {
-        let mut row_el = div().flex().flex_row().gap(px(4.0)).w_full();
+        let mut row_el = div().flex().flex_row().h(px(34.0)).flex_shrink_0().gap(px(4.0)).w_full();
         for (c_idx, btn) in row.iter().enumerate() {
             let label = btn.text.clone();
             let btype = btn.button_type.clone();
@@ -526,6 +526,8 @@ pub fn render_inline_bot_keyboard<V: 'static>(
                 div()
                     .id(SharedString::from(format!("bot-btn-{}-{}-{}", msg_id, r_idx, c_idx)))
                     .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
                     .h(px(34.0))
                     .px(px(8.0))
                     .rounded(px(8.0))
@@ -541,9 +543,11 @@ pub fn render_inline_bot_keyboard<V: 'static>(
                     .gap(px(4.0))
                     .child(
                         div()
+                            .min_w(px(0.0))
                             .text_size(px(12.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(rgb(palette.service_pill_fg))
+                            .truncate()
                             .child(label),
                     )
                     .when(is_ext, |el| {

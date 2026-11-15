@@ -227,6 +227,11 @@ pub fn reset_account_conversation_views(
 ) {
     sidebar.configure_for_cloud_workspace(server_url);
     sidebar.dialogs.clear();
+    sidebar.custom_folders.clear();
+    sidebar.bot_ids.clear();
+    sidebar.contact_chat_ids.clear();
+    sidebar.group_chat_ids.clear();
+    sidebar.channel_chat_ids.clear();
     sidebar.clear_selection();
     sidebar.inner_widget.total_rows = 0;
     sidebar.folders = vec![("All".to_string(), 0)];
@@ -274,6 +279,8 @@ pub fn select_authoritative_dialog(
         &dialog.avatar_initials,
         dialog.avatar_color,
     );
+    stage.is_group_chat = dialog.folder == "Groups" || dialog.folder == "Channels";
+    stage.is_saved_messages = dialog.peer_name == "Saved Messages" || dialog.peer_name == "收藏夹";
 
     let avatar_initials = if dialog.avatar_initials.trim().is_empty() {
         derive_initials(&dialog.peer_name)
@@ -296,26 +303,60 @@ pub fn apply_authoritative_chat_list(
     chats: &[ChatSummary],
 ) -> Option<u64> {
     let previous_selected = sidebar.active_chat_id;
+    let prev_flags: std::collections::HashMap<u64, (bool, bool)> = sidebar
+        .dialogs
+        .iter()
+        .map(|d| (d.id, (d.is_muted, d.is_pinned)))
+        .collect();
+    sidebar.bot_ids.clear();
+    sidebar.group_chat_ids.clear();
+    sidebar.channel_chat_ids.clear();
     sidebar.dialogs = chats
         .iter()
         .map(|chat| {
-            let folder = if chat.is_bot.unwrap_or(false) {
+            let is_bot = chat.is_bot.unwrap_or(false) || chat.chat_type == 4;
+            let is_channel = chat.chat_type == 3;
+            let is_group = !is_channel
+                && (chat.is_group.unwrap_or(false) || matches!(chat.chat_type, 1 | 2));
+            if is_bot {
+                sidebar.bot_ids.insert(chat.chat_id);
+            }
+            if is_channel {
+                sidebar.channel_chat_ids.insert(chat.chat_id);
+            }
+            if is_group {
+                sidebar.group_chat_ids.insert(chat.chat_id);
+            }
+            if chat.chat_type == 5 {
+                sidebar.saved_messages_id = Some(chat.chat_id);
+            }
+            let folder = if is_bot {
                 "Bots".to_string()
-            } else if chat.is_group.unwrap_or(false) || chat.chat_type != 0 {
+            } else if is_channel {
+                "Channels".to_string()
+            } else if is_group {
                 "Groups".to_string()
             } else {
                 "All".to_string()
             };
+            let (was_muted, was_pinned) = prev_flags
+                .get(&chat.chat_id)
+                .copied()
+                .unwrap_or((false, false));
             DialogItemModel {
                 id: chat.chat_id,
                 peer_name: chat.title.clone(),
                 avatar_initials: derive_initials(&chat.title),
                 avatar_color: chat.avatar_color.unwrap_or(0x2AABEE),
-                last_message: chat.last_message.clone().unwrap_or_default(),
+                last_message: chat
+                    .last_message
+                    .as_deref()
+                    .map(super::shell_pts_updates::format_sidebar_preview)
+                    .unwrap_or_default(),
                 timestamp: format_authoritative_timestamp(chat.updated_at),
                 unread_count: chat.unread_count,
-                is_muted: false,
-                is_pinned: false,
+                is_muted: was_muted,
+                is_pinned: was_pinned,
                 is_online: false,
                 typing_indicator: None,
                 delivery_status: DialogDeliveryStatus::Read,
@@ -728,6 +769,35 @@ pub fn apply_fenced_history_response(
     chat_id: u64,
     messages: Vec<HistoricalMessage>,
 ) -> bool {
+    apply_fenced_history_response_preserving(
+        fence,
+        is_authenticated,
+        current_auth_gen,
+        current_history_req_gen,
+        current_token,
+        current_user_id,
+        sidebar,
+        stage,
+        chat_id,
+        messages,
+        &std::collections::HashSet::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn apply_fenced_history_response_preserving(
+    fence: &SessionRequestFence,
+    is_authenticated: bool,
+    current_auth_gen: u64,
+    current_history_req_gen: u64,
+    current_token: Option<&str>,
+    current_user_id: Option<u64>,
+    sidebar: &ChatSidebar,
+    stage: &mut ConversationStage,
+    chat_id: u64,
+    messages: Vec<HistoricalMessage>,
+    protected_reaction_msg_ids: &std::collections::HashSet<u64>,
+) -> bool {
     if !fence.matches(
         is_authenticated,
         current_auth_gen,
@@ -765,12 +835,41 @@ pub fn apply_fenced_history_response(
     };
     resolve_reply_references(&mut models, &existing_refs);
 
-    if stage.active_chat_id == Some(chat_id) {
-        stage.merge_historical_messages(models.clone());
-        stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
-        stage.scroll_to_bottom();
+    let mut effective_protected = protected_reaction_msg_ids.clone();
+    for hm in &messages {
+        if !hm.has_authoritative_reactions() {
+            effective_protected.insert(hm.message_id);
+        }
     }
-    stage.chat_histories.insert(chat_id, models);
+
+    if stage.active_chat_id == Some(chat_id) {
+        let should_scroll_to_bottom =
+            stage.messages.is_empty() || stage.is_anchored_to_bottom || stage.is_at_bottom();
+        stage.merge_historical_messages_preserving(models, &effective_protected);
+        stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
+        if should_scroll_to_bottom {
+            stage.scroll_to_bottom();
+        }
+        stage.chat_histories.insert(chat_id, stage.messages.clone());
+    } else {
+        if !effective_protected.is_empty() {
+            for m in &mut models {
+                if effective_protected.contains(&m.id) {
+                    if let Some(prev) = existing_refs.iter().find(|e| e.id == m.id) {
+                        m.reactions = prev.reactions.clone();
+                    }
+                }
+            }
+        }
+        for prev in &existing_refs {
+            if prev.delivery_status == DeliveryStatus::Sending
+                && !models.iter().any(|m| m.id == prev.id)
+            {
+                models.push(prev.clone());
+            }
+        }
+        stage.chat_histories.insert(chat_id, models);
+    }
     true
 }
 
