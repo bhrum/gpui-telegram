@@ -2,7 +2,11 @@
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;
+use gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto;
 
+use crate::components::grok_bot_avatar::{
+    render_grok_bot_avatar, GrokBotAvatarProps, GrokPersonaState,
+};
 use crate::i18n::{tr_fmt, tr_key_or, tr_str};
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use super::rich_meta::resolve_image_source;
@@ -55,6 +59,7 @@ pub fn render_stage_top_bar<V: 'static>(
     subtitle: &str,
     initials: &str,
     avatar_url: Option<&str>,
+    active_fabushi_bot: Option<&FabushiBotSummaryDto>,
     select_mode_active: bool,
     selected_count: usize,
     message_ttl_seconds: u32,
@@ -224,10 +229,45 @@ pub fn render_stage_top_bar<V: 'static>(
                     }))
                 })
                 .when(has_chat, |el| {
-                    el.child(
+                    let avatar_size_px = palette.scaled_px(40.0);
+                    let avatar_el: AnyElement = if let Some(src) = img_src {
                         div()
-                            .w(px(palette.scaled_px(40.0)))
-                            .h(px(palette.scaled_px(40.0)))
+                            .w(px(avatar_size_px))
+                            .h(px(avatar_size_px))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(rgb(grad_top))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(img(src).size_full().object_fit(ObjectFit::Cover))
+                            .into_any_element()
+                    } else if let Some(fab) = active_fabushi_bot
+                        .filter(|f| !f.avatar_shape.eq_ignore_ascii_case("classic"))
+                    {
+                        let sub_lower = subtitle.to_ascii_lowercase();
+                        let is_typing = sub_lower.contains("typing")
+                            || subtitle.contains("输入")
+                            || subtitle.contains("思考");
+                        render_grok_bot_avatar(
+                            GrokBotAvatarProps::new(
+                                &fab.agent_id,
+                                &fab.avatar_shape,
+                                &fab.avatar_color,
+                                avatar_size_px,
+                            )
+                            .with_state(GrokPersonaState::from_activity_str(
+                                &fab.execution_state,
+                                is_typing,
+                            ))
+                            .with_follow_pointer(true)
+                            .with_surface_bg(palette.topbar_bg),
+                        )
+                        .into_any_element()
+                    } else {
+                        div()
+                            .w(px(avatar_size_px))
+                            .h(px(avatar_size_px))
                             .rounded_full()
                             .overflow_hidden()
                             .bg(rgb(grad_top))
@@ -237,11 +277,12 @@ pub fn render_stage_top_bar<V: 'static>(
                             .text_size(px(palette.scaled_px(14.0)))
                             .font_weight(FontWeight::BOLD)
                             .text_color(rgb(0xFFFFFF))
-                            .when_some(img_src, |av, src| av.child(img(src).size_full().object_fit(ObjectFit::Cover)))
                             .when(avatar_url.map_or(true, |u| u.trim().is_empty()), |av| {
                                 av.child(initials.to_string())
-                            }),
-                    )
+                            })
+                            .into_any_element()
+                    };
+                    el.child(avatar_el)
                 })
                 .child(
                     div()

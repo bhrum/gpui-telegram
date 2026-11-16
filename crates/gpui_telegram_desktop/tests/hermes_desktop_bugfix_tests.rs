@@ -191,6 +191,8 @@ fn test_rich_message_overlay_resolves_peer_identity_and_preserves_bot_keyboard()
 #[test]
 fn test_canonical_composer_slash_autocomplete_and_context_badges() {
     let mut composer = CanonicalComposer::new();
+    assert!(!composer.hermes_slash_enabled);
+    composer.hermes_slash_enabled = true;
     assert!(
         composer.hermes_commands.len() >= 50,
         "Expected 50+ Hermes slash command autocomplete entries, got {}",

@@ -19,7 +19,8 @@
 //!    `AppShell::sync_composer_and_inspector_miniapp_state` / `launch_miniapp_from_composer`) and
 //!    attach-menu peer-type filtering (`USER`, `BOT`, `GROUP`, `BROADCAST`).
 
-use gpui::{px, App, AppContext, Application, Entity, Hsla, Size};
+use futures::FutureExt;
+use gpui::{px, App, AppContext, Application, AsyncApp, Entity, Hsla, Size};
 use gpui_telegram_client::net::{HermesRichChatDto, PeerBotActionResult};
 use gpui_telegram_client::{AccountSessionRecord, ClientConfig, TelegramClient};
 use gpui_telegram_desktop::components::bots::bot_attach_web_view::{
@@ -28,7 +29,10 @@ use gpui_telegram_desktop::components::bots::bot_attach_web_view::{
 };
 use gpui_telegram_desktop::components::ui::chat::attach::attach_bot_webview::AttachBotWebviewChatAttach;
 use gpui_telegram_desktop::theme::{TelegramAssetSource, TdesktopThemePalette};
-use gpui_telegram_desktop::views::boxes::peers::CreateManagedBotBoxPeers;
+use gpui_telegram_desktop::views::boxes::peers::{
+    BotProfileBoxAction, CreateManagedBotBoxPeers,
+};
+use gpui_telegram_desktop::views::canonical_composer::BotSlashCommandItem;
 use gpui_telegram_desktop::views::chat_sidebar::{
     SidebarCatalogAppItem, TELEGRAM_SEARCH_CATEGORIES,
 };
@@ -36,7 +40,14 @@ use gpui_telegram_desktop::views::composer::attachments_drawer::ComposerAttachMi
 use gpui_telegram_desktop::views::composer::popups_ui::{
     render_attachments_drawer_with_apps, ComposerPopupAction,
 };
-use gpui_telegram_desktop::views::sidebar::sidebar_search_view::render_apps_catalog_section;
+use gpui_telegram_desktop::views::drawer::bot_computer_inspector::{
+    format_bot_mau_subtitle, render_bot_profile_main,
+};
+use gpui_telegram_desktop::views::drawer::inspector_tabs::{InspectorAction, InspectorTab};
+use gpui_telegram_desktop::views::sidebar::dialogs_row_view::render_dialog_row_item;
+use gpui_telegram_desktop::views::sidebar::sidebar_search_view::{
+    render_apps_catalog_section, render_apps_catalog_section_with_recent,
+};
 use gpui_telegram_desktop::views::stage::cards::{
     DeliveryStatus, InlineButtonType, InlineKeyboardButton, MessageContent, MessageDirection,
     MessageItemModel,
@@ -48,7 +59,8 @@ use gpui_telegram_desktop::views::{
     AppShell, CanonicalComposer, ChatSidebar, ConversationStage, MainMenuDrawer,
 };
 use gpui_telegram_proto::miniapp_contracts::{
-    BotRegistryEntry, CloudStorageItem, MiniAppActionButton, MiniAppActionRequest,
+    AllowSendMessageResponse, BotCommandSpec, BotPublicProfileDto, BotRegistryEntry,
+    CloudStorageItem, FabushiBotSummaryDto, MiniAppActionButton, MiniAppActionRequest,
     MiniAppActionResponse, MiniAppEntry, MiniAppInitDataDto, MiniAppLaunchContext,
     MiniAppLaunchMode, MiniAppThemeParams, MiniAppUiSchema, MiniAppUiWidget, MiniAppWidgetType,
     BOTFATHER_USER_ID,
@@ -87,16 +99,53 @@ impl Drop for TempConfigDirGuard {
     }
 }
 
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "panic".to_string()
+    }
+}
+
 fn dispatch_headless_target(target: &str) -> ! {
-    let body: fn(&mut App) = match target {
+    enum Runner {
+        Sync(fn(&mut App)),
+        Async(fn(AsyncApp) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>),
+    }
+
+    let runner = match target {
         "test_headless_gpui_mount_all_miniapp_botfather_components_and_navigation" => {
-            headless_body_mount_all_miniapp_botfather_components_and_navigation
+            Runner::Sync(headless_body_mount_all_miniapp_botfather_components_and_navigation)
         }
         "test_headless_gpui_stage_webapp_launch_no_clipboard_and_webview_lifecycle" => {
-            headless_body_stage_webapp_launch_no_clipboard_and_webview_lifecycle
+            Runner::Sync(headless_body_stage_webapp_launch_no_clipboard_and_webview_lifecycle)
         }
         "test_headless_gpui_companion_bot_menu_button_and_attach_peer_filtering" => {
-            headless_body_companion_bot_menu_button_and_attach_peer_filtering
+            Runner::Sync(headless_body_companion_bot_menu_button_and_attach_peer_filtering)
+        }
+        "test_headless_gpui_bot_context_inspector_no_members_tab_and_bot_profile" => {
+            Runner::Sync(headless_body_bot_context_inspector_no_members_tab_and_bot_profile)
+        }
+        "test_headless_gpui_composer_per_bot_slash_commands_isolation" => {
+            Runner::Sync(headless_body_composer_per_bot_slash_commands_isolation)
+        }
+        "test_headless_gpui_apps_catalog_recent_popular_bot_profile_box_and_prestart_chat" => {
+            Runner::Async(|app| {
+                Box::pin(
+                    headless_body_apps_catalog_recent_popular_bot_profile_box_and_prestart_chat(
+                        app,
+                    ),
+                )
+            })
+        }
+        "test_headless_gpui_tos_confirm_modal_write_access_popup_and_dialog_open_pill" => {
+            Runner::Async(|app| {
+                Box::pin(
+                    headless_body_tos_confirm_modal_write_access_popup_and_dialog_open_pill(app),
+                )
+            })
         }
         other => {
             eprintln!("unknown headless gpui test target: {other}");
@@ -107,30 +156,42 @@ fn dispatch_headless_target(target: &str) -> ! {
     let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Application::headless()
             .with_assets(TelegramAssetSource::new())
-            .run(move |cx: &mut App| {
-                let inner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    body(cx);
-                }));
-                match inner {
-                    Ok(()) => std::process::exit(0),
-                    Err(payload) => {
-                        let msg = payload
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-                            .unwrap_or("panic");
-                        eprintln!("[headless child panic] {target_owned}: {msg}");
-                        std::process::exit(101);
+            .run(move |cx: &mut App| match runner {
+                Runner::Sync(body) => {
+                    let inner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        body(cx);
+                    }));
+                    match inner {
+                        Ok(()) => std::process::exit(0),
+                        Err(payload) => {
+                            let msg = panic_payload_to_string(payload);
+                            eprintln!("[headless child panic] {target_owned}: {msg}");
+                            std::process::exit(101);
+                        }
                     }
+                }
+                Runner::Async(async_fn) => {
+                    let t = target_owned.clone();
+                    cx.spawn(async move |app: &mut AsyncApp| {
+                        let app_clone = app.clone();
+                        let res = std::panic::AssertUnwindSafe(async_fn(app_clone))
+                            .catch_unwind()
+                            .await;
+                        match res {
+                            Ok(()) => std::process::exit(0),
+                            Err(payload) => {
+                                let msg = panic_payload_to_string(payload);
+                                eprintln!("[headless async child panic] {t}: {msg}");
+                                std::process::exit(101);
+                            }
+                        }
+                    })
+                    .detach();
                 }
             });
     }));
     if let Err(payload) = outer {
-        let msg = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-            .unwrap_or("panic");
+        let msg = panic_payload_to_string(payload);
         eprintln!("[headless outer panic] {target}: {msg}");
         std::process::exit(101);
     }
@@ -196,6 +257,7 @@ fn build_sample_bot() -> BotRegistryEntry {
         attach_peer_types: vec!["users".into(), "bots".into(), "groups".into()],
         commands: vec![],
         created_at: 1_700_000_000_000,
+        ..Default::default()
     }
 }
 
@@ -257,6 +319,7 @@ fn build_sample_app(installed: bool, companion_chat_id: Option<i64>) -> MiniAppE
         direct_chat_id: companion_chat_id,
         created_by_nl: false,
         updated_at: 1_700_000_000_000,
+        ..Default::default()
     }
 }
 
@@ -570,6 +633,8 @@ fn headless_body_mount_all_miniapp_botfather_components_and_navigation(cx: &mut 
                 is_mine: false,
                 webview_url: "gpui-miniapp://CoffeeOrderBot/order".to_string(),
                 companion_chat_id: Some(9001),
+                mau_count: 12,
+                is_verified: false,
             };
             sidebar.update(cx, |sb, sb_cx| {
                 sb.set_catalog_mini_apps(vec![catalog_item.clone()]);
@@ -712,7 +777,8 @@ fn headless_body_stage_webapp_launch_no_clipboard_and_webview_lifecycle(cx: &mut
                 "Callback inline button must not alter clipboard"
             );
 
-            // 2. Trigger WebApp button in ConversationStage -> MUST launch BotAttachWebView, NEVER copy URL!
+            // 2. Trigger WebApp button in ConversationStage -> shows ToS confirmation first when unaccepted,
+            //    NEVER copies URL, and confirming launches BotAttachWebView!
             stage.update(cx, |st, st_cx| {
                 st.handle_bubble_action(
                     BubbleUiAction::Interactive(InteractiveCardAction::BotButton(
@@ -723,6 +789,13 @@ fn headless_body_stage_webapp_launch_no_clipboard_and_webview_lifecycle(cx: &mut
                     )),
                     st_cx,
                 );
+            });
+            assert!(
+                shell.read(cx).miniapps.pending_miniapp_confirm.is_some(),
+                "First-time WebApp launch from chat must open ToS confirmation modal"
+            );
+            shell.update(cx, |s, cx| {
+                s.confirm_pending_miniapp_launch(cx);
             });
             let overlay = shell
                 .read(cx)
@@ -768,6 +841,7 @@ fn headless_body_stage_webapp_launch_no_clipboard_and_webview_lifecycle(cx: &mut
             // Check disclaimer flow on first-time launch, then accept
             let mut unverified_ctx = launch_ctx.clone();
             unverified_ctx.app.is_installed = false;
+            unverified_ctx.app.app_tos_accepted = false;
             overlay.update(cx, |w, _| {
                 w.load_context(unverified_ctx);
                 assert!(!w.disclaimer_accepted);
@@ -1034,12 +1108,17 @@ fn headless_body_companion_bot_menu_button_and_attach_peer_filtering(cx: &mut Ap
                 ));
                 btn_cx.notify();
             });
+            assert!(
+                shell.read(cx).miniapps.pending_miniapp_confirm.is_some(),
+                "MenuButton click on unaccepted Mini App must open ToS confirm modal"
+            );
+            shell.update(cx, |s, cx| s.confirm_pending_miniapp_launch(cx));
             let ov = shell
                 .read(cx)
                 .miniapps
                 .miniapp_overlay
                 .clone()
-                .expect("HistoryViewBotMenuButtonViewControls click must launch Mini App via AppShell");
+                .expect("HistoryViewBotMenuButtonViewControls click + ToS confirm must launch Mini App via AppShell");
             assert!(ov.read(cx).is_open);
             assert_eq!(ov.read(cx).bot_username, "CoffeeOrderBot");
 
@@ -1143,8 +1222,1083 @@ fn test_unit_attach_bot_webview_peer_masks_and_botfather_entry_models() {
 
     let comp = CanonicalComposer::new();
     assert_eq!(comp.current_peer_type_mask, 0);
+    assert!(!comp.hermes_slash_enabled);
     let _ = Size {
         width: px(400.0),
         height: px(600.0),
     };
 }
+
+fn build_third_party_shop_bot() -> BotRegistryEntry {
+    BotRegistryEntry {
+        bot_user_id: 600_777,
+        owner_user_id: 200_999,
+        username: "PizzaShopBot".to_string(),
+        display_name: "Pizza Shop".to_string(),
+        description: "Order wood-fired pizza right inside Telegram.".to_string(),
+        about: "Official Pizza Shop Mini App".to_string(),
+        ai_persona: String::new(),
+        menu_button_text: "Order Pizza".to_string(),
+        menu_button_url: "gpui-miniapp://PizzaShopBot/shop".to_string(),
+        is_official: true,
+        is_inline: true,
+        allow_attach_menu: false,
+        attach_peer_types: vec!["users".into()],
+        commands: vec![
+            BotCommandSpec {
+                command: "menu".to_string(),
+                description: "Browse pizza menu".to_string(),
+            },
+            BotCommandSpec {
+                command: "help".to_string(),
+                description: "Order support".to_string(),
+            },
+        ],
+        created_at: 1_700_000_000_000,
+        is_fabushi_bot: false,
+        menu_button_type: "web_app".to_string(),
+        has_main_app: true,
+        main_app_short_name: "shop".to_string(),
+        privacy_policy_url: "https://pizza.example.com/privacy".to_string(),
+        has_settings: true,
+        can_join_groups: true,
+        mau_count: 12_345,
+        allows_write_to_pm: false,
+        app_tos_accepted: false,
+        is_blocked_by_viewer: false,
+        ..Default::default()
+    }
+}
+
+fn build_shop_miniapp(tos_accepted: bool, allows_write: bool, chat_id: Option<i64>) -> MiniAppEntry {
+    MiniAppEntry {
+        app_id: "pizza_shop_app".to_string(),
+        bot_user_id: 600_777,
+        bot_username: "PizzaShopBot".to_string(),
+        bot_display_name: "Pizza Shop".to_string(),
+        short_name: "shop".to_string(),
+        title: "Pizza Mini App".to_string(),
+        description: "Fast hot pizza delivery".to_string(),
+        category: "shopping".to_string(),
+        icon_emoji: "🍕".to_string(),
+        web_url: "gpui-miniapp://PizzaShopBot/shop".to_string(),
+        ui_schema: MiniAppUiSchema {
+            title: "Pizza Mini App".to_string(),
+            subtitle: "Fresh wood-fired pizza".to_string(),
+            theme: MiniAppThemeParams::default(),
+            widgets: Vec::new(),
+            main_button: None,
+            secondary_button: None,
+            back_button_visible: false,
+            settings_button_visible: false,
+            copilot_suggestions: Vec::new(),
+        },
+        peer_types: vec!["users".into()],
+        install_count: 0,
+        is_installed: false,
+        has_write_access: allows_write,
+        direct_chat_id: chat_id,
+        created_by_nl: false,
+        updated_at: 1_700_000_000_000,
+        mau_count: 12_345,
+        is_main_app: true,
+        is_recent_used: true,
+        last_launched_at: 1_700_000_001_000,
+        privacy_policy_url: "https://pizza.example.com/privacy".to_string(),
+        app_tos_accepted: tos_accepted,
+        header_color: Some("#FF5500".to_string()),
+        background_color: Some("#FFFDF9".to_string()),
+    }
+}
+
+fn build_shop_public_profile(
+    existing_chat_id: Option<i64>,
+    has_started_chat: bool,
+    allows_write_to_pm: bool,
+    app_tos_accepted: bool,
+    is_blocked: bool,
+) -> BotPublicProfileDto {
+    let mut bot = build_third_party_shop_bot();
+    bot.allows_write_to_pm = allows_write_to_pm;
+    bot.app_tos_accepted = app_tos_accepted;
+    bot.is_blocked_by_viewer = is_blocked;
+    let app = build_shop_miniapp(app_tos_accepted, allows_write_to_pm, existing_chat_id);
+    BotPublicProfileDto {
+        bot,
+        main_app: Some(app.clone()),
+        apps: vec![app],
+        existing_chat_id,
+        has_started_chat,
+        allows_write_to_pm,
+        app_tos_accepted,
+        is_blocked,
+        is_muted: false,
+    }
+}
+
+#[derive(Clone, Default)]
+struct ParityMockState {
+    chat_created: bool,
+    chat_id: i64,
+    allows_write_to_pm: bool,
+    app_tos_accepted: bool,
+    is_blocked: bool,
+    has_started_chat: bool,
+    launched_once: bool,
+}
+
+fn spawn_parity_mock_http_server(
+    client: &Arc<TelegramClient>,
+    initial: ParityMockState,
+) -> (
+    String,
+    Arc<Mutex<Vec<(String, String, String)>>>,
+    Arc<Mutex<ParityMockState>>,
+) {
+    let recorded: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let state = Arc::new(Mutex::new(initial));
+    let rec_srv = recorded.clone();
+    let state_srv = state.clone();
+    let base_url = client.runtime().block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind parity mock listener");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let rec = rec_srv.clone();
+                let st_arc = state_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 32 * 1024];
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    let req_str = String::from_utf8_lossy(&buf[..n]);
+                    let mut lines = req_str.split("\r\n");
+                    let req_line = lines.next().unwrap_or("");
+                    let mut parts = req_line.split_whitespace();
+                    let method = parts.next().unwrap_or("GET").to_string();
+                    let path = parts.next().unwrap_or("/").to_string();
+                    let body = req_str.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                    rec.lock()
+                        .unwrap()
+                        .push((method.clone(), path.clone(), body.clone()));
+
+                    let json_body = {
+                        let mut st = st_arc.lock().unwrap();
+                        if path.starts_with("/api/v1/bots/profile/") {
+                        let cid = st.chat_created.then_some(st.chat_id);
+                        let prof = build_shop_public_profile(
+                            cid,
+                            st.has_started_chat,
+                            st.allows_write_to_pm,
+                            st.app_tos_accepted,
+                            st.is_blocked,
+                        );
+                        serde_json::to_string(&prof).unwrap()
+                    } else if path == "/api/v1/miniapps/recent" {
+                        let apps = if st.launched_once {
+                            let cid = st.chat_created.then_some(st.chat_id);
+                            vec![build_shop_miniapp(
+                                st.app_tos_accepted,
+                                st.allows_write_to_pm,
+                                cid,
+                            )]
+                        } else {
+                            Vec::new()
+                        };
+                        serde_json::to_string(&json!({ "apps": apps, "total": apps.len() }))
+                            .unwrap()
+                    } else if path.ends_with("/accept-app-tos") {
+                        st.app_tos_accepted = true;
+                        serde_json::to_string(&json!({ "ok": true, "app_tos_accepted": true }))
+                            .unwrap()
+                    } else if path.ends_with("/allow-send-message") {
+                        st.chat_created = true;
+                        st.allows_write_to_pm = true;
+                        st.is_blocked = false;
+                        let resp = AllowSendMessageResponse {
+                            ok: true,
+                            chat_id: st.chat_id,
+                            service_message_id: Some(701),
+                            service_text: "您已允许该机器人在其网页应用中向您发送消息。"
+                                .to_string(),
+                        };
+                        serde_json::to_string(&resp).unwrap()
+                    } else if path.ends_with("/block") {
+                        let v: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
+                        st.is_blocked = v["blocked"].as_bool().unwrap_or(false);
+                        if st.is_blocked {
+                            st.allows_write_to_pm = false;
+                        }
+                        serde_json::to_string(&json!({ "ok": true, "blocked": st.is_blocked }))
+                            .unwrap()
+                    } else if path == "/api/v1/contacts/add" {
+                        st.chat_created = true;
+                        st.has_started_chat = true;
+                        serde_json::to_string(&json!({
+                            "user_id": 600_777_u64,
+                            "chat_id": st.chat_id,
+                            "title": "Pizza Shop",
+                            "username": "PizzaShopBot",
+                            "is_bot": true
+                        }))
+                        .unwrap()
+                    } else if path == "/api/v1/chats" {
+                        let chats = if st.chat_created {
+                            vec![json!({
+                                "chat_id": st.chat_id,
+                                "title": "Pizza Shop",
+                                "chat_type": 4,
+                                "last_message": "您已允许该机器人在其网页应用中向您发送消息。",
+                                "unread_count": 0,
+                                "is_group": false,
+                                "is_bot": true,
+                                "avatar_color": 0x2481cc,
+                                "updated_at": 1_700_000_002_000_i64
+                            })]
+                        } else {
+                            Vec::new()
+                        };
+                        serde_json::to_string(&json!({ "chats": chats })).unwrap()
+                    } else if path.ends_with("/launch") {
+                        st.launched_once = true;
+                        let cid_opt = st.chat_created.then_some(st.chat_id);
+                        let mut app =
+                            build_shop_miniapp(st.app_tos_accepted, st.allows_write_to_pm, cid_opt);
+                        app.is_installed = false;
+                        let mut bot = build_third_party_shop_bot();
+                        bot.allows_write_to_pm = st.allows_write_to_pm;
+                        bot.app_tos_accepted = st.app_tos_accepted;
+                        let ctx = MiniAppLaunchContext {
+                            app,
+                            companion_bot: bot,
+                            companion_chat_id: cid_opt.unwrap_or(0),
+                            source_chat_id: None,
+                            launch_mode: MiniAppLaunchMode::MainMiniApp,
+                            start_param: None,
+                            init_data: MiniAppInitDataDto {
+                                query_id: "qid_parity_1".to_string(),
+                                user_json: format!(
+                                    "{{\"id\":100001,\"username\":\"alice\",\"allows_write_to_pm\":{}}}",
+                                    st.allows_write_to_pm
+                                ),
+                                auth_date: 1_700_000_000,
+                                hash: "b".repeat(64),
+                                start_param: None,
+                                chat_type: Some("sender".to_string()),
+                                chat_instance: Some("app_600777".to_string()),
+                                raw_query_string: "query_id=qid_parity_1&hash=bbb".to_string(),
+                                hmac_verified: true,
+                            },
+                            cloud_storage: Vec::new(),
+                            state_json: json!({}),
+                        };
+                        serde_json::to_string(&ctx).unwrap()
+                    } else if path.contains("/messages") && method == "POST" {
+                        st.has_started_chat = true;
+                        serde_json::to_string(&json!({ "message_id": 702 })).unwrap()
+                    } else if path.contains("/messages") {
+                        let msgs = if st.chat_created {
+                            vec![json!({
+                                "id": 701,
+                                "sender_id": 600_777,
+                                "text": "您已允许该机器人在其网页应用中向您发送消息。",
+                                "date_ms": 1_700_000_001_000_i64
+                            })]
+                        } else {
+                            Vec::new()
+                        };
+                        serde_json::to_string(&json!({ "messages": msgs })).unwrap()
+                    } else {
+                        serde_json::to_string(&json!({ "ok": true, "apps": [], "bots": [], "chats": [] }))
+                            .unwrap()
+                    }
+                    };
+
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json_body.len(),
+                        json_body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    });
+    (base_url, recorded, state)
+}
+
+#[test]
+fn test_headless_gpui_bot_context_inspector_no_members_tab_and_bot_profile() {
+    run_in_headless_subprocess(
+        "test_headless_gpui_bot_context_inspector_no_members_tab_and_bot_profile",
+    );
+}
+
+fn headless_body_bot_context_inspector_no_members_tab_and_bot_profile(cx: &mut App) {
+    let client = new_isolated_client("http://127.0.0.1:9".to_string());
+    let _rt = client.runtime().enter();
+
+    assert_eq!(format_bot_mau_subtitle(12_345, "zh-CN"), "12,345 名每月活跃用户");
+    assert_eq!(format_bot_mau_subtitle(0, "zh-CN"), "机器人");
+    assert_eq!(format_bot_mau_subtitle(1_200, "en"), "1,200 monthly users");
+
+    let bot_cid = 88_001u64;
+    let bot_entry = build_third_party_shop_bot();
+    let prof = build_shop_public_profile(Some(bot_cid as i64), true, false, false, false);
+
+    let shell = cx.new(|cx| {
+        let mut s = AppShell::new_with_client(client.clone(), cx);
+        s.is_authenticated = true;
+        s.session_sync.user_id = Some(100_001);
+        s.session_sync.session_token = Some("tok_insp".to_string());
+        s.miniapps
+            .bot_profiles_cache
+            .insert("pizzashopbot".to_string(), prof);
+        s.miniapps.attach_menu_bots = vec![bot_entry];
+        s.session_sync.rich_chats_by_id.insert(
+            bot_cid,
+            HermesRichChatDto {
+                chat_id: bot_cid as i64,
+                title: "Pizza Shop".to_string(),
+                is_bot: true,
+                peer_user_id: Some(600_777),
+                peer_username: Some("PizzaShopBot".to_string()),
+                peer_bio: Some("Order wood-fired pizza right inside Telegram.".to_string()),
+                menu_button_text: Some("Order Pizza".to_string()),
+                menu_button_url: Some("gpui-miniapp://PizzaShopBot/shop".to_string()),
+                has_mini_app: true,
+                ..Default::default()
+            },
+        );
+        s
+    });
+
+    // Simulate selecting a Bot chat in Inspector even if Inspector previously sat on Members tab
+    shell.update(cx, |s, cx| {
+        s.inspector.update(cx, |insp, _| {
+            insp.open();
+            insp.set_language("zh-CN");
+            insp.set_peer("Pizza Shop", "Order pizza", "PS", 0x2481cc);
+            insp.set_tab(InspectorTab::Members);
+            insp.sync_members(vec![], String::new(), false);
+        });
+        s.stage.update(cx, |st, _| st.active_chat_id = Some(bot_cid));
+        s.sync_composer_and_inspector_miniapp_state(cx);
+    });
+
+    let insp_ent = shell.read(cx).inspector.clone();
+    insp_ent.update(cx, |insp, icx| {
+        assert!(insp.profile.is_bot);
+        assert!(!insp.members.is_group_or_channel, "Bot DM must NEVER mark members.is_group_or_channel = true");
+        assert!(insp.members.members.is_empty());
+        assert_eq!(insp.profile.bot_mau_count, 12_345);
+        assert!(insp.profile.bot_has_main_app);
+        assert_eq!(
+            insp.profile.bot_privacy_policy_url,
+            "https://pizza.example.com/privacy"
+        );
+        assert!(insp.profile.bot_has_settings);
+        assert!(insp.profile.bot_can_join_groups);
+        assert!(!insp.profile.is_viewer_owner);
+        assert!(insp.profile.is_verified);
+        assert!(insp.active_fabushi_bot.is_none());
+
+        // Render bot profile main without panicking (third-party bot: no owner Fabushi/Computer cards)
+        let _bot_main = render_bot_profile_main(insp, TdesktopThemePalette::default(), "zh-CN", icx);
+    });
+
+    // Trigger InspectorAction::OpenMiniAppTos -> AppShell opens miniapp_tos_modal_open
+    insp_ent.update(cx, |insp, icx| {
+        insp.pending_action = Some(InspectorAction::OpenMiniAppTos);
+        icx.notify();
+    });
+    assert!(
+        shell.read(cx).miniapps.miniapp_tos_modal_open,
+        "Inspector OpenMiniAppTos must open Mini App ToS modal"
+    );
+    shell.update(cx, |s, _| s.miniapps.miniapp_tos_modal_open = false);
+
+    // Trigger InspectorAction::FocusBotComposer -> focuses composer
+    insp_ent.update(cx, |insp, icx| {
+        insp.pending_action = Some(InspectorAction::FocusBotComposer);
+        icx.notify();
+    });
+    assert!(shell.read(cx).composer.read(cx).is_input_focused);
+
+    // Verify owner Fabushi bot card gate (`is_viewer_owner && active_fabushi_bot.is_some()`)
+    insp_ent.update(cx, |insp, icx| {
+        insp.sync_bot_profile_extra(0, false, String::new(), false, false, true, false, false);
+        insp.set_active_fabushi_bot(Some(FabushiBotSummaryDto {
+            bot_user_id: 600_900,
+            owner_user_id: 100_001,
+            agent_id: "my-ops-bot".to_string(),
+            username: "MyOpsBot".to_string(),
+            display_name: "My Ops Bot".to_string(),
+            ..Default::default()
+        }));
+        let _owner_main = render_bot_profile_main(insp, TdesktopThemePalette::default(), "zh-CN", icx);
+    });
+}
+
+#[test]
+fn test_headless_gpui_composer_per_bot_slash_commands_isolation() {
+    run_in_headless_subprocess("test_headless_gpui_composer_per_bot_slash_commands_isolation");
+}
+
+fn headless_body_composer_per_bot_slash_commands_isolation(cx: &mut App) {
+    let client = new_isolated_client("http://127.0.0.1:9".to_string());
+    let _rt = client.runtime().enter();
+
+    let pizza_cid = 9_201u64;
+    let silent_bot_cid = 9_202u64;
+    let botfather_cid = 9_203u64;
+    let fabushi_cid = 9_204u64;
+
+    let mut pizza_bot = build_third_party_shop_bot();
+    pizza_bot.menu_button_type = "default".to_string();
+    pizza_bot.menu_button_url.clear();
+    pizza_bot.menu_button_text.clear();
+
+    let silent_bot = BotRegistryEntry {
+        bot_user_id: 600_888,
+        owner_user_id: 200_999,
+        username: "PlainWebhookBot".to_string(),
+        display_name: "Plain Webhook Bot".to_string(),
+        commands: Vec::new(),
+        is_fabushi_bot: false,
+        menu_button_type: "default".to_string(),
+        ..Default::default()
+    };
+
+    let my_fabushi_bot = BotRegistryEntry {
+        bot_user_id: 600_999,
+        owner_user_id: 100_001,
+        username: "MyHermesBot".to_string(),
+        display_name: "My Hermes Agent".to_string(),
+        commands: Vec::new(),
+        is_fabushi_bot: true,
+        menu_button_type: "web_app".to_string(),
+        menu_button_text: "点单控制台".to_string(),
+        menu_button_url: "gpui-miniapp://MyHermesBot/panel".to_string(),
+        ..Default::default()
+    };
+
+    let shell = cx.new(|cx| {
+        let mut s = AppShell::new_with_client(client.clone(), cx);
+        s.is_authenticated = true;
+        s.session_sync.user_id = Some(100_001);
+        s.session_sync.session_token = Some("tok_slash".to_string());
+        s.miniapps.attach_menu_bots = vec![pizza_bot.clone(), silent_bot.clone()];
+        s.miniapps.my_bots = vec![my_fabushi_bot.clone()];
+        s.miniapps.fabushi_bots = vec![FabushiBotSummaryDto {
+            bot_user_id: 600_999,
+            owner_user_id: 100_001,
+            agent_id: "my-hermes-bot".to_string(),
+            username: "MyHermesBot".to_string(),
+            display_name: "My Hermes Agent".to_string(),
+            companion_chat_id: Some(fabushi_cid as i64),
+            ..Default::default()
+        }];
+        s.session_sync.rich_chats_by_id.insert(
+            pizza_cid,
+            HermesRichChatDto {
+                chat_id: pizza_cid as i64,
+                title: "Pizza Shop".to_string(),
+                is_bot: true,
+                peer_user_id: Some(600_777),
+                peer_username: Some("PizzaShopBot".to_string()),
+                ..Default::default()
+            },
+        );
+        s.session_sync.rich_chats_by_id.insert(
+            silent_bot_cid,
+            HermesRichChatDto {
+                chat_id: silent_bot_cid as i64,
+                title: "Plain Webhook Bot".to_string(),
+                is_bot: true,
+                peer_user_id: Some(600_888),
+                peer_username: Some("PlainWebhookBot".to_string()),
+                ..Default::default()
+            },
+        );
+        s.session_sync.rich_chats_by_id.insert(
+            botfather_cid,
+            HermesRichChatDto {
+                chat_id: botfather_cid as i64,
+                title: "BotFather".to_string(),
+                is_bot: true,
+                peer_user_id: Some(BOTFATHER_USER_ID as u64),
+                peer_username: Some("BotFather".to_string()),
+                ..Default::default()
+            },
+        );
+        s.session_sync.rich_chats_by_id.insert(
+            fabushi_cid,
+            HermesRichChatDto {
+                chat_id: fabushi_cid as i64,
+                title: "My Hermes Agent".to_string(),
+                is_bot: true,
+                peer_user_id: Some(600_999),
+                peer_username: Some("MyHermesBot".to_string()),
+                menu_button_text: Some("点单控制台".to_string()),
+                menu_button_url: Some("gpui-miniapp://MyHermesBot/panel".to_string()),
+                has_mini_app: true,
+                ..Default::default()
+            },
+        );
+        s
+    });
+
+    let composer = shell.read(cx).composer.clone();
+    assert!(!composer.read(cx).hermes_slash_enabled);
+
+    // 1. Standard bot with 2 commands: typing `/` shows ONLY those 2 bot commands (never 55 Hermes commands!)
+    //    and menu_button_type="default" leaves bot_menu_controls inactive.
+    shell.update(cx, |s, cx| {
+        s.stage.update(cx, |st, _| st.active_chat_id = Some(pizza_cid));
+        s.sync_composer_and_inspector_miniapp_state(cx);
+    });
+    composer.update(cx, |c, _| {
+        assert!(!c.hermes_slash_enabled);
+        assert!(!c.bot_menu_controls.is_active);
+        assert_eq!(c.bot_slash_commands.len(), 2);
+        c.set_text("/");
+        c.ime_machine.cursor_index = 1;
+        c.sync_autocomplete();
+        assert!(c.bot_ac_visible);
+        assert_eq!(c.bot_ac_matches.len(), 2);
+        let names: Vec<&str> = c.bot_ac_matches.iter().map(|m| m.command.as_str()).collect();
+        assert_eq!(names, vec!["menu", "help"]);
+        assert!(!c.hermes_ac_visible);
+        assert!(c.hermes_ac_matches.is_empty());
+    });
+
+    // 2. Standard bot with 0 commands: typing `/` shows NOTHING (neither bot_ac nor 55 Hermes commands!)
+    shell.update(cx, |s, cx| {
+        s.stage
+            .update(cx, |st, _| st.active_chat_id = Some(silent_bot_cid));
+        s.sync_composer_and_inspector_miniapp_state(cx);
+    });
+    composer.update(cx, |c, _| {
+        assert!(!c.hermes_slash_enabled);
+        assert!(c.bot_slash_commands.is_empty());
+        c.set_text("/");
+        c.ime_machine.cursor_index = 1;
+        c.sync_autocomplete();
+        assert!(!c.bot_ac_visible);
+        assert!(!c.hermes_ac_visible);
+        assert!(c.hermes_ac_matches.is_empty());
+    });
+
+    // 3. @BotFather: hermes_slash_enabled is false, only BotFather commands appear on `/`
+    shell.update(cx, |s, cx| {
+        s.stage
+            .update(cx, |st, _| st.active_chat_id = Some(botfather_cid));
+        s.sync_composer_and_inspector_miniapp_state(cx);
+    });
+    composer.update(cx, |c, _| {
+        assert!(!c.hermes_slash_enabled);
+        assert!(c.bot_slash_commands.iter().any(|b| b.command == "newbot"));
+        c.set_text("/");
+        c.ime_machine.cursor_index = 1;
+        c.sync_autocomplete();
+        assert!(c.bot_ac_visible);
+        assert!(!c.hermes_ac_visible);
+    });
+
+    // 4. Viewer-owned Fabushi bot: hermes_slash_enabled is true + menu_button_type="web_app" uses exact label
+    shell.update(cx, |s, cx| {
+        s.stage.update(cx, |st, _| st.active_chat_id = Some(fabushi_cid));
+        s.sync_composer_and_inspector_miniapp_state(cx);
+    });
+    composer.update(cx, |c, _| {
+        assert!(c.hermes_slash_enabled);
+        assert!(c.bot_menu_controls.is_active);
+        assert_eq!(c.bot_menu_controls.text, "点单控制台");
+        c.set_text("/mem");
+        c.ime_machine.cursor_index = 4;
+        c.sync_autocomplete();
+        assert!(c.hermes_ac_visible);
+        assert!(!c.bot_ac_visible);
+    });
+
+    // Standalone unit check for BotSlashCommandItem popup rendering
+    composer.update(cx, |c, _| {
+        c.set_bot_slash_commands(vec![BotSlashCommandItem {
+            command: "status".to_string(),
+            description: "Check order status".to_string(),
+            bot_username: "PizzaShopBot".to_string(),
+            avatar_initials: "PS".to_string(),
+            avatar_color: 0x2481cc,
+        }]);
+        c.set_text("/sta");
+        c.ime_machine.cursor_index = 4;
+        c.sync_autocomplete();
+        assert!(c.bot_ac_visible);
+        assert_eq!(c.bot_ac_matches.len(), 1);
+    });
+}
+
+#[test]
+fn test_headless_gpui_apps_catalog_recent_popular_bot_profile_box_and_prestart_chat() {
+    run_in_headless_subprocess(
+        "test_headless_gpui_apps_catalog_recent_popular_bot_profile_box_and_prestart_chat",
+    );
+}
+
+async fn headless_body_apps_catalog_recent_popular_bot_profile_box_and_prestart_chat(
+    app: AsyncApp,
+) {
+    let seed_client = new_isolated_client("http://127.0.0.1:9".to_string());
+    let (base_url, recorded_http, _mock_state) = spawn_parity_mock_http_server(
+        &seed_client,
+        ParityMockState {
+            chat_created: false,
+            chat_id: 600_000_777,
+            allows_write_to_pm: false,
+            app_tos_accepted: false,
+            is_blocked: false,
+            has_started_chat: false,
+            launched_once: true,
+        },
+    );
+    let client = new_isolated_client(base_url);
+
+    let shell = app
+        .update(|cx| {
+            cx.new(|cx| {
+                let mut s = AppShell::new_with_client(client.clone(), cx);
+                s.is_authenticated = true;
+                s.session_sync.user_id = Some(100_001);
+                s.session_sync.session_token = Some("tok_apps_catalog".to_string());
+                s
+            })
+        })
+        .expect("create shell");
+
+    // 1. Render Sidebar `应用` catalog with `您用过的应用` & `畅销应用` (NO + 添加并打开 buttons)
+    let clicked_profile_un: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let clicked_profile_un_cb = clicked_profile_un.clone();
+    app.update(|cx| {
+        let shop_item = SidebarCatalogAppItem {
+            bot_id: 600_777,
+            bot_username: "PizzaShopBot".to_string(),
+            title: "Pizza Mini App".to_string(),
+            short_name: "shop".to_string(),
+            description: "Fast hot pizza delivery".to_string(),
+            category: "shopping".to_string(),
+            icon_initials: "🍕".to_string(),
+            avatar_color: 0xFF5500,
+            installs_count: 0,
+            is_installed: false,
+            is_mine: false,
+            webview_url: "gpui-miniapp://PizzaShopBot/shop".to_string(),
+            companion_chat_id: None,
+            mau_count: 12_345,
+            is_verified: true,
+        };
+        let sb = shell.read(cx).sidebar.clone();
+        sb.update(cx, |sb, sb_cx| {
+            sb.set_recent_mini_apps(vec![shop_item.clone()]);
+            sb.set_catalog_mini_apps(vec![shop_item.clone()]);
+            let pal = TdesktopThemePalette::default();
+            let elems = render_apps_catalog_section_with_recent(
+                "",
+                &sb.recent_mini_apps,
+                &sb.catalog_mini_apps,
+                &pal,
+                "zh-CN",
+                sb_cx,
+                |_, _| {},
+                move |_, item, _| {
+                    *clicked_profile_un_cb.lock().unwrap() = Some(item.bot_username);
+                },
+            );
+            // BotFather card + "您用过的应用" header + row + "畅销应用" header + row = 5
+            assert_eq!(elems.len(), 5, "expected BotFather + 2 section headers + 2 rows");
+
+            // Clicking catalog app triggers pending_open_bot_profile (NOT install or launch!)
+            sb.pending_open_bot_profile = Some("PizzaShopBot".to_string());
+            sb_cx.notify();
+        });
+        assert!(clicked_profile_un.lock().unwrap().is_none());
+    })
+    .expect("update sidebar catalog");
+
+    // Pump AsyncApp until `open_bot_profile_popup` finishes HTTP fetch and opens BotProfileBox
+    for _ in 0..40 {
+        app.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
+        let ready = app
+            .update(|cx| {
+                shell
+                    .read(cx)
+                    .miniapps
+                    .bot_profile_box
+                    .as_ref()
+                    .is_some_and(|b| b.read(cx).is_visible)
+            })
+            .unwrap();
+        if ready {
+            break;
+        }
+    }
+
+    // Verify BotProfileBox opened WITHOUT creating any chat or calling install/contacts/add!
+    app.update(|cx| {
+        let s = shell.read(cx);
+        let bx = s
+            .miniapps
+            .bot_profile_box
+            .as_ref()
+            .expect("BotProfileBox must be open after clicking catalog app");
+        assert!(bx.read(cx).is_visible);
+        assert_eq!(bx.read(cx).profile.bot.username, "PizzaShopBot");
+        assert_eq!(bx.read(cx).profile.bot.mau_count, 12_345);
+        assert_eq!(bx.read(cx).profile.existing_chat_id, None);
+        assert!(s.sidebar.read(cx).dialogs.is_empty(), "NO DM chat may be created");
+        assert!(s.session_sync.rich_chats_by_id.is_empty());
+
+        let log = recorded_http.lock().unwrap();
+        assert!(
+            log.iter()
+                .any(|(m, p, _)| m == "GET" && p == "/api/v1/bots/profile/PizzaShopBot"),
+            "expected GET /api/v1/bots/profile/PizzaShopBot, got: {log:?}"
+        );
+        assert!(
+            !log.iter()
+                .any(|(_, p, _)| p.contains("/contacts/add") || p.contains("/install")),
+            "opening BotProfileBox from Apps catalog must NEVER call /contacts/add or /install: {log:?}"
+        );
+    })
+    .expect("assert BotProfileBox");
+
+    // 2. Click `消息` inside BotProfileBox -> opens virtual pre-start conversation on ConversationStage
+    //    with `它能做什么？` card & `开始` bar (still NO DB chat created!)
+    app.update(|cx| {
+        let bx = shell
+            .read(cx)
+            .miniapps
+            .bot_profile_box
+            .clone()
+            .expect("bot_profile_box");
+        bx.update(cx, |b, b_cx| {
+            b.emit(BotProfileBoxAction::OpenMessageChat {
+                bot_id: 600_777,
+                bot_username: "PizzaShopBot".to_string(),
+                display_name: "Pizza Shop".to_string(),
+                description: "Order wood-fired pizza right inside Telegram.".to_string(),
+                existing_chat_id: None,
+                has_started_chat: false,
+            });
+            b_cx.notify();
+        });
+    })
+    .expect("emit BotProfileBox OpenMessageChat");
+
+    app.update(|cx| {
+        let s = shell.read(cx);
+        assert!(s.miniapps.bot_profile_box.is_none());
+        assert!(s.miniapps.pending_prestart_bot.is_some());
+        let st = s.stage.read(cx);
+        assert_eq!(st.active_chat_id, None, "pre-start bot stage has no DB chat yet");
+        assert_eq!(
+            st.bot_description_card.as_deref(),
+            Some("Order wood-fired pizza right inside Telegram.")
+        );
+        assert!(st.show_bot_start_bar);
+        assert!(!st.is_viewer_owner_fabushi_bot);
+        assert!(s.sidebar.read(cx).dialogs.is_empty());
+    })
+    .expect("open prestart bot stage");
+
+    // 3. Click `开始` (`stage.pending_bot_start = true`) -> materializes chat via /contacts/add
+    app.update(|cx| {
+        let stage = shell.read(cx).stage.clone();
+        stage.update(cx, |st, st_cx| {
+            st.pending_bot_start = true;
+            st_cx.notify();
+        });
+    })
+    .expect("click start bar");
+
+    for _ in 0..40 {
+        app.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
+        let materialized = app
+            .update(|cx| {
+                shell.read(cx).stage.read(cx).active_chat_id == Some(600_000_777)
+            })
+            .unwrap();
+        if materialized {
+            break;
+        }
+    }
+
+    app.update(|cx| {
+        assert_eq!(
+            shell.read(cx).stage.read(cx).active_chat_id,
+            Some(600_000_777),
+            "clicking 开始 must materialize bot DM chat"
+        );
+        let log = recorded_http.lock().unwrap();
+        assert!(
+            log.iter().any(|(m, p, _)| m == "POST" && p == "/api/v1/contacts/add"),
+            "clicking 开始 must create DM chat via /contacts/add: {log:?}"
+        );
+    })
+    .expect("assert materialized start");
+}
+
+#[test]
+fn test_headless_gpui_tos_confirm_modal_write_access_popup_and_dialog_open_pill() {
+    run_in_headless_subprocess(
+        "test_headless_gpui_tos_confirm_modal_write_access_popup_and_dialog_open_pill",
+    );
+}
+
+async fn headless_body_tos_confirm_modal_write_access_popup_and_dialog_open_pill(
+    app: AsyncApp,
+) {
+    let seed_client = new_isolated_client("http://127.0.0.1:9".to_string());
+    let (base_url, recorded_http, mock_state) = spawn_parity_mock_http_server(
+        &seed_client,
+        ParityMockState {
+            chat_created: false,
+            chat_id: 600_000_777,
+            allows_write_to_pm: false,
+            app_tos_accepted: false,
+            is_blocked: false,
+            has_started_chat: false,
+            launched_once: false,
+        },
+    );
+    let client = new_isolated_client(base_url);
+    let bot_cid = 600_000_777u64;
+
+    let shell = app
+        .update(|cx| {
+            cx.new(|cx| {
+                let mut s = AppShell::new_with_client(client.clone(), cx);
+                s.is_authenticated = true;
+                s.session_sync.user_id = Some(100_001);
+                s.session_sync.session_token = Some("tok_tos_write".to_string());
+                s.miniapps.catalog_miniapps = vec![build_shop_miniapp(false, false, None)];
+                s.miniapps.attach_menu_bots = vec![build_third_party_shop_bot()];
+                s.session_sync.rich_chats_by_id.insert(
+                    bot_cid,
+                    HermesRichChatDto {
+                        chat_id: bot_cid as i64,
+                        title: "Pizza Shop".to_string(),
+                        is_bot: true,
+                        peer_user_id: Some(600_777),
+                        peer_username: Some("PizzaShopBot".to_string()),
+                        menu_button_text: Some("Order Pizza".to_string()),
+                        menu_button_url: Some("gpui-miniapp://PizzaShopBot/shop".to_string()),
+                        has_mini_app: true,
+                        ..Default::default()
+                    },
+                );
+                s
+            })
+        })
+        .expect("create shell");
+
+    // 1. Trigger dialog `打开` pill / launch_miniapp_from_uri while !app_tos_accepted -> opens ToS confirm modal
+    app.update(|cx| {
+        let sb = shell.read(cx).sidebar.clone();
+        sb.update(cx, |sb, sb_cx| {
+            let mut map = std::collections::HashMap::new();
+            map.insert(bot_cid, "gpui-miniapp://PizzaShopBot/shop".to_string());
+            sb.set_bot_main_app_uris(map);
+            let dlg = gpui_telegram_desktop::views::chat_sidebar::DialogItemModel {
+                id: bot_cid,
+                peer_name: "Pizza Shop".to_string(),
+                avatar_initials: "PS".to_string(),
+                avatar_color: 0x2481cc,
+                last_message: String::new(),
+                timestamp: String::new(),
+                unread_count: 0,
+                is_muted: false,
+                is_pinned: false,
+                is_online: true,
+                typing_indicator: None,
+                delivery_status: gpui_telegram_desktop::views::chat_sidebar::DialogDeliveryStatus::Read,
+                folder: "Bots".to_string(),
+            };
+            let meta = sb.dialog_meta(&dlg);
+            assert_eq!(
+                meta.miniapp_open_uri.as_deref(),
+                Some("gpui-miniapp://PizzaShopBot/shop"),
+                "Dialog row with bot Main Mini App must carry miniapp_open_uri for `打开` pill"
+            );
+            let _row_el = render_dialog_row_item(
+                &dlg,
+                0,
+                false,
+                false,
+                &meta,
+                &TdesktopThemePalette::default(),
+                "zh-CN",
+                sb_cx,
+                |_, _| {},
+                |_, _, _| {},
+                |_, _| {},
+                |_, _, _| {},
+            );
+            sb.pending_launch_dialog_miniapp =
+                Some((bot_cid, "gpui-miniapp://PizzaShopBot/shop".to_string()));
+            sb_cx.notify();
+        });
+    })
+    .expect("notify dialog miniapp launch");
+
+    app.update(|cx| {
+        let s = shell.read(cx);
+        assert!(
+            s.miniapps.pending_miniapp_confirm.is_some(),
+            "first-time launch must show ToS confirmation modal"
+        );
+        assert!(s.miniapps.miniapp_overlay.is_none());
+    })
+    .expect("trigger ToS confirm");
+
+    // Confirm ToS -> calls POST /api/v1/bots/600777/accept-app-tos and launches BotAttachWebView!
+    app.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.miniapps.miniapp_tos_modal_open = true;
+            s.miniapps.miniapp_tos_modal_open = false;
+            s.confirm_pending_miniapp_launch(cx);
+        });
+    })
+    .expect("confirm launch");
+
+    for _ in 0..40 {
+        app.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
+        let launched = app
+            .update(|cx| {
+                shell
+                    .read(cx)
+                    .miniapps
+                    .miniapp_overlay
+                    .as_ref()
+                    .is_some_and(|ov| !ov.read(cx).is_loading && ov.read(cx).bot_id == 600_777)
+            })
+            .unwrap();
+        if launched {
+            break;
+        }
+    }
+
+    app.update(|cx| {
+        let ov = shell
+            .read(cx)
+            .miniapps
+            .miniapp_overlay
+            .clone()
+            .expect("overlay open after ToS confirm");
+        assert!(ov.read(cx).is_open);
+        assert!(!ov.read(cx).allows_write_to_pm);
+        assert!(mock_state.lock().unwrap().app_tos_accepted);
+
+        // 2. JS calls Telegram.WebApp.requestWriteAccess() -> `web_app_request_write_access`
+        ov.update(cx, |w, w_cx| {
+            w.handle_bridge_event("web_app_request_write_access", "{}");
+            assert!(w.write_access_prompt_open, "must open 允许发送消息 modal");
+            assert!(!w.allows_write_to_pm);
+
+            // Test MainButton / SecondaryButton / BackButton / ClosingConfirmation / showPopup bridge events
+            w.handle_bridge_event(
+                "web_app_setup_main_button",
+                r#"{"is_visible":true,"is_active":true,"text":"Checkout $18"}"#,
+            );
+            assert_eq!(
+                w.ui_schema.main_button.as_ref().map(|b| b.text.as_str()),
+                Some("Checkout $18")
+            );
+            w.handle_bridge_event("web_app_setup_back_button", r#"{"is_visible":true}"#);
+            assert!(w.ui_schema.back_button_visible);
+            w.handle_bridge_event(
+                "web_app_setup_closing_behavior",
+                r#"{"need_confirmation":true}"#,
+            );
+            assert!(w.closing_confirmation);
+            w.handle_bridge_event(
+                "web_app_open_popup",
+                r#"{"title":"Confirm Order","message":"1x Margherita","buttons":[{"id":"yes","type":"ok","text":"OK"}]}"#,
+            );
+            assert!(w.custom_popup.is_some());
+            w.resolve_custom_popup(Some("yes"));
+            assert!(w.custom_popup.is_none());
+
+            // 3. User clicks `允许` in `允许发送消息` popup -> queues AllowBotSendMessage
+            w.write_access_prompt_open = false;
+            w.pending_actions
+                .push_back(BotWebViewPendingAction::AllowBotSendMessage {
+                    bot_id: w.bot_id,
+                    bot_username: w.bot_username.clone(),
+                    app_id: w.app_id.clone(),
+                    app_title: w.ui_schema.title.clone(),
+                });
+            w_cx.notify();
+        });
+    })
+    .expect("trigger write access prompt & allow");
+
+    // Pump AsyncApp until allow-send-message finishes and resolves write_access + refreshes chats
+    for _ in 0..50 {
+        app.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
+        let done = app
+            .update(|cx| {
+                let s = shell.read(cx);
+                s.miniapps
+                    .miniapp_overlay
+                    .as_ref()
+                    .is_some_and(|ov| ov.read(cx).allows_write_to_pm)
+                    && !s.sidebar.read(cx).dialogs.is_empty()
+            })
+            .unwrap();
+        if done {
+            break;
+        }
+    }
+
+    app.update(|cx| {
+        let s = shell.read(cx);
+        let ov = s.miniapps.miniapp_overlay.as_ref().unwrap().read(cx);
+        assert!(ov.allows_write_to_pm, "Allow click must resolve allows_write_to_pm = true");
+        assert!(!ov.write_access_prompt_open);
+        assert!(
+            s.sidebar.read(cx).dialogs.iter().any(|d| d.id == bot_cid),
+            "allowing write access must refresh sidebar with created bot chat"
+        );
+        let log = recorded_http.lock().unwrap();
+        assert!(log
+            .iter()
+            .any(|(m, p, _)| m == "POST" && p == "/api/v1/bots/600777/accept-app-tos"));
+        assert!(log
+            .iter()
+            .any(|(m, p, _)| m == "POST" && p == "/api/v1/bots/600777/allow-send-message"));
+        assert!(log
+            .iter()
+            .any(|(m, p, _)| m == "GET" && p == "/api/v1/miniapps/recent"));
+    })
+    .expect("assert write access granted & dialog refreshed");
+}
+

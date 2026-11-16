@@ -11,6 +11,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::stream::{self, StreamExt};
+use gpui_telegram_agent::fabushi_bot::{AgentAddress, AgentGroupAddress, FabushiBotHost, FabushiBotPatch};
 use gpui_telegram_agent::hermes::commands::{InlineActionButton, SlashCommandParser};
 use gpui_telegram_agent::hermes::memory::{MemoryTarget, ObservationCategory, SoulProfile};
 use gpui_telegram_agent::hermes::providers::{ApiMode, CredentialEntry, ProviderConfig};
@@ -26,7 +27,7 @@ use gpui_telegram_agent::hermes::state_db::{
 use gpui_telegram_agent::hermes::toolsets::{all_builtin_tool_specs, ToolsetId, ToolsetPreset};
 use gpui_telegram_agent::hermes::trajectory::TrajectoryFormat;
 use gpui_telegram_agent::hermes::{
-    HeartbeatConfig, HermesEvent, HermesTurnRequest, HermesTurnResult,
+    HeartbeatConfig, HermesEngine, HermesEvent, HermesTurnRequest, HermesTurnResult,
 };
 use gpui_telegram_agent::tasks::CronRoutine;
 use gpui_telegram_core::types::{ChatId, MsgId, PeerId, UserId};
@@ -57,6 +58,48 @@ fn parse_optional_bot_id(v: Option<&Value>) -> Option<String> {
     val.as_u64()
         .map(|n| n.to_string())
         .or_else(|| val.as_i64().map(|n| n.to_string()))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct OptionalBotScopeQuery {
+    pub bot_id: Option<u64>,
+}
+
+fn parse_bot_id_u64(v: Option<&Value>) -> Option<u64> {
+    let val = v?;
+    val.as_u64()
+        .or_else(|| val.as_i64().filter(|n| *n > 0).map(|n| n as u64))
+        .or_else(|| val.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+}
+
+pub(crate) fn resolve_hermes_for_bot(state: &AppState, bot_id: Option<u64>) -> Arc<HermesEngine> {
+    if let Some(bid) = bot_id {
+        if bid != crate::db::miniapp_store::BOTFATHER_USER_ID {
+            if let Some(inst) = crate::routes::bots_miniapps::ensure_fabushi_bot_hydrated(state, bid as i64) {
+                return inst.hermes();
+            }
+        }
+    }
+    Arc::clone(&state.hermes)
+}
+
+fn resolve_hermes_for_session(
+    state: &AppState,
+    bot_id: Option<u64>,
+    session_id: &str,
+) -> Arc<HermesEngine> {
+    if bot_id.is_some() {
+        return resolve_hermes_for_bot(state, bot_id);
+    }
+    if state.hermes.store().get_session(session_id).ok().flatten().is_some() {
+        return Arc::clone(&state.hermes);
+    }
+    for inst in state.fabushi_bots.list_instances() {
+        if inst.hermes().store().get_session(session_id).ok().flatten().is_some() {
+            return inst.hermes();
+        }
+    }
+    Arc::clone(&state.hermes)
 }
 
 pub(crate) fn map_proto_buttons(
@@ -240,9 +283,8 @@ fn db_approval_to_dto(rec: &ApprovalRecord) -> Value {
     })
 }
 
-fn toolsets_list_json(state: &AppState) -> Vec<Value> {
-    let guard = state
-        .hermes
+fn toolsets_list_json(engine: &HermesEngine) -> Vec<Value> {
+    let guard = engine
         .toolsets()
         .read()
         .unwrap_or_else(|e| e.into_inner());
@@ -280,14 +322,12 @@ fn toolsets_list_json(state: &AppState) -> Vec<Value> {
         .collect()
 }
 
-fn build_memory_state_json(state: &AppState) -> Result<Value, Response> {
-    let mem = state
-        .hermes
+fn build_memory_state_json(engine: &HermesEngine) -> Result<Value, Response> {
+    let mem = engine
         .memory()
         .read(MemoryTarget::Memory)
         .map_err(map_telegram_err)?;
-    let usr = state
-        .hermes
+    let usr = engine
         .memory()
         .read(MemoryTarget::User)
         .map_err(map_telegram_err)?;
@@ -710,16 +750,21 @@ pub(crate) fn resolve_and_apply_bot_session_policy(
     model_override: Option<&str>,
     force_yolo: bool,
 ) -> gpui_telegram_core::error::Result<(String, bool)> {
-    let sess = state.hermes.resolve_or_create_session(
+    let engine = resolve_hermes_for_bot(state, Some(bot_user_id.0));
+    let sess = engine.resolve_or_create_session(
         session_id_hint,
         chat_id.map(|c| c.0),
         Some(&bot_user_id.0.to_string()),
         source,
         model_override,
     )?;
-    let yolo = force_yolo || bot_execution_policy_is_yolo(state, user_id, bot_user_id);
+    let instance_yolo = state
+        .fabushi_bots
+        .get_by_user_id(bot_user_id.0 as i64)
+        .is_some_and(|i| i.settings().approval_mode == "autonomous");
+    let yolo = force_yolo || instance_yolo || bot_execution_policy_is_yolo(state, user_id, bot_user_id);
     if yolo {
-        if let Ok(mut sec) = state.hermes.security().write() {
+        if let Ok(mut sec) = engine.security().write() {
             sec.approvals
                 .set_session_mode(sess.id.clone(), ApprovalMode::Yolo);
         }
@@ -1556,6 +1601,29 @@ pub(crate) async fn execute_bot_turn_streamed(
     let typing_guard =
         BotTypingGuard::start(Arc::clone(state), params.chat_id, params.bot_user_id);
 
+    let bot_inst = crate::routes::bots_miniapps::ensure_fabushi_bot_hydrated(
+        state,
+        params.bot_user_id.0 as i64,
+    );
+    let target_engine = bot_inst
+        .as_ref()
+        .map(|i| i.hermes())
+        .unwrap_or_else(|| Arc::clone(&state.hermes));
+    let mut exec_guard = state.fabushi_bots.begin_bot_execution(
+        params.bot_user_id.0 as i64,
+        params.chat_id.0,
+        params.sender_id.0 as i64,
+        &params.prompt,
+        None,
+    );
+
+    let fallback_bot_model = params.bot_model.clone().or_else(|| {
+        bot_inst
+            .as_ref()
+            .map(|i| i.settings().preferred_model)
+            .filter(|m| !m.trim().is_empty())
+    });
+
     let (enriched_sp, effective_model) = build_enriched_bot_turn_context(
         state,
         params.sender_id.0,
@@ -1563,7 +1631,7 @@ pub(crate) async fn execute_bot_turn_streamed(
         params.bot_display_name.as_deref(),
         params.base_system_prompt.clone(),
         params.explicit_model.clone(),
-        params.bot_model.clone(),
+        fallback_bot_model,
         &params.extra_context_sections,
         !params.companion_apps.is_empty(),
     );
@@ -1581,27 +1649,95 @@ pub(crate) async fn execute_bot_turn_streamed(
     .ok()
     .map(|(sid, _)| sid);
 
+    let mut room_groups = Vec::new();
+    if let Ok(member_ids) = state.db.get_chat_members(params.chat_id) {
+        let bot_members: Vec<AgentAddress> = member_ids
+            .iter()
+            .filter_map(|uid| state.fabushi_bots.get_by_user_id(uid.0 as i64))
+            .map(|inst| inst.agent_address())
+            .collect();
+        if bot_members.len() > 1 {
+            let chat_title = state
+                .db
+                .get_chat(params.chat_id)
+                .ok()
+                .flatten()
+                .map(|c| c.title)
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| format!("Group {}", params.chat_id.0));
+            room_groups.push(AgentGroupAddress {
+                address: AgentAddress {
+                    id: format!("chat:{}", params.chat_id.0),
+                    name: chat_title,
+                    description: Some("Shared Telegram multi-bot conversation".to_string()),
+                    is_group: true,
+                },
+                members: bot_members,
+            });
+        }
+    }
+    let mentioned_teammates = state
+        .fabushi_bots
+        .collect_mentioned_teammates(params.bot_user_id.0 as i64, &params.prompt);
+    let (fabushi_sp, profile_delta_prefix) = if bot_inst.is_some() {
+        let (sp, delta) = state.fabushi_bots.build_turn_system_prompt(
+            params.bot_user_id.0 as i64,
+            params.chat_id.0,
+            enriched_sp.as_deref().unwrap_or(""),
+            &room_groups,
+            &mentioned_teammates,
+        );
+        (
+            if sp.trim().is_empty() {
+                enriched_sp
+            } else {
+                Some(sp)
+            },
+            delta,
+        )
+    } else {
+        (enriched_sp, None)
+    };
+
     let skip_slash = if params.prompt.trim().starts_with('/') {
         SlashCommandParser::parse(&params.prompt)
-            .is_some_and(|parsed| state.hermes.commands().get(&parsed.command).is_none())
+            .is_some_and(|parsed| target_engine.commands().get(&parsed.command).is_none())
     } else {
         false
     };
 
-    let mut req = HermesTurnRequest::new(&params.prompt)
+    let final_prompt = match profile_delta_prefix {
+        Some(ref delta) if !params.prompt.trim_start().starts_with('/') => {
+            format!("{delta}\n\n{}", params.prompt)
+        }
+        _ => params.prompt.clone(),
+    };
+
+    let mut req = HermesTurnRequest::new(final_prompt)
         .with_chat_bot(params.chat_id.0, params.bot_user_id.0.to_string());
     req.session_id = session_id_opt;
     req.bot_name = params.bot_display_name.clone();
     req.user_id = Some(params.sender_id.0.to_string());
     req.source = "telegram_bot".to_string();
-    req.preset = Some(ToolsetPreset::HermesTelegram);
+    req.preset = Some(
+        bot_inst
+            .as_ref()
+            .map(|inst| FabushiBotHost::toolset_preset_for_name(&inst.settings().toolset_preset))
+            .unwrap_or(ToolsetPreset::HermesTelegram),
+    );
+    req.thinking_budget_tokens = bot_inst.as_ref().and_then(|inst| {
+        FabushiBotHost::thinking_budget_for_level(&inst.settings().thinking_level)
+    });
     req.model = effective_model;
-    req.system_prompt = enriched_sp;
+    req.system_prompt = fabushi_sp;
     req.skip_slash_commands = skip_slash;
 
-    let mut rx = match state.hermes.start_turn_stream(req) {
+    let mut rx = match target_engine.start_turn_stream(req) {
         Ok(rx) => rx,
         Err(err) => {
+            if let Some(g) = exec_guard.as_mut() {
+                g.mark_failed(err.to_string());
+            }
             let mut err_consumer = StreamConsumerState::new();
             err_consumer.terminal_error = Some(format!("⚠️ **无法启动 AI 回复**：{err}"));
             flush_streamed_bot_message(state, &params, &mut err_consumer, true);
@@ -1659,6 +1795,14 @@ pub(crate) async fn execute_bot_turn_streamed(
 
     if !consumer.saw_terminal_event {
         flush_streamed_bot_message(state, &params, &mut consumer, true);
+    }
+
+    if let Some(g) = exec_guard.as_mut() {
+        if let Some(ref err) = consumer.terminal_error {
+            g.mark_failed(err.clone());
+        } else {
+            g.mark_success();
+        }
     }
 
     typing_guard.finish();
@@ -1821,9 +1965,11 @@ fn collect_available_models(
 pub async fn hermes_status(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    let (active_provider, active_model, api_mode) = state.hermes.providers().active_info();
-    let snap = state.hermes.providers().snapshot();
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
+    let (active_provider, active_model, api_mode) = engine.providers().active_info();
+    let snap = engine.providers().snapshot();
     let available_models = collect_available_models(&snap);
     let mut provider_list: Vec<_> = snap.providers.values().collect();
     provider_list.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1832,45 +1978,41 @@ pub async fn hermes_status(
         .map(|cfg| provider_to_dto(cfg, &snap.active_provider_id, &snap.model_profiles))
         .collect();
     let (toolsets_count, tools_count) = {
-        let reg = state
-            .hermes
+        let reg = engine
             .toolsets()
             .read()
             .unwrap_or_else(|e| e.into_inner());
         (reg.enabled_toolsets.len(), reg.active_specs().len())
     };
-    let skills_count = state.hermes.skills().skills_list(None).len();
-    let cron_count = state
-        .hermes
+    let skills_count = engine.skills().skills_list(None).len();
+    let cron_count = engine
         .store()
         .list_cron_jobs(false)
         .map(|v| v.len())
         .unwrap_or(0);
-    let sessions_count = state
-        .hermes
+    let sessions_count = engine
         .store()
         .list_sessions(SessionListFilter::default())
         .map(|v| v.len())
         .unwrap_or(0);
-    let pending_db = state
-        .hermes
+    let pending_db = engine
         .store()
         .list_approvals(None, true)
         .map(|v| v.len())
         .unwrap_or(0);
-    let pending_mem = state
-        .hermes
+    let pending_mem = engine
         .security()
         .read()
         .map(|s| s.approvals.pending.len())
         .unwrap_or(0);
-    let heartbeat_enabled = state.hermes.heartbeat().status().enabled;
+    let heartbeat_enabled = engine.heartbeat().status().enabled;
 
     (
         StatusCode::OK,
         Json(json!({
             "healthy": true,
             "engine": "hermes-rust",
+            "scoped_bot_id": q.bot_id,
             "active_model": active_model,
             "active_provider": active_provider,
             "api_mode": api_mode.as_str(),
@@ -1949,6 +2091,7 @@ pub async fn hermes_turns_create(
 
     let explicit_model = sanitize_model_override(&state, model.clone());
     let bot_id_u64 = bot_id.as_deref().and_then(|b| b.parse::<u64>().ok());
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     let mut bot_fallback_model: Option<String> = None;
     if let Some(bid_num) = bot_id_u64 {
         let (bot_sp, bot_model, _) = load_bot_persona_config(&state, UserId(bid_num));
@@ -1992,7 +2135,7 @@ pub async fn hermes_turns_create(
         }
     } else if yolo_mode {
         if let Some(ref sid) = session_id {
-            if let Ok(mut sec) = state.hermes.security().write() {
+            if let Ok(mut sec) = engine.security().write() {
                 sec.approvals
                     .set_session_mode(sid.clone(), ApprovalMode::Yolo);
             }
@@ -2037,7 +2180,7 @@ pub async fn hermes_turns_create(
         caller_depth: 0,
     };
 
-    match state.hermes.run_turn(req).await {
+    match engine.run_turn(req).await {
         Ok(res) => {
             if payload
                 .get("deliver_to_chat")
@@ -2067,6 +2210,7 @@ pub async fn hermes_turns_create(
 pub struct EventsQuery {
     pub stream: Option<bool>,
     pub sse: Option<bool>,
+    pub bot_id: Option<u64>,
 }
 
 pub async fn hermes_turn_events(
@@ -2076,7 +2220,16 @@ pub async fn hermes_turn_events(
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let events = state.hermes.get_turn_events(&turn_id);
+    let mut events = resolve_hermes_for_bot(&state, query.bot_id).get_turn_events(&turn_id);
+    if events.is_empty() && query.bot_id.is_none() {
+        for inst in state.fabushi_bots.list_instances() {
+            let bot_events = inst.hermes().get_turn_events(&turn_id);
+            if !bot_events.is_empty() {
+                events = bot_events;
+                break;
+            }
+        }
+    }
     let wants_sse = query.stream == Some(true)
         || query.sse == Some(true)
         || headers
@@ -2108,6 +2261,7 @@ pub async fn hermes_turn_events(
 pub async fn hermes_command_run(
     auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
     let command = payload
@@ -2133,12 +2287,12 @@ pub async fn hermes_command_run(
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let bot_id = parse_optional_bot_id(payload.get("bot_id"));
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let bot_id = parse_optional_bot_id(payload.get("bot_id"))
+        .or_else(|| bot_id_u64.map(|n| n.to_string()));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
 
-    match state
-        .hermes
-        .execute_command(session_id, chat_id, bot_id.as_deref(), &command)
-    {
+    match engine.execute_command(session_id, chat_id, bot_id.as_deref(), &command) {
         Ok((resolved_sid, outcome)) => (
             StatusCode::OK,
             Json(json!({
@@ -2224,33 +2378,91 @@ pub async fn hermes_sessions_list(
             return resp;
         }
     }
-    let filter = SessionListFilter {
-        chat_id: q.chat_id,
-        bot_id: q.bot_id.filter(|s| !s.trim().is_empty()),
-        source: q.source.filter(|s| !s.trim().is_empty()),
-        active_only: q.active_only.unwrap_or(false),
-        limit: Some(q.limit.unwrap_or(100)),
-        offset: q.offset,
+    let bot_id_u64 = q
+        .bot_id
+        .as_deref()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
+    let filter_bot_id = if bot_id_u64.is_some() && !Arc::ptr_eq(&engine, &state.hermes) {
+        None
+    } else {
+        q.bot_id.filter(|s| !s.trim().is_empty())
     };
-    match state.hermes.store().list_sessions(filter) {
-        Ok(list) => {
-            let sessions: Vec<Value> = list.iter().map(session_to_dto).collect();
-            (
-                StatusCode::OK,
-                Json(json!({ "sessions": sessions, "total": sessions.len() })),
-            )
-                .into_response()
-        }
-        Err(e) => map_telegram_err(e),
+    let limit = q.limit.unwrap_or(100);
+    if bot_id_u64.is_some() {
+        let filter = SessionListFilter {
+            chat_id: q.chat_id,
+            bot_id: filter_bot_id,
+            source: q.source.filter(|s| !s.trim().is_empty()),
+            active_only: q.active_only.unwrap_or(false),
+            limit: Some(limit),
+            offset: q.offset,
+        };
+        return match engine.store().list_sessions(filter) {
+            Ok(list) => {
+                let sessions: Vec<Value> = list.iter().map(session_to_dto).collect();
+                (
+                    StatusCode::OK,
+                    Json(json!({ "sessions": sessions, "total": sessions.len() })),
+                )
+                    .into_response()
+            }
+            Err(e) => map_telegram_err(e),
+        };
     }
+
+    let source_opt = q.source.filter(|s| !s.trim().is_empty());
+    let active_only = q.active_only.unwrap_or(false);
+    let make_filter = || SessionListFilter {
+        chat_id: q.chat_id,
+        bot_id: filter_bot_id.clone(),
+        source: source_opt.clone(),
+        active_only,
+        limit: Some(limit.saturating_add(q.offset.unwrap_or(0))),
+        offset: None,
+    };
+    let mut combined = match state.hermes.store().list_sessions(make_filter()) {
+        Ok(list) => list,
+        Err(e) => return map_telegram_err(e),
+    };
+    let mut seen: std::collections::HashSet<String> =
+        combined.iter().map(|s| s.id.clone()).collect();
+    for inst in state.fabushi_bots.list_instances() {
+        if let Ok(list) = inst.hermes().store().list_sessions(make_filter()) {
+            for s in list {
+                if seen.insert(s.id.clone()) {
+                    combined.push(s);
+                }
+            }
+        }
+    }
+    combined.sort_by(|a, b| {
+        b.ended_at
+            .unwrap_or(b.started_at)
+            .cmp(&a.ended_at.unwrap_or(a.started_at))
+    });
+    let off = q.offset.unwrap_or(0);
+    let paged: Vec<Value> = combined
+        .iter()
+        .skip(off)
+        .take(limit)
+        .map(session_to_dto)
+        .collect();
+    (
+        StatusCode::OK,
+        Json(json!({ "sessions": paged, "total": paged.len() })),
+    )
+        .into_response()
 }
 
 pub async fn hermes_session_get(
     auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    let sess = match state.hermes.store().get_session(&session_id) {
+    let engine = resolve_hermes_for_session(&state, q.bot_id, &session_id);
+    let sess = match engine.store().get_session(&session_id) {
         Ok(Some(s)) => s,
         Ok(None) => {
             return err_resp(
@@ -2266,13 +2478,11 @@ pub async fn hermes_session_get(
             return resp;
         }
     }
-    let messages = state
-        .hermes
+    let messages = engine
         .store()
         .get_messages(&session_id, Some(200))
         .unwrap_or_default();
-    let branches = state
-        .hermes
+    let branches = engine
         .store()
         .list_branches(&session_id)
         .unwrap_or_default()
@@ -2294,6 +2504,7 @@ pub async fn hermes_session_get(
 pub async fn hermes_sessions_search(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
     let query = payload
@@ -2311,24 +2522,41 @@ pub async fn hermes_sessions_search(
         .get("limit")
         .and_then(|v| v.as_u64())
         .unwrap_or(25) as usize;
-    match state
-        .hermes
-        .store()
-        .session_search(&query, session_id, limit)
-    {
-        Ok(hits) => (
-            StatusCode::OK,
-            Json(json!({ "results": hits, "hits": hits })),
-        )
-            .into_response(),
-        Err(e) => map_telegram_err(e),
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    if bot_id_u64.is_some() {
+        let engine = resolve_hermes_for_bot(&state, bot_id_u64);
+        return match engine.store().session_search(&query, session_id, limit) {
+            Ok(hits) => (
+                StatusCode::OK,
+                Json(json!({ "results": hits, "hits": hits })),
+            )
+                .into_response(),
+            Err(e) => map_telegram_err(e),
+        };
     }
+
+    let mut all_hits = match state.hermes.store().session_search(&query, session_id, limit) {
+        Ok(hits) => hits,
+        Err(e) => return map_telegram_err(e),
+    };
+    for inst in state.fabushi_bots.list_instances() {
+        if let Ok(hits) = inst.hermes().store().session_search(&query, session_id, limit) {
+            all_hits.extend(hits);
+        }
+    }
+    all_hits.truncate(limit);
+    (
+        StatusCode::OK,
+        Json(json!({ "results": all_hits, "hits": all_hits })),
+    )
+        .into_response()
 }
 
 pub async fn hermes_session_branch(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
     let branch_name = payload
@@ -2339,8 +2567,9 @@ pub async fn hermes_session_branch(
         .filter(|s| !s.is_empty())
         .map(ToString::to_string);
     let up_to_seq = payload.get("up_to_seq").and_then(|v| v.as_i64());
-    match state
-        .hermes
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_session(&state, bot_id_u64, &session_id);
+    match engine
         .store()
         .branch_session(&session_id, up_to_seq, branch_name)
     {
@@ -2353,6 +2582,7 @@ pub async fn hermes_session_compress(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
     payload: Option<Json<Value>>,
 ) -> Response {
     let focus = payload
@@ -2360,14 +2590,15 @@ pub async fn hermes_session_compress(
         .and_then(|Json(v)| v.get("focus").and_then(|s| s.as_str()))
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let payload_bot_id = payload
+        .as_ref()
+        .and_then(|Json(v)| parse_bot_id_u64(v.get("bot_id")));
+    let engine = resolve_hermes_for_session(&state, q.bot_id.or(payload_bot_id), &session_id);
     let cmd = match focus {
         Some(f) => format!("/compact {f}"),
         None => "/compact".to_string(),
     };
-    match state
-        .hermes
-        .execute_command(Some(&session_id), None, None, &cmd)
-    {
+    match engine.execute_command(Some(&session_id), None, None, &cmd) {
         Ok((sid, outcome)) => (
             StatusCode::OK,
             Json(json!({
@@ -2386,8 +2617,10 @@ pub async fn hermes_session_undo(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    match state.hermes.store().undo_last_turn(&session_id) {
+    let engine = resolve_hermes_for_session(&state, q.bot_id, &session_id);
+    match engine.store().undo_last_turn(&session_id) {
         Ok(res) => (StatusCode::OK, Json(json!(res))).into_response(),
         Err(e) => map_telegram_err(e),
     }
@@ -2397,9 +2630,12 @@ pub async fn hermes_session_export(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
     payload: Option<Json<Value>>,
 ) -> Response {
     let val = payload.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(val.get("bot_id")));
+    let engine = resolve_hermes_for_session(&state, bot_id_u64, &session_id);
     let raw_fmt = val
         .get("format")
         .and_then(|v| v.as_str())
@@ -2409,7 +2645,7 @@ pub async fn hermes_session_export(
     let redact = val.get("redact").and_then(|v| v.as_bool()).unwrap_or(true);
 
     if raw_fmt == "markdown" || raw_fmt == "md" {
-        let sess = match state.hermes.store().get_session(&session_id) {
+        let sess = match engine.store().get_session(&session_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 return err_resp(
@@ -2420,8 +2656,7 @@ pub async fn hermes_session_export(
             }
             Err(e) => return map_telegram_err(e),
         };
-        let msgs = state
-            .hermes
+        let msgs = engine
             .store()
             .get_messages(&session_id, None)
             .unwrap_or_default();
@@ -2447,7 +2682,7 @@ pub async fn hermes_session_export(
     }
 
     let fmt = TrajectoryFormat::parse(&raw_fmt).unwrap_or(TrajectoryFormat::HermesNative);
-    match state.hermes.export_session(&session_id, fmt, redact, None) {
+    match engine.export_session(&session_id, fmt, redact, None) {
         Ok(exported) => (
             StatusCode::OK,
             Json(json!({
@@ -2471,8 +2706,10 @@ pub async fn hermes_session_export(
 pub async fn hermes_memory_get(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    match build_memory_state_json(&state) {
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
+    match build_memory_state_json(&engine) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(resp) => resp,
     }
@@ -2481,19 +2718,22 @@ pub async fn hermes_memory_get(
 pub async fn hermes_memory_put(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     if let Some(mem_md) = payload.get("memory_markdown").and_then(|v| v.as_str()) {
-        if let Err(e) = state.hermes.memory().set_raw(MemoryTarget::Memory, mem_md) {
+        if let Err(e) = engine.memory().set_raw(MemoryTarget::Memory, mem_md) {
             return map_telegram_err(e);
         }
     }
     if let Some(user_md) = payload.get("user_markdown").and_then(|v| v.as_str()) {
-        if let Err(e) = state.hermes.memory().set_raw(MemoryTarget::User, user_md) {
+        if let Err(e) = engine.memory().set_raw(MemoryTarget::User, user_md) {
             return map_telegram_err(e);
         }
     }
-    match build_memory_state_json(&state) {
+    match build_memory_state_json(&engine) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(resp) => resp,
     }
@@ -2502,8 +2742,11 @@ pub async fn hermes_memory_put(
 pub async fn hermes_memory_action(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     let action = payload
         .get("action")
         .and_then(|v| v.as_str())
@@ -2528,11 +2771,11 @@ pub async fn hermes_memory_action(
         .unwrap_or(content);
 
     let res = match action.as_str() {
-        "add" => state.hermes.memory().add(target, content),
-        "replace" | "update" => state.hermes.memory().replace(target, old_text, content),
-        "remove" | "delete" => state.hermes.memory().remove(target, old_text),
-        "clear" => state.hermes.memory().clear(target),
-        "set_raw" | "set" => state.hermes.memory().set_raw(target, content),
+        "add" => engine.memory().add(target, content),
+        "replace" | "update" => engine.memory().replace(target, old_text, content),
+        "remove" | "delete" => engine.memory().remove(target, old_text),
+        "clear" => engine.memory().clear(target),
+        "set_raw" | "set" => engine.memory().set_raw(target, content),
         other => {
             return err_resp(
                 StatusCode::BAD_REQUEST,
@@ -2544,7 +2787,7 @@ pub async fn hermes_memory_action(
     if let Err(e) = res {
         return map_telegram_err(e);
     }
-    match build_memory_state_json(&state) {
+    match build_memory_state_json(&engine) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(resp) => resp,
     }
@@ -2562,6 +2805,7 @@ pub async fn hermes_soul_get(
     Query(query): Query<SoulQuery>,
 ) -> Response {
     if let Some(bot_id) = query.bot_id {
+        let engine = resolve_hermes_for_bot(&state, Some(bot_id));
         if let Ok(Some(raw)) = state
             .hermes
             .store()
@@ -2598,6 +2842,29 @@ pub async fn hermes_soul_get(
                         "welcome_message": val.get("welcome_message").cloned().unwrap_or(Value::Null),
                         "model": val.get("model").cloned().unwrap_or(Value::Null),
                         "updated_at_ms": val.get("updated_at_ms").and_then(|v| v.as_i64()).unwrap_or_else(|| Utc::now().timestamp_millis()),
+                    })),
+                )
+                    .into_response();
+            }
+        }
+        if !Arc::ptr_eq(&engine, &state.hermes) && engine.memory().has_soul() {
+            if let Ok(profile) = engine.memory().read_soul() {
+                let preferred_model = state
+                    .fabushi_bots
+                    .get_by_user_id(bot_id as i64)
+                    .map(|inst| inst.settings().preferred_model)
+                    .filter(|m| !m.trim().is_empty());
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "bot_id": bot_id,
+                        "chat_id": query.chat_id,
+                        "persona_name": profile.name,
+                        "content": profile.raw_markdown,
+                        "system_prompt": profile.persona,
+                        "welcome_message": Value::Null,
+                        "model": preferred_model,
+                        "updated_at_ms": Utc::now().timestamp_millis(),
                     })),
                 )
                     .into_response();
@@ -2646,7 +2913,7 @@ pub async fn hermes_soul_put(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let bot_id = payload.get("bot_id").and_then(|v| v.as_u64());
+    let bot_id = parse_bot_id_u64(payload.get("bot_id"));
     let chat_id = payload.get("chat_id").and_then(|v| v.as_i64());
     let persona_name = payload
         .get("persona_name")
@@ -2689,6 +2956,43 @@ pub async fn hermes_soul_put(
     let now_ms = Utc::now().timestamp_millis();
 
     if let Some(bid) = bot_id {
+        let engine = resolve_hermes_for_bot(&state, Some(bid));
+        if !Arc::ptr_eq(&engine, &state.hermes) {
+            if !content.trim().is_empty() {
+                let _ = engine.memory().write_soul_raw(&content);
+            } else {
+                let mut p = SoulProfile::new(
+                    &persona_name,
+                    "Personal AI Assistant",
+                    system_prompt.as_deref().unwrap_or(""),
+                );
+                p.raw_markdown = p.to_markdown();
+                let _ = engine.memory().write_soul(&p);
+            }
+            let _ = state.fabushi_bots.update_bot(
+                bid as i64,
+                FabushiBotPatch {
+                    display_name: Some(persona_name.clone()),
+                    description: system_prompt.clone(),
+                    preferred_model: model.clone(),
+                    ..Default::default()
+                },
+            );
+            let _ = state.db.update_bot_fabushi_fields(
+                bid as i64,
+                None,
+                None,
+                None,
+                system_prompt.as_deref(),
+                None,
+                None,
+                None,
+                model.as_deref(),
+                None,
+                None,
+                None,
+            );
+        }
         let dto = json!({
             "bot_id": bid,
             "chat_id": chat_id,
@@ -2749,6 +3053,7 @@ pub async fn hermes_soul_put(
 pub struct HonchoQuery {
     pub user_id: Option<String>,
     pub peer_name: Option<String>,
+    pub bot_id: Option<u64>,
 }
 
 pub async fn hermes_honcho_get(
@@ -2756,12 +3061,13 @@ pub async fn hermes_honcho_get(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HonchoQuery>,
 ) -> Response {
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
     let uid = q
         .user_id
         .or(q.peer_name)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| format!("user_{}", auth.user_id.0));
-    match state.hermes.honcho().profile(&uid) {
+    match engine.honcho().profile(&uid) {
         Ok(prof) => (StatusCode::OK, Json(honcho_profile_to_dto(prof))).into_response(),
         Err(e) => map_telegram_err(e),
     }
@@ -2770,8 +3076,11 @@ pub async fn hermes_honcho_get(
 pub async fn hermes_honcho_post(
     auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     let uid = payload
         .get("peer_name")
         .or_else(|| payload.get("user_id"))
@@ -2792,8 +3101,7 @@ pub async fn hermes_honcho_post(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Err(e) = state
-            .hermes
+        if let Err(e) = engine
             .honcho()
             .record_observation(&uid, category, note, 1.0, None)
         {
@@ -2807,9 +3115,9 @@ pub async fn hermes_honcho_post(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        match state.hermes.honcho().query(&uid, q) {
+        match engine.honcho().query(&uid, q) {
             Ok(qres) => {
-                let prof = state.hermes.honcho().profile(&uid).ok();
+                let prof = engine.honcho().profile(&uid).ok();
                 let mut dto = prof
                     .map(honcho_profile_to_dto)
                     .unwrap_or_else(|| json!({ "enabled": true, "peer_name": uid, "session_notes": [] }));
@@ -2822,7 +3130,7 @@ pub async fn hermes_honcho_post(
         }
     }
 
-    match state.hermes.honcho().profile(&uid) {
+    match engine.honcho().profile(&uid) {
         Ok(prof) => (StatusCode::OK, Json(honcho_profile_to_dto(prof))).into_response(),
         Err(e) => map_telegram_err(e),
     }
@@ -2835,6 +3143,7 @@ pub async fn hermes_honcho_post(
 #[derive(Debug, Deserialize, Default)]
 pub struct SkillsQuery {
     pub filter: Option<String>,
+    pub bot_id: Option<u64>,
 }
 
 pub async fn hermes_skills_list(
@@ -2842,9 +3151,9 @@ pub async fn hermes_skills_list(
     State(state): State<Arc<AppState>>,
     Query(q): Query<SkillsQuery>,
 ) -> Response {
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
     let now_ms = Utc::now().timestamp_millis();
-    let skills: Vec<Value> = state
-        .hermes
+    let skills: Vec<Value> = engine
         .skills()
         .skills_list(q.filter.as_deref())
         .iter()
@@ -2860,8 +3169,11 @@ pub async fn hermes_skills_list(
 pub async fn hermes_skills_create(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     let name = payload
         .get("name")
         .and_then(|v| v.as_str())
@@ -2897,12 +3209,11 @@ pub async fn hermes_skills_create(
     let trusted = payload.get("trusted").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let res = if content.trim_start().starts_with("---") {
-        state
-            .hermes
+        engine
             .skills()
             .skill_upsert_markdown(&content, category, trusted)
     } else {
-        state.hermes.skills().skill_create(CreateSkillRequest {
+        engine.skills().skill_create(CreateSkillRequest {
             name,
             description,
             body: content,
@@ -2929,8 +3240,10 @@ pub async fn hermes_skill_get(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    match state.hermes.skills().skill_view(&name) {
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
+    match engine.skills().skill_view(&name) {
         Ok(doc) => (
             StatusCode::OK,
             Json(skill_to_dto(&doc, Utc::now().timestamp_millis())),
@@ -2944,17 +3257,16 @@ pub async fn hermes_skill_patch(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     if let (Some(old_text), Some(new_text)) = (
         payload.get("old_text").and_then(|v| v.as_str()),
         payload.get("new_text").and_then(|v| v.as_str()),
     ) {
-        return match state
-            .hermes
-            .skills()
-            .skill_patch(&name, old_text, new_text)
-        {
+        return match engine.skills().skill_patch(&name, old_text, new_text) {
             Ok(doc) => (
                 StatusCode::OK,
                 Json(skill_to_dto(&doc, Utc::now().timestamp_millis())),
@@ -2964,7 +3276,7 @@ pub async fn hermes_skill_patch(
         };
     }
 
-    let existing = match state.hermes.skills().skill_view(&name) {
+    let existing = match engine.skills().skill_view(&name) {
         Ok(doc) => doc,
         Err(e) => return map_telegram_err(e),
     };
@@ -2975,8 +3287,7 @@ pub async fn hermes_skill_patch(
         .unwrap_or(&existing.raw_markdown)
         .to_string();
     let res = if content.trim_start().starts_with("---") {
-        state
-            .hermes
+        engine
             .skills()
             .skill_upsert_markdown(&content, Some(existing.frontmatter.origin), existing.trusted)
     } else {
@@ -2994,7 +3305,7 @@ pub async fn hermes_skill_patch(
                     .collect()
             })
             .unwrap_or(existing.frontmatter.tags);
-        state.hermes.skills().skill_create(CreateSkillRequest {
+        engine.skills().skill_create(CreateSkillRequest {
             name: existing.frontmatter.name,
             description,
             body: content,
@@ -3021,8 +3332,10 @@ pub async fn hermes_skill_delete(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    match state.hermes.skills().skill_delete(&name) {
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
+    match engine.skills().skill_delete(&name) {
         Ok(true) => (
             StatusCode::OK,
             Json(json!({ "deleted": true, "name": name })),
@@ -3037,20 +3350,26 @@ pub async fn hermes_skill_approve(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    Query(q): Query<OptionalBotScopeQuery>,
     payload: Option<Json<Value>>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| {
+        payload
+            .as_ref()
+            .and_then(|Json(v)| parse_bot_id_u64(v.get("bot_id")))
+    });
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     let allow_high_risk = payload
         .as_ref()
         .and_then(|Json(v)| v.get("allow_high_risk").and_then(|b| b.as_bool()))
         .unwrap_or(true);
 
-    let pending = state.hermes.skills().list_pending_skill_writes();
+    let pending = engine.skills().list_pending_skill_writes();
     if let Some(proposal) = pending
         .into_iter()
         .find(|p| p.id == name || p.skill_name.eq_ignore_ascii_case(&name))
     {
-        return match state
-            .hermes
+        return match engine
             .skills()
             .approve_skill_write(&proposal.id, allow_high_risk)
         {
@@ -3063,9 +3382,9 @@ pub async fn hermes_skill_approve(
         };
     }
 
-    match state.hermes.skills().skill_view(&name) {
+    match engine.skills().skill_view(&name) {
         Ok(existing) => {
-            match state.hermes.skills().skill_create(CreateSkillRequest {
+            match engine.skills().skill_create(CreateSkillRequest {
                 name: existing.frontmatter.name,
                 description: existing.frontmatter.description,
                 body: existing.body,
@@ -3095,8 +3414,10 @@ pub async fn hermes_skill_approve(
 pub async fn hermes_toolsets_get(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
-    let items = toolsets_list_json(&state);
+    let engine = resolve_hermes_for_bot(&state, q.bot_id);
+    let items = toolsets_list_json(&engine);
     (
         StatusCode::OK,
         Json(json!({ "toolsets": items, "total": items.len() })),
@@ -3107,11 +3428,13 @@ pub async fn hermes_toolsets_get(
 pub async fn hermes_toolsets_put(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
     Json(payload): Json<Value>,
 ) -> Response {
+    let bot_id_u64 = q.bot_id.or_else(|| parse_bot_id_u64(payload.get("bot_id")));
+    let engine = resolve_hermes_for_bot(&state, bot_id_u64);
     {
-        let mut reg = state
-            .hermes
+        let mut reg = engine
             .toolsets()
             .write()
             .unwrap_or_else(|e| e.into_inner());
@@ -3151,7 +3474,7 @@ pub async fn hermes_toolsets_put(
         }
     }
 
-    let items = toolsets_list_json(&state);
+    let items = toolsets_list_json(&engine);
     (
         StatusCode::OK,
         Json(json!({ "toolsets": items, "total": items.len() })),
@@ -3162,37 +3485,49 @@ pub async fn hermes_toolsets_put(
 pub async fn hermes_approvals_list(
     _auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalBotScopeQuery>,
 ) -> Response {
     let mut seen = HashSet::new();
     let mut items = Vec::new();
-
-    if let Ok(sec) = state.hermes.security().read() {
-        for p in sec
-            .approvals
-            .pending
-            .iter()
-            .chain(sec.approvals.resolved.iter())
-        {
-            if seen.insert(p.id.clone()) {
-                items.push(json!({
-                    "approval_id": p.id,
-                    "session_id": p.session_id,
-                    "tool_name": p.tool_name,
-                    "command_preview": p.command,
-                    "risk_level": p.risk_level,
-                    "reason": p.reason,
-                    "status": sec_approval_status_str(p.status),
-                    "created_at_ms": p.created_at.timestamp_millis(),
-                    "decided_at_ms": p.decided_at.map(|d| d.timestamp_millis()),
-                }));
-            }
+    let mut engines = Vec::new();
+    if q.bot_id.is_some() {
+        engines.push(resolve_hermes_for_bot(&state, q.bot_id));
+    } else {
+        engines.push(Arc::clone(&state.hermes));
+        for inst in state.fabushi_bots.list_instances() {
+            engines.push(inst.hermes());
         }
     }
 
-    if let Ok(rows) = state.hermes.store().list_approvals(None, false) {
-        for row in rows {
-            if seen.insert(row.id.clone()) {
-                items.push(db_approval_to_dto(&row));
+    for engine in &engines {
+        if let Ok(sec) = engine.security().read() {
+            for p in sec
+                .approvals
+                .pending
+                .iter()
+                .chain(sec.approvals.resolved.iter())
+            {
+                if seen.insert(p.id.clone()) {
+                    items.push(json!({
+                        "approval_id": p.id,
+                        "session_id": p.session_id,
+                        "tool_name": p.tool_name,
+                        "command_preview": p.command,
+                        "risk_level": p.risk_level,
+                        "reason": p.reason,
+                        "status": sec_approval_status_str(p.status),
+                        "created_at_ms": p.created_at.timestamp_millis(),
+                        "decided_at_ms": p.decided_at.map(|d| d.timestamp_millis()),
+                    }));
+                }
+            }
+        }
+
+        if let Ok(rows) = engine.store().list_approvals(None, false) {
+            for row in rows {
+                if seen.insert(row.id.clone()) {
+                    items.push(db_approval_to_dto(&row));
+                }
             }
         }
     }
@@ -3242,52 +3577,60 @@ pub(crate) fn apply_hermes_approval_decision(
         }
     };
 
-    let mem_res = state
-        .hermes
-        .security()
-        .write()
-        .ok()
-        .and_then(|mut sec| sec.approvals.decide(approval_id, mem_action, actor.clone()).ok());
-    let db_res = state
-        .hermes
-        .store()
-        .decide_approval(approval_id, db_status, Some(actor))
-        .ok();
-
-    if let Some(p) = mem_res {
-        let status_str = sec_approval_status_str(p.status).to_string();
-        return Ok((
-            status_str.clone(),
-            json!({
-                "approval_id": p.id,
-                "session_id": p.session_id,
-                "tool_name": p.tool_name,
-                "command_preview": p.command,
-                "risk_level": p.risk_level,
-                "reason": p.reason,
-                "status": status_str,
-                "created_at_ms": p.created_at.timestamp_millis(),
-                "decided_at_ms": p.decided_at.map(|d| d.timestamp_millis()),
-            }),
-        ));
+    let mut candidate_engines = vec![Arc::clone(&state.hermes)];
+    for inst in state.fabushi_bots.list_instances() {
+        candidate_engines.push(inst.hermes());
     }
 
-    match db_res {
-        Some(rec) => {
+    for engine in candidate_engines {
+        let mem_res = engine
+            .security()
+            .write()
+            .ok()
+            .and_then(|mut sec| {
+                sec.approvals
+                    .decide(approval_id, mem_action, actor.clone())
+                    .ok()
+            });
+        let db_res = engine
+            .store()
+            .decide_approval(approval_id, db_status, Some(actor.clone()))
+            .ok();
+
+        if let Some(p) = mem_res {
+            let status_str = sec_approval_status_str(p.status).to_string();
+            return Ok((
+                status_str.clone(),
+                json!({
+                    "approval_id": p.id,
+                    "session_id": p.session_id,
+                    "tool_name": p.tool_name,
+                    "command_preview": p.command,
+                    "risk_level": p.risk_level,
+                    "reason": p.reason,
+                    "status": status_str,
+                    "created_at_ms": p.created_at.timestamp_millis(),
+                    "decided_at_ms": p.decided_at.map(|d| d.timestamp_millis()),
+                }),
+            ));
+        }
+
+        if let Some(rec) = db_res {
             let dto = db_approval_to_dto(&rec);
             let status_str = dto
                 .get("status")
                 .and_then(|v| v.as_str())
                 .unwrap_or("decided")
                 .to_string();
-            Ok((status_str, dto))
+            return Ok((status_str, dto));
         }
-        None => Err(err_resp(
-            StatusCode::NOT_FOUND,
-            "approval_not_found",
-            "Pending approval request not found",
-        )),
     }
+
+    Err(err_resp(
+        StatusCode::NOT_FOUND,
+        "approval_not_found",
+        "Pending approval request not found",
+    ))
 }
 
 pub async fn hermes_approval_decide(
@@ -3930,6 +4273,7 @@ pub async fn hermes_providers_put(
     }
 
     state.hermes.persist_providers_state();
+    state.fabushi_bots.sync_all_providers();
     let snap_after = state.hermes.providers().snapshot();
     match snap_after.providers.get(&provider_id) {
         Some(updated) => {

@@ -83,6 +83,7 @@ impl AppShell {
             MainMenuCommand::MyProfile => {
                 self.navigate_settings_to(SettingsSectionType::Information, cx);
             }
+            MainMenuCommand::NewFabushiBot => self.open_fabushi_creator_modal(cx),
             MainMenuCommand::NewGroup => self.open_modal_dialog(tr_str(lang, "新建群组", "New Group"), ModalDialogKind::NewGroup, 420.0, 380.0, cx),
             MainMenuCommand::NewChannel => self.open_modal_dialog(tr_str(lang, "新建频道", "New Channel"), ModalDialogKind::NewChannel, 420.0, 380.0, cx),
             MainMenuCommand::Contacts => {

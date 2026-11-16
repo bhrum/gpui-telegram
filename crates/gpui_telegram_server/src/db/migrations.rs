@@ -65,8 +65,26 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         if !already_applied {
             if let Err(e) = conn.execute_batch(migration_sql) {
                 let err_str = e.to_string();
-                if !err_str.contains("duplicate column name") {
-                    return Err(TelegramError::Database(format!("Migration v{} failed: {}", version, e)));
+                if err_str.contains("duplicate column name") {
+                    for stmt in migration_sql.split(';') {
+                        let clean = stmt.trim();
+                        if clean.is_empty() {
+                            continue;
+                        }
+                        if let Err(stmt_err) = conn.execute_batch(clean) {
+                            if !stmt_err.to_string().contains("duplicate column name") {
+                                return Err(TelegramError::Database(format!(
+                                    "Migration v{} statement failed: {}",
+                                    version, stmt_err
+                                )));
+                            }
+                        }
+                    }
+                } else {
+                    return Err(TelegramError::Database(format!(
+                        "Migration v{} failed: {}",
+                        version, e
+                    )));
                 }
             }
 

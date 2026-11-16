@@ -113,6 +113,17 @@ pub enum InspectorAction {
         allow_cross_device_control: bool,
         allow_cloud_self_config: bool,
     },
+    PatchFabushiBot {
+        bot_id: u64,
+        req: gpui_telegram_proto::miniapp_contracts::PatchFabushiBotRequest,
+    },
+    FocusBotComposer,
+    OpenMiniAppTos,
+    OpenBotPrivacyPolicy(String),
+    OpenBotSettings(u64),
+    OpenAddBotToGroup(u64),
+    ReportBot(u64),
+    ToggleBlockBot(u64),
 }
 
 pub struct ProfileTabModel {
@@ -133,6 +144,14 @@ pub struct ProfileTabModel {
     pub miniapp_title: Option<String>,
     pub miniapp_url: Option<String>,
     pub in_attach_menu: bool,
+    pub bot_mau_count: i64,
+    pub bot_has_main_app: bool,
+    pub bot_privacy_policy_url: String,
+    pub bot_has_settings: bool,
+    pub bot_can_join_groups: bool,
+    pub is_viewer_owner: bool,
+    pub is_verified: bool,
+    pub is_blocked: bool,
 }
 
 pub struct MembersTabModel {

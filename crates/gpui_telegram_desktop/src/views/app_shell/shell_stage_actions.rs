@@ -41,13 +41,16 @@ fn normalized_username(raw: Option<&str>) -> String {
 fn enrich_facts_with_rich_chat(
     mut facts: Vec<(String, String)>,
     rc: &HermesRichChatDto,
+    is_fabushi_bot: bool,
     lang: &str,
 ) -> Vec<(String, String)> {
     if rc.is_bot {
-        facts.push((
-            tr_str(lang, "智能体引擎", "Agent Engine").to_string(),
-            "Hermes Rust Fusion · Talk Mode & Tools".to_string(),
-        ));
+        if is_fabushi_bot {
+            facts.push((
+                tr_str(lang, "智能体引擎", "Agent Engine").to_string(),
+                "Fabushi AI · Talk Mode & Tools".to_string(),
+            ));
+        }
     } else if rc.members_count > 0 && !facts.iter().any(|(k, _)| k == "Members" || k == "成员") {
         facts.push((tr_str(lang, "成员", "Members").to_string(), rc.members_count.to_string()));
     }
@@ -239,15 +242,58 @@ impl AppShell {
         if !selected {
             return;
         }
+        self.miniapps.pending_prestart_bot = None;
+        let sb_is_bot = self.sidebar.read(cx).bot_ids.contains(&chat_id);
+        let fallback_bot_target = rich_meta_opt
+            .as_ref()
+            .and_then(|rc| rc.peer_username.clone().or_else(|| rc.username.clone()))
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                rich_meta_opt
+                    .as_ref()
+                    .and_then(|rc| rc.peer_user_id)
+                    .filter(|&id| id > 0)
+                    .map(|id| id.to_string())
+            })
+            .or_else(|| {
+                self.session_sync
+                    .chat_peer_user_ids
+                    .get(&chat_id)
+                    .filter(|&&id| id > 0)
+                    .map(|id| id.to_string())
+            });
         self.load_historical_messages(chat_id, cx);
         self.sync_composer_and_inspector_miniapp_state(cx);
         self.sync_active_bot_computer_to_inspector(cx);
+        self.sync_fabushi_bots_to_views(cx);
         let lang = self.active_lang_id().to_string();
         let contacts = self.session_sync.contacts_list.clone();
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let details = client.get_chat(chat_id as i64).await.ok();
             let rich_chat = client.hermes_get_chat_rich(chat_id as i64).await.ok();
+            let rc_is_bot_flag = rich_chat.as_ref().is_some_and(|rc| rc.is_bot) || sb_is_bot;
+            let bot_target = if rc_is_bot_flag {
+                rich_chat
+                    .as_ref()
+                    .and_then(|rc| rc.peer_username.clone().or_else(|| rc.username.clone()))
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| {
+                        rich_chat
+                            .as_ref()
+                            .and_then(|rc| rc.peer_user_id)
+                            .filter(|&id| id > 0)
+                            .map(|id| id.to_string())
+                    })
+                    .or(fallback_bot_target)
+            } else {
+                None
+            };
+            let bot_profile = if let Some(ref target) = bot_target {
+                client.get_bot_public_profile(target).await.ok()
+            } else {
+                None
+            };
             let members = client.get_chat_members(chat_id as i64).await.ok();
             let invites = client.list_invites(chat_id as i64).await.ok();
             let pins = client.list_pinned_messages(chat_id as i64).await.ok();
@@ -259,6 +305,12 @@ impl AppShell {
             let _ = weak.update(app, |shell, cx| {
                 if !fence_matches(&fence, shell) {
                     return;
+                }
+                if let Some(ref prof) = bot_profile {
+                    let key = prof.bot.username.trim().trim_start_matches('@').to_ascii_lowercase();
+                    if !key.is_empty() {
+                        shell.miniapps.bot_profiles_cache.insert(key, prof.clone());
+                    }
                 }
                 if let Some(ref rc) = rich_chat {
                     shell.session_sync.rich_chats_by_id.insert(chat_id, rc.clone());
@@ -290,6 +342,20 @@ impl AppShell {
                         }
                     });
                 }
+                let viewer_uid = shell.session_sync.user_id;
+                let peer_uid_for_fabushi = rich_chat
+                    .as_ref()
+                    .and_then(|rc| rc.peer_user_id)
+                    .or_else(|| bot_profile.as_ref().map(|p| p.bot.bot_user_id.max(0) as u64));
+                let is_fabushi_owner_bot = peer_uid_for_fabushi.is_some_and(|uid| {
+                    shell
+                        .miniapps
+                        .fabushi_bots
+                        .iter()
+                        .any(|fb| fb.bot_user_id > 0 && fb.bot_user_id as u64 == uid)
+                }) || bot_profile.as_ref().is_some_and(|p| {
+                    p.bot.is_fabushi_bot && viewer_uid.is_some_and(|u| p.bot.owner_user_id == u as i64)
+                });
                 shell.inspector.update(cx, |insp, _| {
                     let mut username = String::new();
                     let mut phone = String::new();
@@ -315,9 +381,37 @@ impl AppShell {
                         phone = rc.peer_phone.clone().unwrap_or_default();
                         bio = rc.peer_bio.as_deref().or(rc.about.as_deref()).unwrap_or("").trim().to_string();
                         if rc.is_bot {
-                            status = tr_str(&lang, "AI 机器人 · Hermes 智能体", "AI Bot · Hermes Agent").to_string();
+                            if is_fabushi_owner_bot {
+                                status = tr_str(&lang, "AI 机器人 · Fabushi 智能体", "AI Bot · Fabushi Agent").to_string();
+                            } else if let Some(ref prof) = bot_profile {
+                                if prof.bot.mau_count > 0 {
+                                    status = crate::views::drawer::bot_computer_inspector::format_bot_mau_subtitle(
+                                        prof.bot.mau_count,
+                                        &lang,
+                                    );
+                                } else {
+                                    status = tr_str(&lang, "机器人", "bot").to_string();
+                                }
+                            } else {
+                                status = tr_str(&lang, "机器人", "bot").to_string();
+                            }
                         }
-                        facts = enrich_facts_with_rich_chat(facts, rc, &lang);
+                        facts = enrich_facts_with_rich_chat(facts, rc, is_fabushi_owner_bot, &lang);
+                    }
+                    if let Some(ref prof) = bot_profile {
+                        if username.is_empty() && !prof.bot.username.trim().is_empty() {
+                            username = normalized_username(Some(prof.bot.username.as_str()));
+                        }
+                        if bio.is_empty() {
+                            let b = if !prof.bot.about.trim().is_empty() {
+                                prof.bot.about.trim()
+                            } else {
+                                prof.bot.description.trim()
+                            };
+                            if !b.is_empty() {
+                                bio = b.to_string();
+                            }
+                        }
                     }
                     if username.is_empty() {
                         let contact = rich_chat
@@ -344,13 +438,19 @@ impl AppShell {
                         avatar_path = insp.profile.avatar_path.clone();
                     }
                     insp.sync_profile_details(username, phone, status, avatar_path, facts);
-                    if let Some(ref mems) = members {
-                        let inv = invites.as_ref().and_then(|v| v.first()).map(|i| i.link.clone()).unwrap_or_default();
-                        let is_grp = rich_chat
-                            .as_ref()
-                            .map(|rc| rc.is_group || rc.is_channel)
-                            .unwrap_or_else(|| details.as_ref().map(|d| d.chat_type != 0).unwrap_or(!mems.is_empty()));
-                        insp.sync_members(map_chat_members_to_inspector(mems, &contacts), inv, is_grp);
+                    let inv = invites.as_ref().and_then(|v| v.first()).map(|i| i.link.clone()).unwrap_or_default();
+                    let is_grp = rich_chat
+                        .as_ref()
+                        .map(|rc| rc.is_group || rc.is_channel || matches!(rc.chat_type, 1 | 2 | 3))
+                        .unwrap_or_else(|| details.as_ref().is_some_and(|d| d.chat_type != 0) && !rc_is_bot_flag);
+                    if is_grp {
+                        if let Some(ref mems) = members {
+                            insp.sync_members(map_chat_members_to_inspector(mems, &contacts), inv, true);
+                        } else {
+                            insp.sync_members(Vec::new(), inv, true);
+                        }
+                    } else {
+                        insp.sync_members(Vec::new(), String::new(), false);
                     }
                     if let Some(ref st) = stats {
                         let (lvl, cur, tgt, bars) = map_channel_stats_to_chart(st);
@@ -371,6 +471,7 @@ impl AppShell {
                 }
                 shell.sync_composer_and_inspector_miniapp_state(cx);
                 shell.sync_active_bot_computer_to_inspector(cx);
+                shell.sync_fabushi_bots_to_views(cx);
                 cx.notify();
             });
         })
@@ -428,12 +529,14 @@ impl AppShell {
             self.stage.read(cx).active_chat_id,
             self.sidebar.read(cx).active_chat_id,
         );
-        let bot_id = active_chat.and_then(|cid| {
-            self.session_sync
-                .rich_chats_by_id
-                .get(&cid)
-                .and_then(|rc| rc.peer_user_id)
-                .or_else(|| self.session_sync.chat_peer_user_ids.get(&cid).copied())
+        let bot_id = self.active_chat_bot_id(cx).or_else(|| {
+            active_chat.and_then(|cid| {
+                self.session_sync
+                    .rich_chats_by_id
+                    .get(&cid)
+                    .and_then(|rc| rc.peer_user_id)
+                    .or_else(|| self.session_sync.chat_peer_user_ids.get(&cid).copied())
+            })
         });
         let session_id = self.rtc_talk.active_talk_session_id.clone();
 

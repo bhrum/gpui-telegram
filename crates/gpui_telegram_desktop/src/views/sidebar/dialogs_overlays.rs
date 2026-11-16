@@ -117,6 +117,7 @@ pub fn render_forum_topics_subtree<V: 'static>(
             let tid = topic.topic_id;
             let is_sel = selected_topic == Some((forum_id, tid));
             let cb = on_select_topic.clone();
+            let is_fabushi = palette.mode.is_fabushi_style();
             let row_bg = if is_sel { rgb(palette.dialogs_active_bg) } else { rgb(palette.dialogs_bg) };
             let hover_bg = rgb(palette.dialogs_hover_bg);
             div()
@@ -126,6 +127,7 @@ pub fn render_forum_topics_subtree<V: 'static>(
                 .w_full()
                 .pl(px(58.0))
                 .pr(px(10.0))
+                .when(is_fabushi, |el| el.rounded(px(8.0)))
                 .bg(row_bg)
                 .hover(move |s| if is_sel { s } else { s.bg(hover_bg) })
                 .flex()
@@ -144,7 +146,7 @@ pub fn render_forum_topics_subtree<V: 'static>(
                         .child(
                             div()
                                 .text_size(px(12.5))
-                                .text_color(if is_sel { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) })
+                                .text_color(if is_sel && !is_fabushi { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) })
                                 .child(topic.title.clone()),
                         )
                         .when(topic.is_closed, |el| el.child(tg_icon(IconName::Lock, 11.0, palette.icon_fg))),

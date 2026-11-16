@@ -3,9 +3,12 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+use crate::components::grok_bot_avatar::{
+    render_grok_bot_avatar, GrokBotAvatarProps, GrokPersonaState,
+};
 use crate::i18n::tr_str;
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
-use crate::views::chat_sidebar::{DialogDeliveryStatus, DialogItemModel};
+use crate::views::chat_sidebar::{BotGrokAvatarVisual, DialogDeliveryStatus, DialogItemModel};
 use crate::views::sidebar::dialogs_entry::DialogsEntry;
 use crate::views::sidebar::dialogs_row::DialogsRow;
 use crate::views::sidebar::ui::dialogs_layout::DialogsLayoutUi;
@@ -30,6 +33,9 @@ pub struct SidebarDialogMeta {
     pub is_verified: bool,
     pub is_premium: bool,
     pub is_bot: bool,
+    pub fabushi_shape: Option<String>,
+    pub fabushi_color: Option<u32>,
+    pub grok_avatar: Option<BotGrokAvatarVisual>,
     pub is_saved_messages: bool,
     pub is_unread_marked: bool,
     pub is_archived: bool,
@@ -38,6 +44,7 @@ pub struct SidebarDialogMeta {
     pub topics: Option<DialogsTopicsViewUi>,
     pub is_topics_expanded: bool,
     pub folder_tags: Vec<String>,
+    pub miniapp_open_uri: Option<String>,
 }
 
 fn delivery_svg(
@@ -50,7 +57,8 @@ fn delivery_svg(
         DialogDeliveryStatus::Sent => IconName::CheckSingle,
         DialogDeliveryStatus::Read => IconName::CheckDouble,
     };
-    let color = if is_selected {
+    let use_inverted_sel = is_selected && !palette.mode.is_fabushi_style();
+    let color = if use_inverted_sel {
         palette.active_button_fg
     } else if status == DialogDeliveryStatus::Read {
         palette.check_read_fg
@@ -88,6 +96,7 @@ pub fn render_dialog_row_item<V: 'static>(
     on_select: impl Fn(&mut V, &mut Context<V>) + 'static,
     on_context: impl Fn(&mut V, Point<Pixels>, &mut Context<V>) + 'static,
     on_toggle_topics: impl Fn(&mut V, &mut Context<V>) + 'static,
+    on_open_miniapp: impl Fn(&mut V, String, &mut Context<V>) + 'static,
 ) -> AnyElement {
     let mut entry = DialogsEntry::new(item.id as i64, item.peer_name.clone());
     entry.data.is_forum = meta.topics.as_ref().is_some_and(|t| !t.topics.is_empty());
@@ -107,22 +116,30 @@ pub fn render_dialog_row_item<V: 'static>(
     pill.is_active = is_selected;
     pill.is_muted = item.is_muted;
 
-    let row_bg = if is_selected { rgb(palette.dialogs_active_bg) } else { rgb(palette.dialogs_bg) };
+    let is_fabushi = palette.mode.is_fabushi_style();
+    let use_inverted_sel = is_selected && !is_fabushi;
+    let row_bg_hex = if is_selected { palette.dialogs_active_bg } else { palette.dialogs_bg };
+    let row_bg = rgb(row_bg_hex);
     let hover_bg = rgb(palette.dialogs_hover_bg);
-    let name_fg = if is_selected { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) };
-    let sub_fg_hex = if is_selected { palette.active_button_fg } else { palette.text_secondary };
-    let time_fg = if is_selected { rgb(palette.active_button_fg) } else { rgb(palette.msg_in_date_fg) };
-    let icon_hex = if is_selected { palette.active_button_fg } else { palette.icon_fg };
-    let badge_bg = if is_selected {
+    let name_fg = if use_inverted_sel { rgb(palette.active_button_fg) } else { rgb(palette.text_primary) };
+    let sub_fg_hex = if use_inverted_sel { palette.active_button_fg } else { palette.text_secondary };
+    let time_fg = if use_inverted_sel { rgb(palette.active_button_fg) } else { rgb(palette.msg_in_date_fg) };
+    let icon_hex = if use_inverted_sel { palette.active_button_fg } else { palette.icon_fg };
+    let badge_bg = if use_inverted_sel {
         rgb(palette.active_button_fg)
     } else if item.is_muted {
         rgb(palette.muted_badge_bg)
     } else {
         rgb(palette.unread_badge_bg)
     };
-    let badge_fg = if is_selected { rgb(palette.accent) } else { rgb(palette.unread_badge_fg) };
-    let avatar_bg = if meta.is_saved_messages { palette.accent } else { item.avatar_color };
-    let avatar_size = px(palette.scaled_px(46.0));
+    let badge_fg = if use_inverted_sel { rgb(palette.accent) } else { rgb(palette.unread_badge_fg) };
+    let avatar_bg = if meta.is_saved_messages {
+        palette.accent
+    } else {
+        meta.fabushi_color.unwrap_or(item.avatar_color)
+    };
+    let avatar_size_px = palette.scaled_px(46.0);
+    let avatar_size = px(avatar_size_px);
     let _ = DialogsLayoutUi::AVATAR_SIZE;
 
     let root = div()
@@ -133,6 +150,7 @@ pub fn render_dialog_row_item<V: 'static>(
         .w_full()
         .px(px(palette.scaled_px(10.0)))
         .py(px(palette.scaled_px(8.0)))
+        .when(is_fabushi, |el| el.rounded(px(palette.scaled_px(10.0))))
         .bg(row_bg)
         .hover(move |s| if is_selected { s } else { s.bg(hover_bg) })
         .flex()
@@ -145,28 +163,65 @@ pub fn render_dialog_row_item<V: 'static>(
             on_context(this, ev.position, cx);
         }));
 
-    let mut avatar = div()
-        .relative()
-        .w(avatar_size)
-        .h(avatar_size)
-        .flex_shrink_0()
-        .rounded_full()
-        .bg(rgb(avatar_bg))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(rgb(0xFFFFFF))
-        .font_weight(FontWeight::BOLD)
-        .text_size(px(palette.scaled_px(15.0)));
-    avatar = if meta.is_saved_messages {
-        avatar.child(tg_icon(IconName::SavedMessages, palette.scaled_px(22.0), 0xFFFFFF))
-    } else if meta.is_bot && item.avatar_initials.chars().all(|c| !c.is_ascii_alphanumeric()) {
-        avatar.child(tg_icon(IconName::BotRobot, palette.scaled_px(20.0), 0xFFFFFF))
+    let render_classic_circle = || -> Div {
+        let mut el = div()
+            .relative()
+            .w(avatar_size)
+            .h(avatar_size)
+            .flex_shrink_0()
+            .rounded_full()
+            .bg(rgb(avatar_bg))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(rgb(0xFFFFFF))
+            .font_weight(FontWeight::BOLD)
+            .text_size(px(palette.scaled_px(15.0)));
+        el = if meta.is_saved_messages {
+            el.child(tg_icon(IconName::SavedMessages, palette.scaled_px(22.0), 0xFFFFFF))
+        } else if meta.is_bot && item.avatar_initials.chars().all(|c| !c.is_ascii_alphanumeric()) {
+            el.child(tg_icon(IconName::BotRobot, palette.scaled_px(20.0), 0xFFFFFF))
+        } else {
+            el.child(item.avatar_initials.clone())
+        };
+        el
+    };
+
+    let mut avatar = if !meta.is_saved_messages {
+        if let Some(ref ga) = meta.grok_avatar {
+            if !ga.shape.eq_ignore_ascii_case("classic") {
+                render_grok_bot_avatar(
+                    GrokBotAvatarProps::new(&ga.agent_id, &ga.shape, &ga.color, avatar_size_px)
+                        .with_state(GrokPersonaState::from_activity_str(
+                            &ga.execution_state,
+                            item.typing_indicator.is_some(),
+                        ))
+                        .with_follow_pointer(true)
+                        .with_paused(false)
+                        .with_surface_bg(row_bg_hex),
+                )
+            } else {
+                render_classic_circle()
+            }
+        } else if let Some(ref shape) = meta.fabushi_shape {
+            if !shape.eq_ignore_ascii_case("classic") {
+                crate::components::avatar::render_fabushi_shape_avatar(
+                    shape,
+                    avatar_bg,
+                    &item.peer_name,
+                    avatar_size_px,
+                )
+            } else {
+                render_classic_circle()
+            }
+        } else {
+            render_classic_circle()
+        }
     } else {
-        avatar.child(item.avatar_initials.clone())
+        render_classic_circle()
     };
     if item.is_online && !meta.is_saved_messages {
-        avatar = avatar.child(
+        avatar = avatar.relative().child(
             div().absolute().bottom_0().right_0().w(px(palette.scaled_px(11.0))).h(px(palette.scaled_px(11.0)))
                 .rounded_full().bg(rgb(palette.online_dot_fg)).border_2().border_color(row_bg),
         );
@@ -177,10 +232,10 @@ pub fn render_dialog_row_item<V: 'static>(
         div().text_size(px(palette.scaled_px(14.0))).font_weight(FontWeight::SEMIBOLD).text_color(name_fg).child(item.peer_name.clone()),
     );
     if meta.is_verified {
-        title_row = title_row.child(tg_icon(IconName::Verified, palette.scaled_px(14.0), if is_selected { palette.active_button_fg } else { palette.accent }));
+        title_row = title_row.child(tg_icon(IconName::Verified, palette.scaled_px(14.0), if use_inverted_sel { palette.active_button_fg } else { palette.accent }));
     }
     if meta.is_premium {
-        title_row = title_row.child(tg_icon(IconName::PremiumStar, palette.scaled_px(13.0), if is_selected { palette.active_button_fg } else { palette.accent }));
+        title_row = title_row.child(tg_icon(IconName::PremiumStar, palette.scaled_px(13.0), if use_inverted_sel { palette.active_button_fg } else { palette.accent }));
     }
     if item.is_muted {
         title_row = title_row.child(tg_icon(IconName::Mute, palette.scaled_px(12.0), icon_hex));
@@ -193,7 +248,7 @@ pub fn render_dialog_row_item<V: 'static>(
             .child(div().text_size(preview_font).text_color(rgb(sub_fg_hex)).child(preview_ui.text))
             .into_any_element()
     } else if let Some(ref typing) = item.typing_indicator {
-        div().text_size(preview_font).text_color(if is_selected { rgb(palette.active_button_fg) } else { rgb(palette.accent) }).child(typing.clone()).into_any_element()
+        div().text_size(preview_font).text_color(if use_inverted_sel { rgb(palette.active_button_fg) } else { rgb(palette.accent) }).child(typing.clone()).into_any_element()
     } else {
         let mut line = div().flex().items_center().gap(px(4.0)).overflow_hidden();
         if let Some(icon) = media_badge_svg(preview_ui.media_badge, sub_fg_hex) {
@@ -203,14 +258,44 @@ pub fn render_dialog_row_item<V: 'static>(
     };
 
     let mut right_badges = div().flex().items_center().gap(px(palette.scaled_px(5.0))).flex_shrink_0();
+    if let Some(ref open_uri) = meta.miniapp_open_uri {
+        let uri_owned = open_uri.clone();
+        let pill_bg = if use_inverted_sel {
+            rgb(palette.active_button_fg)
+        } else {
+            rgb(palette.accent)
+        };
+        let pill_fg = if use_inverted_sel {
+            rgb(palette.accent)
+        } else {
+            rgb(0xFFFFFF)
+        };
+        right_badges = right_badges.child(
+            div()
+                .id(("dialog-row-open-miniapp", item.id))
+                .cursor_pointer()
+                .px(px(palette.scaled_px(8.0)))
+                .py(px(palette.scaled_px(2.0)))
+                .rounded_full()
+                .bg(pill_bg)
+                .text_size(px(palette.scaled_px(11.0)))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(pill_fg)
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _ev, _w, cx| {
+                    cx.stop_propagation();
+                    on_open_miniapp(this, uri_owned.clone(), cx);
+                }))
+                .child(tr_str(lang_id, "打开", "Open")),
+        );
+    }
     for (tag_idx, tag_label) in meta.folder_tags.iter().enumerate() {
         let display_tag = crate::views::sidebar::dialogs_overlays::localize_folder_label(tag_label, lang_id);
-        let tag_bg = if is_selected {
+        let tag_bg = if use_inverted_sel {
             TdesktopThemePalette::rgba_with_alpha(palette.active_button_fg, 0.22)
         } else {
             TdesktopThemePalette::rgba_with_alpha(palette.accent, 0.16)
         };
-        let tag_fg = if is_selected {
+        let tag_fg = if use_inverted_sel {
             rgb(palette.active_button_fg)
         } else {
             rgb(palette.accent)

@@ -3,11 +3,13 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::Context;
+use gpui_telegram_proto::miniapp_contracts::CLASSIC_INITIALS_AVATAR_SHAPE;
 
 use crate::i18n::tr_str;
 use crate::views::chat_sidebar::{
-    AddContactKind, CategorizedSearchResult, ChatSidebar, CreationInputField, DialogDeliveryStatus,
-    DialogItemModel, PendingAddContactRequest, PendingCreateGroupRequest, SidebarCreationModal,
+    AddContactKind, BotGrokAvatarVisual, CategorizedSearchResult, ChatSidebar, CreationInputField,
+    DialogDeliveryStatus, DialogItemModel, PendingAddContactRequest, PendingCreateGroupRequest,
+    SidebarCreationModal,
 };
 use crate::views::nav_rail::{NavDestination, NavRail};
 use crate::views::sidebar::dialogs_row_view::{SidebarContextAction, SidebarDialogMeta};
@@ -370,6 +372,9 @@ impl ChatSidebar {
         self.creation_primary_input.clear();
         self.creation_secondary_input.clear();
         self.creation_tertiary_input.clear();
+        self.creation_avatar_shape = "blob".to_string();
+        self.creation_avatar_color = "blue".to_string();
+        self.creation_use_dynamic_avatar = true;
     }
 
     pub fn open_add_contact_modal(&mut self, kind: AddContactKind) {
@@ -468,6 +473,18 @@ impl ChatSidebar {
                 };
 
                 let tertiary = non_empty_trimmed(&self.creation_tertiary_input);
+                let (av_shape, av_color) = if is_bot {
+                    if self.creation_use_dynamic_avatar {
+                        (
+                            Some(self.creation_avatar_shape.clone()),
+                            Some(self.creation_avatar_color.clone()),
+                        )
+                    } else {
+                        (Some(CLASSIC_INITIALS_AVATAR_SHAPE.to_string()), None)
+                    }
+                } else {
+                    (None, None)
+                };
                 let (avatar_initials, avatar_color, preview_msg, folder) = if is_bot {
                     let default_prompt = tr_str(
                         lang,
@@ -475,9 +492,17 @@ impl ChatSidebar {
                         "General assistant for Q&A, code, and translation",
                     );
                     let prompt_preview = tertiary.as_deref().unwrap_or(default_prompt);
+                    let resolved_color = if self.creation_use_dynamic_avatar {
+                        crate::components::avatar::parse_fabushi_hex_color(
+                            &self.creation_avatar_color,
+                        )
+                        .unwrap_or(0x1ABC9C)
+                    } else {
+                        0x1ABC9C
+                    };
                     (
                         initials_or_fallback(&name, "BOT"),
-                        0x1ABC9C,
+                        resolved_color,
                         if lang.eq_ignore_ascii_case("en") {
                             format!("AI Bot (@{}) • {}", handle, prompt_preview)
                         } else {
@@ -516,6 +541,17 @@ impl ChatSidebar {
                 });
                 if is_bot {
                     self.bot_ids.insert(local_id);
+                    if self.creation_use_dynamic_avatar {
+                        self.bot_grok_avatars.insert(
+                            local_id,
+                            BotGrokAvatarVisual {
+                                agent_id: handle.clone(),
+                                shape: self.creation_avatar_shape.clone(),
+                                color: self.creation_avatar_color.clone(),
+                                execution_state: "idle".to_string(),
+                            },
+                        );
+                    }
                 }
 
                 self.pending_add_contact_request = Some(PendingAddContactRequest {
@@ -526,6 +562,8 @@ impl ChatSidebar {
                     phone: if is_bot { None } else { tertiary.clone() },
                     is_bot,
                     system_prompt: if is_bot { tertiary } else { None },
+                    avatar_shape: av_shape,
+                    avatar_color: av_color,
                 });
             }
             SidebarCreationModal::CreateGroup => {
@@ -841,6 +879,8 @@ impl ChatSidebar {
         self.drafts.remove(&id);
         self.unread_marked_ids.remove(&id);
         self.forum_topics.remove(&id);
+        self.bot_grok_avatars.remove(&id);
+        self.bot_fabushi_visuals.remove(&id);
         if self.active_chat_id == Some(id) {
             self.clear_selection();
         } else if let Some(sel) = self.active_chat_id {
@@ -890,10 +930,15 @@ impl ChatSidebar {
                 folder_tags.push(localized);
             }
         }
+        let fabushi_vis = self.bot_fabushi_visuals.get(&item.id).cloned();
+        let grok_avatar = self.bot_grok_avatars.get(&item.id).cloned();
         SidebarDialogMeta {
             is_verified: self.verified_ids.contains(&item.id),
             is_premium: self.premium_ids.contains(&item.id),
             is_bot: self.bot_ids.contains(&item.id) || item.folder == "Bots" || lower.ends_with("bot"),
+            fabushi_shape: fabushi_vis.as_ref().map(|(s, _)| s.clone()),
+            fabushi_color: fabushi_vis.as_ref().map(|(_, c)| *c),
+            grok_avatar,
             is_saved_messages: self.saved_messages_id == Some(item.id)
                 || item.peer_name == "Saved Messages"
                 || item.peer_name == "已保存消息",
@@ -904,6 +949,7 @@ impl ChatSidebar {
             is_topics_expanded: self.expanded_forum_id == Some(item.id),
             topics,
             folder_tags,
+            miniapp_open_uri: self.bot_main_app_uris.get(&item.id).cloned(),
         }
     }
 

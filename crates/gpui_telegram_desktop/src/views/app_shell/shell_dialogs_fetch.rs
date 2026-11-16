@@ -14,7 +14,8 @@ use crate::views::app_shell::shell_truth::{
 };
 use crate::views::boxes::modal_types::ModalDialogKind;
 use crate::views::chat_sidebar::{
-    CategorizedSearchResult, DialogItemModel, PendingAddContactRequest, PendingCreateGroupRequest,
+    BotGrokAvatarVisual, CategorizedSearchResult, DialogItemModel, PendingAddContactRequest,
+    PendingCreateGroupRequest,
 };
 use crate::views::shell::AppShell;
 
@@ -36,9 +37,15 @@ impl AppShell {
             bot_system_prompt: req.system_prompt.clone(),
         };
         let local_dialog_id = req.local_dialog_id;
+        let is_bot = req.is_bot;
+        let avatar_shape = req.avatar_shape.clone();
+        let avatar_color = req.avatar_color.clone();
 
         cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
-            let res = client.http_client.add_contact(&token, http_req).await;
+            let res = client
+                .http_client
+                .add_contact_with_avatar(&token, http_req, avatar_shape, avatar_color)
+                .await;
             let _ = weak_shell.update(app, |shell, cx| {
                 if !shell.is_authenticated
                     || shell.session_sync.auth_generation != auth_gen
@@ -59,6 +66,47 @@ impl AppShell {
                         if sb.active_chat_id == Some(local_dialog_id) {
                             sb.active_chat_id = Some(server_chat_id);
                         }
+                        if sb.bot_ids.remove(&local_dialog_id) {
+                            sb.bot_ids.insert(server_chat_id);
+                        }
+                        if let Some(mut grok_vis) = sb.bot_grok_avatars.remove(&local_dialog_id) {
+                            if let Some(ref srv_shape) = resp.avatar_shape {
+                                grok_vis.shape = srv_shape.clone();
+                            }
+                            if let Some(ref srv_col) = resp.avatar_color_id {
+                                grok_vis.color = srv_col.clone();
+                            }
+                            if !resp.username.is_empty() {
+                                grok_vis.agent_id = resp.username.clone();
+                            }
+                            sb.bot_grok_avatars.insert(server_chat_id, grok_vis);
+                        } else if let Some(ref srv_shape) = resp.avatar_shape {
+                            if !srv_shape.eq_ignore_ascii_case("classic") {
+                                let color_str = resp.avatar_color_id.clone().unwrap_or_else(|| {
+                                    resp.avatar_color
+                                        .map(|c| format!("#{:06X}", c & 0xFF_FFFF))
+                                        .unwrap_or_else(|| "blue".to_string())
+                                });
+                                sb.bot_grok_avatars.insert(
+                                    server_chat_id,
+                                    BotGrokAvatarVisual {
+                                        agent_id: if resp.username.is_empty() {
+                                            server_chat_id.to_string()
+                                        } else {
+                                            resp.username.clone()
+                                        },
+                                        shape: srv_shape.clone(),
+                                        color: color_str,
+                                        execution_state: "idle".to_string(),
+                                    },
+                                );
+                            } else {
+                                sb.bot_grok_avatars.remove(&server_chat_id);
+                            }
+                        }
+                        if let Some(fab_vis) = sb.bot_fabushi_visuals.remove(&local_dialog_id) {
+                            sb.bot_fabushi_visuals.insert(server_chat_id, fab_vis);
+                        }
                         sb_cx.notify();
                     });
                     if let Some(d) = selected_peer {
@@ -74,6 +122,9 @@ impl AppShell {
                         });
                     }
                     shell.load_historical_messages(server_chat_id, cx);
+                    if is_bot {
+                        shell.refresh_miniapps_catalog(None, cx);
+                    }
                     cx.notify();
                 }
             });

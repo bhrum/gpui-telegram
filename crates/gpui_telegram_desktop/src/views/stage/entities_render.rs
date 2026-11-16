@@ -133,12 +133,26 @@ pub fn render_rich_message_body<V: 'static>(
                 let code_copy = code.clone();
                 let act = on_action.clone();
                 let is_copied = copied_code_msg == Some(msg_id);
+                let is_fabushi = palette.mode.is_fabushi_style();
                 let lang_label = if language.is_empty() {
                     "code".to_string()
                 } else {
                     language
                 };
                 let code_font = palette.scaled_px((palette.font_size_px as f32 - 1.5).max(11.5));
+                let block_bg = if is_fabushi { rgb(0x1A1D19) } else { rgb(palette.code_bg) };
+                let block_border: Rgba = if is_fabushi {
+                    rgb(0x343932)
+                } else {
+                    TdesktopThemePalette::rgba_with_alpha(palette.border_fg, 0.55)
+                };
+                let hdr_bg: Rgba = if is_fabushi {
+                    rgb(0x222621)
+                } else {
+                    TdesktopThemePalette::rgba_with_alpha(palette.border_fg, 0.35)
+                };
+                let hdr_fg = if is_fabushi { rgb(0x9CA39A) } else { rgb(palette.text_secondary) };
+                let code_text_fg = if is_fabushi { rgb(0xD9DED4) } else { rgb(palette.code_fg) };
                 col = col.child(
                     div()
                         .flex()
@@ -146,10 +160,10 @@ pub fn render_rich_message_body<V: 'static>(
                         .w_full()
                         .min_w(px(0.0))
                         .my(px(3.0))
-                        .rounded(px(8.0))
-                        .bg(rgb(palette.code_bg))
+                        .rounded(px(if is_fabushi { 10.0 } else { 8.0 }))
+                        .bg(block_bg)
                         .border_1()
-                        .border_color(TdesktopThemePalette::rgba_with_alpha(palette.border_fg, 0.55))
+                        .border_color(block_border)
                         .overflow_hidden()
                         .child(
                             div()
@@ -158,12 +172,12 @@ pub fn render_rich_message_body<V: 'static>(
                                 .justify_between()
                                 .px(px(10.0))
                                 .py(px(4.0))
-                                .bg(TdesktopThemePalette::rgba_with_alpha(palette.border_fg, 0.35))
+                                .bg(hdr_bg)
                                 .child(
                                     div()
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(rgb(palette.text_secondary))
+                                        .text_color(hdr_fg)
                                         .child(lang_label),
                                 )
                                 .child(
@@ -203,7 +217,7 @@ pub fn render_rich_message_body<V: 'static>(
                                 .py(px(palette.scaled_px(8.0)))
                                 .text_size(px(code_font))
                                 .line_height(px(code_font + 5.0))
-                                .text_color(rgb(palette.code_fg))
+                                .text_color(code_text_fg)
                                 .child(code),
                         ),
                 );
@@ -238,6 +252,14 @@ pub fn render_rich_message_body<V: 'static>(
                     }
                 }
                 let act = on_action.clone();
+                let quote_bg = if palette.mode.is_fabushi_style() {
+                    TdesktopThemePalette::rgba_with_alpha(
+                        palette.text_primary,
+                        if palette.mode.is_dark() { 0.06 } else { 0.045 },
+                    )
+                } else {
+                    TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.25)
+                };
                 col = col.child(
                     div()
                         .id(SharedString::from(format!("quote-{}-{}", msg_id, block_id)))
@@ -252,7 +274,7 @@ pub fn render_rich_message_body<V: 'static>(
                         .px(px(palette.scaled_px(10.0)))
                         .py(px(palette.scaled_px(6.0)))
                         .rounded(px(palette.scaled_px(6.0)))
-                        .bg(TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.25))
+                        .bg(quote_bg)
                         .border_l_2()
                         .border_color(rgb(palette.reply_bar_fg))
                         .when(can_collapse, |el| {

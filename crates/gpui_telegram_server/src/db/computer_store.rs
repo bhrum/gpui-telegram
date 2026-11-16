@@ -9,11 +9,14 @@ use gpui_telegram_proto::computer_contracts::{
     ComputerNodeKind, ComputerRunPolicy, RegisterLocalComputerRequest, UpdateBotComputerRequest,
     UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
 };
+use gpui_telegram_proto::tailnet_contracts::{
+    TailnetEndpoint, TailnetPeerDescriptor, TailnetRegisterRequest, TailnetRelayMode,
+};
 use hkdf::Hkdf;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use zeroize::Zeroizing;
 
 pub const DEFAULT_SANDBOX_NODE_ID: &str = "sandbox:default";
@@ -82,6 +85,62 @@ CREATE TABLE IF NOT EXISTS computer_command_audit (
 CREATE INDEX IF NOT EXISTS idx_computer_command_audit_owner_time
     ON computer_command_audit(owner_user_id, created_at_ms DESC);
 "#;
+
+pub const MIGRATION_V30_TAILNET_MESH: &str = r#"
+ALTER TABLE computer_nodes ADD COLUMN tailnet_ip TEXT;
+ALTER TABLE computer_nodes ADD COLUMN machine_public_key TEXT;
+ALTER TABLE computer_nodes ADD COLUMN node_public_key TEXT;
+ALTER TABLE computer_nodes ADD COLUMN disco_public_key TEXT;
+ALTER TABLE computer_nodes ADD COLUMN endpoints_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+/// Allocates a deterministic collision-free RFC 6598 CGNAT IPv4 address (`100.<64..=127>.<0..=255>.<1..=254>`).
+pub fn allocate_tailnet_ipv4(
+    owner_user_id: u64,
+    key_seed: &str,
+    existing_ips: &HashMap<String, String>,
+) -> String {
+    if let Some(existing) = existing_ips.get(key_seed) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let used_ips: HashSet<&str> = existing_ips
+        .values()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let seed = key_seed.trim();
+    for attempt in 0u64..4096 {
+        let mut hasher = Sha256::new();
+        hasher.update(b"gpui-tailnet-ipv4-v1|");
+        hasher.update(owner_user_id.to_le_bytes());
+        hasher.update(b"|");
+        hasher.update(seed.as_bytes());
+        hasher.update(b"|");
+        hasher.update(attempt.to_le_bytes());
+        let digest = hasher.finalize();
+        let b1 = 64 + (digest[0] % 64);
+        let b2 = digest[1];
+        let b3 = 1 + (digest[2] % 254);
+        let candidate = format!("100.{b1}.{b2}.{b3}");
+        if !used_ips.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    for b1 in 64u8..=127 {
+        for b2 in 0u8..=255 {
+            for b3 in 1u8..=254 {
+                let candidate = format!("100.{b1}.{b2}.{b3}");
+                if !used_ips.contains(candidate.as_str()) {
+                    return candidate;
+                }
+            }
+        }
+    }
+    "100.64.0.1".to_string()
+}
 
 #[derive(Debug, Clone)]
 pub struct ComputerNodeSecretRecord {
@@ -285,6 +344,11 @@ struct RawComputerNodeRow {
     last_seen_ms: i64,
     latest_frame_data_url: Option<String>,
     created_at_ms: i64,
+    tailnet_ip: Option<String>,
+    machine_public_key: Option<String>,
+    node_public_key: Option<String>,
+    disco_public_key: Option<String>,
+    endpoints_json: String,
 }
 
 impl RawComputerNodeRow {
@@ -311,6 +375,13 @@ impl RawComputerNodeRow {
             last_seen_ms: row.get(18)?,
             latest_frame_data_url: row.get(19)?,
             created_at_ms: row.get(20)?,
+            tailnet_ip: row.get(21)?,
+            machine_public_key: row.get(22)?,
+            node_public_key: row.get(23)?,
+            disco_public_key: row.get(24)?,
+            endpoints_json: row
+                .get::<_, Option<String>>(25)?
+                .unwrap_or_else(|| "[]".to_string()),
         })
     }
 
@@ -366,6 +437,13 @@ impl RawComputerNodeRow {
         } else {
             self.workdir
         };
+        let host = if kind == ComputerNodeKind::LocalDevice {
+            self.host
+                .filter(|h| !h.trim().is_empty())
+                .or_else(|| self.tailnet_ip.clone().filter(|ip| !ip.trim().is_empty()))
+        } else {
+            self.host
+        };
 
         ComputerNodeSecretRecord {
             dto: ComputerNodeDto {
@@ -374,7 +452,7 @@ impl RawComputerNodeRow {
                 kind,
                 display_name: self.display_name,
                 ip_address: self.ip_address,
-                host: self.host,
+                host,
                 ssh_port: self.ssh_port.and_then(|p| u16::try_from(p).ok()),
                 ssh_username: self.ssh_username,
                 auth_method,
@@ -397,13 +475,67 @@ impl RawComputerNodeRow {
             secret_nonce: self.secret_nonce,
         }
     }
+
+    fn into_tailnet_peer(
+        self,
+        owner_user_id: u64,
+        now_ms: i64,
+        connected_device_ids: &HashSet<String>,
+    ) -> TailnetPeerDescriptor {
+        let external_node_id = to_external_node_id(owner_user_id, &self.node_id);
+        let dev_id = self.device_id.unwrap_or_default();
+        let derp_connected = !dev_id.is_empty() && connected_device_ids.contains(&dev_id);
+        let online = derp_connected
+            || (self.last_seen_ms > 0
+                && now_ms.saturating_sub(self.last_seen_ms) < LOCAL_NODE_HEARTBEAT_TTL_MS);
+        let relay_mode = if derp_connected {
+            TailnetRelayMode::DerpRelay
+        } else if online {
+            TailnetRelayMode::HttpFallback
+        } else {
+            TailnetRelayMode::Offline
+        };
+        let tailnet_ip = self
+            .tailnet_ip
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.host.filter(|s| !s.trim().is_empty()))
+            .unwrap_or_default();
+        let endpoints: Vec<TailnetEndpoint> =
+            serde_json::from_str(&self.endpoints_json).unwrap_or_default();
+        let authorized_controllers: Vec<AuthorizedControllerEntry> =
+            serde_json::from_str(&self.authorized_controllers_json).unwrap_or_default();
+        let run_policy = parse_run_policy(&self.run_policy, ComputerNodeKind::LocalDevice);
+
+        TailnetPeerDescriptor {
+            node_id: external_node_id,
+            device_id: dev_id,
+            display_name: self.display_name,
+            tailnet_ip,
+            lan_ip: self.ip_address,
+            os_name: self.os_name,
+            resolution: self.resolution,
+            machine_public_key: self.machine_public_key.unwrap_or_default(),
+            node_public_key: self.node_public_key.unwrap_or_default(),
+            disco_public_key: self.disco_public_key.unwrap_or_default(),
+            endpoints,
+            derp_region: "primary".to_string(),
+            derp_connected,
+            online,
+            relay_mode,
+            latency_ms: None,
+            run_policy,
+            authorized_controllers,
+            last_seen_ms: self.last_seen_ms,
+        }
+    }
 }
 
 const SELECT_NODE_COLS: &str = r#"
     node_id, owner_user_id, kind, display_name, ip_address, host, ssh_port,
     ssh_username, auth_method, agent_endpoint_url, workdir, encrypted_secret,
     secret_nonce, os_name, resolution, device_id, run_policy,
-    authorized_controllers_json, last_seen_ms, latest_frame_data_url, created_at_ms
+    authorized_controllers_json, last_seen_ms, latest_frame_data_url, created_at_ms,
+    tailnet_ip, machine_public_key, node_public_key, disco_public_key, endpoints_json
 "#;
 
 impl ServerDatabase {
@@ -554,6 +686,30 @@ impl ServerDatabase {
             .map(|rec| rec.dto))
     }
 
+    fn load_existing_tailnet_ips(&self, owner_user_id: u64) -> Result<HashMap<String, String>> {
+        self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT node_id, tailnet_ip
+                    FROM computer_nodes
+                    WHERE owner_user_id = ?1
+                      AND tailnet_ip IS NOT NULL
+                      AND tailnet_ip != ''
+                    "#,
+                )
+                .map_db()?;
+            let mut rows = stmt.query(params![owner_user_id as i64]).map_db()?;
+            let mut map = HashMap::new();
+            while let Some(row) = rows.next().map_db()? {
+                let nid: String = row.get(0).map_db()?;
+                let tip: String = row.get(1).map_db()?;
+                map.insert(nid, tip);
+            }
+            Ok(map)
+        })
+    }
+
     pub fn upsert_local_computer_node(
         &self,
         owner_user_id: u64,
@@ -576,29 +732,42 @@ impl ServerDatabase {
         let os_name = req.os_name.trim().to_string();
         let resolution = req.resolution.trim().to_string();
 
-        let existing_node_id: Option<String> = self.pool.with_conn(|conn| {
+        let existing_row: Option<(String, Option<String>)> = self.pool.with_conn(|conn| {
             conn.query_row(
-                "SELECT node_id FROM computer_nodes WHERE owner_user_id = ?1 AND device_id = ?2 LIMIT 1",
+                "SELECT node_id, tailnet_ip FROM computer_nodes WHERE owner_user_id = ?1 AND device_id = ?2 LIMIT 1",
                 params![owner_user_id as i64, device_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_db()
         })?;
 
-        let node_id = existing_node_id.unwrap_or_else(|| format!("local:{owner_user_id}:{device_id}"));
+        let (node_id, existing_tailnet_ip) = match existing_row {
+            Some((nid, tip)) => (nid, tip.filter(|s| !s.trim().is_empty())),
+            None => (format!("local:{owner_user_id}:{device_id}"), None),
+        };
+        let tailnet_ip = match existing_tailnet_ip {
+            Some(ip) => ip,
+            None => {
+                let existing_ips = self.load_existing_tailnet_ips(owner_user_id)?;
+                allocate_tailnet_ipv4(owner_user_id, device_id, &existing_ips)
+            }
+        };
 
         self.pool.with_conn(|conn| {
             conn.execute(
                 r#"
                 INSERT INTO computer_nodes (
-                    node_id, owner_user_id, kind, display_name, ip_address,
+                    node_id, owner_user_id, kind, display_name, ip_address, host,
                     os_name, resolution, device_id, run_policy,
-                    authorized_controllers_json, last_seen_ms, created_at_ms, updated_at_ms
-                ) VALUES (?1, ?2, 'local_device', ?3, ?4, ?5, ?6, ?7, 'ask_every_time', '[]', ?8, ?8, ?8)
+                    authorized_controllers_json, last_seen_ms, created_at_ms, updated_at_ms,
+                    tailnet_ip
+                ) VALUES (?1, ?2, 'local_device', ?3, ?4, ?5, ?6, ?7, ?8, 'ask_every_time', '[]', ?9, ?9, ?9, ?5)
                 ON CONFLICT(node_id) DO UPDATE SET
                     display_name = excluded.display_name,
                     ip_address = excluded.ip_address,
+                    host = COALESCE(NULLIF(computer_nodes.tailnet_ip, ''), excluded.tailnet_ip),
+                    tailnet_ip = COALESCE(NULLIF(computer_nodes.tailnet_ip, ''), excluded.tailnet_ip),
                     os_name = excluded.os_name,
                     resolution = excluded.resolution,
                     device_id = excluded.device_id,
@@ -610,6 +779,7 @@ impl ServerDatabase {
                     owner_user_id as i64,
                     &display_name,
                     &ip_address,
+                    &tailnet_ip,
                     &os_name,
                     &resolution,
                     device_id,
@@ -622,6 +792,278 @@ impl ServerDatabase {
 
         self.get_computer_node(owner_user_id, &node_id, Some(device_id), now_ms)?
             .ok_or_else(|| TelegramError::Internal("Failed to reload upserted local node".into()))
+    }
+
+    pub fn upsert_tailnet_computer_node(
+        &self,
+        owner_user_id: u64,
+        req: &TailnetRegisterRequest,
+        now_ms: i64,
+    ) -> Result<TailnetPeerDescriptor> {
+        let device_id = req.device_id.trim();
+        if device_id.is_empty() {
+            return Err(TelegramError::Validation(
+                "device_id must not be empty".to_string(),
+            ));
+        }
+
+        let display_name = if req.display_name.trim().is_empty() {
+            format!("Device {device_id}")
+        } else {
+            req.display_name.trim().to_string()
+        };
+        let lan_ip = req.lan_ip.trim().to_string();
+        let os_name = req.os_name.trim().to_string();
+        let resolution = req.resolution.trim().to_string();
+        let machine_key = req.machine_public_key.trim().to_string();
+        let node_key = req.node_public_key.trim().to_string();
+        let disco_key = req.disco_public_key.trim().to_string();
+        let endpoints_json = serde_json::to_string(&req.endpoints)?;
+
+        let existing_row: Option<(String, Option<String>)> = self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT node_id, tailnet_ip FROM computer_nodes WHERE owner_user_id = ?1 AND device_id = ?2 LIMIT 1",
+                params![owner_user_id as i64, device_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_db()
+        })?;
+
+        let (node_id, existing_tailnet_ip) = match existing_row {
+            Some((nid, tip)) => (nid, tip.filter(|s| !s.trim().is_empty())),
+            None => (format!("local:{owner_user_id}:{device_id}"), None),
+        };
+        let tailnet_ip = match existing_tailnet_ip {
+            Some(ip) => ip,
+            None => {
+                let existing_ips = self.load_existing_tailnet_ips(owner_user_id)?;
+                let seed = if !machine_key.is_empty() {
+                    machine_key.as_str()
+                } else {
+                    device_id
+                };
+                allocate_tailnet_ipv4(owner_user_id, seed, &existing_ips)
+            }
+        };
+
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO computer_nodes (
+                    node_id, owner_user_id, kind, display_name, ip_address, host,
+                    os_name, resolution, device_id, run_policy,
+                    authorized_controllers_json, last_seen_ms, created_at_ms, updated_at_ms,
+                    tailnet_ip, machine_public_key, node_public_key, disco_public_key, endpoints_json
+                ) VALUES (
+                    ?1, ?2, 'local_device', ?3, ?4, ?5,
+                    ?6, ?7, ?8, 'ask_every_time',
+                    '[]', ?9, ?9, ?9,
+                    ?5, ?10, ?11, ?12, ?13
+                )
+                ON CONFLICT(node_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    ip_address = excluded.ip_address,
+                    host = excluded.host,
+                    os_name = excluded.os_name,
+                    resolution = excluded.resolution,
+                    device_id = excluded.device_id,
+                    last_seen_ms = excluded.last_seen_ms,
+                    updated_at_ms = excluded.updated_at_ms,
+                    tailnet_ip = excluded.tailnet_ip,
+                    machine_public_key = excluded.machine_public_key,
+                    node_public_key = excluded.node_public_key,
+                    disco_public_key = excluded.disco_public_key,
+                    endpoints_json = excluded.endpoints_json
+                "#,
+                params![
+                    &node_id,
+                    owner_user_id as i64,
+                    &display_name,
+                    &lan_ip,
+                    &tailnet_ip,
+                    &os_name,
+                    &resolution,
+                    device_id,
+                    now_ms,
+                    &machine_key,
+                    &node_key,
+                    &disco_key,
+                    &endpoints_json,
+                ],
+            )
+            .map_db()?;
+
+            conn.execute(
+                r#"
+                UPDATE bot_computer_configs
+                SET bound_node_id = NULL, updated_at_ms = ?3
+                WHERE owner_user_id = ?1
+                  AND bound_node_id IN (
+                      SELECT node_id FROM computer_nodes
+                      WHERE owner_user_id = ?1
+                        AND kind = 'local_device'
+                        AND node_id != ?2
+                        AND (machine_public_key IS NULL OR machine_public_key = '')
+                        AND (?3 - last_seen_ms) >= 60000
+                        AND (
+                            (?4 != '' AND (ip_address = ?4 OR display_name = ?4))
+                            OR (?5 != '' AND display_name = ?5)
+                            OR (?6 != '' AND os_name = ?6)
+                        )
+                  )
+                "#,
+                params![
+                    owner_user_id as i64,
+                    &node_id,
+                    now_ms,
+                    &lan_ip,
+                    &display_name,
+                    &os_name,
+                ],
+            )
+            .map_db()?;
+
+            conn.execute(
+                r#"
+                DELETE FROM computer_nodes
+                WHERE owner_user_id = ?1
+                  AND kind = 'local_device'
+                  AND node_id != ?2
+                  AND (machine_public_key IS NULL OR machine_public_key = '')
+                  AND (?3 - last_seen_ms) >= 60000
+                  AND (
+                      (?4 != '' AND (ip_address = ?4 OR display_name = ?4))
+                      OR (?5 != '' AND display_name = ?5)
+                      OR (?6 != '' AND os_name = ?6)
+                  )
+                "#,
+                params![
+                    owner_user_id as i64,
+                    &node_id,
+                    now_ms,
+                    &lan_ip,
+                    &display_name,
+                    &os_name,
+                ],
+            )
+            .map_db()?;
+            Ok(())
+        })?;
+
+        let raw = self.pool.with_conn(|conn| {
+            let sql = format!(
+                "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 AND node_id = ?2 LIMIT 1"
+            );
+            conn.query_row(
+                &sql,
+                params![owner_user_id as i64, &node_id],
+                RawComputerNodeRow::from_row,
+            )
+            .optional()
+            .map_db()
+        })?
+        .ok_or_else(|| TelegramError::Internal("Failed to reload upserted tailnet node".into()))?;
+
+        let empty_connected = HashSet::new();
+        Ok(raw.into_tailnet_peer(owner_user_id, now_ms, &empty_connected))
+    }
+
+    pub fn touch_local_device_heartbeat_by_device_id(
+        &self,
+        owner_user_id: u64,
+        device_id: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        let trimmed = device_id.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE computer_nodes
+                SET last_seen_ms = ?1,
+                    updated_at_ms = ?1
+                WHERE owner_user_id = ?2 AND device_id = ?3
+                "#,
+                params![now_ms, owner_user_id as i64, trimmed],
+            )
+            .map_db()?;
+            Ok(())
+        })
+    }
+
+    pub fn touch_tailnet_hello_or_keepalive(
+        &self,
+        owner_user_id: u64,
+        device_id: &str,
+        node_public_key: Option<&str>,
+        disco_public_key: Option<&str>,
+        endpoints: &[TailnetEndpoint],
+        now_ms: i64,
+    ) -> Result<()> {
+        let trimmed = device_id.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let endpoints_json = if endpoints.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(endpoints)?)
+        };
+        let node_key = node_public_key.map(str::trim).filter(|s| !s.is_empty());
+        let disco_key = disco_public_key.map(str::trim).filter(|s| !s.is_empty());
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"
+                UPDATE computer_nodes
+                SET last_seen_ms = ?1,
+                    updated_at_ms = ?1,
+                    endpoints_json = COALESCE(?2, endpoints_json),
+                    node_public_key = COALESCE(NULLIF(node_public_key, ''), ?3),
+                    disco_public_key = COALESCE(NULLIF(disco_public_key, ''), ?4)
+                WHERE owner_user_id = ?5 AND device_id = ?6
+                "#,
+                params![
+                    now_ms,
+                    endpoints_json.as_deref(),
+                    node_key,
+                    disco_key,
+                    owner_user_id as i64,
+                    trimmed,
+                ],
+            )
+            .map_db()?;
+            Ok(())
+        })
+    }
+
+    pub fn list_tailnet_peers(
+        &self,
+        owner_user_id: u64,
+        now_ms: i64,
+        connected_device_ids: &HashSet<String>,
+    ) -> Result<Vec<TailnetPeerDescriptor>> {
+        let rows = self.pool.with_conn(|conn| {
+            let sql = format!(
+                "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 AND kind = 'local_device' ORDER BY created_at_ms ASC, node_id ASC"
+            );
+            let mut stmt = conn.prepare(&sql).map_db()?;
+            let mapped = stmt
+                .query_map(params![owner_user_id as i64], RawComputerNodeRow::from_row)
+                .map_db()?;
+            let mut out = Vec::new();
+            for item in mapped {
+                out.push(item.map_db()?);
+            }
+            Ok(out)
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|raw| raw.into_tailnet_peer(owner_user_id, now_ms, connected_device_ids))
+            .collect())
     }
 
     pub fn upsert_cloud_computer_node(
@@ -1406,5 +1848,109 @@ mod tests {
             .expect("get bot")
             .expect("bot row");
         assert_eq!(cleared.bound_node_id, None);
+    }
+
+    #[test]
+    fn test_v30_tailnet_ip_allocation_upsert_prune_and_heartbeat() {
+        use gpui_telegram_proto::tailnet_contracts::TailnetEndpointKind;
+
+        let mut existing = HashMap::new();
+        let ip1 = allocate_tailnet_ipv4(42, "machine-a", &existing);
+        assert!(ip1.starts_with("100."));
+        let octets: Vec<u8> = ip1.split('.').map(|s| s.parse::<u8>().unwrap()).collect();
+        assert_eq!(octets.len(), 4);
+        assert_eq!(octets[0], 100);
+        assert!((64..=127).contains(&octets[1]));
+        assert!((1..=254).contains(&octets[3]));
+        assert_eq!(allocate_tailnet_ipv4(42, "machine-a", &existing), ip1);
+
+        existing.insert("other-node".to_string(), ip1.clone());
+        let ip2 = allocate_tailnet_ipv4(42, "machine-a", &existing);
+        assert_ne!(ip2, ip1);
+
+        let db = ServerDatabase::open_in_memory().expect("open db");
+
+        // Legacy zombie registered >60s ago with IP as hostname and no machine_public_key.
+        let zombie = db
+            .upsert_local_computer_node(
+                9,
+                &RegisterLocalComputerRequest {
+                    device_id: "legacy-ephemeral-1".to_string(),
+                    display_name: "192.168.1.88".to_string(),
+                    ip_address: "192.168.1.88".to_string(),
+                    os_name: "macOS arm64 (192.168.1.88)".to_string(),
+                    resolution: "1440x900".to_string(),
+                },
+                10_000,
+            )
+            .expect("zombie");
+        assert!(zombie.host.as_deref().is_some_and(|h| h.starts_with("100.")));
+
+        // Unrelated other legacy machine (different IP, display_name, os_name) should NOT be pruned.
+        let other_legacy = db
+            .upsert_local_computer_node(
+                9,
+                &RegisterLocalComputerRequest {
+                    device_id: "legacy-win-2".to_string(),
+                    display_name: "WinBox".to_string(),
+                    ip_address: "10.0.0.55".to_string(),
+                    os_name: "Windows x86_64".to_string(),
+                    resolution: "1920x1080".to_string(),
+                },
+                10_000,
+            )
+            .expect("other legacy");
+
+        let peer = db
+            .upsert_tailnet_computer_node(
+                9,
+                &TailnetRegisterRequest {
+                    device_id: "dev-ts-0011223344556677".to_string(),
+                    display_name: "Studio Mac".to_string(),
+                    lan_ip: "192.168.1.88".to_string(),
+                    os_name: "macOS arm64 (Studio Mac)".to_string(),
+                    resolution: "2560x1440".to_string(),
+                    machine_public_key: "aa".repeat(32),
+                    node_public_key: "bb".repeat(32),
+                    disco_public_key: "cc".repeat(32),
+                    endpoints: vec![TailnetEndpoint {
+                        addr: "192.168.1.88:41641".to_string(),
+                        kind: TailnetEndpointKind::Lan,
+                    }],
+                    timestamp_ms: 80_000,
+                    signature_hex: None,
+                },
+                80_000,
+            )
+            .expect("upsert tailnet");
+
+        assert!(peer.tailnet_ip.starts_with("100."));
+        assert!(peer.online);
+        assert_eq!(peer.endpoints.len(), 1);
+
+        let nodes = db.list_computer_nodes(9, Some("dev-ts-0011223344556677"), 80_000).expect("list");
+        assert!(
+            !nodes.iter().any(|n| n.node_id == zombie.node_id),
+            "stale duplicate zombie should be pruned"
+        );
+        assert!(nodes.iter().any(|n| n.node_id == other_legacy.node_id));
+        let self_dto = nodes
+            .iter()
+            .find(|n| n.node_id == peer.node_id)
+            .expect("tailnet node");
+        assert_eq!(self_dto.host.as_deref(), Some(peer.tailnet_ip.as_str()));
+
+        // Heartbeat touch extends online past initial 60s TTL.
+        db.touch_local_device_heartbeat_by_device_id(9, "dev-ts-0011223344556677", 150_000)
+            .expect("touch");
+        let connected = HashSet::from(["dev-ts-0011223344556677".to_string()]);
+        let peers = db.list_tailnet_peers(9, 170_000, &connected).expect("peers");
+        let found = peers
+            .iter()
+            .find(|p| p.device_id == "dev-ts-0011223344556677")
+            .expect("found");
+        assert!(found.online);
+        assert!(found.derp_connected);
+        assert_eq!(found.relay_mode, TailnetRelayMode::DerpRelay);
     }
 }

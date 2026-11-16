@@ -4,7 +4,12 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_telegram_proto::computer_contracts::{PendingComputerCommandDto, RemoteComputerOp};
 use gpui_telegram_proto::contracts::chats::CreateChatRequest;
+use gpui_telegram_proto::miniapp_contracts::GROK_AVATAR_SHAPES;
 
+use crate::components::grok_bot_avatar::{
+    render_grok_bot_avatar, trigger_grok_avatar_bounce, trigger_grok_avatar_spin,
+    GrokBotAvatarProps, GrokPersonaState, GROK_COLOR_PALETTE,
+};
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use crate::views::app_shell::shell_actions::localize_call_state;
 use crate::views::app_shell::shell_panels::{render_empty_panel_notice, render_panel_header};
@@ -130,11 +135,32 @@ impl AppShell {
         fullscreen_occluded_layer(overlay)
     }
 
-    /// Renders the minimized MiniApp pill, open MiniApp host sheet, and NL Bot creator modal.
+    /// Renders the minimized MiniApp pill, open MiniApp host sheet, confirmation/ToS modals,
+    /// `BotProfileBox`, and NL Bot creator modal.
     pub fn render_miniapp_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut layers = Vec::new();
         let pal = self.theme_state.palette;
         let lang = self.active_lang_id();
+
+        let has_top_modal = self.miniapps.pending_miniapp_confirm.is_some()
+            || self.miniapps.miniapp_tos_modal_open
+            || self
+                .miniapps
+                .bot_profile_box
+                .as_ref()
+                .is_some_and(|b| b.read(cx).is_visible)
+            || self
+                .miniapps
+                .create_bot_box
+                .as_ref()
+                .is_some_and(|b| b.read(cx).is_visible);
+
+        if let Some(ref ov) = self.miniapps.miniapp_overlay {
+            let should_hide_native = !ov.read(cx).is_open || has_top_modal;
+            if should_hide_native && ov.read(cx).is_native_webview_visible() {
+                ov.update(cx, |w, _| w.hide_native_webview());
+            }
+        }
 
         if self.miniapps.is_miniapp_minimized {
             if let Some(ov) = self.miniapps.miniapp_overlay.clone() {
@@ -171,7 +197,9 @@ impl AppShell {
                                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.miniapps.is_miniapp_minimized = false;
-                                    this.miniapps.miniapp_overlay = None;
+                                    if let Some(ov) = this.miniapps.miniapp_overlay.take() {
+                                        ov.update(cx, |w, _| w.close());
+                                    }
                                     cx.notify();
                                 }))
                                 .child("×"),
@@ -181,13 +209,319 @@ impl AppShell {
             }
         }
         if let Some(overlay) = self.miniapps.miniapp_overlay.clone().filter(|ov| ov.read(cx).is_open) {
-            layers.push(div().id("miniapp-overlay-host").child(fullscreen_occluded_layer(overlay)).into_any_element());
+            layers.push(
+                div()
+                    .id("miniapp-overlay-host")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .child(fullscreen_occluded_layer(overlay))
+                    .into_any_element(),
+            );
         }
         if let Some(box_ent) = self.miniapps.create_bot_box.clone().filter(|b| b.read(cx).is_visible) {
             layers.push(
                 modal_backdrop_shell("create-managed-bot-backdrop", 0x00000099)
                     .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.miniapps.create_bot_box = None; cx.notify(); }))
-                    .child(div().on_mouse_down(MouseButton::Left, |_, _, _| {}).child(box_ent))
+                    .child(div().on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation())).child(box_ent))
+                    .into_any_element(),
+            );
+        }
+        if let Some(ref confirm) = self.miniapps.pending_miniapp_confirm {
+            let bot_name = confirm.bot_display_name.clone();
+            let bot_un = confirm.bot_username.clone();
+            let bot_sub = if bot_un.is_empty() {
+                String::new()
+            } else {
+                format!("@{}", bot_un.trim_start_matches('@'))
+            };
+            let bot_un_for_profile = bot_un.clone();
+            let app_title = confirm.app_title.clone();
+            let avatar_col = peer_avatar_color(confirm.bot_id.max(1));
+            let init = {
+                let i = derive_initials(&bot_name);
+                if i.is_empty() { "BT".to_string() } else { i }
+            };
+            layers.push(
+                modal_backdrop_shell("miniapp-launch-confirm-backdrop", 0x00000088)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.miniapps.pending_miniapp_confirm = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("miniapp-launch-confirm-modal")
+                            .w(px(360.0))
+                            .p(px(22.0))
+                            .rounded(px(16.0))
+                            .bg(rgb(pal.modal_bg))
+                            .border_1()
+                            .border_color(rgb(pal.border_fg))
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.0))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.0))
+                                    .child(
+                                        div()
+                                            .w(px(48.0))
+                                            .h(px(48.0))
+                                            .rounded_full()
+                                            .bg(rgb(avatar_col))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_size(px(17.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .child(init),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(15.5))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(pal.text_primary))
+                                                    .child(bot_name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.0))
+                                                    .text_color(rgb(pal.text_secondary))
+                                                    .child(if !app_title.is_empty() && !bot_sub.is_empty() {
+                                                        format!("{} · {}", app_title, bot_sub)
+                                                    } else {
+                                                        bot_sub
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("miniapp-confirm-more-info-btn")
+                                    .cursor_pointer()
+                                    .px(px(10.0))
+                                    .py(px(8.0))
+                                    .rounded(px(8.0))
+                                    .bg(rgb(pal.card_bg))
+                                    .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(rgb(pal.accent))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.open_bot_profile_popup(&bot_un_for_profile, cx);
+                                        }),
+                                    )
+                                    .child(tr_str(
+                                        lang,
+                                        "本机器人的更多信息",
+                                        "More information about this bot",
+                                    ))
+                                    .child(">"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .text_size(px(12.5))
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(tr_str(
+                                        lang,
+                                        "启动此小程序即表示您同意",
+                                        "By launching this mini app, you agree to the",
+                                    ))
+                                    .child(
+                                        div()
+                                            .id("miniapp-confirm-tos-link")
+                                            .cursor_pointer()
+                                            .text_color(rgb(pal.accent))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.miniapps.miniapp_tos_modal_open = true;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child(tr_str(
+                                                lang,
+                                                "小程序服务条款。",
+                                                "Terms of Service for Mini Apps.",
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(4.0))
+                                    .flex()
+                                    .justify_end()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .id("miniapp-confirm-cancel-btn")
+                                            .cursor_pointer()
+                                            .px(px(14.0))
+                                            .py(px(8.0))
+                                            .rounded(px(8.0))
+                                            .hover(move |s| s.bg(rgb(pal.hover_bg)))
+                                            .text_size(px(13.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(pal.text_secondary))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.miniapps.pending_miniapp_confirm = None;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child(tr_str(lang, "取消", "Cancel")),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("miniapp-confirm-open-btn")
+                                            .cursor_pointer()
+                                            .px(px(16.0))
+                                            .py(px(8.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(pal.accent))
+                                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
+                                            .text_size(px(13.5))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.confirm_pending_miniapp_launch(cx);
+                                                }),
+                                            )
+                                            .child(tr_str(lang, "打开应用", "Launch")),
+                                    ),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if let Some(box_ent) = self.miniapps.bot_profile_box.clone().filter(|b| b.read(cx).is_visible) {
+            layers.push(
+                modal_backdrop_shell("bot-profile-box-backdrop", 0x00000088)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if let Some(ref ent) = this.miniapps.bot_profile_box {
+                                ent.update(cx, |b, b_cx| {
+                                    b.close();
+                                    b_cx.notify();
+                                });
+                            }
+                            this.miniapps.bot_profile_box = None;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                            .child(box_ent),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if self.miniapps.miniapp_tos_modal_open {
+            layers.push(
+                modal_backdrop_shell("miniapp-tos-modal-backdrop", 0x00000099)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.miniapps.miniapp_tos_modal_open = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .id("miniapp-tos-modal")
+                            .w(px(390.0))
+                            .p(px(22.0))
+                            .rounded(px(16.0))
+                            .bg(rgb(pal.modal_bg))
+                            .border_1()
+                            .border_color(rgb(pal.border_fg))
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.0))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.stop_propagation()))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .child(tr_str(
+                                        lang,
+                                        "小程序服务条款",
+                                        "Terms of Service for Mini Apps",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(tr_str(
+                                        lang,
+                                        "小程序由第三方机器人开发者独立提供和运营。启动小程序时，应用将接收您的基础公开身份标识与主题配色参数；仅在您主动启用对话或明确点击「允许发送消息」后，该机器人才能向您发送消息。",
+                                        "Mini Apps are built and operated independently by third-party bot developers. When launched, the Mini App receives your signed basic profile identifier and theme parameters. Bots can only send you messages if you start the chat or explicitly grant write access.",
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(6.0))
+                                    .flex()
+                                    .justify_end()
+                                    .child(
+                                        div()
+                                            .id("miniapp-tos-close-btn")
+                                            .cursor_pointer()
+                                            .px(px(16.0))
+                                            .py(px(7.0))
+                                            .rounded(px(8.0))
+                                            .bg(rgb(pal.accent))
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0xFFFFFF))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.miniapps.miniapp_tos_modal_open = false;
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child(tr_str(lang, "我知道了", "OK")),
+                                    ),
+                            ),
+                    )
                     .into_any_element(),
             );
         }
@@ -326,6 +660,9 @@ impl AppShell {
         let primary_val = sb_ref.creation_primary_input.clone();
         let secondary_val = sb_ref.creation_secondary_input.clone();
         let tertiary_val = sb_ref.creation_tertiary_input.clone();
+        let creation_avatar_shape = sb_ref.creation_avatar_shape.clone();
+        let creation_avatar_color = sb_ref.creation_avatar_color.clone();
+        let creation_use_dynamic_avatar = sb_ref.creation_use_dynamic_avatar;
 
         let title = match modal_kind {
             SidebarCreationModal::AddContact if is_bot => tr_str(lang, "创建 AI 智能体助手", "New AI Bot"),
@@ -388,14 +725,232 @@ impl AppShell {
         let box_2 = make_field(CreationInputField::SecondaryHandle, lbl_2, &secondary_val, ph_2, cx);
         let box_3 = make_field(CreationInputField::TertiaryPromptOrPhone, lbl_3, &tertiary_val, ph_3, cx);
 
+        let show_bot_avatar_chooser = modal_kind == SidebarCreationModal::AddContact && is_bot;
+        let bot_avatar_chooser = if show_bot_avatar_chooser {
+            let preview_initials = {
+                let d = derive_initials(&primary_val);
+                if d.is_empty() { "AI".to_string() } else { d }
+            };
+            let preview_el: AnyElement = if creation_use_dynamic_avatar {
+                render_grok_bot_avatar(
+                    GrokBotAvatarProps::new(
+                        "sidebar-ai-bot-preview",
+                        &creation_avatar_shape,
+                        &creation_avatar_color,
+                        52.0,
+                    )
+                    .with_state(GrokPersonaState::Happy)
+                    .with_follow_pointer(true)
+                    .with_surface_bg(pal.card_bg),
+                )
+                .into_any_element()
+            } else {
+                div()
+                    .w(px(52.0))
+                    .h(px(52.0))
+                    .rounded_full()
+                    .bg(rgb(pal.accent))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(18.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0xFFFFFF))
+                    .child(preview_initials)
+                    .into_any_element()
+            };
+
+            let mode_pill = |id: &'static str, active: bool, label: &'static str, use_dyn: bool, cx: &mut Context<Self>| -> AnyElement {
+                div()
+                    .id(id)
+                    .cursor_pointer()
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(999.0))
+                    .bg(rgb(if active { pal.accent } else { pal.input_bg }))
+                    .border_1()
+                    .border_color(rgb(if active { pal.accent } else { pal.border_fg }))
+                    .text_size(px(11.0))
+                    .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                    .text_color(rgb(if active { pal.active_button_fg } else { pal.text_primary }))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                        this.sidebar.update(cx, |sb, scx| {
+                            sb.creation_use_dynamic_avatar = use_dyn;
+                            if use_dyn {
+                                trigger_grok_avatar_bounce("sidebar-ai-bot-preview");
+                            }
+                            scx.notify();
+                        });
+                        cx.notify();
+                    }))
+                    .child(label)
+                    .into_any_element()
+            };
+
+            let mut shape_row = div().flex().flex_wrap().items_center().gap(px(4.0));
+            for (idx, &shape) in GROK_AVATAR_SHAPES.iter().enumerate() {
+                let selected = creation_avatar_shape.eq_ignore_ascii_case(shape);
+                let shape_owned = shape.to_string();
+                shape_row = shape_row.child(
+                    div()
+                        .id(SharedString::from(format!("sidebar-avatar-shape-{idx}")))
+                        .cursor_pointer()
+                        .p(px(3.0))
+                        .rounded(px(7.0))
+                        .bg(if selected {
+                            TdesktopThemePalette::rgba_with_alpha(pal.accent, 0.16)
+                        } else {
+                            rgb(pal.input_bg).into()
+                        })
+                        .border_1()
+                        .border_color(rgb(if selected { pal.accent } else { pal.border_fg }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            this.sidebar.update(cx, |sb, scx| {
+                                sb.creation_avatar_shape = shape_owned.clone();
+                                trigger_grok_avatar_bounce("sidebar-ai-bot-preview");
+                                scx.notify();
+                            });
+                            cx.notify();
+                        }))
+                        .child(
+                            render_grok_bot_avatar(
+                                GrokBotAvatarProps::new(
+                                    format!("sidebar-shape-opt-{shape}"),
+                                    shape,
+                                    &creation_avatar_color,
+                                    24.0,
+                                )
+                                .with_state(GrokPersonaState::Idle)
+                                .with_paused(true)
+                                .with_surface_bg(pal.card_bg),
+                            ),
+                        ),
+                );
+            }
+
+            let mut color_row = div().flex().flex_wrap().items_center().gap(px(5.0));
+            for (idx, spec) in GROK_COLOR_PALETTE.iter().enumerate() {
+                let selected = creation_avatar_color.eq_ignore_ascii_case(spec.id);
+                let color_id = spec.id.to_string();
+                color_row = color_row.child(
+                    div()
+                        .id(SharedString::from(format!("sidebar-avatar-color-{idx}")))
+                        .cursor_pointer()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .rounded_full()
+                        .bg(rgb(spec.swatch_rgb))
+                        .border_2()
+                        .border_color(rgb(if selected { pal.text_primary } else { pal.border_fg }))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                            this.sidebar.update(cx, |sb, scx| {
+                                sb.creation_avatar_color = color_id.clone();
+                                trigger_grok_avatar_bounce("sidebar-ai-bot-preview");
+                                scx.notify();
+                            });
+                            cx.notify();
+                        })),
+                );
+            }
+
+            Some(
+                div()
+                    .w_full()
+                    .p(px(pal.scaled_px(10.0)))
+                    .rounded(px(pal.scaled_px(10.0)))
+                    .bg(rgb(pal.card_bg))
+                    .border_1()
+                    .border_color(rgb(pal.border_fg))
+                    .flex()
+                    .flex_col()
+                    .gap(px(pal.scaled_px(8.0)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(pal.scaled_px(11.5)))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(tr_str(lang, "Grok Bot 动态头像", "Grok Dynamic Avatar")),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(mode_pill(
+                                        "sidebar-avatar-mode-dynamic",
+                                        creation_use_dynamic_avatar,
+                                        tr_str(lang, "动态角色", "Dynamic"),
+                                        true,
+                                        cx,
+                                    ))
+                                    .child(mode_pill(
+                                        "sidebar-avatar-mode-classic",
+                                        !creation_use_dynamic_avatar,
+                                        tr_str(lang, "经典字母", "Classic"),
+                                        false,
+                                        cx,
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(pal.scaled_px(12.0)))
+                            .child(
+                                div()
+                                    .id("sidebar-ai-bot-preview-btn")
+                                    .cursor_pointer()
+                                    .flex_shrink_0()
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|_this, _, _, cx| {
+                                        trigger_grok_avatar_spin("sidebar-ai-bot-preview");
+                                        cx.notify();
+                                    }))
+                                    .child(preview_el),
+                            )
+                            .child(if creation_use_dynamic_avatar {
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.0))
+                                    .child(shape_row)
+                                    .child(color_row)
+                                    .into_any_element()
+                            } else {
+                                div()
+                                    .flex_1()
+                                    .text_size(px(pal.scaled_px(11.5)))
+                                    .text_color(rgb(pal.text_secondary))
+                                    .child(tr_str(
+                                        lang,
+                                        "使用经典圆形首字母头像（静态）",
+                                        "Static classic circular initials avatar",
+                                    ))
+                                    .into_any_element()
+                            }),
+                    ),
+            )
+        } else {
+            None
+        };
+
+        let modal_w = if show_bot_avatar_chooser { 436.0 } else { 410.0 };
+
         modal_backdrop_shell("telegram-creation-modal-backdrop", 0x00000088)
             .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                 this.sidebar.update(cx, |sb, scx| { sb.close_creation_modal(); scx.notify(); });
                 cx.notify();
             }))
             .child(
-                div().id("telegram-creation-modal-box").w(px(pal.scaled_px(410.0).min(720.0))).rounded(px(pal.scaled_px(14.0))).bg(rgb(pal.modal_bg))
-                    .border_1().border_color(rgb(pal.border_fg)).shadow_lg().p(px(pal.scaled_px(22.0))).flex().flex_col().gap(px(pal.scaled_px(14.0)))
+                div().id("telegram-creation-modal-box").w(px(pal.scaled_px(modal_w).min(720.0))).rounded(px(pal.scaled_px(14.0))).bg(rgb(pal.modal_bg))
+                    .border_1().border_color(rgb(pal.border_fg)).shadow_lg().p(px(pal.scaled_px(22.0))).flex().flex_col().gap(px(pal.scaled_px(12.0)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div().flex().items_center().justify_between()
@@ -416,6 +971,7 @@ impl AppShell {
                                 .child(make_kind_tab(is_bot, tr_str(lang, "AI 智能体", "AI Bot"), AddContactKind::AiBot, cx)),
                         )
                     })
+                    .when_some(bot_avatar_chooser, |el, card| el.child(card))
                     .child(box_1).child(box_2).child(box_3)
                     .child(
                         div().pt(px(4.0)).flex().justify_end().gap(px(10.0))
@@ -583,6 +1139,7 @@ impl AppShell {
                     .child(menu_row("account-popover-saved", IconName::SavedMessages, tr_str(lang, "收藏夹", "Saved"), pal.text_primary, false, |this, cx| this.handle_main_menu_command(MainMenuCommand::SavedMessages, cx)))
                     .child(menu_row("account-popover-connectors", IconName::TerminalMcp, tr_str(lang, "连接器", "Connectors"), pal.text_primary, false, |this, cx| this.handle_main_menu_command(MainMenuCommand::McpTools, cx)))
                     .child(menu_row("account-popover-voice", IconName::Mic, tr_str(lang, "语音对话", "Voice Chat"), pal.text_primary, false, |this, cx| this.activate_nav_destination(NavDestination::TalkMode, cx)))
+                    .child(menu_row("account-popover-fabushi", IconName::BotRobot, tr_str(lang, "新建智能体 · Fabushi Bot", "New Fabushi Bot"), pal.accent, false, |this, cx| this.open_fabushi_creator_modal(cx)))
                     .child(menu_row("account-popover-botfather", IconName::BotRobot, tr_str(lang, "BotFather · 创建机器人/小程序", "BotFather · Create Bot/App"), pal.accent, false, |this, cx| this.open_botfather_chat(cx)))
                     .child(menu_row("account-popover-miniapps", IconName::FolderBots, tr_str(lang, "小程序中心", "Mini Apps Center"), pal.text_primary, false, |this, cx| this.open_miniapps_center(cx)))
                     .child(menu_row("account-popover-settings", IconName::SettingsGear, tr_str(lang, "设置", "Settings"), pal.text_primary, false, |this, cx| this.handle_main_menu_command(MainMenuCommand::Settings, cx)))

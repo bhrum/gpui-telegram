@@ -20,6 +20,7 @@ pub enum MainMenuCommand {
     AddAccount,
     SetEmojiStatus(String),
     MyProfile,
+    NewFabushiBot,
     NewGroup,
     NewChannel,
     Contacts,
@@ -199,6 +200,12 @@ impl Render for MainMenuDrawer {
                 cmd: MainMenuCommand::MyProfile,
             },
             MenuRowEntry::Divider,
+            MenuRowEntry::Action {
+                icon: IconName::BotRobot,
+                zh: "新建智能体 (Fabushi Bot)",
+                en: "New Fabushi Bot",
+                cmd: MainMenuCommand::NewFabushiBot,
+            },
             MenuRowEntry::Action {
                 icon: IconName::GroupUsers,
                 zh: "新建群组",

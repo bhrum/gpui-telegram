@@ -32,3 +32,7 @@ qrcode = { version = "0.14.1", default-features = false }
 fabushi-messaging-core = { path = "../../inherited/mahayana-messaging" }
 mahayana-node-agent-coordinator = { path = "../../inherited/node-agent-coordinator" }
 mahayana-host-runtime = { path = "../../inherited/host" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+raw-window-handle = "0.6.2"
+objc = "0.2.7"

@@ -271,3 +271,63 @@ CREATE TABLE IF NOT EXISTS mini_app_cloud_storage (
     PRIMARY KEY(user_id, bot_user_id, storage_key)
 ) STRICT;
 "#;
+
+pub const MIGRATION_V29_FABUSHI_BOT_PROFILES: &str = r#"
+ALTER TABLE bots_registry ADD COLUMN agent_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN avatar_shape TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN preferred_model TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN thinking_level TEXT NOT NULL DEFAULT 'medium';
+ALTER TABLE bots_registry ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'prompt';
+ALTER TABLE bots_registry ADD COLUMN toolset_preset TEXT NOT NULL DEFAULT 'full';
+"#;
+
+pub const MIGRATION_V31_TELEGRAM_MINIAPPS_PARITY: &str = r#"
+ALTER TABLE bots_registry ADD COLUMN menu_button_type TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE bots_registry ADD COLUMN has_main_app INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE bots_registry ADD COLUMN main_app_short_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN privacy_policy_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN has_settings INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE bots_registry ADD COLUMN can_join_groups INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE bots_registry ADD COLUMN webhook_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN webhook_secret_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE bots_registry ADD COLUMN is_standard_bot INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE mini_apps ADD COLUMN header_color TEXT NOT NULL DEFAULT '';
+ALTER TABLE mini_apps ADD COLUMN background_color TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS user_bot_permissions (
+    user_id INTEGER NOT NULL,
+    bot_user_id INTEGER NOT NULL,
+    allows_write_to_pm INTEGER NOT NULL DEFAULT 0,
+    app_tos_accepted_at INTEGER NOT NULL DEFAULT 0,
+    has_started_chat INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(user_id, bot_user_id)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS mini_app_usage_events (
+    user_id INTEGER NOT NULL,
+    app_id TEXT NOT NULL,
+    bot_user_id INTEGER NOT NULL,
+    last_launched_at INTEGER NOT NULL,
+    launch_count INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY(user_id, app_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_mini_app_usage_user ON mini_app_usage_events(user_id, last_launched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mini_app_usage_bot_time ON mini_app_usage_events(bot_user_id, last_launched_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_api_updates (
+    update_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_user_id INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_bot_api_updates_bot ON bot_api_updates(bot_user_id, update_id ASC);
+
+CREATE TABLE IF NOT EXISTS mini_app_hosted_bundles (
+    app_id TEXT PRIMARY KEY,
+    html_content TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+) STRICT;
+"#;

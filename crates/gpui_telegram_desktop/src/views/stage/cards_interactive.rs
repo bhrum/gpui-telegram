@@ -213,7 +213,13 @@ pub fn render_location_card(
             div()
                 .relative()
                 .h(px(118.0))
-                .bg(if palette.mode.is_dark() { rgb(0x1E2F40) } else { rgb(0xDCE7EE) })
+                .bg(if palette.mode.is_fabushi_style() {
+                    if palette.mode.is_dark() { rgb(0x1C1E22) } else { rgb(0xEAECEF) }
+                } else if palette.mode.is_dark() {
+                    rgb(0x1E2F40)
+                } else {
+                    rgb(0xDCE7EE)
+                })
                 .flex()
                 .items_center()
                 .justify_center()

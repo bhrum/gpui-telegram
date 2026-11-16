@@ -40,17 +40,18 @@ impl DialogRow {
 impl Render for DialogRow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let pal = self.palette;
+        let use_inverted_sel = self.is_selected && !pal.mode.is_fabushi_style();
         let bg_color = if self.is_selected {
             rgb(pal.dialogs_active_bg)
         } else {
             rgb(pal.dialogs_bg)
         };
-        let title_color = if self.is_selected {
+        let title_color = if use_inverted_sel {
             rgb(pal.active_button_fg)
         } else {
             rgb(pal.text_primary)
         };
-        let sub_color = if self.is_selected {
+        let sub_color = if use_inverted_sel {
             rgb(pal.active_button_fg)
         } else {
             rgb(pal.text_secondary)

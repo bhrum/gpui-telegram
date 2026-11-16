@@ -109,6 +109,7 @@ pub struct ComputerControlService {
     master_key: Zeroizing<Vec<u8>>,
     http_client: reqwest::Client,
     agent_exec_token: RwLock<Option<String>>,
+    tailnet: RwLock<Option<Arc<crate::routes::tailnet::TailnetCoordService>>>,
 }
 
 impl ComputerControlService {
@@ -124,6 +125,28 @@ impl ComputerControlService {
             master_key: resolve_computer_master_key(),
             http_client,
             agent_exec_token: RwLock::new(None),
+            tailnet: RwLock::new(None),
+        }
+    }
+
+    pub fn set_tailnet_service(&self, svc: Arc<crate::routes::tailnet::TailnetCoordService>) {
+        *self.tailnet.write() = Some(svc);
+    }
+
+    fn tailnet_service(&self) -> Option<Arc<crate::routes::tailnet::TailnetCoordService>> {
+        self.tailnet.read().clone()
+    }
+
+    fn apply_derp_online_override(&self, owner_user_id: u64, dto: &mut ComputerNodeDto) {
+        if dto.kind == ComputerNodeKind::LocalDevice && !dto.online {
+            if let Some(ref did) = dto.device_id {
+                if self
+                    .tailnet_service()
+                    .is_some_and(|t| t.is_device_derp_connected(owner_user_id, did))
+                {
+                    dto.online = true;
+                }
+            }
         }
     }
 
@@ -446,7 +469,7 @@ impl ComputerControlService {
             req.caller_label.trim().to_string()
         };
 
-        let node_rec = self
+        let mut node_rec = self
             .db
             .get_computer_node_with_secret(
                 owner_user_id,
@@ -457,6 +480,7 @@ impl ComputerControlService {
             .ok_or_else(|| {
                 TelegramError::NotFound(format!("Computer node `{}` not found", req.node_id))
             })?;
+        self.apply_derp_online_override(owner_user_id, &mut node_rec.dto);
 
         let command_id = format!("cmd:{}", uuid::Uuid::new_v4());
         let policy = node_rec.dto.run_policy;
@@ -598,8 +622,15 @@ impl ComputerControlService {
                         command_id.clone(),
                         PendingLocalCommandEntry {
                             owner_user_id,
-                            dto: pending,
+                            dto: pending.clone(),
                         },
+                    );
+                }
+                if let Some(tailnet) = self.tailnet_service() {
+                    let _ = tailnet.dispatch_command_to_device(
+                        owner_user_id,
+                        &target_device_id,
+                        pending,
                     );
                 }
 
@@ -759,10 +790,12 @@ fn evaluate_node_authorization(
                                 || entry.controller_id == format!("bot:{bid}")
                         }),
                         AuthorizedControllerKind::Device => {
-                            caller_device_id.is_some_and(|did| {
-                                entry.controller_id == did
-                                    || entry.controller_id == format!("device:{did}")
-                            })
+                            entry.controller_id == "account_all_devices"
+                                || entry.controller_id == "*"
+                                || caller_device_id.is_some_and(|did| {
+                                    entry.controller_id == did
+                                        || entry.controller_id == format!("device:{did}")
+                                })
                         }
                     }
                 });
@@ -797,7 +830,10 @@ impl ComputerCloudProvider for ComputerControlService {
     ) -> BoxFuture<'a, CoreResult<Vec<AgentComputerNodeSummary>>> {
         Box::pin(async move {
             let now_ms = chrono::Utc::now().timestamp_millis();
-            let nodes = self.db.list_computer_nodes(user_id, None, now_ms)?;
+            let mut nodes = self.db.list_computer_nodes(user_id, None, now_ms)?;
+            for dto in &mut nodes {
+                self.apply_derp_online_override(user_id, dto);
+            }
             let bound_node_id = if let Some(bid) = bot_id {
                 self.db
                     .get_bot_computer_profile(user_id, bid)?
@@ -834,12 +870,13 @@ impl ComputerCloudProvider for ComputerControlService {
                 .db
                 .upsert_bot_computer_profile(user_id, bot_id, &update, now_ms)?;
             if let Some(ref target_id) = profile.bound_node_id {
-                let node = self
+                let mut node = self
                     .db
                     .get_computer_node(user_id, target_id, None, now_ms)?
                     .ok_or_else(|| {
                         TelegramError::NotFound(format!("Computer node `{target_id}` not found"))
                     })?;
+                self.apply_derp_online_override(user_id, &mut node);
                 Ok(dto_to_agent_summary(
                     &node,
                     Some(bot_id),
@@ -966,7 +1003,10 @@ impl ComputerCloudProvider for ComputerControlService {
             {
                 bound.to_string()
             } else {
-                let nodes = self.db.list_computer_nodes(user_id, None, now_ms)?;
+                let mut nodes = self.db.list_computer_nodes(user_id, None, now_ms)?;
+                for dto in &mut nodes {
+                    self.apply_derp_online_override(user_id, dto);
+                }
                 nodes
                     .iter()
                     .find(|n| n.kind == ComputerNodeKind::CloudServer && n.online)
@@ -1126,10 +1166,19 @@ pub(crate) fn format_computer_context_block(
     profile: Option<&BotComputerProfileDto>,
     now_ms: i64,
 ) -> String {
-    let nodes = state
+    let mut nodes = state
         .db
         .list_computer_nodes(user_id, None, now_ms)
         .unwrap_or_default();
+    for dto in &mut nodes {
+        if dto.kind == ComputerNodeKind::LocalDevice && !dto.online {
+            if let Some(ref did) = dto.device_id {
+                if state.tailnet.is_device_derp_connected(user_id, did) {
+                    dto.online = true;
+                }
+            }
+        }
+    }
     let bound_node_id = profile.and_then(|p| p.bound_node_id.as_deref());
 
     let mut lines = Vec::new();
@@ -2336,7 +2385,7 @@ pub async fn computers_list(
 ) -> Response {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let req_dev = header_device_id(&headers);
-    let computers = match state.db.list_computer_nodes(
+    let mut computers = match state.db.list_computer_nodes(
         auth.user_id.0,
         req_dev.as_deref(),
         now_ms,
@@ -2344,6 +2393,15 @@ pub async fn computers_list(
         Ok(list) => list,
         Err(e) => return map_telegram_err(e),
     };
+    for dto in &mut computers {
+        if dto.kind == ComputerNodeKind::LocalDevice && !dto.online {
+            if let Some(ref did) = dto.device_id {
+                if state.tailnet.is_device_derp_connected(auth.user_id.0, did) {
+                    dto.online = true;
+                }
+            }
+        }
+    }
     let pending_approvals = state
         .computers
         .pending_approvals_for_device(auth.user_id.0, req_dev.as_deref());
@@ -2387,6 +2445,10 @@ pub async fn computers_local_poll(
     let Some(device_id) = header_device_id(&headers) else {
         return (StatusCode::OK, Json(Vec::<PendingComputerCommandDto>::new())).into_response();
     };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let _ = state
+        .db
+        .touch_local_device_heartbeat_by_device_id(auth.user_id.0, &device_id, now_ms);
     let pending = state
         .computers
         .poll_commands_for_device(auth.user_id.0, &device_id);
@@ -2403,7 +2465,16 @@ pub async fn computers_command_approve(
         .computers
         .approve_pending_command(auth.user_id.0, &command_id, body.approved)
     {
-        Ok(dto) => (StatusCode::OK, Json(dto)).into_response(),
+        Ok(dto) => {
+            if body.approved {
+                let _ = state.tailnet.dispatch_command_to_device(
+                    auth.user_id.0,
+                    &dto.target_device_id,
+                    dto.clone(),
+                );
+            }
+            (StatusCode::OK, Json(dto)).into_response()
+        }
         Err(e) => map_telegram_err(e),
     }
 }
@@ -2473,7 +2544,10 @@ pub async fn computers_policy_patch(
         req_dev.as_deref(),
         now_ms,
     ) {
-        Ok(Some(dto)) => (StatusCode::OK, Json(dto)).into_response(),
+        Ok(Some(dto)) => {
+            state.tailnet.broadcast_netmap_for_user(auth.user_id.0);
+            (StatusCode::OK, Json(dto)).into_response()
+        }
         Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "Computer node not found"),
         Err(e) => map_telegram_err(e),
     }
@@ -2486,7 +2560,10 @@ pub async fn computers_delete(
 ) -> Response {
     let now_ms = chrono::Utc::now().timestamp_millis();
     match state.db.delete_computer_node(auth.user_id.0, &node_id, now_ms) {
-        Ok(true) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Ok(true) => {
+            state.tailnet.broadcast_netmap_for_user(auth.user_id.0);
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
         Ok(false) => err_resp(StatusCode::NOT_FOUND, "not_found", "Computer node not found"),
         Err(e) => map_telegram_err(e),
     }

@@ -2730,6 +2730,8 @@ struct HermesEngineInner {
     turn_events: RwLock<HashMap<String, Vec<HermesEvent>>>,
     turn_event_order: Mutex<VecDeque<String>>,
     ui_actions: Arc<Mutex<Vec<HermesUiAction>>>,
+    teammate_handler: RwLock<Option<Arc<dyn toolsets::FabushiTeammateHandler>>>,
+    bound_agent_id: RwLock<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -2835,6 +2837,8 @@ impl HermesEngine {
             turn_events: RwLock::new(HashMap::new()),
             turn_event_order: Mutex::new(VecDeque::new()),
             ui_actions: Arc::new(Mutex::new(Vec::new())),
+            teammate_handler: RwLock::new(None),
+            bound_agent_id: RwLock::new(None),
             config,
         });
         Ok(Self { inner })
@@ -2870,6 +2874,39 @@ impl HermesEngine {
 
     pub fn providers(&self) -> &ProviderRouter {
         &self.inner.providers
+    }
+
+    pub fn sync_providers_from(&self, upstream: &ProviderRouter) {
+        let state = upstream.snapshot();
+        self.inner.providers.sync_from_state(&state);
+    }
+
+    pub fn set_teammate_handler(&self, handler: Arc<dyn toolsets::FabushiTeammateHandler>) {
+        if let Ok(mut guard) = self.inner.teammate_handler.write() {
+            *guard = Some(handler);
+        }
+    }
+
+    pub fn teammate_handler(&self) -> Option<Arc<dyn toolsets::FabushiTeammateHandler>> {
+        self.inner
+            .teammate_handler
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    pub fn set_bound_agent_id(&self, agent_id: impl Into<String>) {
+        if let Ok(mut guard) = self.inner.bound_agent_id.write() {
+            *guard = Some(agent_id.into());
+        }
+    }
+
+    pub fn bound_agent_id(&self) -> Option<String> {
+        self.inner
+            .bound_agent_id
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
     }
 
     pub fn persist_providers_state(&self) {
@@ -3206,6 +3243,8 @@ impl HermesEngine {
         ctx.caller_depth = caller_depth;
         ctx.cancellation = cancellation;
         ctx.terminal_backend = self.inner.config.terminal_backend.clone();
+        ctx.teammate_handler = self.teammate_handler();
+        ctx.bound_agent_id = self.bound_agent_id();
         ctx
     }
 

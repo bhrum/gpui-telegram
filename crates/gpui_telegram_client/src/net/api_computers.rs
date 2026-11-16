@@ -6,6 +6,9 @@ use gpui_telegram_proto::computer_contracts::{
     RemoteComputerCommandResult, RemoteComputerOp, UpdateBotComputerRequest,
     UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
 };
+use gpui_telegram_proto::tailnet_contracts::{
+    TailnetNetMap, TailnetRegisterRequest, TailnetStunResponse,
+};
 use reqwest::Method;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,8 +26,40 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Detects the current host's hostname cleanly via libc/env with localhost fallback.
+fn sanitize_hostname_candidate(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Detects the current host's hostname cleanly via macOS `scutil`, `gethostname`, or env fallback,
+/// rejecting raw IP strings as hostnames.
 pub fn detect_local_hostname() -> String {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("GPUI_OFFLINE_TEST").is_none() && !cfg!(test) {
+        for key in ["ComputerName", "LocalHostName"] {
+            if let Ok(output) = std::process::Command::new("scutil")
+                .args(["--get", key])
+                .output()
+            {
+                if output.status.success() {
+                    if let Ok(raw) = std::str::from_utf8(&output.stdout) {
+                        if let Some(clean) = sanitize_hostname_candidate(raw) {
+                            return clean;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(unused_mut)]
+    let mut saw_ip_hostname = false;
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
@@ -34,28 +69,208 @@ pub fn detect_local_hostname() -> String {
             if let Ok(name) = std::str::from_utf8(&buf[..end]) {
                 let trimmed = name.trim();
                 if !trimmed.is_empty() {
-                    return trimmed.to_string();
+                    if trimmed.parse::<std::net::IpAddr>().is_ok() {
+                        saw_ip_hostname = true;
+                    } else {
+                        return trimmed.to_string();
+                    }
                 }
             }
         }
     }
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "localhost".to_string())
+
+    for var in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(val) = std::env::var(var) {
+            if let Some(clean) = sanitize_hostname_candidate(&val) {
+                return clean;
+            }
+        }
+    }
+
+    if cfg!(target_os = "macos") && saw_ip_hostname {
+        return format!("Mac ({})", std::env::consts::ARCH);
+    }
+
+    "localhost".to_string()
+}
+
+fn is_ignored_interface_name(if_name: &str) -> bool {
+    let lower = if_name.to_ascii_lowercase();
+    const IGNORED_PREFIXES: &[&str] = &[
+        "lo", "utun", "tun", "tap", "docker", "br-", "veth", "bridge", "awdl", "llw", "vmnet",
+        "vboxnet",
+    ];
+    IGNORED_PREFIXES.iter().any(|p| lower.starts_with(p))
+}
+
+fn is_invalid_or_virtual_lan_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    ip.is_unspecified()
+        || o[0] == 127
+        || (o[0] == 169 && o[1] == 254)
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        || o[0] >= 224
+}
+
+fn is_docker_bridge_172(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 172 && (o[1] == 17 || o[1] == 18)
+}
+
+fn is_cgnat_100(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    o[0] == 100 && (64..=127).contains(&o[1])
+}
+
+fn is_preferred_lan_rfc1918(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    (o[0] == 192 && o[1] == 168) || o[0] == 10
+}
+
+fn is_clean_rfc1918(ip: std::net::Ipv4Addr) -> bool {
+    let o = ip.octets();
+    is_preferred_lan_rfc1918(ip)
+        || (o[0] == 172 && (16..=31).contains(&o[1]) && o[1] != 17 && o[1] != 18)
+}
+
+fn is_primary_physical_iface(if_name: &str) -> bool {
+    let lower = if_name.to_ascii_lowercase();
+    lower.starts_with("en")
+        || lower.starts_with("eth")
+        || lower.starts_with("wlan")
+        || lower.starts_with("wl")
+}
+
+/// Detects real LAN IPv4 addresses sorted by physical NIC & RFC1918 priority,
+/// filtering out down/loopback/tunnel/bridge interfaces and fake-IP/link-local ranges.
+pub fn detect_real_lan_ips() -> Vec<String> {
+    #[allow(unused_mut)]
+    let mut candidates: Vec<(u8, String, std::net::Ipv4Addr)> = Vec::new();
+
+    #[cfg(unix)]
+    {
+        struct IfAddrsGuard(*mut libc::ifaddrs);
+        impl Drop for IfAddrsGuard {
+            fn drop(&mut self) {
+                if !self.0.is_null() {
+                    unsafe { libc::freeifaddrs(self.0) };
+                }
+            }
+        }
+
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        let rc = unsafe { libc::getifaddrs(&mut ifap) };
+        if rc == 0 && !ifap.is_null() {
+            let _guard = IfAddrsGuard(ifap);
+            let mut cur = ifap;
+            while !cur.is_null() {
+                let ifa = unsafe { &*cur };
+                cur = ifa.ifa_next;
+
+                let is_up = (ifa.ifa_flags as u64) & (libc::IFF_UP as u64) != 0;
+                let is_loopback = (ifa.ifa_flags as u64) & (libc::IFF_LOOPBACK as u64) != 0;
+                if !is_up || is_loopback || ifa.ifa_addr.is_null() || ifa.ifa_name.is_null() {
+                    continue;
+                }
+
+                let if_name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
+                    .to_string_lossy()
+                    .into_owned();
+                if is_ignored_interface_name(&if_name) {
+                    continue;
+                }
+
+                let sa = unsafe { std::ptr::read_unaligned(ifa.ifa_addr) };
+                if sa.sa_family as i32 != libc::AF_INET {
+                    continue;
+                }
+
+                let sin =
+                    unsafe { std::ptr::read_unaligned(ifa.ifa_addr as *const libc::sockaddr_in) };
+                let ipv4 = std::net::Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
+                if is_invalid_or_virtual_lan_ipv4(ipv4) {
+                    continue;
+                }
+
+                let primary_nic = is_primary_physical_iface(&if_name);
+                let tier = if primary_nic && is_preferred_lan_rfc1918(ipv4) {
+                    0
+                } else if primary_nic && is_clean_rfc1918(ipv4) {
+                    1
+                } else if is_clean_rfc1918(ipv4) {
+                    2
+                } else if primary_nic && !is_docker_bridge_172(ipv4) && !is_cgnat_100(ipv4) {
+                    3
+                } else if !is_docker_bridge_172(ipv4) && !is_cgnat_100(ipv4) {
+                    4
+                } else if is_cgnat_100(ipv4) {
+                    5
+                } else {
+                    6
+                };
+
+                candidates.push((tier, if_name, ipv4));
+            }
+        }
+    }
+
+    if candidates.iter().any(|(_, _, ip)| is_preferred_lan_rfc1918(*ip)) {
+        candidates.retain(|(_, _, ip)| !is_docker_bridge_172(*ip));
+    }
+
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+
+    let mut out = Vec::new();
+    for (_, _, ip) in candidates {
+        let s = ip.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+
+    if out.is_empty() {
+        if let Ok(addr) = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|sock| {
+            sock.connect("8.8.8.8:80")?;
+            sock.local_addr()
+        }) {
+            if let std::net::IpAddr::V4(ipv4) = addr.ip() {
+                if !is_invalid_or_virtual_lan_ipv4(ipv4) {
+                    out.push(ipv4.to_string());
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Detects `(ip_address, os_name, resolution)` for the local host machine.
 pub fn detect_local_host_info() -> (String, String, String) {
-    let ip = std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|sock| {
-            sock.connect("8.8.8.8:80")?;
-            sock.local_addr()
-        })
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let real_ips = detect_real_lan_ips();
+    let has_non_bridge_lan = real_ips.iter().any(|ip| {
+        ip.parse::<std::net::Ipv4Addr>()
+            .map(|v4| !is_docker_bridge_172(v4) && !is_invalid_or_virtual_lan_ipv4(v4))
+            .unwrap_or(false)
+    });
+    let ip = if has_non_bridge_lan {
+        real_ips
+            .into_iter()
+            .find(|s| {
+                s.parse::<std::net::Ipv4Addr>()
+                    .map(|v4| !is_docker_bridge_172(v4) && !is_invalid_or_virtual_lan_ipv4(v4))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        real_ips
+            .into_iter()
+            .find(|s| {
+                s.parse::<std::net::Ipv4Addr>()
+                    .map(|v4| !is_invalid_or_virtual_lan_ipv4(v4))
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    };
 
     let os_pretty = match std::env::consts::OS {
         "macos" => "macOS",
@@ -273,6 +488,100 @@ async fn capture_screen_png_data_url(force_fallback: bool) -> (String, &'static 
     (format!("data:image/png;base64,{}", b64), "fallback_png")
 }
 
+#[cfg(target_os = "macos")]
+async fn try_macos_gui_input(
+    action: &str,
+    x: Option<i32>,
+    y: Option<i32>,
+    text: Option<&str>,
+    key: Option<&str>,
+) -> Option<&'static str> {
+    if cfg!(test) || std::env::var_os("GPUI_OFFLINE_TEST").is_some() {
+        return None;
+    }
+
+    let mut cmd = tokio::process::Command::new("osascript");
+    match action.trim().to_ascii_lowercase().as_str() {
+        "type" => {
+            let txt = text.filter(|s| !s.is_empty())?;
+            cmd.args([
+                "-e",
+                "on run argv",
+                "-e",
+                "tell application \"System Events\" to keystroke (item 1 of argv)",
+                "-e",
+                "end run",
+                "--",
+                txt,
+            ]);
+        }
+        "key" => {
+            let k = key.map(str::trim).filter(|s| !s.is_empty())?;
+            let key_code = match k.to_ascii_lowercase().as_str() {
+                "enter" | "return" => Some(36u16),
+                "tab" => Some(48),
+                "escape" | "esc" => Some(53),
+                "space" => Some(49),
+                "backspace" | "delete" => Some(51),
+                "up" => Some(126),
+                "down" => Some(125),
+                "left" => Some(123),
+                "right" => Some(124),
+                _ => None,
+            };
+            if let Some(code) = key_code {
+                cmd.args([
+                    "-e",
+                    &format!("tell application \"System Events\" to key code {code}"),
+                ]);
+            } else if k.chars().count() == 1 {
+                cmd.args([
+                    "-e",
+                    "on run argv",
+                    "-e",
+                    "tell application \"System Events\" to keystroke (item 1 of argv)",
+                    "-e",
+                    "end run",
+                    "--",
+                    k,
+                ]);
+            } else {
+                return None;
+            }
+        }
+        "click" => {
+            let (px, py) = (x?, y?);
+            let script = format!(
+                "ObjC.import('CoreGraphics'); \
+                 var pt = {{x: {px}, y: {py}}}; \
+                 var down = $.CGEventCreateMouseEvent(null, $.kCGEventLeftMouseDown, pt, $.kCGMouseButtonLeft); \
+                 var up = $.CGEventCreateMouseEvent(null, $.kCGEventLeftMouseUp, pt, $.kCGMouseButtonLeft); \
+                 $.CGEventPost($.kCGHIDEventTap, down); \
+                 $.CGEventPost($.kCGHIDEventTap, up);"
+            );
+            cmd.args(["-l", "JavaScript", "-e", &script]);
+        }
+        _ => return None,
+    }
+
+    cmd.kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(2), cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() => Some("macos_gui"),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn try_macos_gui_input(
+    _action: &str,
+    _x: Option<i32>,
+    _y: Option<i32>,
+    _text: Option<&str>,
+    _key: Option<&str>,
+) -> Option<&'static str> {
+    None
+}
+
 /// Executes a `RemoteComputerOp` directly on the local host machine.
 pub async fn execute_local_computer_op(
     node_id: &str,
@@ -429,16 +738,36 @@ async fn execute_local_computer_op_inner(
             text,
             key,
         } => {
+            let delivered = try_macos_gui_input(
+                action,
+                *x,
+                *y,
+                text.as_deref(),
+                key.as_deref(),
+            )
+            .await;
             result.ok = true;
             result.exit_code = 0;
-            result.stdout = format!(
-                "gui_input acknowledged: action={} x={:?} y={:?} text_len={} key={:?}",
-                action,
-                x,
-                y,
-                text.as_ref().map(|t| t.len()).unwrap_or(0),
-                key
-            );
+            if let Some(driver) = delivered {
+                result.stdout = format!(
+                    "gui_input delivered ({}): action={} x={:?} y={:?} text_len={} key={:?}",
+                    driver,
+                    action,
+                    x,
+                    y,
+                    text.as_ref().map(|t| t.len()).unwrap_or(0),
+                    key
+                );
+            } else {
+                result.stdout = format!(
+                    "gui_input acknowledged: action={} x={:?} y={:?} text_len={} key={:?}",
+                    action,
+                    x,
+                    y,
+                    text.as_ref().map(|t| t.len()).unwrap_or(0),
+                    key
+                );
+            }
         }
         RemoteComputerOp::TestConnection => {
             let (ip, os, _res) = detect_local_host_info();
@@ -587,6 +916,46 @@ impl HttpClient {
         let path = format!("/api/v1/bots/{}/computer", bot_id);
         self.request_json(Method::PUT, &path, Some(token), Some(req))
             .await
+    }
+
+    pub async fn register_tailnet(
+        &self,
+        token: &str,
+        req: &TailnetRegisterRequest,
+    ) -> Result<TailnetNetMap, HttpClientError> {
+        self.request_json(
+            Method::POST,
+            "/api/v1/tailnet/register",
+            Some(token),
+            Some(req),
+        )
+        .await
+    }
+
+    pub async fn get_tailnet_netmap(
+        &self,
+        token: &str,
+    ) -> Result<TailnetNetMap, HttpClientError> {
+        self.request_json(
+            Method::GET,
+            "/api/v1/tailnet/netmap",
+            Some(token),
+            None::<&()>,
+        )
+        .await
+    }
+
+    pub async fn get_tailnet_stun(
+        &self,
+        token: &str,
+    ) -> Result<TailnetStunResponse, HttpClientError> {
+        self.request_json(
+            Method::GET,
+            "/api/v1/tailnet/stun",
+            Some(token),
+            None::<&()>,
+        )
+        .await
     }
 
     /// Registers or refreshes the current local host machine using `self.device_id()`.
@@ -991,5 +1360,37 @@ mod tests {
             "/api/v1/computers/local%3A1%3Adev-custom/policy"
         );
         assert_eq!(reqs[4].1, "/api/v1/computers/local%3A1%3Adev-custom");
+    }
+
+    #[test]
+    fn test_hostname_sanitization_and_real_lan_ip_filters() {
+        assert_eq!(sanitize_hostname_candidate("  "), None);
+        assert_eq!(sanitize_hostname_candidate("192.168.1.7"), None);
+        assert_eq!(sanitize_hostname_candidate("::1"), None);
+        assert_eq!(
+            sanitize_hostname_candidate("  Bhrum-MacBook.local \n"),
+            Some("Bhrum-MacBook.local".to_string())
+        );
+
+        let hostname = detect_local_hostname();
+        assert!(!hostname.is_empty());
+        assert!(
+            hostname.parse::<std::net::IpAddr>().is_err(),
+            "hostname must never resolve to a raw IP literal: {hostname}"
+        );
+
+        let ips = detect_real_lan_ips();
+        for ip in &ips {
+            let parsed: std::net::Ipv4Addr = ip.parse().expect("valid ipv4");
+            assert!(!is_invalid_or_virtual_lan_ipv4(parsed));
+        }
+
+        let (primary_ip, os_name, res) = detect_local_host_info();
+        assert!(!primary_ip.is_empty());
+        assert!(!primary_ip.starts_with("198.18."));
+        assert!(!primary_ip.starts_with("198.19."));
+        assert!(!primary_ip.starts_with("169.254."));
+        assert!(!os_name.is_empty());
+        assert!(!res.is_empty());
     }
 }

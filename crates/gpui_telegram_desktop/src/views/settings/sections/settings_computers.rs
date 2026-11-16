@@ -2,7 +2,8 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_telegram_proto::{
     AuthorizedControllerEntry, AuthorizedControllerKind, CloudAuthMethod, ComputerNodeDto,
-    ComputerNodeKind, ComputerRunPolicy, UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
+    ComputerNodeKind, ComputerRunPolicy, TailnetNodeStatus, TailnetPeerLiveState, TailnetRelayMode,
+    UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
 };
 
 use crate::components::ui::{
@@ -58,6 +59,7 @@ pub struct SettingsComputersSections {
     pub language_id: String,
     pub page: SettingsComputersPage,
     pub computers: Vec<ComputerNodeDto>,
+    pub tailnet_status: Option<TailnetNodeStatus>,
     pub known_bots: Vec<(u64, String)>,
     pub current_bot_id: Option<u64>,
     pub status_message: Option<String>,
@@ -96,6 +98,7 @@ impl SettingsComputersSections {
             language_id: lang.to_string(),
             page: SettingsComputersPage::Overview,
             computers: Vec::new(),
+            tailnet_status: None,
             known_bots: Vec::new(),
             current_bot_id: None,
             status_message: None,
@@ -135,6 +138,10 @@ impl SettingsComputersSections {
 
     pub fn sync_computers(&mut self, computers: Vec<ComputerNodeDto>) {
         self.computers = computers;
+    }
+
+    pub fn sync_tailnet_status(&mut self, status: Option<TailnetNodeStatus>) {
+        self.tailnet_status = status;
     }
 
     pub fn sync_known_bots(&mut self, bots: Vec<(u64, String)>, current_bot_id: Option<u64>) {
@@ -455,11 +462,200 @@ impl SettingsComputersSections {
     }
 
     fn node_endpoint(node: &ComputerNodeDto) -> String {
-        node.host
+        let host_opt = node
+            .host
             .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let ip = node.ip_address.trim();
+        match (node.kind, host_opt) {
+            (ComputerNodeKind::LocalDevice, Some(ts_ip)) if !ip.is_empty() && ts_ip != ip => {
+                format!("{ts_ip} · {ip}")
+            }
+            (_, Some(h)) => h.to_string(),
+            (_, None) => ip.to_string(),
+        }
+    }
+
+    fn find_tailnet_peer(&self, node: &ComputerNodeDto) -> Option<&TailnetPeerLiveState> {
+        let ts = self.tailnet_status.as_ref()?;
+        ts.peers.iter().find(|p| {
+            p.node_id == node.node_id
+                || node
+                    .device_id
+                    .as_deref()
+                    .is_some_and(|did| !did.is_empty() && p.device_id == did)
+        })
+    }
+
+    fn relay_mode_label(mode: TailnetRelayMode, lang: &str) -> &'static str {
+        if lang.starts_with("zh") {
+            mode.label_zh()
+        } else {
+            mode.label_en()
+        }
+    }
+
+    fn format_peer_transport(peer: &TailnetPeerLiveState, lang: &str) -> String {
+        let mode = Self::relay_mode_label(peer.relay_mode, lang);
+        match peer.rtt_ms {
+            Some(ms) => format!("{mode} · {ms}ms"),
+            None => mode.to_string(),
+        }
+    }
+
+    fn render_tailnet_mesh_card(&self, pal: TdesktopThemePalette, lang: &str) -> AnyElement {
+        let ts = self.tailnet_status.as_ref();
+        let running = ts.is_some_and(|s| s.running);
+        let current_local = self
+            .computers
+            .iter()
+            .find(|c| c.kind == ComputerNodeKind::LocalDevice && c.is_current_device);
+
+        let tailnet_ip = ts
+            .map(|s| s.tailnet_ip.trim())
             .filter(|s| !s.is_empty())
-            .unwrap_or(&node.ip_address)
-            .to_string()
+            .or_else(|| {
+                current_local
+                    .and_then(|c| c.host.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| tr_str(lang, "分配中...", "Assigning..."));
+
+        let lan_ip = ts
+            .map(|s| s.lan_ip.trim())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                current_local
+                    .map(|c| c.ip_address.trim())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or("--");
+
+        let active_mode = ts
+            .map(|s| {
+                if s.peers
+                    .iter()
+                    .any(|p| p.online && p.relay_mode == TailnetRelayMode::DirectUdp)
+                {
+                    TailnetRelayMode::DirectUdp
+                } else {
+                    s.relay_mode
+                }
+            })
+            .unwrap_or(TailnetRelayMode::HttpFallback);
+        let mode_label = Self::relay_mode_label(active_mode, lang);
+        let transport_text = match ts.and_then(|s| s.derp_rtt_ms) {
+            Some(rtt) if running => format!("{mode_label} · {rtt}ms"),
+            _ => mode_label.to_string(),
+        };
+
+        let status_badge = if running {
+            tr_str(lang, "已组网 · 内置免服务", "Mesh Active · Zero-Service")
+        } else {
+            tr_str(lang, "正在连接 Tailnet...", "Connecting Tailnet...")
+        };
+        let status_color = if running { pal.success } else { pal.accent };
+        let peer_count = ts
+            .map(|s| s.peers.iter().filter(|p| p.online).count())
+            .unwrap_or(0);
+        let udp_port = ts.map(|s| s.local_udp_port).unwrap_or(0);
+        let udp_text = if udp_port > 0 {
+            format!("UDP :{udp_port}")
+        } else {
+            tr_str(lang, "内置 Mesh", "Embedded Mesh").to_string()
+        };
+
+        settings_card(pal)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .w(px(8.0))
+                                            .h(px(8.0))
+                                            .rounded_full()
+                                            .bg(rgb(status_color)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(rgb(pal.text_primary))
+                                            .child("Tailscale Mesh"),
+                                    )
+                                    .child(
+                                        div()
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded(px(999.0))
+                                            .bg(TdesktopThemePalette::rgba_with_alpha(
+                                                status_color,
+                                                0.14,
+                                            ))
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(status_color))
+                                            .child(status_badge.to_string()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(2.0))
+                                    .rounded(px(999.0))
+                                    .bg(TdesktopThemePalette::rgba_with_alpha(pal.success, 0.12))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(tg_icon(IconName::Lock, 11.0, pal.success))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(pal.success))
+                                            .child("X25519 + ChaCha20-Poly1305"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(10.0))
+                            .text_size(px(11.5))
+                            .text_color(rgb(pal.text_secondary))
+                            .child(format!("Tailnet IP: {tailnet_ip}"))
+                            .child(format!("LAN: {lan_ip}"))
+                            .child(format!(
+                                "{}: {transport_text}",
+                                tr_str(lang, "传输", "Transport")
+                            ))
+                            .child(udp_text)
+                            .when(peer_count > 0, |row| {
+                                row.child(format!(
+                                    "{}: {peer_count}",
+                                    tr_str(lang, "在线节点", "Online Peers")
+                                ))
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_overview(&self, pal: TdesktopThemePalette, lang: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -659,6 +855,7 @@ impl SettingsComputersSections {
                         .child(msg.clone()),
                 )
             })
+            .child(self.render_tailnet_mesh_card(pal, lang))
             .child(settings_subsection_title(
                 tr_str(lang, "本地电脑", "Local Computers"),
                 pal,
@@ -684,7 +881,58 @@ impl SettingsComputersSections {
         let nid_select = node.node_id.clone();
         let nid_ctrl = node.node_id.clone();
         let nid_test = node.node_id.clone();
-        let endpoint = Self::node_endpoint(node);
+        let peer_opt = self.find_tailnet_peer(node);
+        let is_online = node.online || peer_opt.is_some_and(|p| p.online);
+        let endpoint = if let Some(peer) = peer_opt {
+            let ts_ip = peer.tailnet_ip.trim();
+            let lan = if !peer.lan_ip.trim().is_empty() {
+                peer.lan_ip.trim()
+            } else {
+                node.ip_address.trim()
+            };
+            if !ts_ip.is_empty() && !lan.is_empty() && ts_ip != lan {
+                format!("{ts_ip} · {lan}")
+            } else if !ts_ip.is_empty() {
+                ts_ip.to_string()
+            } else {
+                Self::node_endpoint(node)
+            }
+        } else {
+            Self::node_endpoint(node)
+        };
+        let transport_suffix = if let Some(peer) = peer_opt {
+            Some(Self::format_peer_transport(peer, lang))
+        } else if is_local && node.is_current_device {
+            self.tailnet_status
+                .as_ref()
+                .filter(|ts| ts.running)
+                .map(|ts| Self::relay_mode_label(ts.relay_mode, lang).to_string())
+        } else {
+            None
+        };
+        let subtitle = match transport_suffix {
+            Some(t) => format!(
+                "{} · {} · {} · {}",
+                if is_online {
+                    tr_str(lang, "在线", "Online")
+                } else {
+                    tr_str(lang, "离线", "Offline")
+                },
+                endpoint,
+                t,
+                Self::policy_label(node.run_policy, lang),
+            ),
+            None => format!(
+                "{} · {} · {}",
+                if is_online {
+                    tr_str(lang, "在线", "Online")
+                } else {
+                    tr_str(lang, "离线", "Offline")
+                },
+                endpoint,
+                Self::policy_label(node.run_policy, lang),
+            ),
+        };
         let badge = if is_local {
             if node.is_current_device {
                 tr_str(lang, "当前设备", "Current Device")
@@ -775,7 +1023,7 @@ impl SettingsComputersSections {
                                             .w(px(7.0))
                                             .h(px(7.0))
                                             .rounded_full()
-                                            .bg(rgb(if node.online {
+                                            .bg(rgb(if is_online {
                                                 pal.success
                                             } else {
                                                 pal.text_secondary
@@ -786,16 +1034,7 @@ impl SettingsComputersSections {
                                             .text_size(px(11.5))
                                             .text_color(rgb(pal.text_secondary))
                                             .truncate()
-                                            .child(format!(
-                                                "{} · {} · {}",
-                                                if node.online {
-                                                    tr_str(lang, "在线", "Online")
-                                                } else {
-                                                    tr_str(lang, "离线", "Offline")
-                                                },
-                                                endpoint,
-                                                Self::policy_label(node.run_policy, lang),
-                                            )),
+                                            .child(subtitle),
                                     ),
                             ),
                     ),
@@ -805,31 +1044,29 @@ impl SettingsComputersSections {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .when(!is_local, |row| {
-                        row.child(
-                            div()
-                                .id(("sc-test-node", idx))
-                                .cursor_pointer()
-                                .px(px(8.0))
-                                .py(px(5.0))
-                                .rounded(px(7.0))
-                                .bg(rgb(pal.input_bg))
-                                .border_1()
-                                .border_color(rgb(pal.border_fg))
-                                .hover(|s| s.bg(rgb(pal.dialogs_hover_bg)))
-                                .text_size(px(11.5))
-                                .text_color(rgb(pal.text_primary))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.pending_event =
-                                            Some(SettingsComputersEvent::TestNode(nid_test.clone()));
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(tr_str(lang, "测试", "Test")),
-                        )
-                    })
+                    .child(
+                        div()
+                            .id((if is_local { "sc-local-test" } else { "sc-cloud-test" }, idx))
+                            .cursor_pointer()
+                            .px(px(8.0))
+                            .py(px(5.0))
+                            .rounded(px(7.0))
+                            .bg(rgb(pal.input_bg))
+                            .border_1()
+                            .border_color(rgb(pal.border_fg))
+                            .hover(|s| s.bg(rgb(pal.dialogs_hover_bg)))
+                            .text_size(px(11.5))
+                            .text_color(rgb(pal.text_primary))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.pending_event =
+                                        Some(SettingsComputersEvent::TestNode(nid_test.clone()));
+                                    cx.notify();
+                                }),
+                            )
+                            .child(tr_str(lang, "测试", "Test")),
+                    )
                     .child(
                         div()
                             .id((if is_local { "sc-local-wb" } else { "sc-cloud-wb" }, idx))
@@ -884,7 +1121,71 @@ impl SettingsComputersSections {
                 .into_any_element();
         };
 
-        let endpoint = Self::node_endpoint(node);
+        let peer_opt = self.find_tailnet_peer(node);
+        let is_local = node.kind == ComputerNodeKind::LocalDevice;
+        let is_cloud = node.kind == ComputerNodeKind::CloudServer;
+        let is_online = node.online || peer_opt.is_some_and(|p| p.online);
+        let can_remove_offline_local = is_local && !node.is_current_device && !node.online;
+        let endpoint = if let Some(peer) = peer_opt {
+            let ts_ip = peer.tailnet_ip.trim();
+            let lan = if !peer.lan_ip.trim().is_empty() {
+                peer.lan_ip.trim()
+            } else {
+                node.ip_address.trim()
+            };
+            if !ts_ip.is_empty() && !lan.is_empty() && ts_ip != lan {
+                format!("{ts_ip} · {lan}")
+            } else if !ts_ip.is_empty() {
+                ts_ip.to_string()
+            } else {
+                Self::node_endpoint(node)
+            }
+        } else {
+            Self::node_endpoint(node)
+        };
+        let local_tailnet_ip = if is_local {
+            peer_opt
+                .map(|p| p.tailnet_ip.trim())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    node.host
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty() && *s != node.ip_address.trim())
+                })
+                .or_else(|| {
+                    if node.is_current_device {
+                        self.tailnet_status
+                            .as_ref()
+                            .map(|ts| ts.tailnet_ip.trim())
+                            .filter(|s| !s.is_empty())
+                    } else {
+                        None
+                    }
+                })
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let local_transport_badge = if is_local {
+            if let Some(peer) = peer_opt {
+                Some((
+                    Self::format_peer_transport(peer, lang),
+                    peer.relay_mode == TailnetRelayMode::DirectUdp,
+                ))
+            } else if node.is_current_device {
+                self.tailnet_status.as_ref().filter(|ts| ts.running).map(|ts| {
+                    (
+                        Self::relay_mode_label(ts.relay_mode, lang).to_string(),
+                        ts.relay_mode == TailnetRelayMode::DirectUdp,
+                    )
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let badge = match node.kind {
             ComputerNodeKind::LocalDevice if node.is_current_device => {
                 tr_str(lang, "当前设备", "Current Device")
@@ -900,7 +1201,7 @@ impl SettingsComputersSections {
         let nid_remove = node.node_id.clone();
         let nid_test = node.node_id.clone();
         let nid_del = node.node_id.clone();
-        let is_cloud = node.kind == ComputerNodeKind::CloudServer;
+        let nid_del_local = node.node_id.clone();
         let node_clone_for_edit = node.clone();
 
         // Middle ACL card: 谁可以控制 <device>
@@ -1614,7 +1915,7 @@ impl SettingsComputersSections {
                                                             .w(px(7.0))
                                                             .h(px(7.0))
                                                             .rounded_full()
-                                                            .bg(rgb(if node.online {
+                                                            .bg(rgb(if is_online {
                                                                 pal.success
                                                             } else {
                                                                 pal.text_secondary
@@ -1626,7 +1927,7 @@ impl SettingsComputersSections {
                                                             .text_color(rgb(pal.text_secondary))
                                                             .child(format!(
                                                                 "{} · {} · {}",
-                                                                if node.online {
+                                                                if is_online {
                                                                     tr_str(lang, "在线", "Online")
                                                                 } else {
                                                                     tr_str(lang, "离线", "Offline")
@@ -1635,6 +1936,79 @@ impl SettingsComputersSections {
                                                                 node.os_name,
                                                             )),
                                                     ),
+                                            )
+                                            .when(
+                                                local_tailnet_ip.is_some()
+                                                    || local_transport_badge.is_some(),
+                                                |col| {
+                                                    col.child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_wrap()
+                                                            .items_center()
+                                                            .gap(px(6.0))
+                                                            .when_some(
+                                                                local_tailnet_ip.clone(),
+                                                                |row, ts_ip| {
+                                                                    row.child(
+                                                                        div()
+                                                                            .px(px(7.0))
+                                                                            .py(px(1.5))
+                                                                            .rounded(px(999.0))
+                                                                            .bg(rgb(pal.input_bg))
+                                                                            .text_size(px(10.5))
+                                                                            .text_color(rgb(
+                                                                                pal.text_primary,
+                                                                            ))
+                                                                            .child(format!(
+                                                                                "Tailnet: {ts_ip}"
+                                                                            )),
+                                                                    )
+                                                                },
+                                                            )
+                                                            .when_some(
+                                                                local_transport_badge.clone(),
+                                                                |row, (t_label, is_direct)| {
+                                                                    let t_color = if is_direct {
+                                                                        pal.success
+                                                                    } else {
+                                                                        pal.accent
+                                                                    };
+                                                                    row.child(
+                                                                        div()
+                                                                            .px(px(7.0))
+                                                                            .py(px(1.5))
+                                                                            .rounded(px(999.0))
+                                                                            .bg(TdesktopThemePalette::rgba_with_alpha(
+                                                                                t_color,
+                                                                                0.14,
+                                                                            ))
+                                                                            .flex()
+                                                                            .items_center()
+                                                                            .gap(px(4.0))
+                                                                            .child(tg_icon(
+                                                                                IconName::Lock,
+                                                                                10.0,
+                                                                                t_color,
+                                                                            ))
+                                                                            .child(
+                                                                                div()
+                                                                                    .text_size(px(10.5))
+                                                                                    .font_weight(
+                                                                                        FontWeight::SEMIBOLD,
+                                                                                    )
+                                                                                    .text_color(rgb(
+                                                                                        t_color,
+                                                                                    ))
+                                                                                    .child(format!(
+                                                                                        "{t_label} · WireGuard E2E"
+                                                                                    )),
+                                                                            ),
+                                                                    )
+                                                                },
+                                                            ),
+                                                    )
+                                                },
                                             ),
                                     ),
                             )
@@ -1643,6 +2017,45 @@ impl SettingsComputersSections {
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
+                                    .when(can_remove_offline_local, |row| {
+                                        let nid_rm = nid_del_local.clone();
+                                        row.child(
+                                            div()
+                                                .id("sc-detail-remove-offline-device")
+                                                .cursor_pointer()
+                                                .px(px(10.0))
+                                                .py(px(7.0))
+                                                .rounded(px(8.0))
+                                                .bg(rgb(pal.input_bg))
+                                                .border_1()
+                                                .border_color(rgb(pal.danger))
+                                                .hover(|s| {
+                                                    s.bg(TdesktopThemePalette::rgba_with_alpha(
+                                                        pal.danger,
+                                                        0.12,
+                                                    ))
+                                                })
+                                                .text_size(px(12.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(rgb(pal.danger))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        this.pending_event = Some(
+                                                            SettingsComputersEvent::DeleteNode(
+                                                                nid_rm.clone(),
+                                                            ),
+                                                        );
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(tr_str(
+                                                    lang,
+                                                    "移除离线设备",
+                                                    "Remove Offline Device",
+                                                )),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .id("sc-detail-remote-control")

@@ -28,6 +28,15 @@ pub fn render_webpage_preview_card<V: 'static>(
         .unwrap_or_else(|| "Web Preview".to_string());
     let has_iv = wp.has_instant_view;
 
+    let wp_bg = if palette.mode.is_fabushi_style() {
+        TdesktopThemePalette::rgba_with_alpha(
+            palette.text_primary,
+            if palette.mode.is_dark() { 0.06 } else { 0.045 },
+        )
+    } else {
+        TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.25)
+    };
+
     div()
         .w_full()
         .min_w(px(0.0))
@@ -36,7 +45,7 @@ pub fn render_webpage_preview_card<V: 'static>(
         .pr(px(8.0))
         .py(px(6.0))
         .rounded(px(8.0))
-        .bg(TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.25))
+        .bg(wp_bg)
         .border_l_2()
         .border_color(rgb(palette.accent))
         .flex()

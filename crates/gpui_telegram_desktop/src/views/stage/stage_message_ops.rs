@@ -895,6 +895,7 @@ impl ConversationStage {
             message_rows.push(render_message_row_1to1(
                 msg,
                 meta,
+                self.active_fabushi_bot.as_ref(),
                 group,
                 stage_w,
                 selected_set.contains(&msg.id),

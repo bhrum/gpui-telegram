@@ -36,10 +36,15 @@ impl Render for ThinkingBubble {
             IconName::ChevronRight
         };
 
+        let is_fabushi = pal.mode.is_fabushi_style();
+        let container_bg = if is_fabushi { pal.card_bg } else { pal.code_bg };
+        let label_fg = if is_fabushi { pal.text_primary } else { pal.text_secondary };
+        let body_fg = if is_fabushi { pal.text_secondary } else { pal.code_fg };
+
         div()
             .p(px(10.0))
-            .rounded(px(8.0))
-            .bg(rgb(pal.code_bg))
+            .rounded(px(if is_fabushi { 10.0 } else { 8.0 }))
+            .bg(rgb(container_bg))
             .border_1()
             .border_color(rgb(pal.border_fg))
             .flex()
@@ -68,7 +73,7 @@ impl Render for ThinkingBubble {
                                 div()
                                     .text_size(px(12.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(pal.text_secondary))
+                                    .text_color(rgb(label_fg))
                                     .child("Reasoning"),
                             ),
                     )
@@ -88,7 +93,7 @@ impl Render for ThinkingBubble {
                 el.child(
                     div()
                         .text_size(px(12.0))
-                        .text_color(rgb(pal.code_fg))
+                        .text_color(rgb(body_fg))
                         .child(preview),
                 )
             })

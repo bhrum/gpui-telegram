@@ -1,6 +1,9 @@
 use crate::computer::{ComputerCloudProvider, ComputerLeaseBroker};
 use crate::mcp::{McpRegistry, ToolRiskLevel};
 use crate::talk::TalkCoordinator;
+use mahayana_host_runtime::agents::agent_messaging::{
+    SAND_CREATE_AGENT_TOOL_NAME, SAND_SEND_TO_AGENT_TOOL_NAME, SAND_UPDATE_AGENT_TOOL_NAME,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -730,6 +733,39 @@ pub type ApprovalCallback = Arc<
 >;
 pub type UiActionCallback = Arc<dyn Fn(&HermesUiAction) + Send + Sync>;
 
+/// Callback bridge for Mahayana/Fabushi native agent-to-agent messaging & roster management tools.
+pub trait FabushiTeammateHandler: Send + Sync {
+    fn send_to_agent(
+        &self,
+        from_agent_id: &str,
+        active_chat_id: Option<i64>,
+        target_id: &str,
+        message: &str,
+        priority: bool,
+        caller_depth: usize,
+    ) -> std::result::Result<Value, String>;
+
+    fn create_agent(
+        &self,
+        creator_agent_id: &str,
+        active_chat_id: Option<i64>,
+        name: &str,
+        description: &str,
+        avatar_shape: Option<&str>,
+        avatar_color: Option<&str>,
+    ) -> std::result::Result<Value, String>;
+
+    fn update_agent(
+        &self,
+        caller_agent_id: &str,
+        target_agent_id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        avatar_shape: Option<&str>,
+        avatar_color: Option<&str>,
+    ) -> std::result::Result<Value, String>;
+}
+
 /// Execution context passed to every Hermes tool invocation.
 #[derive(Clone)]
 pub struct HermesToolContext {
@@ -737,6 +773,7 @@ pub struct HermesToolContext {
     pub session_id: String,
     pub chat_id: Option<i64>,
     pub bot_id: Option<i64>,
+    pub bound_agent_id: Option<String>,
     pub user_id: Option<u64>,
     pub turn_index: u64,
     pub caller_depth: usize,
@@ -756,6 +793,7 @@ pub struct HermesToolContext {
     pub approval_callback: Option<ApprovalCallback>,
     pub ui_action_emitter: Option<UiActionCallback>,
     pub state_bridge: Option<Arc<dyn HermesStateBridge>>,
+    pub teammate_handler: Option<Arc<dyn FabushiTeammateHandler>>,
     pub http_client: reqwest::Client,
     pub browser_cdp_url: Option<String>,
     pub terminal_backend: TerminalBackendConfig,
@@ -774,6 +812,7 @@ impl HermesToolContext {
             session_id: "default".into(),
             chat_id: None,
             bot_id: None,
+            bound_agent_id: None,
             user_id: None,
             turn_index: 1,
             caller_depth: 0,
@@ -793,6 +832,7 @@ impl HermesToolContext {
             approval_callback: None,
             ui_action_emitter: None,
             state_bridge: None,
+            teammate_handler: None,
             http_client,
             browser_cdp_url: std::env::var("HERMES_BROWSER_CDP_URL").ok(),
             terminal_backend: TerminalBackendConfig::default(),
@@ -836,6 +876,16 @@ impl HermesToolContext {
 
     pub fn with_state_bridge(mut self, bridge: Arc<dyn HermesStateBridge>) -> Self {
         self.state_bridge = Some(bridge);
+        self
+    }
+
+    pub fn with_teammate_handler(mut self, handler: Arc<dyn FabushiTeammateHandler>) -> Self {
+        self.teammate_handler = Some(handler);
+        self
+    }
+
+    pub fn with_bound_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.bound_agent_id = Some(agent_id.into());
         self
     }
 
@@ -1425,6 +1475,56 @@ pub fn all_builtin_tool_specs() -> Vec<HermesToolSpec> {
                     },
                     "max_concurrent": { "type": "integer", "minimum": 1, "maximum": 16 },
                     "max_depth": { "type": "integer", "minimum": 1, "maximum": 8 }
+                }
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            SAND_SEND_TO_AGENT_TOOL_NAME,
+            ToolsetId::Subagents,
+            "Asynchronously send a message or handoff request to another teammate Fabushi bot or group chat by agent_id or @username.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "targetId": { "type": "string", "description": "Target agent_id, @username, or group id" },
+                    "message": { "type": "string", "description": "Actionable instructions or summary for the target agent" },
+                    "priority": { "type": "boolean", "description": "Interrupt non-user background work on the target agent" }
+                },
+                "required": ["targetId", "message"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            SAND_CREATE_AGENT_TOOL_NAME,
+            ToolsetId::Subagents,
+            "Create a new dedicated Fabushi teammate bot with isolated profile, memory, and skills.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "avatarShape": { "type": "string" },
+                    "avatarColor": { "type": "string" }
+                },
+                "required": ["name", "description"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            SAND_UPDATE_AGENT_TOOL_NAME,
+            ToolsetId::Subagents,
+            "Update a Fabushi bot's profile identity (name, description, avatarShape, avatarColor).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "targetId": { "type": "string", "description": "Optional target agent_id (defaults to self)" },
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "avatarShape": { "type": "string" },
+                    "avatarColor": { "type": "string" }
                 }
             }),
             ToolRiskLevel::Medium,

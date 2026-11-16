@@ -2,7 +2,10 @@ use crate::db::schema::MessageRecord;
 use crate::messaging::pipeline::MessagePipeline;
 use crate::routes::{broadcast_chat_pts, check_active_membership, err_resp, map_telegram_err, parse_json_object};
 use crate::search::schema::SearchDocument;
-use crate::server::{extract_message_content_text, maybe_trigger_bot_reply, AppState, AuthBearer};
+use crate::server::{
+    detect_target_bots_in_chat, extract_message_content_text,
+    maybe_trigger_bot_reply_with_reply_to, AppState, AuthBearer,
+};
 use axum::{body::Bytes, extract::{Path, Query, State}, http::StatusCode, response::{IntoResponse, Json, Response}};
 use chrono::{DateTime, Utc};
 use gpui_telegram_core::types::{ChatId, MessageFlags, MsgId, PeerId, TopicId, UserId};
@@ -253,12 +256,36 @@ pub async fn send_for_chat(state: &Arc<AppState>, auth_user: UserId, chat_id_raw
         state.search_indexer.index_message_nonblocking(SearchDocument::new(msg_id.0.to_string(), chat_id.0.to_string(), auth_user.0.to_string(), date_ms, text_preview.clone(), None));
         state.search_indexer.commit_nonblocking();
         broadcast_chat_pts(state, chat_id, pts_update.clone());
-        if crate::server::detect_bot_in_chat(&state.db, chat_id, auth_user, &text_preview).is_some() {
+        crate::routes::telegram_bot_api::record_incoming_user_message_for_bot(
+            state,
+            chat_id,
+            auth_user,
+            msg_id,
+            &text_preview,
+            date_ms,
+        );
+        let targets = detect_target_bots_in_chat(state, chat_id, auth_user, &text_preview, reply_to);
+        let has_ai_target = targets.iter().any(|buid| {
+            !state
+                .db
+                .get_bot_by_user_id(buid.0 as i64)
+                .ok()
+                .flatten()
+                .is_some_and(|b| b.is_standard_bot)
+        });
+        if has_ai_target {
             let weak_state = Arc::downgrade(state);
             let tp = text_preview.clone();
             tokio::spawn(async move {
                 if let Some(state_bg) = weak_state.upgrade() {
-                    maybe_trigger_bot_reply(&state_bg, chat_id, auth_user, &tp).await;
+                    maybe_trigger_bot_reply_with_reply_to(
+                        &state_bg,
+                        chat_id,
+                        auth_user,
+                        &tp,
+                        reply_to,
+                    )
+                    .await;
                 }
             });
         }

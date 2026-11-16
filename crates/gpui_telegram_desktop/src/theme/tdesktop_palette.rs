@@ -147,9 +147,15 @@ impl TdesktopThemePalette {
         rgba_from_hex_alpha(hex, alpha)
     }
 
-    /// Translucent service pill / date badge background matching Telegram Desktop stage overlays.
+    /// Translucent service pill / date badge background matching Fabushi / Telegram Desktop stage overlays.
     pub fn service_pill_rgba(&self) -> Rgba {
-        let alpha = if self.mode.is_dark() { 0.80 } else { 0.52 };
+        let alpha = if self.mode.is_fabushi_style() {
+            0.92
+        } else if self.mode.is_dark() {
+            0.80
+        } else {
+            0.52
+        };
         Self::rgba_with_alpha(self.service_pill_bg, alpha)
     }
 
@@ -198,6 +204,6 @@ impl TdesktopThemePalette {
 
 impl Default for TdesktopThemePalette {
     fn default() -> Self {
-        Self::build(TdesktopThemeMode::Night, 0x2AABEE, 14, 14)
+        Self::build(TdesktopThemeMode::Night, 0x1084FE, 14, 17)
     }
 }

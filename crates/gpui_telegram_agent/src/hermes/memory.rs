@@ -497,6 +497,12 @@ impl MemoryManager {
     // SOUL.md Persona Persistence
     // =========================================================================
 
+    pub fn has_soul(&self) -> bool {
+        self.read_blob("SOUL.md", "soul_md")
+            .map(|raw| !raw.trim().is_empty())
+            .unwrap_or(false)
+    }
+
     pub fn read_soul(&self) -> Result<SoulProfile> {
         let raw = self.read_blob("SOUL.md", "soul_md")?;
         if raw.trim().is_empty() {

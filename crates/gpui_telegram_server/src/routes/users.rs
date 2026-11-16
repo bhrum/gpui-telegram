@@ -261,6 +261,16 @@ pub async fn contacts_add_or_upsert(
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let avatar_shape = payload
+        .get("avatar_shape")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let avatar_color = payload
+        .get("avatar_color")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let mut raw_un = payload
         .get("username")
         .and_then(|v| v.as_str())
@@ -568,6 +578,8 @@ pub async fn contacts_add_or_upsert(
         state.gateway_hub.subscribe_chat(human_cid.0, target_uid);
         human_cid
     };
+    let mut resolved_avatar_shape: Option<String> = None;
+    let mut resolved_avatar_color_id: Option<String> = None;
     if is_bot && target_uid.0 != crate::db::miniapp_store::BOTFATHER_USER_ID {
         crate::routes::hermes::save_bot_persona_kv(
             &state,
@@ -579,6 +591,50 @@ pub async fn contacts_add_or_upsert(
             model.as_deref(),
             welcome_message.as_deref(),
         );
+        let default_persona = bot_prompt
+            .as_deref()
+            .or(persona.as_deref())
+            .or(effective_bio.as_deref())
+            .unwrap_or("");
+        if let Ok(Some(mut rec)) = state.db.ensure_bot_registry_for_existing_bot_user(
+            target_uid.0 as i64,
+            auth.user_id.0 as i64,
+            default_persona,
+        ) {
+            let model_opt = model.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            if model_opt.is_some() || avatar_shape.is_some() || avatar_color.is_some() {
+                if let Ok(updated) = state.db.update_bot_fabushi_fields(
+                    rec.bot_user_id,
+                    None,
+                    None,
+                    None,
+                    model_opt.map(|_| default_persona),
+                    None,
+                    avatar_shape.as_deref(),
+                    avatar_color.as_deref(),
+                    model_opt,
+                    None,
+                    None,
+                    None,
+                ) {
+                    rec = updated;
+                }
+            }
+            if let Some(inst) = crate::routes::bots_miniapps::provision_fabushi_bot_with_host(
+                &state.db,
+                &state.fabushi_bots,
+                &rec,
+            ) {
+                let prof = inst.profile();
+                resolved_avatar_shape = Some(prof.avatar_shape);
+                resolved_avatar_color_id = Some(prof.avatar_color);
+            } else {
+                resolved_avatar_shape =
+                    (!rec.avatar_shape.trim().is_empty()).then(|| rec.avatar_shape.clone());
+                resolved_avatar_color_id =
+                    (!rec.avatar_color.trim().is_empty()).then(|| rec.avatar_color.clone());
+            }
+        }
     }
     (
         StatusCode::CREATED,
@@ -599,6 +655,8 @@ pub async fn contacts_add_or_upsert(
             "welcome_message": welcome_message,
             "message_ttl_seconds": state.db.get_chat_ttl(direct_cid).unwrap_or(0),
             "avatar_color": if is_bot { 0x2AABEE } else { 0x27AE60 },
+            "avatar_shape": resolved_avatar_shape,
+            "avatar_color_id": resolved_avatar_color_id,
         })),
     )
         .into_response()

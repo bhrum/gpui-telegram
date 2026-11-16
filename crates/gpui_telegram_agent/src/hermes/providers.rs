@@ -1153,6 +1153,24 @@ impl ProviderRouter {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Synchronizes providers, model profiles, fallback chain, and active defaults from an
+    /// upstream `ProviderRouter` (used to propagate host-level Cloud/Local API keys into every
+    /// isolated per-Bot Fabushi instance while keeping per-bot runtime isolated).
+    pub fn sync_from_state(&self, state: &ProviderRouterState) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, cfg) in &state.providers {
+            guard.providers.insert(id.clone(), cfg.clone());
+        }
+        for (id, profile) in &state.model_profiles {
+            guard.model_profiles.insert(id.clone(), profile.clone());
+        }
+        guard.active_provider_id = state.active_provider_id.clone();
+        guard.active_model = state.active_model.clone();
+        guard.fallback_chain = state.fallback_chain.clone();
+        guard.allow_local_fallback = state.allow_local_fallback;
+        guard.offline_rule_bot_allowed = state.offline_rule_bot_allowed;
+    }
+
     pub fn active_info(&self) -> (String, String, ApiMode) {
         let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mode = guard

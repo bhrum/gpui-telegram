@@ -736,7 +736,7 @@ async fn test_e2e_discover_install_auto_companion_runtime_hmac_storage_actions_a
     .await;
     assert_eq!(tmp_bot_st, StatusCode::CREATED, "create disposable bot: {tmp_bot_val}");
 
-    // 2. Bob searches "apps" -> sees 3 flagship Mini Apps + Alice's newly created Mini App
+    // 2. Bob searches "apps" -> built-in flagship Mini Apps are not seeded; Alice's newly created Mini App is present
     let (apps_s_st, apps_s_val) = http_json(
         &router,
         "GET",
@@ -750,8 +750,8 @@ async fn test_e2e_discover_install_auto_companion_runtime_hmac_storage_actions_a
         serde_json::from_value(apps_s_val["apps"].clone()).unwrap();
     for flagship_short in ["focus", "split", "poll"] {
         assert!(
-            apps_catalog.iter().any(|a| a.short_name == flagship_short),
-            "flagship Mini App {flagship_short} missing from apps search"
+            apps_catalog.iter().all(|a| a.short_name != flagship_short),
+            "unexpected built-in flagship Mini App {flagship_short} in apps search"
         );
     }
     assert!(

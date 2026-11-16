@@ -2116,6 +2116,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fabushi_miniapp"
+version = "1.2.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2936,13 +2947,16 @@ version = "1.2.0"
 dependencies = [
  "aes",
  "argon2",
+ "chacha20poly1305",
  "chrono",
  "cipher",
+ "ed25519-dalek",
  "fabushi-messaging-core",
  "futures",
  "getrandom 0.2.17",
  "gpui_telegram_core",
  "gpui_telegram_proto",
+ "hkdf",
  "hmac",
  "libc",
  "mahayana-host-runtime",
@@ -2961,6 +2975,9 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tracing",
+ "uuid",
+ "x25519-dalek",
+ "zeroize",
  "zip",
 ]
 
@@ -2999,8 +3016,10 @@ dependencies = [
  "gpui_telegram_webrtc",
  "mahayana-host-runtime",
  "mahayana-node-agent-coordinator",
+ "objc",
  "parking_lot",
  "qrcode",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
@@ -3048,6 +3067,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "fabushi-messaging-core",
+ "fabushi_miniapp",
  "futures",
  "gpui_telegram_agent",
  "gpui_telegram_client",
@@ -3076,6 +3096,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek",
  "zeroize",
 ]
 

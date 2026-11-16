@@ -130,3 +130,42 @@ fn test_stage_composer_sidebar_and_e2ee_call_parity() {
     settings.active_page = SettingsPageId::TonWallet;
     assert_eq!(settings.active_page, SettingsPageId::TonWallet);
 }
+
+#[test]
+fn test_fabushi_visual_theme_tokens_and_readability() {
+    let dark = TdesktopThemePalette::build(TdesktopThemeMode::Night, 0, 14, 17);
+    let tinted = TdesktopThemePalette::build(TdesktopThemeMode::Tinted, 0, 14, 17);
+    let light = TdesktopThemePalette::build(TdesktopThemeMode::Day, 0, 14, 17);
+    let classic = TdesktopThemePalette::build(TdesktopThemeMode::Classic, 0, 14, 12);
+
+    assert!(dark.mode.is_fabushi_style());
+    assert!(tinted.mode.is_fabushi_style());
+    assert!(light.mode.is_fabushi_style());
+    assert!(!classic.mode.is_fabushi_style());
+
+    // Fabushi Dark obsidian hierarchy & accent
+    assert_eq!(dark.accent, 0x1084FE);
+    assert_eq!(dark.stage_bg, 0x070707);
+    assert_eq!(dark.dialogs_bg, 0x111111);
+    assert_eq!(dark.dialogs_active_bg, 0x2A2A2A);
+    assert_eq!(dark.msg_in_bg, 0x1A1A1A);
+    assert_eq!(dark.msg_out_bg, 0x2C2C2C);
+    assert_eq!(dark.text_primary, 0xFAFAFA);
+
+    // Fabushi Light paper hierarchy & non-inverted neutral selection contrast
+    assert_eq!(light.accent, 0x1084FE);
+    assert_eq!(light.stage_bg, 0xFCFCFC);
+    assert_eq!(light.dialogs_bg, 0xF7F7F7);
+    assert_eq!(light.dialogs_active_bg, 0xE4E4E4);
+    assert_ne!(light.dialogs_active_bg, light.accent);
+    assert_eq!(light.text_primary, 0x141414);
+    assert_eq!(light.service_pill_fg, 0x6E6E6E);
+
+    // Custom accent in Fabushi Light keeps neutral active sidebar row for dark text readability
+    let light_custom = TdesktopThemePalette::build(TdesktopThemeMode::Day, 0x8544D6, 14, 17);
+    assert_ne!(light_custom.dialogs_active_bg, 0x8544D6);
+
+    // Classic mode preserves legacy Telegram green outgoing bubbles and inverted pill fg
+    assert_eq!(classic.msg_out_bg, 0xEFFDDE);
+    assert_eq!(classic.service_pill_fg, 0xFFFFFF);
+}

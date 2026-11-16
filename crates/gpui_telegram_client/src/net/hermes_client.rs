@@ -779,6 +779,14 @@ pub struct HermesRichMessageDto {
     pub bot_keyboard: Option<Vec<Vec<HermesInlineButtonDto>>>,
 }
 
+fn with_bot_scope(base: &str, bot_id: Option<u64>) -> String {
+    match bot_id {
+        Some(id) if base.contains('?') => format!("{base}&bot_id={id}"),
+        Some(id) => format!("{base}?bot_id={id}"),
+        None => base.to_string(),
+    }
+}
+
 #[derive(Clone)]
 pub struct HermesClient {
     http: HttpClient,
@@ -794,8 +802,17 @@ impl HermesClient {
     }
 
     pub async fn status(&self, token: &str) -> Result<HermesStatusDto, HttpClientError> {
+        self.status_for_bot(token, None).await
+    }
+
+    pub async fn status_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<HermesStatusDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/status", bot_id);
         self.http
-            .request_json(Method::GET, "/api/v1/hermes/status", Some(token), None::<&()>)
+            .request_json(Method::GET, &path, Some(token), None::<&()>)
             .await
     }
 
@@ -853,13 +870,17 @@ impl HermesClient {
         &self,
         token: &str,
     ) -> Result<Vec<HermesSessionDto>, HttpClientError> {
+        self.list_sessions_for_bot(token, None).await
+    }
+
+    pub async fn list_sessions_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<Vec<HermesSessionDto>, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/sessions", bot_id);
         self.http
-            .request_vec_or_field(
-                Method::GET,
-                "/api/v1/hermes/sessions",
-                Some(token),
-                &["sessions", "items"],
-            )
+            .request_vec_or_field(Method::GET, &path, Some(token), &["sessions", "items"])
             .await
     }
 
@@ -960,8 +981,17 @@ impl HermesClient {
     }
 
     pub async fn get_memory(&self, token: &str) -> Result<HermesMemoryStateDto, HttpClientError> {
+        self.get_memory_for_bot(token, None).await
+    }
+
+    pub async fn get_memory_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<HermesMemoryStateDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/memory", bot_id);
         self.http
-            .request_json(Method::GET, "/api/v1/hermes/memory", Some(token), None::<&()>)
+            .request_json(Method::GET, &path, Some(token), None::<&()>)
             .await
     }
 
@@ -971,12 +1001,25 @@ impl HermesClient {
         memory_markdown: &str,
         user_markdown: Option<&str>,
     ) -> Result<HermesMemoryStateDto, HttpClientError> {
+        self.save_memory_for_bot(token, None, memory_markdown, user_markdown)
+            .await
+    }
+
+    pub async fn save_memory_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        memory_markdown: &str,
+        user_markdown: Option<&str>,
+    ) -> Result<HermesMemoryStateDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/memory", bot_id);
         let body = serde_json::json!({
+            "bot_id": bot_id,
             "memory_markdown": memory_markdown,
             "user_markdown": user_markdown,
         });
         self.http
-            .request_json(Method::PUT, "/api/v1/hermes/memory", Some(token), Some(&body))
+            .request_json(Method::PUT, &path, Some(token), Some(&body))
             .await
     }
 
@@ -985,13 +1028,18 @@ impl HermesClient {
         token: &str,
         req: &HermesMemoryMutationRequest,
     ) -> Result<HermesMemoryStateDto, HttpClientError> {
+        self.mutate_memory_for_bot(token, None, req).await
+    }
+
+    pub async fn mutate_memory_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        req: &HermesMemoryMutationRequest,
+    ) -> Result<HermesMemoryStateDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/memory/action", bot_id);
         self.http
-            .request_json(
-                Method::POST,
-                "/api/v1/hermes/memory/action",
-                Some(token),
-                Some(req),
-            )
+            .request_json(Method::POST, &path, Some(token), Some(req))
             .await
     }
 
@@ -1000,10 +1048,7 @@ impl HermesClient {
         token: &str,
         bot_id: Option<u64>,
     ) -> Result<HermesSoulDto, HttpClientError> {
-        let path = match bot_id {
-            Some(id) => format!("/api/v1/hermes/soul?bot_id={}", id),
-            None => "/api/v1/hermes/soul".to_string(),
-        };
+        let path = with_bot_scope("/api/v1/hermes/soul", bot_id);
         self.http
             .request_json(Method::GET, &path, Some(token), None::<&()>)
             .await
@@ -1020,8 +1065,17 @@ impl HermesClient {
     }
 
     pub async fn get_honcho(&self, token: &str) -> Result<HermesHonchoStateDto, HttpClientError> {
+        self.get_honcho_for_bot(token, None).await
+    }
+
+    pub async fn get_honcho_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<HermesHonchoStateDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/honcho", bot_id);
         self.http
-            .request_json(Method::GET, "/api/v1/hermes/honcho", Some(token), None::<&()>)
+            .request_json(Method::GET, &path, Some(token), None::<&()>)
             .await
     }
 
@@ -1030,19 +1084,33 @@ impl HermesClient {
         token: &str,
         req: &HermesHonchoRequest,
     ) -> Result<HermesHonchoStateDto, HttpClientError> {
+        self.post_honcho_for_bot(token, None, req).await
+    }
+
+    pub async fn post_honcho_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        req: &HermesHonchoRequest,
+    ) -> Result<HermesHonchoStateDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/honcho", bot_id);
         self.http
-            .request_json(Method::POST, "/api/v1/hermes/honcho", Some(token), Some(req))
+            .request_json(Method::POST, &path, Some(token), Some(req))
             .await
     }
 
     pub async fn list_skills(&self, token: &str) -> Result<Vec<HermesSkillDto>, HttpClientError> {
+        self.list_skills_for_bot(token, None).await
+    }
+
+    pub async fn list_skills_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<Vec<HermesSkillDto>, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/skills", bot_id);
         self.http
-            .request_vec_or_field(
-                Method::GET,
-                "/api/v1/hermes/skills",
-                Some(token),
-                &["skills", "items"],
-            )
+            .request_vec_or_field(Method::GET, &path, Some(token), &["skills", "items"])
             .await
     }
 
@@ -1062,8 +1130,18 @@ impl HermesClient {
         token: &str,
         req: &HermesSaveSkillRequest,
     ) -> Result<HermesSkillDto, HttpClientError> {
+        self.save_skill_for_bot(token, None, req).await
+    }
+
+    pub async fn save_skill_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        req: &HermesSaveSkillRequest,
+    ) -> Result<HermesSkillDto, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/skills", bot_id);
         self.http
-            .request_json(Method::POST, "/api/v1/hermes/skills", Some(token), Some(req))
+            .request_json(Method::POST, &path, Some(token), Some(req))
             .await
     }
 
@@ -1080,7 +1158,17 @@ impl HermesClient {
     }
 
     pub async fn delete_skill(&self, token: &str, name: &str) -> Result<(), HttpClientError> {
-        let path = format!("/api/v1/hermes/skills/{}", percent_encode_rfc3986(name));
+        self.delete_skill_for_bot(token, None, name).await
+    }
+
+    pub async fn delete_skill_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        name: &str,
+    ) -> Result<(), HttpClientError> {
+        let base = format!("/api/v1/hermes/skills/{}", percent_encode_rfc3986(name));
+        let path = with_bot_scope(&base, bot_id);
         self.http
             .request_empty(Method::DELETE, &path, Some(token), None::<&()>)
             .await
@@ -1104,13 +1192,17 @@ impl HermesClient {
         &self,
         token: &str,
     ) -> Result<Vec<HermesToolsetDto>, HttpClientError> {
+        self.list_toolsets_for_bot(token, None).await
+    }
+
+    pub async fn list_toolsets_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<Vec<HermesToolsetDto>, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/toolsets", bot_id);
         self.http
-            .request_vec_or_field(
-                Method::GET,
-                "/api/v1/hermes/toolsets",
-                Some(token),
-                &["toolsets", "items"],
-            )
+            .request_vec_or_field(Method::GET, &path, Some(token), &["toolsets", "items"])
             .await
     }
 
@@ -1119,9 +1211,19 @@ impl HermesClient {
         token: &str,
         req: &HermesUpdateToolsetsRequest,
     ) -> Result<Vec<HermesToolsetDto>, HttpClientError> {
+        self.update_toolsets_for_bot(token, None, req).await
+    }
+
+    pub async fn update_toolsets_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+        req: &HermesUpdateToolsetsRequest,
+    ) -> Result<Vec<HermesToolsetDto>, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/toolsets", bot_id);
         let resp: Value = self
             .http
-            .request_json(Method::PUT, "/api/v1/hermes/toolsets", Some(token), Some(req))
+            .request_json(Method::PUT, &path, Some(token), Some(req))
             .await?;
         let arr = resp
             .get("toolsets")
@@ -1134,13 +1236,17 @@ impl HermesClient {
         &self,
         token: &str,
     ) -> Result<Vec<HermesApprovalDto>, HttpClientError> {
+        self.list_approvals_for_bot(token, None).await
+    }
+
+    pub async fn list_approvals_for_bot(
+        &self,
+        token: &str,
+        bot_id: Option<u64>,
+    ) -> Result<Vec<HermesApprovalDto>, HttpClientError> {
+        let path = with_bot_scope("/api/v1/hermes/approvals", bot_id);
         self.http
-            .request_vec_or_field(
-                Method::GET,
-                "/api/v1/hermes/approvals",
-                Some(token),
-                &["approvals", "items"],
-            )
+            .request_vec_or_field(Method::GET, &path, Some(token), &["approvals", "items"])
             .await
     }
 

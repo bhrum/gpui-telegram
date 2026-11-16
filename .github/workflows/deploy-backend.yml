@@ -11,6 +11,8 @@ on:
       - "crates/gpui_telegram_webrtc/**"
       - "crates/gpui_telegram_agent/**"
       - "crates/gpui_telegram_server/**"
+      - "crates/fabushi_miniapp/**"
+      - "crates/fabushi_miniapp_wasm/**"
       - "inherited/**"
       - "Cargo.toml"
       - "Cargo.lock"

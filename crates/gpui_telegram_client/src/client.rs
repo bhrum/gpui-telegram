@@ -17,6 +17,7 @@ use crate::net::{
     HermesTurnRequest, HermesTurnResponse, HermesUpdateToolsetsRequest, HermesUsageSummaryDto,
     HttpClient, HttpClientError, OpenAiChatCompletionsRequest, PendingComputerCommandDto,
     RegisterLocalComputerRequest, RemoteComputerCommandRequest, RemoteComputerCommandResult,
+    RemoteComputerOp, TailnetEngine, TailnetIdentity, TailnetNetMap, TailnetNodeStatus,
     UpdateBotComputerRequest, UpdateComputerPolicyRequest, UpsertCloudComputerRequest, WsChannel,
     WsTransport,
 };
@@ -41,6 +42,7 @@ pub struct TelegramClient {
     pub hermes: HermesClient,
     pub ws_channel: WsChannel,
     pub ws_transport: WsTransport,
+    pub tailnet: Arc<TailnetEngine>,
     runtime: Arc<Runtime>,
     auth_session: Arc<RwLock<Option<AuthResponse>>>,
     auth_token: Arc<RwLock<Option<String>>>,
@@ -70,12 +72,25 @@ impl TelegramClient {
                 .expect("Failed to initialize client Tokio runtime"),
         );
 
+        let tailnet_identity = if let Some(dir) = local_store.cache_dir() {
+            TailnetIdentity::load_or_create(&dir)
+        } else if std::env::var_os("GPUI_TELEGRAM_CONFIG_DIR")
+            .and_then(|v| (!v.to_string_lossy().trim().is_empty()).then_some(v))
+            .is_some()
+        {
+            TailnetIdentity::load_or_create(&ClientConfig::get_app_dir())
+        } else {
+            TailnetIdentity::ephemeral()
+        };
+
         let handle = runtime.handle().clone();
         let http_client = HttpClient::new_with_runtime(
             config.server_url.clone(),
             Duration::from_secs(config.http_timeout_secs),
             Some(handle.clone()),
         );
+        http_client.set_device_id(tailnet_identity.device_id.clone());
+        let tailnet = TailnetEngine::new(tailnet_identity);
         let hermes = HermesClient::new(http_client.clone());
         let ws_channel = WsChannel::new();
         let ws_transport = WsTransport::new_with_runtime(
@@ -93,6 +108,7 @@ impl TelegramClient {
             hermes,
             ws_channel,
             ws_transport,
+            tailnet,
             runtime,
             auth_session: Arc::new(RwLock::new(None)),
             auth_token: Arc::new(RwLock::new(None)),
@@ -120,7 +136,79 @@ impl TelegramClient {
     }
 
     pub fn set_device_id(&self, id: impl Into<String>) {
-        self.http_client.set_device_id(id);
+        let trimmed = id.into().trim().to_string();
+        if !trimmed.is_empty() {
+            self.http_client.set_device_id(&trimmed);
+            self.tailnet.set_device_id_override(Some(trimmed));
+        }
+    }
+
+    pub fn bind_persistent_identity_dir(&self, dir: impl AsRef<Path>) {
+        let prev_device_id = self.device_id();
+        let was_running = self.tailnet.is_running();
+        let id = TailnetIdentity::load_or_create(dir.as_ref());
+        let next_device_id = id.device_id.clone();
+        self.http_client.set_device_id(next_device_id.clone());
+        self.tailnet.bind_identity(id);
+        if was_running && prev_device_id != next_device_id {
+            self.tailnet.stop();
+            self.start_tailnet_mesh();
+        }
+    }
+
+    pub fn start_tailnet_mesh(&self) {
+        if let Some(token) = self.token().filter(|t| !t.trim().is_empty()) {
+            self.tailnet.start(
+                self.config.server_url.clone(),
+                token,
+                self.current_user_id(),
+                self.http_client.clone(),
+                self.runtime.handle().clone(),
+            );
+        }
+    }
+
+    pub fn stop_tailnet_mesh(&self) {
+        self.tailnet.stop();
+    }
+
+    pub fn tailnet_status(&self) -> TailnetNodeStatus {
+        self.tailnet.status()
+    }
+
+    pub fn tailnet_pending_approvals(&self) -> Vec<PendingComputerCommandDto> {
+        self.tailnet.pending_approvals()
+    }
+
+    pub async fn decide_tailnet_approval_async(
+        &self,
+        command_id: &str,
+        approved: bool,
+    ) -> Option<std::result::Result<(), String>> {
+        self.tailnet.decide_approval(command_id, approved)
+    }
+
+    pub fn set_tailnet_force_derp_only(&self, force: bool) {
+        self.tailnet.set_force_derp_only(force);
+    }
+
+    pub async fn register_tailnet_async(&self) -> Result<TailnetNetMap> {
+        let token = self.require_token()?;
+        let user_id = match self.current_user_id() {
+            Some(uid) if uid > 0 => uid,
+            _ => self.http_client.get_me(&token).await?.user_id,
+        };
+        let req = self.tailnet.build_register_request(user_id);
+        let netmap = self.http_client.register_tailnet(&token, &req).await?;
+        self.tailnet.apply_netmap(netmap.clone());
+        Ok(netmap)
+    }
+
+    pub async fn get_tailnet_netmap_async(&self) -> Result<TailnetNetMap> {
+        let token = self.require_token()?;
+        let netmap = self.http_client.get_tailnet_netmap(&token).await?;
+        self.tailnet.apply_netmap(netmap.clone());
+        Ok(netmap)
     }
 
     fn block_on_http<F, T>(&self, fut: F) -> Result<T>
@@ -179,6 +267,7 @@ impl TelegramClient {
     }
 
     pub fn clear_session(&self) {
+        self.stop_tailnet_mesh();
         self.ws_transport.stop();
         self.ws_transport.set_token(None);
         *self.auth_session.write() = None;
@@ -269,8 +358,15 @@ impl TelegramClient {
     }
 
     pub async fn hermes_status(&self) -> std::result::Result<HermesStatusDto, HttpClientError> {
+        self.hermes_status_for_bot(None).await
+    }
+
+    pub async fn hermes_status_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<HermesStatusDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.status(&token).await
+        self.hermes.status_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_run_turn(
@@ -300,8 +396,15 @@ impl TelegramClient {
     pub async fn hermes_list_sessions(
         &self,
     ) -> std::result::Result<Vec<HermesSessionDto>, HttpClientError> {
+        self.hermes_list_sessions_for_bot(None).await
+    }
+
+    pub async fn hermes_list_sessions_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<Vec<HermesSessionDto>, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.list_sessions(&token).await
+        self.hermes.list_sessions_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_get_session(
@@ -341,16 +444,43 @@ impl TelegramClient {
     pub async fn hermes_get_memory(
         &self,
     ) -> std::result::Result<HermesMemoryStateDto, HttpClientError> {
+        self.hermes_get_memory_for_bot(None).await
+    }
+
+    pub async fn hermes_get_memory_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<HermesMemoryStateDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.get_memory(&token).await
+        self.hermes.get_memory_for_bot(&token, bot_id).await
+    }
+
+    pub async fn hermes_save_memory_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        memory_markdown: &str,
+        user_markdown: Option<&str>,
+    ) -> std::result::Result<HermesMemoryStateDto, HttpClientError> {
+        let token = self.require_token()?;
+        self.hermes
+            .save_memory_for_bot(&token, bot_id, memory_markdown, user_markdown)
+            .await
     }
 
     pub async fn hermes_mutate_memory(
         &self,
         req: &HermesMemoryMutationRequest,
     ) -> std::result::Result<HermesMemoryStateDto, HttpClientError> {
+        self.hermes_mutate_memory_for_bot(None, req).await
+    }
+
+    pub async fn hermes_mutate_memory_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        req: &HermesMemoryMutationRequest,
+    ) -> std::result::Result<HermesMemoryStateDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.mutate_memory(&token, req).await
+        self.hermes.mutate_memory_for_bot(&token, bot_id, req).await
     }
 
     pub async fn hermes_get_soul(
@@ -372,61 +502,121 @@ impl TelegramClient {
     pub async fn hermes_get_honcho(
         &self,
     ) -> std::result::Result<HermesHonchoStateDto, HttpClientError> {
+        self.hermes_get_honcho_for_bot(None).await
+    }
+
+    pub async fn hermes_get_honcho_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<HermesHonchoStateDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.get_honcho(&token).await
+        self.hermes.get_honcho_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_post_honcho(
         &self,
         req: &HermesHonchoRequest,
     ) -> std::result::Result<HermesHonchoStateDto, HttpClientError> {
+        self.hermes_post_honcho_for_bot(None, req).await
+    }
+
+    pub async fn hermes_post_honcho_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        req: &HermesHonchoRequest,
+    ) -> std::result::Result<HermesHonchoStateDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.post_honcho(&token, req).await
+        self.hermes.post_honcho_for_bot(&token, bot_id, req).await
     }
 
     pub async fn hermes_list_skills(
         &self,
     ) -> std::result::Result<Vec<HermesSkillDto>, HttpClientError> {
+        self.hermes_list_skills_for_bot(None).await
+    }
+
+    pub async fn hermes_list_skills_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<Vec<HermesSkillDto>, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.list_skills(&token).await
+        self.hermes.list_skills_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_save_skill(
         &self,
         req: &HermesSaveSkillRequest,
     ) -> std::result::Result<HermesSkillDto, HttpClientError> {
+        self.hermes_save_skill_for_bot(None, req).await
+    }
+
+    pub async fn hermes_save_skill_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        req: &HermesSaveSkillRequest,
+    ) -> std::result::Result<HermesSkillDto, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.save_skill(&token, req).await
+        self.hermes.save_skill_for_bot(&token, bot_id, req).await
     }
 
     pub async fn hermes_delete_skill(
         &self,
         name: &str,
     ) -> std::result::Result<(), HttpClientError> {
+        self.hermes_delete_skill_for_bot(None, name).await
+    }
+
+    pub async fn hermes_delete_skill_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        name: &str,
+    ) -> std::result::Result<(), HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.delete_skill(&token, name).await
+        self.hermes.delete_skill_for_bot(&token, bot_id, name).await
     }
 
     pub async fn hermes_list_toolsets(
         &self,
     ) -> std::result::Result<Vec<HermesToolsetDto>, HttpClientError> {
+        self.hermes_list_toolsets_for_bot(None).await
+    }
+
+    pub async fn hermes_list_toolsets_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<Vec<HermesToolsetDto>, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.list_toolsets(&token).await
+        self.hermes.list_toolsets_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_update_toolsets(
         &self,
         req: &HermesUpdateToolsetsRequest,
     ) -> std::result::Result<Vec<HermesToolsetDto>, HttpClientError> {
+        self.hermes_update_toolsets_for_bot(None, req).await
+    }
+
+    pub async fn hermes_update_toolsets_for_bot(
+        &self,
+        bot_id: Option<u64>,
+        req: &HermesUpdateToolsetsRequest,
+    ) -> std::result::Result<Vec<HermesToolsetDto>, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.update_toolsets(&token, req).await
+        self.hermes.update_toolsets_for_bot(&token, bot_id, req).await
     }
 
     pub async fn hermes_list_approvals(
         &self,
     ) -> std::result::Result<Vec<HermesApprovalDto>, HttpClientError> {
+        self.hermes_list_approvals_for_bot(None).await
+    }
+
+    pub async fn hermes_list_approvals_for_bot(
+        &self,
+        bot_id: Option<u64>,
+    ) -> std::result::Result<Vec<HermesApprovalDto>, HttpClientError> {
         let token = self.require_token()?;
-        self.hermes.list_approvals(&token).await
+        self.hermes.list_approvals_for_bot(&token, bot_id).await
     }
 
     pub async fn hermes_decide_approval(
@@ -749,7 +939,10 @@ impl TelegramClient {
     ) -> Result<ComputerNodeDto> {
         let token = self.require_token()?;
         let http = self.http_client.clone();
-        self.block_on_http(async move { http.update_computer_policy(&token, node_id, req).await })
+        let updated = self
+            .block_on_http(async move { http.update_computer_policy(&token, node_id, req).await })?;
+        self.tailnet.sync_node_policy_from_dto(&updated);
+        Ok(updated)
     }
 
     pub async fn update_computer_policy_async(
@@ -758,10 +951,12 @@ impl TelegramClient {
         req: &UpdateComputerPolicyRequest,
     ) -> Result<ComputerNodeDto> {
         let token = self.require_token()?;
-        Ok(self
+        let updated = self
             .http_client
             .update_computer_policy(&token, node_id, req)
-            .await?)
+            .await?;
+        self.tailnet.sync_node_policy_from_dto(&updated);
+        Ok(updated)
     }
 
     pub fn delete_computer(&self, node_id: &str) -> Result<()> {
@@ -789,6 +984,16 @@ impl TelegramClient {
         node_id: &str,
     ) -> Result<RemoteComputerCommandResult> {
         let token = self.require_token()?;
+        let p2p_req = RemoteComputerCommandRequest {
+            node_id: node_id.to_string(),
+            caller_device_id: Some(self.device_id()),
+            caller_bot_id: None,
+            caller_label: format!("Device {}", self.device_id()),
+            operation: RemoteComputerOp::TestConnection,
+        };
+        if let Some(res) = self.tailnet.execute_peer_op(&p2p_req).await {
+            return Ok(res);
+        }
         Ok(self
             .http_client
             .test_computer_connection(&token, node_id)
@@ -809,6 +1014,9 @@ impl TelegramClient {
         req: &RemoteComputerCommandRequest,
     ) -> Result<RemoteComputerCommandResult> {
         let token = self.require_token()?;
+        if let Some(res) = self.tailnet.execute_peer_op(req).await {
+            return Ok(res);
+        }
         Ok(self
             .http_client
             .execute_remote_computer_op(&token, req)

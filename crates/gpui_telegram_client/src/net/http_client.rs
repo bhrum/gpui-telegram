@@ -312,6 +312,10 @@ pub struct AddContactHttpResponse {
     pub is_bot: bool,
     #[serde(default)]
     pub avatar_color: Option<u32>,
+    #[serde(default)]
+    pub avatar_shape: Option<String>,
+    #[serde(default)]
+    pub avatar_color_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1832,15 +1836,42 @@ impl HttpClient {
         token: &str,
         payload: AddContactHttpRequest,
     ) -> Result<AddContactHttpResponse, HttpClientError> {
+        self.add_contact_with_avatar(token, payload, None, None)
+            .await
+    }
+
+    /// Adds a contact (human friend or AI Bot) with optional Grok dynamic avatar shape/color metadata.
+    pub async fn add_contact_with_avatar(
+        &self,
+        token: &str,
+        payload: AddContactHttpRequest,
+        avatar_shape: Option<String>,
+        avatar_color: Option<String>,
+    ) -> Result<AddContactHttpResponse, HttpClientError> {
+        #[derive(Serialize)]
+        struct AddContactWithAvatarPayload {
+            #[serde(flatten)]
+            base: AddContactHttpRequest,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            avatar_shape: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            avatar_color: Option<String>,
+        }
+
         let client = self.client.clone();
         let url = format!("{}/api/v1/contacts/add", self.base_url);
         let token_owned = token.to_string();
+        let body = AddContactWithAvatarPayload {
+            base: payload,
+            avatar_shape,
+            avatar_color,
+        };
 
         self.run_on_tokio(async move {
             let resp = client
                 .post(&url)
                 .bearer_auth(&token_owned)
-                .json(&payload)
+                .json(&body)
                 .send()
                 .await?;
             let status = resp.status();

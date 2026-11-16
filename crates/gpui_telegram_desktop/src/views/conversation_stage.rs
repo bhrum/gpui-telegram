@@ -348,6 +348,11 @@ pub struct ConversationStage {
     pub copied_code_msg: Option<u64>,
     pub more_menu_open: bool,
     pub toast_banner: Option<String>,
+    pub active_fabushi_bot: Option<gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto>,
+    pub bot_description_card: Option<String>,
+    pub show_bot_start_bar: bool,
+    pub is_viewer_owner_fabushi_bot: bool,
+    pub pending_bot_start: bool,
 }
 
 impl ConversationStage {
@@ -443,6 +448,11 @@ impl ConversationStage {
             copied_code_msg: None,
             more_menu_open: bool::default(),
             toast_banner: None,
+            active_fabushi_bot: None,
+            bot_description_card: None,
+            show_bot_start_bar: false,
+            is_viewer_owner_fabushi_bot: false,
+            pending_bot_start: false,
         };
         stage.row_height_cache.rebuild_prefix_sums(&stage.messages);
         stage
@@ -456,6 +466,10 @@ impl ConversationStage {
         self.message_meta.clear();
         self.revealed_spoilers.clear();
         self.expanded_quotes.clear();
+        self.bot_description_card = None;
+        self.show_bot_start_bar = false;
+        self.is_viewer_owner_fabushi_bot = false;
+        self.pending_bot_start = false;
     }
 
     pub fn sync_measured_row_heights(&mut self) -> bool {
@@ -487,6 +501,27 @@ impl ConversationStage {
         self.reset();
     }
 
+    pub fn set_active_fabushi_bot(
+        &mut self,
+        bot: Option<gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto>,
+    ) {
+        self.active_fabushi_bot = bot;
+    }
+
+    pub fn set_bot_prestart_state(
+        &mut self,
+        description_card: Option<String>,
+        show_start_bar: bool,
+        is_viewer_owner_fabushi: bool,
+    ) {
+        self.bot_description_card = description_card;
+        self.show_bot_start_bar = show_start_bar;
+        self.is_viewer_owner_fabushi_bot = is_viewer_owner_fabushi;
+        if !show_start_bar {
+            self.pending_bot_start = false;
+        }
+    }
+
     pub fn set_chat(&mut self, chat_id: u64, title: &str, subtitle: &str, initials: &str, color: u32) {
         if let Some(prev_id) = self.active_chat_id {
             self.chat_histories.insert(prev_id, self.messages.clone());
@@ -503,6 +538,10 @@ impl ConversationStage {
             self.is_group_chat = false;
             self.is_saved_messages = false;
             self.message_ttl_seconds = 0;
+            self.bot_description_card = None;
+            self.show_bot_start_bar = false;
+            self.is_viewer_owner_fabushi_bot = false;
+            self.pending_bot_start = false;
         }
         self.active_chat_id = Some(chat_id);
         self.chat_title = title.to_string();
@@ -680,13 +719,18 @@ impl Render for ConversationStage {
                 .size_full(),
             );
 
-        if has_active_chat || total_msgs > 0 {
+        if has_active_chat
+            || total_msgs > 0
+            || self.show_bot_start_bar
+            || self.bot_description_card.is_some()
+        {
             root = root.child(render_stage_top_bar(
                 self.active_chat_id,
                 &self.chat_title,
                 &self.chat_subtitle,
                 &self.chat_avatar_initials,
                 self.chat_avatar_url.as_deref(),
+                self.active_fabushi_bot.as_ref(),
                 self.select_mode_active,
                 self.selected_message_ids.len(),
                 self.message_ttl_seconds,
@@ -701,6 +745,133 @@ impl Render for ConversationStage {
                 cx,
                 |this, action, cx| this.handle_topbar_action(action, cx),
             ));
+            if self.is_viewer_owner_fabushi_bot {
+                if let Some(fab_bot) = self.active_fabushi_bot.clone() {
+                    let fab_color = crate::components::avatar::parse_fabushi_hex_color(&fab_bot.avatar_color)
+                        .unwrap_or(self.palette.accent);
+                    let fab_meta = format!(
+                        "isolated · {} · {}",
+                        fab_bot.thinking_level, fab_bot.approval_mode
+                    );
+                    let fab_model = fab_bot.preferred_model.trim().to_string();
+                    let mut left = div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(crate::components::grok_bot_avatar::render_grok_persona_avatar(
+                            &fab_bot.agent_id,
+                            &fab_bot.avatar_shape,
+                            &fab_bot.avatar_color,
+                            &fab_bot.display_name,
+                            18.0,
+                            crate::components::grok_bot_avatar::GrokPersonaState::from_activity_str(
+                                &fab_bot.execution_state,
+                                false,
+                            ),
+                            self.palette.card_bg,
+                            false,
+                        ))
+                        .child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(1.0))
+                                .rounded(px(999.0))
+                                .bg(TdesktopThemePalette::rgba_with_alpha(fab_color, 0.14))
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(fab_color))
+                                .child(format!("@{}", fab_bot.agent_id)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(rgb(self.palette.text_secondary))
+                                .child(fab_meta),
+                        );
+                    if !fab_model.is_empty() {
+                        left = left.child(
+                            div()
+                                .px(px(6.0))
+                                .py(px(1.0))
+                                .rounded(px(6.0))
+                                .bg(rgb(self.palette.input_bg))
+                                .text_size(px(10.5))
+                                .text_color(rgb(self.palette.text_primary))
+                                .child(fab_model),
+                        );
+                    }
+                    let insp_label = if self.is_inspector_open {
+                        crate::i18n::tr_str(&self.lang_id, "收起面板", "Hide Inspector")
+                    } else {
+                        crate::i18n::tr_str(&self.lang_id, "智能体面板", "Inspector")
+                    };
+                    root = root.child(
+                        div()
+                            .id("stage-fabushi-session-bar")
+                            .w_full()
+                            .h(px(32.0))
+                            .px(px(14.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .bg(rgb(self.palette.top_bar_bg))
+                            .border_b_1()
+                            .border_color(rgb(self.palette.border_fg))
+                            .child(left)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .flex_shrink_0()
+                                    .child(
+                                        div()
+                                            .id("stage-fabushi-reset-session")
+                                            .cursor_pointer()
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded(px(6.0))
+                                            .bg(rgb(self.palette.input_bg))
+                                            .border_1()
+                                            .border_color(rgb(self.palette.border_fg))
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(self.palette.text_primary))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.pending_bot_action = Some("hermes:/new".to_string());
+                                                    cx.notify();
+                                                }),
+                                            )
+                                            .child("/new"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("stage-fabushi-open-inspector")
+                                            .cursor_pointer()
+                                            .px(px(8.0))
+                                            .py(px(2.0))
+                                            .rounded(px(6.0))
+                                            .bg(TdesktopThemePalette::rgba_with_alpha(self.palette.accent, 0.14))
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(self.palette.accent))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.handle_topbar_action(TopBarUiAction::ToggleInspector, cx);
+                                                }),
+                                            )
+                                            .child(insp_label),
+                                    ),
+                            ),
+                    );
+                }
+            }
             if self.search_open {
                 root = root.child(render_stage_search_bar(
                     &self.search_query,
@@ -727,6 +898,60 @@ impl Render for ConversationStage {
                 |this, action, cx| this.handle_topbar_action(action, cx),
             ));
         }
+
+        let bot_desc_card = self.bot_description_card.as_ref().map(|desc| {
+            let card_bg = TdesktopThemePalette::rgba_with_alpha(self.palette.card_bg, 0.96);
+            let body_text = if desc.trim().is_empty() {
+                crate::i18n::tr_str(
+                    &self.lang_id,
+                    "点击下方开始使用此机器人。",
+                    "Tap Start below to begin.",
+                )
+                .to_string()
+            } else {
+                desc.clone()
+            };
+            div()
+                .id("stage-bot-description-card")
+                .w_full()
+                .my(px(16.0))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(340.0))
+                        .max_w(px(380.0))
+                        .px(px(18.0))
+                        .py(px(14.0))
+                        .rounded(px(14.0))
+                        .bg(card_bg)
+                        .border_1()
+                        .border_color(rgb(self.palette.border_fg))
+                        .shadow_sm()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .text_size(px(13.5))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(self.palette.text_primary))
+                                .child(crate::i18n::tr_str(
+                                    &self.lang_id,
+                                    "它能做什么？",
+                                    "What can this bot do?",
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .line_height(relative(1.45))
+                                .text_color(rgb(self.palette.text_primary))
+                                .child(body_text),
+                        ),
+                )
+                .into_any_element()
+        });
 
         let transcript = div()
             .relative()
@@ -767,12 +992,13 @@ impl Render for ConversationStage {
                     )
                     .flex()
                     .flex_col()
-                    .when(!has_active_chat && total_msgs == 0, |el| {
+                    .when(!has_active_chat && total_msgs == 0 && bot_desc_card.is_none(), |el| {
                         el.child(render_empty_no_chat_pill(&self.palette, &self.lang_id))
                     })
-                    .when(has_active_chat && total_msgs == 0, |el| {
+                    .when(has_active_chat && total_msgs == 0 && bot_desc_card.is_none(), |el| {
                         el.child(render_empty_history_placeholder(&self.palette, &self.lang_id))
                     })
+                    .when_some(bot_desc_card, |el, card| el.child(card))
                     .when(top_spacer_height > 0.0, |el| {
                         el.child(div().id("stage-top-spacer").w_full().h(px(top_spacer_height)).flex_shrink_0())
                     })
@@ -792,6 +1018,49 @@ impl Render for ConversationStage {
             .when_some(drag_overlay, |el, overlay| el.child(overlay));
 
         root = root.child(transcript);
+
+        if self.show_bot_start_bar {
+            let pal = self.palette;
+            let lang = self.lang_id.as_str();
+            root = root.child(
+                div()
+                    .id("stage-bot-start-bar")
+                    .w_full()
+                    .h(px(48.0))
+                    .flex_shrink_0()
+                    .px(px(16.0))
+                    .bg(rgb(pal.composer_bg))
+                    .border_t_1()
+                    .border_color(rgb(pal.border_fg))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("stage-bot-start-btn")
+                            .cursor_pointer()
+                            .w_full()
+                            .h(px(34.0))
+                            .rounded(px(8.0))
+                            .bg(rgb(pal.accent))
+                            .hover(move |s| s.bg(rgb(pal.accent_hover)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(13.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.pending_bot_start = true;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(crate::i18n::tr_str(lang, "开始", "START")),
+                    ),
+            );
+        }
 
         if let Some(menu) = self.active_context_menu.clone() {
             root = root.child(self.render_active_context_menu_overlay(menu, cx));

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use gpui_telegram_proto::{ComputerNodeDto, ComputerNodeKind, ComputerRunPolicy};
+use gpui_telegram_proto::{
+    ComputerNodeDto, ComputerNodeKind, ComputerRunPolicy, TailnetPeerLiveState, TailnetRelayMode,
+};
 
 use crate::components::ui::TextInputController;
 use crate::i18n::tr_str;
@@ -211,6 +213,7 @@ pub struct ComputerWorkbench {
     pub file_preview: Option<(String, String)>,
     pub status_banner: Option<String>,
     pub pending_command: Option<WorkbenchCommand>,
+    pub tailnet_peer: Option<TailnetPeerLiveState>,
     cached_frame_src: Option<String>,
     cached_frame_image: Option<Arc<gpui::Image>>,
 }
@@ -250,6 +253,7 @@ impl ComputerWorkbench {
             file_preview: None,
             status_banner: None,
             pending_command: None,
+            tailnet_peer: None,
             cached_frame_src: None,
             cached_frame_image: None,
         }
@@ -290,6 +294,7 @@ impl ComputerWorkbench {
         self.node_kind = node.kind;
         self.run_policy = node.run_policy;
         self.is_connected = node.online;
+        self.tailnet_peer = None;
         let ip_or_host = node
             .host
             .as_deref()
@@ -329,6 +334,22 @@ impl ComputerWorkbench {
             .to_string();
         if node.latest_frame_data_url.is_some() {
             self.update_frame_url(node.latest_frame_data_url.clone());
+        }
+    }
+
+    pub fn sync_tailnet_peer_state(&mut self, peer: Option<&TailnetPeerLiveState>) {
+        self.tailnet_peer = peer.cloned();
+        if let Some(peer) = peer {
+            if peer.online {
+                self.is_connected = true;
+            }
+            if !peer.tailnet_ip.trim().is_empty() {
+                self.device.ip_address = peer.tailnet_ip.clone();
+            }
+            if let Some(rtt) = peer.rtt_ms {
+                self.device.latency_ms = rtt;
+            }
+            self.device.is_tunnel_encrypted = true;
         }
     }
 
@@ -571,11 +592,19 @@ impl ComputerWorkbench {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(pal.text_secondary))
-                                    .child(tr_str(
-                                        lang,
-                                        "安全控制通道已就绪",
-                                        "Encrypted Control Channel Ready",
-                                    )),
+                                    .child(if self.tailnet_peer.is_some() {
+                                        tr_str(
+                                            lang,
+                                            "WireGuard 端到端加密通道已就绪 (X25519 + ChaCha20-Poly1305)",
+                                            "WireGuard E2E Channel Ready (X25519 + ChaCha20-Poly1305)",
+                                        )
+                                    } else {
+                                        tr_str(
+                                            lang,
+                                            "安全控制通道已就绪",
+                                            "Encrypted Control Channel Ready",
+                                        )
+                                    }),
                             ),
                     )
                 })
@@ -1238,7 +1267,43 @@ impl Render for ComputerWorkbench {
                                                     } else {
                                                         tr_str(&lang, "本地", "Local")
                                                     }),
-                                            ),
+                                            )
+                                            .when_some(self.tailnet_peer.as_ref(), |row, peer| {
+                                                let is_zh = lang.starts_with("zh");
+                                                let mode_label = if is_zh {
+                                                    peer.relay_mode.label_zh()
+                                                } else {
+                                                    peer.relay_mode.label_en()
+                                                };
+                                                let badge_color =
+                                                    if peer.relay_mode == TailnetRelayMode::DirectUdp {
+                                                        pal.success
+                                                    } else {
+                                                        pal.accent
+                                                    };
+                                                row.child(
+                                                    div()
+                                                        .px(px(7.0))
+                                                        .py(px(1.5))
+                                                        .rounded(px(999.0))
+                                                        .bg(TdesktopThemePalette::rgba_with_alpha(
+                                                            badge_color,
+                                                            0.14,
+                                                        ))
+                                                        .flex()
+                                                        .flex_row()
+                                                        .items_center()
+                                                        .gap(px(4.0))
+                                                        .child(tg_icon(IconName::Lock, 10.0, badge_color))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.5))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .text_color(rgb(badge_color))
+                                                                .child(format!("{mode_label} · E2E")),
+                                                        ),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()

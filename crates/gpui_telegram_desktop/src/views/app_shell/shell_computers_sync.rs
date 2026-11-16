@@ -9,9 +9,9 @@ use std::time::Duration;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, WeakEntity};
 use gpui_telegram_client::TelegramClient;
 use gpui_telegram_proto::computer_contracts::{
-    ComputerListResponse, ComputerNodeDto, PendingComputerCommandDto, RemoteComputerCommandRequest,
-    RemoteComputerOp, UpdateBotComputerRequest, UpdateComputerPolicyRequest,
-    UpsertCloudComputerRequest,
+    ComputerListResponse, ComputerNodeDto, ComputerNodeKind, PendingComputerCommandDto,
+    RemoteComputerCommandRequest, RemoteComputerOp, UpdateBotComputerRequest,
+    UpdateComputerPolicyRequest, UpsertCloudComputerRequest,
 };
 
 use crate::i18n::tr_str;
@@ -138,6 +138,7 @@ impl AppShell {
     /// Synchronizes cached computers and bot computer profiles into Inspector, Settings, and Workbench.
     pub fn sync_computers_to_views(&mut self, cx: &mut Context<Self>) {
         let nodes = self.computers.computers.clone();
+        let tailnet_status = self.computers.tailnet_status.clone();
         let bots = self.known_bots_for_computers(cx);
         let active_bot_id = self.effective_inspector_bot_id(cx);
         let active_bot_profile = active_bot_id
@@ -163,6 +164,7 @@ impl AppShell {
             sc_ent.update(cx, |sc, sc_cx| {
                 sc.sync_computers(nodes.clone());
                 sc.sync_known_bots(bots, active_bot_id);
+                sc.sync_tailnet_status(tailnet_status.clone());
                 sc_cx.notify();
             });
         }
@@ -170,10 +172,22 @@ impl AppShell {
         if let Some(ref wb_ent) = self.overlays.computer_overlay.clone() {
             let target_id = wb_ent.read(cx).node_id.clone();
             if let Some(tid) = target_id {
-                if let Some(node) = self.computers.computers.iter().find(|n| n.node_id == tid) {
-                    let node_clone = node.clone();
+                let node_opt = self.computers.computers.iter().find(|n| n.node_id == tid).cloned();
+                let peer_opt = tailnet_status.as_ref().and_then(|ts| {
+                    ts.peers.iter().find(|p| {
+                        p.node_id == tid
+                            || node_opt
+                                .as_ref()
+                                .and_then(|n| n.device_id.as_deref())
+                                .is_some_and(|did| !did.is_empty() && p.device_id == did)
+                    })
+                });
+                if node_opt.is_some() || peer_opt.is_some() {
                     wb_ent.update(cx, |wb, wcx| {
-                        wb.refresh_target_node_status(&node_clone);
+                        if let Some(ref node_clone) = node_opt {
+                            wb.refresh_target_node_status(node_clone);
+                        }
+                        wb.sync_tailnet_peer_state(peer_opt);
                         wcx.notify();
                     });
                 }
@@ -218,18 +232,29 @@ impl AppShell {
             return;
         }
         self.computers.relay_loop_started = true;
+        self.client.bind_persistent_identity_dir(&self.preferences_dir);
+        self.client.start_tailnet_mesh();
         let client = self.client.clone();
 
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let reg_client = client.clone();
-            let (reg_res, list_res) = run_on_tokio(&client, async move {
+            let (reg_res, list_res, tailnet_st, tailnet_waiting) = run_on_tokio(&client, async move {
                 let reg = reg_client.register_current_host_computer_async().await;
                 let list = reg_client.list_computers_async().await;
-                (reg, list)
+                let ts = reg_client.tailnet_status();
+                let waiting = reg_client.tailnet_pending_approvals();
+                (reg, list, ts, waiting)
             })
             .await
-            .map(|(reg, list)| (reg.map_err(|e| e.to_string()), list.map_err(|e| e.to_string())))
-            .unwrap_or_else(|e| (Err(e.clone()), Err(e)));
+            .map(|(reg, list, ts, waiting)| {
+                (
+                    reg.map_err(|e| e.to_string()),
+                    list.map_err(|e| e.to_string()),
+                    Some(ts),
+                    waiting,
+                )
+            })
+            .unwrap_or_else(|e| (Err(e.clone()), Err(e), None, Vec::new()));
 
             let keep = weak
                 .update(app, |shell, cx| {
@@ -242,6 +267,10 @@ impl AppShell {
                     if let Ok(list) = list_res {
                         shell.apply_computer_list_response(list);
                     }
+                    if let Some(ts) = tailnet_st {
+                        shell.computers.tailnet_status = Some(ts);
+                    }
+                    shell.merge_pending_approvals(tailnet_waiting);
                     shell.sync_computers_to_views(cx);
                     cx.notify();
                     true
@@ -252,10 +281,12 @@ impl AppShell {
                 return;
             }
 
+            let mut tick_count: u64 = 0;
             loop {
                 app.background_executor()
                     .timer(Duration::from_millis(2000))
                     .await;
+                tick_count = tick_count.wrapping_add(1);
 
                 let still_valid = weak
                     .update(app, |shell, _| shell.computer_fence_matches(fence))
@@ -264,15 +295,29 @@ impl AppShell {
                     break;
                 }
 
+                let do_heartbeat = tick_count % 10 == 0;
                 let poll_client = client.clone();
-                let (relay_res, list_res) = run_on_tokio(&client, async move {
-                    let relay = poll_client.process_ready_local_computer_commands_async().await;
-                    let list = poll_client.list_computers_async().await;
-                    (relay, list)
-                })
-                .await
-                .map(|(r, l)| (r.map_err(|e| e.to_string()), l.map_err(|e| e.to_string())))
-                .unwrap_or_else(|e| (Err(e.clone()), Err(e)));
+                let (relay_res, list_res, tailnet_st, tailnet_waiting) =
+                    run_on_tokio(&client, async move {
+                        if do_heartbeat {
+                            let _ = poll_client.register_current_host_computer_async().await;
+                        }
+                        let relay = poll_client.process_ready_local_computer_commands_async().await;
+                        let list = poll_client.list_computers_async().await;
+                        let ts = poll_client.tailnet_status();
+                        let waiting = poll_client.tailnet_pending_approvals();
+                        (relay, list, ts, waiting)
+                    })
+                    .await
+                    .map(|(r, l, ts, waiting)| {
+                        (
+                            r.map_err(|e| e.to_string()),
+                            l.map_err(|e| e.to_string()),
+                            Some(ts),
+                            waiting,
+                        )
+                    })
+                    .unwrap_or_else(|e| (Err(e.clone()), Err(e), None, Vec::new()));
 
                 let cont = weak
                     .update(app, |shell, cx| {
@@ -285,6 +330,10 @@ impl AppShell {
                         if let Ok(waiting) = relay_res {
                             shell.merge_pending_approvals(waiting);
                         }
+                        if let Some(ts) = tailnet_st {
+                            shell.computers.tailnet_status = Some(ts);
+                        }
+                        shell.merge_pending_approvals(tailnet_waiting);
                         shell.sync_computers_to_views(cx);
                         cx.notify();
                         true
@@ -307,15 +356,27 @@ impl AppShell {
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let c = client.clone();
-            let res = run_on_tokio(&client, async move { c.list_computers_async().await.map_err(|e| e.to_string()) })
-                .await
-                .and_then(|inner| inner);
+            let (res, ts, waiting) = run_on_tokio(&client, async move {
+                let list = c.list_computers_async().await.map_err(|e| e.to_string());
+                let ts = c.tailnet_status();
+                let waiting = c.tailnet_pending_approvals();
+                (list, Some(ts), waiting)
+            })
+            .await
+            .unwrap_or_else(|e| (Err(e), None, Vec::new()));
             let _ = weak.update(app, |shell, cx| {
                 if !shell.computer_fence_matches(fence) {
                     return;
                 }
+                if let Some(ts) = ts {
+                    shell.computers.tailnet_status = Some(ts);
+                }
+                let ok = res.is_ok();
                 if let Ok(list) = res {
                     shell.apply_computer_list_response(list);
+                }
+                shell.merge_pending_approvals(waiting);
+                if ok || shell.computers.tailnet_status.is_some() {
                     shell.sync_computers_to_views(cx);
                     cx.notify();
                 }
@@ -377,6 +438,20 @@ impl AppShell {
             .as_ref()
             .map(|n| n.display_name.clone())
             .unwrap_or_else(|| node_id.clone());
+        let peer_opt = self
+            .computers
+            .tailnet_status
+            .as_ref()
+            .and_then(|ts| {
+                ts.peers.iter().find(|p| {
+                    p.node_id == node_id
+                        || node_opt
+                            .as_ref()
+                            .and_then(|n| n.device_id.as_deref())
+                            .is_some_and(|did| !did.is_empty() && p.device_id == did)
+                })
+            })
+            .cloned();
 
         let overlay = cx.new(|wcx| {
             let mut wb = ComputerWorkbench::new_live(fallback_name, pal, &lang);
@@ -384,6 +459,9 @@ impl AppShell {
                 wb.set_target_node(node);
             } else {
                 wb.node_id = Some(node_id.clone());
+            }
+            if peer_opt.is_some() {
+                wb.sync_tailnet_peer_state(peer_opt.as_ref());
             }
             wb.ensure_terminal_input(wcx);
             wb
@@ -701,6 +779,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let nodes = self.computers.computers.clone();
+        let tailnet_status = self.computers.tailnet_status.clone();
         let bots = self.known_bots_for_computers(cx);
         let active_bot_id = self.effective_inspector_bot_id(cx);
         self.settings_router.update(cx, |sr, scx| {
@@ -709,6 +788,7 @@ impl AppShell {
             sc.update(scx, |view, vcx| {
                 view.sync_computers(nodes);
                 view.sync_known_bots(bots, active_bot_id);
+                view.sync_tailnet_status(tailnet_status);
                 if let Some(nid) = detail_node_id {
                     view.open_detail(&nid);
                 } else if let Some(bot_opt) = create_cloud_for_bot {
@@ -875,6 +955,12 @@ impl AppShell {
                         if !shell.computer_fence_matches(fence) {
                             return;
                         }
+                        let is_local = shell
+                            .computers
+                            .computers
+                            .iter()
+                            .find(|n| n.node_id == nid)
+                            .is_some_and(|n| n.kind == ComputerNodeKind::LocalDevice);
                         match res {
                             Ok(()) => {
                                 shell.computers.computers.retain(|n| n.node_id != nid);
@@ -887,15 +973,35 @@ impl AppShell {
                                     });
                                 }
                                 shell.sync_computers_to_views(cx);
-                                shell.enqueue_computer_toast(
-                                    "云服务器已删除",
-                                    "Cloud server deleted",
-                                    2000,
-                                );
+                                if is_local {
+                                    shell.enqueue_computer_toast(
+                                        "离线设备已移除",
+                                        "Device removed",
+                                        2000,
+                                    );
+                                } else {
+                                    shell.enqueue_computer_toast(
+                                        "云服务器已删除",
+                                        "Cloud server deleted",
+                                        2000,
+                                    );
+                                }
                                 cx.notify();
                             }
                             Err(e) => {
-                                let pfx = tr_str(shell.active_lang_id(), "删除云服务器失败", "Failed to delete cloud server");
+                                let pfx = if is_local {
+                                    tr_str(
+                                        shell.active_lang_id(),
+                                        "移除设备失败",
+                                        "Failed to remove device",
+                                    )
+                                } else {
+                                    tr_str(
+                                        shell.active_lang_id(),
+                                        "删除云服务器失败",
+                                        "Failed to delete cloud server",
+                                    )
+                                };
                                 shell.window_runtime.enqueue_toast(format!("{pfx}: {e}"), 2600);
                                 cx.notify();
                             }
@@ -910,10 +1016,36 @@ impl AppShell {
                 };
                 let client = self.client.clone();
                 let nid = node_id.clone();
+                let is_local = self
+                    .computers
+                    .computers
+                    .iter()
+                    .find(|n| n.node_id == nid)
+                    .is_some_and(|n| n.kind == ComputerNodeKind::LocalDevice);
+                let caller_label = self
+                    .session_sync
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| "Desktop".to_string());
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
                     let c = client.clone();
                     let res = run_on_tokio(&client, async move {
-                        c.test_computer_connection_async(&nid).await.map_err(|e| e.to_string())
+                        if is_local {
+                            let req = RemoteComputerCommandRequest {
+                                node_id: nid,
+                                caller_device_id: Some(c.device_id()),
+                                caller_bot_id: None,
+                                caller_label,
+                                operation: RemoteComputerOp::TestConnection,
+                            };
+                            c.execute_remote_computer_op_async(&req)
+                                .await
+                                .map_err(|e| e.to_string())
+                        } else {
+                            c.test_computer_connection_async(&nid)
+                                .await
+                                .map_err(|e| e.to_string())
+                        }
                     })
                     .await
                     .and_then(|inner| inner);
@@ -974,18 +1106,29 @@ impl AppShell {
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let c = client.clone();
             let res = run_on_tokio(&client, async move {
-                let decision = c
-                    .approve_computer_command_async(&command_id, approved)
-                    .await
-                    .map_err(|e| e.to_string());
-                if decision.is_ok() && approved {
+                let is_p2p = command_id.starts_with("p2p:");
+                let decision = if is_p2p {
+                    match c.decide_tailnet_approval_async(&command_id, approved).await {
+                        Some(Ok(())) => Ok(()),
+                        Some(Err(e)) => Err(e),
+                        None => Err("Pending P2P approval expired or not found".to_string()),
+                    }
+                } else {
+                    c.approve_computer_command_async(&command_id, approved)
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                };
+                if !is_p2p && decision.is_ok() && approved {
                     let _ = c.process_ready_local_computer_commands_async().await;
                 }
                 let list = c.list_computers_async().await.map_err(|e| e.to_string());
-                (decision, list)
+                let ts = Some(c.tailnet_status());
+                let waiting = c.tailnet_pending_approvals();
+                (decision, list, ts, waiting)
             })
             .await
-            .unwrap_or_else(|e| (Err(e.clone()), Err(e)));
+            .unwrap_or_else(|e| (Err(e.clone()), Err(e), None, Vec::new()));
 
             let _ = weak.update(app, |shell, cx| {
                 if !shell.computer_fence_matches(fence) {
@@ -993,10 +1136,14 @@ impl AppShell {
                 }
                 match res.0 {
                     Ok(_) => {
+                        if let Some(ts) = res.2 {
+                            shell.computers.tailnet_status = Some(ts);
+                        }
                         if let Ok(list) = res.1 {
                             shell.apply_computer_list_response(list);
-                            shell.sync_computers_to_views(cx);
                         }
+                        shell.merge_pending_approvals(res.3);
+                        shell.sync_computers_to_views(cx);
                         if approved {
                             shell.enqueue_computer_toast(
                                 "已允许远程指令并立即执行",

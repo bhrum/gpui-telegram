@@ -87,7 +87,7 @@ impl Default for AutoDownloadPreferences {
 }
 
 fn default_bubble_radius() -> u32 {
-    12
+    17
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

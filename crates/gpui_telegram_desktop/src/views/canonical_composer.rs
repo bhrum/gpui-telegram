@@ -47,6 +47,15 @@ pub struct HermesSlashOption {
     pub accepts_args: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BotSlashCommandItem {
+    pub command: String,
+    pub description: String,
+    pub bot_username: String,
+    pub avatar_initials: String,
+    pub avatar_color: u32,
+}
+
 fn default_hermes_slash_commands() -> Vec<HermesSlashOption> {
     let entries: &[(&str, &[&str], &str, &str, &str, bool)] = &[
         ("help", &["h", "?"], "/help [command]", "Session", "List Hermes slash commands & help", true),
@@ -198,6 +207,12 @@ pub struct CanonicalComposer {
     pub hermes_ac_visible: bool,
     pub hermes_ac_matches: Vec<HermesSlashOption>,
     pub hermes_ac_selected: usize,
+    pub hermes_slash_enabled: bool,
+    pub bot_slash_commands: Vec<BotSlashCommandItem>,
+    pub bot_ac_visible: bool,
+    pub bot_ac_matches: Vec<BotSlashCommandItem>,
+    pub bot_ac_selected: usize,
+    pub(crate) bot_ac_pinned_by_button: bool,
     pub context_ref_hint_open: bool,
     pub send_on_enter: bool,
     pub suggest_stickers_by_emoji: bool,
@@ -247,6 +262,12 @@ impl CanonicalComposer {
             hermes_ac_visible: false,
             hermes_ac_matches: Vec::new(),
             hermes_ac_selected: 0,
+            hermes_slash_enabled: false,
+            bot_slash_commands: Vec::new(),
+            bot_ac_visible: false,
+            bot_ac_matches: Vec::new(),
+            bot_ac_selected: 0,
+            bot_ac_pinned_by_button: false,
             context_ref_hint_open: false,
             send_on_enter: true,
             suggest_stickers_by_emoji: true,
@@ -365,6 +386,58 @@ impl CanonicalComposer {
         self.sync_autocomplete();
     }
 
+    pub fn set_bot_slash_commands(&mut self, commands: Vec<BotSlashCommandItem>) {
+        self.bot_slash_commands = commands;
+        self.bot_ac_visible = false;
+        self.bot_ac_matches.clear();
+        self.bot_ac_selected = 0;
+        self.bot_ac_pinned_by_button = false;
+        self.sync_autocomplete();
+    }
+
+    pub fn clear_bot_slash_commands(&mut self) {
+        self.bot_slash_commands.clear();
+        self.bot_ac_visible = false;
+        self.bot_ac_matches.clear();
+        self.bot_ac_selected = 0;
+        self.bot_ac_pinned_by_button = false;
+        self.sync_autocomplete();
+    }
+
+    pub fn set_hermes_slash_enabled(&mut self, enabled: bool) {
+        self.hermes_slash_enabled = enabled;
+        if !enabled {
+            self.hermes_ac_visible = false;
+            self.hermes_ac_matches.clear();
+            self.hermes_ac_selected = 0;
+        }
+        self.sync_autocomplete();
+    }
+
+    pub fn toggle_bot_commands_popup(&mut self) {
+        if self.bot_slash_commands.is_empty() {
+            self.bot_ac_visible = false;
+            self.bot_ac_matches.clear();
+            self.bot_ac_pinned_by_button = false;
+            return;
+        }
+        if self.bot_ac_visible {
+            self.bot_ac_visible = false;
+            self.bot_ac_matches.clear();
+            self.bot_ac_selected = 0;
+            self.bot_ac_pinned_by_button = false;
+        } else {
+            self.bot_ac_matches = self.bot_slash_commands.clone();
+            self.bot_ac_selected = 0;
+            self.bot_ac_visible = true;
+            self.bot_ac_pinned_by_button = true;
+            self.hermes_ac_visible = false;
+            self.hermes_ac_matches.clear();
+            self.autocomplete.hide();
+            self.is_input_focused = true;
+        }
+    }
+
     pub fn begin_reply(&mut self, msg_id: u64, sender_name: String, snippet: String) {
         self.editing_message = None;
         self.replying_to = Some((msg_id, sender_name, snippet));
@@ -419,6 +492,13 @@ impl CanonicalComposer {
     pub fn clear(&mut self) {
         self.ime_machine.clear();
         self.editor.selection_anchor = None;
+        self.bot_ac_visible = false;
+        self.bot_ac_matches.clear();
+        self.bot_ac_selected = 0;
+        self.bot_ac_pinned_by_button = false;
+        self.hermes_ac_visible = false;
+        self.hermes_ac_matches.clear();
+        self.hermes_ac_selected = 0;
         self.autocomplete.hide();
     }
 
@@ -609,6 +689,8 @@ impl Render for CanonicalComposer {
             } else {
                 let bot_menu_view = if self.bot_menu_controls.is_active {
                     Some(self.ensure_bot_menu_entity(cx).into_any_element())
+                } else if !self.bot_slash_commands.is_empty() {
+                    Some(self.render_bot_slash_toggle_button(cx))
                 } else {
                     None
                 };

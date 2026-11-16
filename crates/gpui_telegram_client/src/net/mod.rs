@@ -7,12 +7,19 @@ pub mod api_miniapps;
 pub mod hermes_client;
 pub mod http_client;
 pub mod http_helpers;
+pub mod tailnet;
 pub mod ws_channel;
 pub mod ws_transport;
 
 pub use api_computers::{
-    detect_local_host_info, detect_local_hostname, execute_local_computer_op,
+    detect_local_host_info, detect_local_hostname, detect_real_lan_ips, execute_local_computer_op,
 };
+pub use gpui_telegram_proto::tailnet_contracts::{
+    DerpClientFrame, DerpServerFrame, DiscoPayload, PeerApiFrame, TailnetEndpoint,
+    TailnetEndpointKind, TailnetNetMap, TailnetNodeStatus, TailnetPeerDescriptor,
+    TailnetPeerLiveState, TailnetRegisterRequest, TailnetRelayMode, TailnetStunResponse,
+};
+pub use tailnet::{derive_peer_cipher_keys, TailnetEngine, TailnetIdentity};
 pub use api_miniapps::{
     compute_telegram_init_data_hash, parse_init_data_check_string,
     verify_telegram_init_data_hmac, GlobalCatalogSearchResponse,

@@ -1,13 +1,15 @@
-//! Chrome, header, navigation tabs, overflow menu, and footer rendering for [`BotAttachWebView`].
+//! Authentic Telegram Desktop Mini App sheet chrome, WKWebView bounds sync, overflow menu,
+//! Main/Secondary buttons, and `@bot_username` footer rendering for [`BotAttachWebView`].
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_telegram_proto::miniapp_contracts::MiniAppActionRequest;
 
+#[cfg(target_os = "macos")]
+use super::macos_wkwebview::MacOsWkWebView;
+use super::bot_attach_web_view::{BotAttachWebView, BotWebViewPendingAction};
 use crate::i18n::tr_str;
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
-
-use super::bot_attach_web_view::{BotAttachWebView, BotWebViewPendingAction};
 
 fn overflow_menu_btn(
     id: &'static str,
@@ -30,6 +32,7 @@ fn overflow_menu_btn(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
                 on_click(this, cx);
                 cx.notify();
             }),
@@ -40,6 +43,7 @@ fn overflow_menu_btn(
 impl Render for BotAttachWebView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_open {
+            self.hide_native_webview();
             return div().into_any_element();
         }
         let pal = self.palette;
@@ -52,40 +56,111 @@ impl Render for BotAttachWebView {
                 .map(|b| b.name.clone())
                 .unwrap_or_else(|| "Mini App".to_string())
         };
-        let bot_sub = if self.bot_username.is_empty() {
+        let bot_sub = if self.bot_username.trim().is_empty() {
             "@bot".to_string()
         } else {
-            format!("@{}", self.bot_username.trim_start_matches('@'))
+            format!("@{}", self.bot_username.trim().trim_start_matches('@'))
         };
         let short_name = self.current_short_name();
-        let init_hmac_ok = self
-            .launch_context
-            .as_ref()
-            .is_some_and(|c| c.init_data.hmac_verified);
         let chat_id_opt = self.target_chat_i64();
-        let companion_cid = self.companion_chat_id.unwrap_or(0);
-        let browser_path = format!(
-            "/miniapps/{}/{}",
-            self.bot_username.trim_start_matches('@'),
-            short_name
-        );
-
-        let show_back = self.ui_schema.back_button_visible;
-        let show_settings = self.ui_schema.settings_button_visible || self.active_tab == 2;
-        let is_full = self.is_fullscreen;
-        let tab = self.active_tab;
-
-        let body: AnyElement = if !self.disclaimer_accepted {
-            self.render_disclaimer_panel(&app_title, &bot_sub, &short_name, cx)
-        } else if tab == 0 {
-            self.render_widgets_panel(&app_title, cx)
-        } else if tab == 1 {
-            self.render_cloud_storage_panel(&short_name, cx)
+        let resolved_url = self.resolved_webview_url();
+        let browser_target = if resolved_url.starts_with("http://")
+            || resolved_url.starts_with("https://")
+        {
+            resolved_url
         } else {
-            self.render_security_panel(init_hmac_ok, companion_cid, &bot_sub, cx)
+            format!(
+                "/miniapps/{}/{}",
+                self.bot_username.trim().trim_start_matches('@'),
+                short_name
+            )
         };
-        let copilot_strip =
-            (self.disclaimer_accepted && tab == 0).then(|| self.render_copilot_strip(&bot_sub, cx));
+
+        let header_bg =
+            Self::parse_hex_color(self.header_color_override.as_deref(), pal.top_bar_bg);
+        let body_bg =
+            Self::parse_hex_color(self.background_color_override.as_deref(), pal.modal_bg);
+        let show_back = self.ui_schema.back_button_visible;
+        let show_settings = self.ui_schema.settings_button_visible;
+        let is_full = self.is_fullscreen;
+
+        let overlay_covering_webview = !self.disclaimer_accepted
+            || self.write_access_prompt_open
+            || self.menu_open
+            || self.confirm_close_open
+            || self.custom_popup.is_some();
+        let native_visible = self.is_open && !overlay_covering_webview;
+
+        #[cfg(target_os = "macos")]
+        let use_headless_fallback = MacOsWkWebView::is_headless_or_offline_test_env();
+        #[cfg(not(target_os = "macos"))]
+        let use_headless_fallback = true;
+
+        let main_viewport: AnyElement = if !self.disclaimer_accepted {
+            self.render_disclaimer_panel(&app_title, &bot_sub, &short_name, cx)
+        } else {
+            let entity = cx.entity().clone();
+            let bounds_canvas = canvas(
+                |bounds, _, _| bounds,
+                move |bounds, _, window, cx| {
+                    let _ = entity.update(cx, |this, entity_cx| {
+                        let had_events = this.sync_native_webview(
+                            window,
+                            bounds,
+                            native_visible,
+                            entity_cx,
+                        );
+                        if had_events {
+                            entity_cx
+                                .spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+                                    let _ = weak.update(app, |_, cx| cx.notify());
+                                })
+                                .detach();
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .inset_0();
+
+            let fallback_content = if use_headless_fallback {
+                Some(self.render_widgets_panel(&app_title, cx))
+            } else {
+                None
+            };
+
+            div()
+                .id("miniapp-webview-viewport")
+                .relative()
+                .flex_1()
+                .w_full()
+                .overflow_hidden()
+                .bg(rgb(body_bg))
+                .when_some(fallback_content, |el, panel| el.child(panel))
+                .child(bounds_canvas)
+                .when(self.write_access_prompt_open, |el| {
+                    el.child(self.render_write_access_modal(&app_title, cx))
+                })
+                .when(!self.write_access_prompt_open, |el| {
+                    el.when_some(self.custom_popup.clone(), |el, popup| {
+                        el.child(self.render_custom_popup_modal(&popup, cx))
+                    })
+                })
+                .into_any_element()
+        };
+
+        let footer_bot_username = self.bot_username.clone();
+        let has_bottom_buttons = self.disclaimer_accepted
+            && (self
+                .ui_schema
+                .main_button
+                .as_ref()
+                .is_some_and(|b| b.is_visible)
+                || self
+                    .ui_schema
+                    .secondary_button
+                    .as_ref()
+                    .is_some_and(|b| b.is_visible));
 
         let sheet = div()
             .id("bot-attach-webview-sheet")
@@ -109,13 +184,13 @@ impl Render for BotAttachWebView {
                     cx.stop_propagation();
                 }),
             )
-            // 1. Telegram Desktop Mini App Header
+            // 1. Clean Telegram Desktop Mini App Header
             .child(
                 div()
                     .w_full()
-                    .h(px(54.0))
+                    .h(px(50.0))
                     .px(px(12.0))
-                    .bg(rgb(pal.top_bar_bg))
+                    .bg(rgb(header_bg))
                     .border_b_1()
                     .border_color(rgb(pal.border_fg))
                     .flex()
@@ -126,7 +201,7 @@ impl Render for BotAttachWebView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
+                            .gap(px(4.0))
                             .when(show_back, |row| {
                                 let b_user = self.bot_username.clone();
                                 let s_name = short_name.clone();
@@ -144,18 +219,25 @@ impl Render for BotAttachWebView {
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
-                                                this.pending_actions.push_back(
-                                                    BotWebViewPendingAction::SendAppAction {
-                                                        bot_username: b_user.clone(),
-                                                        short_name: s_name.clone(),
-                                                        req: MiniAppActionRequest {
-                                                            action_type: "back_button_click"
-                                                                .to_string(),
-                                                            chat_id: chat_id_opt,
-                                                            ..Default::default()
+                                                if this.has_native_webview() {
+                                                    this.dispatch_js_event(
+                                                        "back_button_pressed",
+                                                        "{}",
+                                                    );
+                                                } else {
+                                                    this.pending_actions.push_back(
+                                                        BotWebViewPendingAction::SendAppAction {
+                                                            bot_username: b_user.clone(),
+                                                            short_name: s_name.clone(),
+                                                            req: MiniAppActionRequest {
+                                                                action_type: "back_button_click"
+                                                                    .to_string(),
+                                                                chat_id: chat_id_opt,
+                                                                ..Default::default()
+                                                            },
                                                         },
-                                                    },
-                                                );
+                                                    );
+                                                }
                                                 cx.notify();
                                             }),
                                         )
@@ -176,7 +258,9 @@ impl Render for BotAttachWebView {
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
-                                            if this.is_dirty && !this.confirm_close_open {
+                                            if (this.is_dirty || this.closing_confirmation)
+                                                && !this.confirm_close_open
+                                            {
                                                 this.confirm_close_open = true;
                                             } else {
                                                 this.close();
@@ -194,51 +278,65 @@ impl Render for BotAttachWebView {
                             .flex_1()
                             .overflow_hidden()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap(px(5.0))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.0))
-                                    .child(
-                                        div()
-                                            .text_size(px(14.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(rgb(pal.text_primary))
-                                            .child(app_title),
-                                    )
-                                    .child(tg_icon(IconName::Verified, 13.0, pal.accent))
-                                    .when(init_hmac_ok, |row| {
-                                        row.child(
-                                            div()
-                                                .id("miniapp-initdata-verified-badge")
-                                                .px(px(5.0))
-                                                .py(px(1.0))
-                                                .rounded(px(4.0))
-                                                .bg(rgb(pal.composer_bg))
-                                                .text_size(px(9.5))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(rgb(pal.success))
-                                                .child("initData HMAC ✓"),
-                                        )
-                                    }),
+                                    .text_size(px(14.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.text_primary))
+                                    .child(app_title.clone()),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(rgb(pal.text_secondary))
-                                    .child(format!(
-                                        "{} · {}",
-                                        bot_sub,
-                                        tr_str(lang, "伴侣机器人", "Companion Bot")
-                                    )),
-                            ),
+                            .child(tg_icon(IconName::Verified, 13.0, pal.accent)),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(4.0))
+                            .when(show_settings, |row| {
+                                let b_user = self.bot_username.clone();
+                                let s_name = short_name.clone();
+                                row.child(
+                                    div()
+                                        .id("miniapp-settings-btn")
+                                        .cursor_pointer()
+                                        .w(px(28.0))
+                                        .h(px(28.0))
+                                        .rounded_full()
+                                        .hover(|s| s.bg(rgb(pal.hover_bg)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                if this.has_native_webview() {
+                                                    this.dispatch_js_event(
+                                                        "settings_button_pressed",
+                                                        "{}",
+                                                    );
+                                                } else {
+                                                    this.pending_actions.push_back(
+                                                        BotWebViewPendingAction::SendAppAction {
+                                                            bot_username: b_user.clone(),
+                                                            short_name: s_name.clone(),
+                                                            req: MiniAppActionRequest {
+                                                                action_type:
+                                                                    "settings_button_click"
+                                                                        .to_string(),
+                                                                chat_id: chat_id_opt,
+                                                                ..Default::default()
+                                                            },
+                                                        },
+                                                    );
+                                                }
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child(tg_icon(IconName::SettingsGear, 15.0, pal.icon_fg)),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("miniapp-minimize-btn")
@@ -256,7 +354,7 @@ impl Render for BotAttachWebView {
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
-                                            this.is_open = false;
+                                            this.minimize();
                                             this.pending_actions
                                                 .push_back(BotWebViewPendingAction::Minimize);
                                             cx.notify();
@@ -264,29 +362,6 @@ impl Render for BotAttachWebView {
                                     )
                                     .child("—"),
                             )
-                            .when(show_settings, |row| {
-                                row.child(
-                                    div()
-                                        .id("miniapp-settings-btn")
-                                        .cursor_pointer()
-                                        .w(px(28.0))
-                                        .h(px(28.0))
-                                        .rounded_full()
-                                        .hover(|s| s.bg(rgb(pal.hover_bg)))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                this.active_tab =
-                                                    if this.active_tab == 2 { 0 } else { 2 };
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(tg_icon(IconName::SettingsGear, 15.0, pal.icon_fg)),
-                                )
-                            })
                             .child(
                                 div()
                                     .id("miniapp-more-btn")
@@ -310,111 +385,12 @@ impl Render for BotAttachWebView {
                             ),
                     ),
             )
-            // 2. Navigation Sub-Tabs (App / CloudStorage / Info)
-            .child(
-                div()
-                    .w_full()
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .bg(rgb(pal.card_bg))
-                    .border_b_1()
-                    .border_color(rgb(pal.border_fg))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .id("miniapp-tab-view")
-                            .cursor_pointer()
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(px(999.0))
-                            .bg(rgb(if tab == 0 { pal.accent } else { pal.input_bg }))
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(if tab == 0 {
-                                0xFFFFFF
-                            } else {
-                                pal.text_secondary
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.active_tab = 0;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(tr_str(lang, "小程序界面", "Mini App")),
-                    )
-                    .child({
-                        let b_user = self.bot_username.clone();
-                        let s_name = short_name.clone();
-                        div()
-                            .id("miniapp-tab-storage")
-                            .cursor_pointer()
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(px(999.0))
-                            .bg(rgb(if tab == 1 { pal.accent } else { pal.input_bg }))
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(if tab == 1 {
-                                0xFFFFFF
-                            } else {
-                                pal.text_secondary
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.active_tab = 1;
-                                    this.pending_actions.push_back(
-                                        BotWebViewPendingAction::CloudStorageRefresh {
-                                            bot_username: b_user.clone(),
-                                            short_name: s_name.clone(),
-                                        },
-                                    );
-                                    cx.notify();
-                                }),
-                            )
-                            .child(format!(
-                                "{} ({})",
-                                tr_str(lang, "云存储", "CloudStorage"),
-                                self.cloud_storage.len()
-                            ))
-                    })
-                    .child(
-                        div()
-                            .id("miniapp-tab-info")
-                            .cursor_pointer()
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(px(999.0))
-                            .bg(rgb(if tab == 2 { pal.accent } else { pal.input_bg }))
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(if tab == 2 {
-                                0xFFFFFF
-                            } else {
-                                pal.text_secondary
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.active_tab = 2;
-                                    cx.notify();
-                                }),
-                            )
-                            .child(tr_str(lang, "安全与伴侣", "Security")),
-                    ),
-            )
-            // Overflow Menu (⋯)
+            // 2. Overflow Menu (⋮)
             .when(self.menu_open, |el| {
-                let b_user_reload = self.bot_username.clone();
-                let s_name_reload = short_name.clone();
-                let b_user_bot = self.bot_username.clone();
+                let b_user_profile = self.bot_username.clone();
                 let b_user_rm = self.bot_username.clone();
                 let s_name_rm = short_name.clone();
-                let web_path = browser_path.clone();
+                let web_path = browser_target.clone();
                 el.child(
                     div()
                         .id("miniapp-overflow-menu")
@@ -429,17 +405,28 @@ impl Render for BotAttachWebView {
                         .gap(px(6.0))
                         .child(overflow_menu_btn(
                             "miniapp-menu-reload",
-                            tr_str(lang, "🔄 刷新", "🔄 Reload"),
+                            tr_str(lang, "刷新页面", "Reload Page"),
                             pal.text_primary,
+                            pal,
+                            |this, _| {
+                                this.menu_open = false;
+                                this.reload_webview();
+                            },
+                            cx,
+                        ))
+                        .child(overflow_menu_btn(
+                            "miniapp-menu-open-bot",
+                            tr_str(lang, "查看机器人", "View Bot"),
+                            pal.accent,
                             pal,
                             move |this, _| {
                                 this.menu_open = false;
-                                this.is_loading = true;
-                                this.pending_actions.push_back(BotWebViewPendingAction::Reload {
-                                    bot_username: b_user_reload.clone(),
-                                    short_name: s_name_reload.clone(),
-                                    chat_id: chat_id_opt,
-                                });
+                                this.minimize();
+                                this.pending_actions.push_back(
+                                    BotWebViewPendingAction::OpenBotProfile(
+                                        b_user_profile.clone(),
+                                    ),
+                                );
                             },
                             cx,
                         ))
@@ -459,25 +446,8 @@ impl Render for BotAttachWebView {
                             cx,
                         ))
                         .child(overflow_menu_btn(
-                            "miniapp-menu-open-bot",
-                            format!("💬 {}", bot_sub),
-                            pal.accent,
-                            pal,
-                            move |this, _| {
-                                this.menu_open = false;
-                                this.is_open = false;
-                                this.pending_actions.push_back(
-                                    BotWebViewPendingAction::OpenCompanionChat {
-                                        companion_chat_id: companion_cid,
-                                        bot_username: b_user_bot.clone(),
-                                    },
-                                );
-                            },
-                            cx,
-                        ))
-                        .child(overflow_menu_btn(
                             "miniapp-menu-browser",
-                            tr_str(lang, "🌐 浏览器打开", "🌐 Open in Browser"),
+                            tr_str(lang, "浏览器打开", "Open in Browser"),
                             pal.text_primary,
                             pal,
                             move |this, _| {
@@ -491,8 +461,21 @@ impl Render for BotAttachWebView {
                             cx,
                         ))
                         .child(overflow_menu_btn(
+                            "miniapp-menu-tos",
+                            tr_str(lang, "服务条款", "Terms of Service"),
+                            pal.text_primary,
+                            pal,
+                            |this, _| {
+                                this.menu_open = false;
+                                this.minimize();
+                                this.pending_actions
+                                    .push_back(BotWebViewPendingAction::OpenMiniAppTos);
+                            },
+                            cx,
+                        ))
+                        .child(overflow_menu_btn(
                             "miniapp-menu-remove",
-                            tr_str(lang, "🗑 移除小程序", "🗑 Remove App"),
+                            tr_str(lang, "移除小程序", "Remove App"),
                             pal.danger,
                             pal,
                             move |this, _| {
@@ -509,7 +492,7 @@ impl Render for BotAttachWebView {
                         )),
                 )
             })
-            // Dirty close confirmation banner
+            // 3. Closing Confirmation Banner
             .when(self.confirm_close_open, |el| {
                 el.child(
                     div()
@@ -529,8 +512,8 @@ impl Render for BotAttachWebView {
                                 .text_color(rgb(pal.text_primary))
                                 .child(tr_str(
                                     lang,
-                                    "您有未保存操作，确定关闭或改为最小化？",
-                                    "Unsaved changes. Close anyway or minimize?",
+                                    "您确定要关闭此小程序吗？未保存的更改可能会丢失。",
+                                    "Changes you made may not be saved. Close anyway?",
                                 )),
                         )
                         .child(
@@ -578,142 +561,153 @@ impl Render for BotAttachWebView {
                         ),
                 )
             })
-            // 3. First-Launch Disclaimer OR Tab Body
-            .child(body)
-            // 4. Built-in AI Co-Pilot Strip (Surpassing Telegram)
-            .when_some(copilot_strip, |el, strip| el.child(strip))
-            // 5. Pinned Telegram MainButton & SecondaryButton Bar
-            .when(
-                self.disclaimer_accepted
-                    && tab == 0
-                    && (self
-                        .ui_schema
-                        .main_button
-                        .as_ref()
-                        .is_some_and(|b| b.is_visible)
-                        || self
-                            .ui_schema
-                            .secondary_button
-                            .as_ref()
-                            .is_some_and(|b| b.is_visible)),
-                |el| {
-                    let sec = self
-                        .ui_schema
-                        .secondary_button
-                        .clone()
-                        .filter(|b| b.is_visible);
-                    let main_b = self.ui_schema.main_button.clone().filter(|b| b.is_visible);
-                    let b_user_sec = self.bot_username.clone();
-                    let s_name_sec = short_name.clone();
-                    let b_user_main = self.bot_username.clone();
-                    let s_name_main = short_name.clone();
-                    el.child(
-                        div()
-                            .id("miniapp-bottom-bar")
-                            .w_full()
-                            .px(px(12.0))
-                            .py(px(10.0))
-                            .bg(rgb(pal.top_bar_bg))
-                            .border_t_1()
-                            .border_color(rgb(pal.border_fg))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .when_some(sec, |row, sb| {
-                                let label = sb.text.clone();
-                                row.child(
-                                    div()
-                                        .id("miniapp-secondary-btn")
-                                        .cursor_pointer()
-                                        .flex_1()
-                                        .h(px(38.0))
-                                        .rounded(px(9.0))
-                                        .bg(rgb(pal.card_bg))
-                                        .border_1()
-                                        .border_color(rgb(pal.border_fg))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(13.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(rgb(pal.text_primary))
-                                        .on_mouse_down(
+            // 4. WebView Viewport (live WKWebView on macOS, GPUI fallback in offline tests) + overlays
+            .child(main_viewport)
+            // 5. Native Telegram MainButton & SecondaryButton Bar
+            .when(has_bottom_buttons, |el| {
+                let sec = self
+                    .ui_schema
+                    .secondary_button
+                    .clone()
+                    .filter(|b| b.is_visible);
+                let main_b = self.ui_schema.main_button.clone().filter(|b| b.is_visible);
+                let b_user_sec = self.bot_username.clone();
+                let s_name_sec = short_name.clone();
+                let b_user_main = self.bot_username.clone();
+                let s_name_main = short_name.clone();
+                el.child(
+                    div()
+                        .id("miniapp-bottom-bar")
+                        .w_full()
+                        .px(px(12.0))
+                        .py(px(10.0))
+                        .bg(rgb(pal.top_bar_bg))
+                        .border_t_1()
+                        .border_color(rgb(pal.border_fg))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .when_some(sec, |row, sb| {
+                            let bg_col = Self::parse_hex_color(sb.color.as_deref(), pal.card_bg);
+                            let fg_col =
+                                Self::parse_hex_color(sb.text_color.as_deref(), pal.text_primary);
+                            let active = sb.is_active;
+                            let label = if sb.is_progress_visible {
+                                format!("⏳ {}", sb.text)
+                            } else {
+                                sb.text.clone()
+                            };
+                            row.child(
+                                div()
+                                    .id("miniapp-secondary-btn")
+                                    .when(active, |d| d.cursor_pointer())
+                                    .flex_1()
+                                    .h(px(38.0))
+                                    .rounded(px(9.0))
+                                    .bg(rgb(bg_col))
+                                    .border_1()
+                                    .border_color(rgb(pal.border_fg))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(fg_col))
+                                    .when(active, |d| {
+                                        d.on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
-                                                this.is_loading = true;
-                                                this.pending_actions.push_back(
-                                                    BotWebViewPendingAction::SendAppAction {
-                                                        bot_username: b_user_sec.clone(),
-                                                        short_name: s_name_sec.clone(),
-                                                        req: MiniAppActionRequest::secondary_button_click(
-                                                            chat_id_opt,
-                                                        ),
-                                                    },
-                                                );
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(label),
-                                )
-                            })
-                            .when_some(main_b, |row, mb| {
-                                let bg_col = Self::parse_hex_color(mb.color.as_deref(), pal.accent);
-                                let fg_col =
-                                    Self::parse_hex_color(mb.text_color.as_deref(), 0xFFFFFF);
-                                let sends_data = mb.sends_data;
-                                let label = if self.is_loading {
-                                    format!("⏳ {}", mb.text)
-                                } else {
-                                    mb.text.clone()
-                                };
-                                row.child(
-                                    div()
-                                        .id("miniapp-main-btn")
-                                        .cursor_pointer()
-                                        .flex_1()
-                                        .h(px(38.0))
-                                        .rounded(px(9.0))
-                                        .bg(rgb(bg_col))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(13.5))
-                                        .font_weight(FontWeight::BOLD)
-                                        .text_color(rgb(fg_col))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.is_loading = true;
-                                                let req = if sends_data {
-                                                    let payload = serde_json::to_string(
-                                                        &this.ui_schema.widgets,
-                                                    )
-                                                    .unwrap_or_else(|_| "{}".to_string());
-                                                    MiniAppActionRequest::send_data(
-                                                        payload,
-                                                        chat_id_opt,
-                                                    )
+                                                if this.has_native_webview() {
+                                                    this.dispatch_js_event(
+                                                        "secondary_button_pressed",
+                                                        "{}",
+                                                    );
                                                 } else {
-                                                    MiniAppActionRequest::main_button_click(
-                                                        chat_id_opt,
-                                                    )
-                                                };
-                                                this.pending_actions.push_back(
-                                                    BotWebViewPendingAction::SendAppAction {
-                                                        bot_username: b_user_main.clone(),
-                                                        short_name: s_name_main.clone(),
-                                                        req,
-                                                    },
-                                                );
+                                                    this.is_loading = true;
+                                                    this.pending_actions.push_back(
+                                                        BotWebViewPendingAction::SendAppAction {
+                                                            bot_username: b_user_sec.clone(),
+                                                            short_name: s_name_sec.clone(),
+                                                            req: MiniAppActionRequest::secondary_button_click(
+                                                                chat_id_opt,
+                                                            ),
+                                                        },
+                                                    );
+                                                }
                                                 cx.notify();
                                             }),
                                         )
-                                        .child(label),
-                                )
-                            }),
-                    )
-                },
-            )
+                                    })
+                                    .child(label),
+                            )
+                        })
+                        .when_some(main_b, |row, mb| {
+                            let bg_col = Self::parse_hex_color(mb.color.as_deref(), pal.accent);
+                            let fg_col =
+                                Self::parse_hex_color(mb.text_color.as_deref(), 0xFFFFFF);
+                            let sends_data = mb.sends_data;
+                            let active = mb.is_active;
+                            let label = if self.is_loading || mb.is_progress_visible {
+                                format!("⏳ {}", mb.text)
+                            } else {
+                                mb.text.clone()
+                            };
+                            row.child(
+                                div()
+                                    .id("miniapp-main-btn")
+                                    .when(active, |d| d.cursor_pointer())
+                                    .flex_1()
+                                    .h(px(38.0))
+                                    .rounded(px(9.0))
+                                    .bg(rgb(bg_col))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(fg_col))
+                                    .when(active, |d| {
+                                        d.on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                if this.has_native_webview() {
+                                                    this.dispatch_js_event(
+                                                        "main_button_pressed",
+                                                        "{}",
+                                                    );
+                                                } else {
+                                                    this.is_loading = true;
+                                                    let req = if sends_data {
+                                                        let payload = serde_json::to_string(
+                                                            &this.ui_schema.widgets,
+                                                        )
+                                                        .unwrap_or_else(|_| "{}".to_string());
+                                                        MiniAppActionRequest::send_data(
+                                                            payload,
+                                                            chat_id_opt,
+                                                        )
+                                                    } else {
+                                                        MiniAppActionRequest::main_button_click(
+                                                            chat_id_opt,
+                                                        )
+                                                    };
+                                                    this.pending_actions.push_back(
+                                                        BotWebViewPendingAction::SendAppAction {
+                                                            bot_username: b_user_main.clone(),
+                                                            short_name: s_name_main.clone(),
+                                                            req,
+                                                        },
+                                                    );
+                                                }
+                                                cx.notify();
+                                            }),
+                                        )
+                                    })
+                                    .child(label),
+                            )
+                        }),
+                )
+            })
             .when_some(self.status_toast.clone(), |el, msg| {
                 el.child(
                     div()
@@ -725,7 +719,43 @@ impl Render for BotAttachWebView {
                         .text_color(rgb(pal.tooltip_fg))
                         .child(msg),
                 )
-            });
+            })
+            // 6. Clean @bot_username Footer Bar
+            .child(
+                div()
+                    .id("miniapp-bot-footer")
+                    .cursor_pointer()
+                    .w_full()
+                    .h(px(30.0))
+                    .px(px(12.0))
+                    .bg(rgb(pal.top_bar_bg))
+                    .border_t_1()
+                    .border_color(rgb(pal.border_fg))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(rgb(pal.hover_bg)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.minimize();
+                            this.pending_actions.push_back(
+                                BotWebViewPendingAction::OpenBotProfile(
+                                    footer_bot_username.clone(),
+                                ),
+                            );
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(pal.text_secondary))
+                            .child(bot_sub),
+                    ),
+            );
 
         div()
             .id("bot-attach-webview-backdrop")
@@ -738,8 +768,8 @@ impl Render for BotAttachWebView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if !this.is_dirty {
-                        this.is_open = false;
+                    if !this.is_dirty && !this.closing_confirmation {
+                        this.minimize();
                         this.pending_actions
                             .push_back(BotWebViewPendingAction::Minimize);
                         cx.notify();

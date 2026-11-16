@@ -4,7 +4,9 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::theme::TdesktopThemePalette;
-use crate::views::canonical_composer::{CanonicalComposer, HermesSlashOption, SelectorTabKind};
+use crate::views::canonical_composer::{
+    BotSlashCommandItem, CanonicalComposer, HermesSlashOption, SelectorTabKind,
+};
 use crate::views::composer::composer_ui::ComposerBarAction;
 use crate::views::composer::editor_state::detect_autocomplete_trigger;
 use crate::views::composer::field_autocomplete::{AutocompleteChooseMethod, BotCommandRow};
@@ -19,57 +21,106 @@ impl CanonicalComposer {
         if let Some((trigger, token, _)) = detect_autocomplete_trigger(text, cur) {
             if trigger == '/' {
                 let q = token.trim_start_matches('/').to_ascii_lowercase();
-                let mut exact = Vec::new();
-                let mut alias = Vec::new();
-                let mut substr = Vec::new();
-                for cmd in &self.hermes_commands {
-                    if q.is_empty() || cmd.name.starts_with(&q) {
-                        exact.push(cmd.clone());
-                    } else if cmd.aliases.iter().any(|a| a.to_ascii_lowercase().starts_with(&q)) {
-                        alias.push(cmd.clone());
-                    } else if cmd.name.contains(&q)
-                        || cmd.description.to_ascii_lowercase().contains(&q)
-                        || cmd.category.to_ascii_lowercase().contains(&q)
-                    {
-                        substr.push(cmd.clone());
+                self.bot_ac_pinned_by_button = false;
+                if !self.bot_slash_commands.is_empty() {
+                    let mut prefix = Vec::new();
+                    let mut substr = Vec::new();
+                    for cmd in &self.bot_slash_commands {
+                        let clean = cmd.command.trim().trim_start_matches('/').to_ascii_lowercase();
+                        if q.is_empty() || clean.starts_with(&q) {
+                            prefix.push(cmd.clone());
+                        } else if clean.contains(&q)
+                            || cmd.description.to_ascii_lowercase().contains(&q)
+                        {
+                            substr.push(cmd.clone());
+                        }
                     }
+                    prefix.extend(substr);
+                    self.bot_ac_matches = prefix;
+                    if self.bot_ac_selected >= self.bot_ac_matches.len() {
+                        self.bot_ac_selected = 0;
+                    }
+                    self.bot_ac_visible = !self.bot_ac_matches.is_empty();
+                    self.hermes_ac_visible = false;
+                    self.hermes_ac_matches.clear();
+                    self.context_ref_hint_open = false;
+                    self.autocomplete.hide();
+                } else if self.hermes_slash_enabled {
+                    let mut exact = Vec::new();
+                    let mut alias = Vec::new();
+                    let mut substr = Vec::new();
+                    for cmd in &self.hermes_commands {
+                        if q.is_empty() || cmd.name.starts_with(&q) {
+                            exact.push(cmd.clone());
+                        } else if cmd.aliases.iter().any(|a| a.to_ascii_lowercase().starts_with(&q)) {
+                            alias.push(cmd.clone());
+                        } else if cmd.name.contains(&q)
+                            || cmd.description.to_ascii_lowercase().contains(&q)
+                            || cmd.category.to_ascii_lowercase().contains(&q)
+                        {
+                            substr.push(cmd.clone());
+                        }
+                    }
+                    exact.extend(alias);
+                    exact.extend(substr);
+                    self.hermes_ac_matches = exact;
+                    if self.hermes_ac_selected >= self.hermes_ac_matches.len() {
+                        self.hermes_ac_selected = 0;
+                    }
+                    self.hermes_ac_visible = !self.hermes_ac_matches.is_empty();
+                    self.bot_ac_visible = false;
+                    self.bot_ac_matches.clear();
+                    self.context_ref_hint_open = false;
+                    self.autocomplete.bot_command_rows = self
+                        .hermes_ac_matches
+                        .iter()
+                        .take(12)
+                        .map(|c| BotCommandRow {
+                            command: c.slash_name.clone(),
+                            description: format!("[{}] {}", c.category, c.description),
+                            bot_user_id: 0,
+                        })
+                        .collect();
+                    self.autocomplete.show_filtered(&token);
+                } else {
+                    self.bot_ac_visible = false;
+                    self.bot_ac_matches.clear();
+                    self.hermes_ac_visible = false;
+                    self.hermes_ac_matches.clear();
+                    self.context_ref_hint_open = false;
+                    self.autocomplete.hide();
                 }
-                exact.extend(alias);
-                exact.extend(substr);
-                self.hermes_ac_matches = exact;
-                if self.hermes_ac_selected >= self.hermes_ac_matches.len() {
-                    self.hermes_ac_selected = 0;
-                }
-                self.hermes_ac_visible = !self.hermes_ac_matches.is_empty();
-                self.context_ref_hint_open = false;
-                self.autocomplete.bot_command_rows = self
-                    .hermes_ac_matches
-                    .iter()
-                    .take(12)
-                    .map(|c| BotCommandRow {
-                        command: c.slash_name.clone(),
-                        description: format!("[{}] {}", c.category, c.description),
-                        bot_user_id: 0,
-                    })
-                    .collect();
-                self.autocomplete.show_filtered(&token);
             } else if trigger == '@' {
+                self.bot_ac_visible = false;
+                self.bot_ac_matches.clear();
+                self.bot_ac_pinned_by_button = false;
                 self.hermes_ac_visible = false;
                 self.hermes_ac_matches.clear();
                 self.context_ref_hint_open = true;
                 self.autocomplete.show_filtered(&token);
             } else if trigger == '#' {
+                self.bot_ac_visible = false;
+                self.bot_ac_matches.clear();
+                self.bot_ac_pinned_by_button = false;
                 self.hermes_ac_visible = false;
                 self.hermes_ac_matches.clear();
                 self.context_ref_hint_open = false;
                 self.autocomplete.show_filtered(&token);
             } else {
+                self.bot_ac_visible = false;
+                self.bot_ac_matches.clear();
+                self.bot_ac_pinned_by_button = false;
                 self.hermes_ac_visible = false;
                 self.hermes_ac_matches.clear();
                 self.context_ref_hint_open = false;
                 self.autocomplete.hide();
             }
         } else {
+            if !(self.bot_ac_pinned_by_button && text.is_empty() && !self.bot_slash_commands.is_empty()) {
+                self.bot_ac_visible = false;
+                self.bot_ac_matches.clear();
+                self.bot_ac_pinned_by_button = false;
+            }
             self.hermes_ac_visible = false;
             self.hermes_ac_matches.clear();
             self.context_ref_hint_open = false;
@@ -108,6 +159,24 @@ impl CanonicalComposer {
         }
     }
 
+    pub fn select_bot_autocomplete_index(&mut self, idx: usize) {
+        if let Some(cmd) = self.bot_ac_matches.get(idx).cloned() {
+            let clean = cmd.command.trim().trim_start_matches('/');
+            let insert = format!("/{clean} ");
+            let cur = self.ime_machine.cursor_index;
+            let text = self.ime_machine.text().to_string();
+            if matches!(detect_autocomplete_trigger(&text, cur), Some(('/', _, _))) {
+                self.replace_active_trigger_token(&insert);
+            } else {
+                self.editor.insert_at_cursor(&mut self.ime_machine, &insert);
+            }
+            self.bot_ac_visible = false;
+            self.bot_ac_matches.clear();
+            self.bot_ac_selected = 0;
+            self.bot_ac_pinned_by_button = false;
+        }
+    }
+
     pub fn select_hermes_autocomplete_index(&mut self, idx: usize) {
         if let Some(cmd) = self.hermes_ac_matches.get(idx).cloned() {
             let suffix = if cmd.accepts_args { " " } else { "" };
@@ -119,7 +188,45 @@ impl CanonicalComposer {
     }
 
     pub fn handle_hermes_autocomplete_nav(&mut self, key: &str, is_shift: bool) -> bool {
-        if self.hermes_ac_visible && !self.hermes_ac_matches.is_empty() {
+        if self.bot_ac_visible && !self.bot_ac_matches.is_empty() {
+            let len = self.bot_ac_matches.len();
+            match key {
+                "up" => {
+                    self.bot_ac_selected = if self.bot_ac_selected == 0 {
+                        len.saturating_sub(1)
+                    } else {
+                        self.bot_ac_selected - 1
+                    };
+                    return true;
+                }
+                "down" => {
+                    self.bot_ac_selected = (self.bot_ac_selected + 1) % len;
+                    return true;
+                }
+                "tab" => {
+                    let idx = self.bot_ac_selected.min(len.saturating_sub(1));
+                    self.select_bot_autocomplete_index(idx);
+                    return true;
+                }
+                "enter" if !is_shift => {
+                    let idx = self.bot_ac_selected.min(len.saturating_sub(1));
+                    self.select_bot_autocomplete_index(idx);
+                    return true;
+                }
+                "escape" => {
+                    self.bot_ac_visible = false;
+                    self.bot_ac_matches.clear();
+                    self.bot_ac_selected = 0;
+                    self.bot_ac_pinned_by_button = false;
+                    return true;
+                }
+                _ => {}
+            }
+        } else if self.hermes_slash_enabled
+            && self.bot_slash_commands.is_empty()
+            && self.hermes_ac_visible
+            && !self.hermes_ac_matches.is_empty()
+        {
             let len = self.hermes_ac_matches.len();
             match key {
                 "up" => {
@@ -311,7 +418,39 @@ impl CanonicalComposer {
             return;
         }
 
-        if self.hermes_ac_visible && !self.hermes_ac_matches.is_empty() {
+        if self.bot_ac_visible && !self.bot_ac_matches.is_empty() {
+            let len = self.bot_ac_matches.len();
+            match ks.key.as_str() {
+                "up" => {
+                    self.bot_ac_selected = if self.bot_ac_selected == 0 {
+                        len.saturating_sub(1)
+                    } else {
+                        self.bot_ac_selected - 1
+                    };
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                "down" => {
+                    self.bot_ac_selected = (self.bot_ac_selected + 1) % len;
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                "tab" => {
+                    let idx = self.bot_ac_selected.min(len.saturating_sub(1));
+                    self.select_bot_autocomplete_index(idx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+        } else if self.hermes_slash_enabled
+            && self.bot_slash_commands.is_empty()
+            && self.hermes_ac_visible
+            && !self.hermes_ac_matches.is_empty()
+        {
             let len = self.hermes_ac_matches.len();
             match ks.key.as_str() {
                 "up" => {
@@ -369,7 +508,19 @@ impl CanonicalComposer {
             "backspace" => self.editor.backspace_or_delete_sel(&mut self.ime_machine),
             "delete" => self.editor.delete_forward(&mut self.ime_machine),
             "enter" => {
-                if self.hermes_ac_visible && !self.hermes_ac_matches.is_empty() && !shift {
+                if self.bot_ac_visible && !self.bot_ac_matches.is_empty() && !shift {
+                    let idx = self.bot_ac_selected.min(self.bot_ac_matches.len().saturating_sub(1));
+                    self.select_bot_autocomplete_index(idx);
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if self.hermes_slash_enabled
+                    && self.bot_slash_commands.is_empty()
+                    && self.hermes_ac_visible
+                    && !self.hermes_ac_matches.is_empty()
+                    && !shift
+                {
                     let idx = self.hermes_ac_selected.min(self.hermes_ac_matches.len().saturating_sub(1));
                     self.select_hermes_autocomplete_index(idx);
                     cx.notify();
@@ -392,11 +543,18 @@ impl CanonicalComposer {
                 self.editor.send_options_open = false;
                 self.attachments_drawer.close();
                 self.is_emoji_picker_open = false;
+                self.bot_ac_visible = false;
+                self.bot_ac_matches.clear();
+                self.bot_ac_selected = 0;
+                self.bot_ac_pinned_by_button = false;
                 self.hermes_ac_visible = false;
                 self.hermes_ac_matches.clear();
                 self.context_ref_hint_open = false;
                 self.autocomplete.hide();
                 self.cancel_reply_or_edit();
+                cx.notify();
+                cx.stop_propagation();
+                return;
             }
             // Printable characters and IME composition flow solely through AppShell::EntityInputHandler
             // so macOS NSTextInputClient never double-inserts characters alongside ks.key_char.
@@ -547,6 +705,43 @@ impl CanonicalComposer {
         cx.notify();
     }
 
+    pub(crate) fn render_bot_slash_toggle_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let pal = self.palette;
+        let active = self.bot_ac_visible;
+        div()
+            .id("composer-bot-slash-btn")
+            .cursor_pointer()
+            .flex_shrink_0()
+            .w(px(34.0))
+            .h(px(34.0))
+            .rounded_full()
+            .bg(rgb(if active { pal.accent } else { pal.input_bg }))
+            .border_1()
+            .border_color(rgb(if active { pal.accent } else { pal.border_fg }))
+            .hover(move |s| {
+                s.bg(rgb(if active {
+                    pal.accent_hover
+                } else {
+                    pal.menu_hover_bg
+                }))
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(15.0))
+            .font_weight(FontWeight::BOLD)
+            .text_color(rgb(if active { 0xFFFFFF } else { pal.icon_fg }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.toggle_bot_commands_popup();
+                    cx.notify();
+                }),
+            )
+            .child("/")
+            .into_any_element()
+    }
+
     pub(crate) fn render_autocomplete_overlay(
         &self,
         text: &str,
@@ -559,7 +754,115 @@ impl CanonicalComposer {
         } else {
             None
         };
-        if self.hermes_ac_visible && !self.hermes_ac_matches.is_empty() {
+        if self.bot_ac_visible && !self.bot_ac_matches.is_empty() {
+            let pal = self.palette;
+            let matches = self.bot_ac_matches.clone();
+            let total_matches = matches.len();
+            let sel = self.bot_ac_selected.min(total_matches.saturating_sub(1));
+            let window_start = if total_matches > 8 && sel >= 5 {
+                (sel - 4).min(total_matches - 8)
+            } else {
+                0
+            };
+            let visible_rows: Vec<(usize, BotSlashCommandItem)> = matches
+                .into_iter()
+                .enumerate()
+                .skip(window_start)
+                .take(8)
+                .collect();
+            Some(
+                div()
+                    .id("composer-bot-commands-popup")
+                    .mb(px(6.0))
+                    .w(px(360.0))
+                    .max_h(px(260.0))
+                    .overflow_y_scroll()
+                    .rounded(px(12.0))
+                    .bg(rgb(pal.menu_bg))
+                    .border_1()
+                    .border_color(rgb(pal.border_fg))
+                    .shadow_lg()
+                    .p(px(6.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .children(visible_rows.into_iter().map(|(idx, cmd)| {
+                        let is_sel = idx == sel;
+                        let cmd_label = format!("/{}", cmd.command.trim().trim_start_matches('/'));
+                        let avatar_col = if cmd.avatar_color != 0 {
+                            cmd.avatar_color
+                        } else {
+                            pal.accent
+                        };
+                        let initials = if cmd.avatar_initials.trim().is_empty() {
+                            cmd.bot_username
+                                .chars()
+                                .take(2)
+                                .collect::<String>()
+                                .to_uppercase()
+                        } else {
+                            cmd.avatar_initials.clone()
+                        };
+                        div()
+                            .id(SharedString::from(format!("bot-slash-row-{idx}")))
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .rounded(px(8.0))
+                            .when(is_sel, |d| d.bg(rgb(pal.input_bg)))
+                            .hover(move |s| s.bg(rgb(pal.menu_hover_bg)))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.select_bot_autocomplete_index(idx);
+                                    cx.notify();
+                                }),
+                            )
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .w(px(26.0))
+                                    .h(px(26.0))
+                                    .rounded_full()
+                                    .flex_shrink_0()
+                                    .bg(rgb(avatar_col))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(0xFFFFFF))
+                                    .child(if initials.is_empty() { "B".to_string() } else { initials }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(if is_sel { pal.accent } else { pal.text_primary }))
+                                    .flex_shrink_0()
+                                    .child(cmd_label),
+                            )
+                            .when(!cmd.description.trim().is_empty(), |row| {
+                                row.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .text_size(px(12.0))
+                                        .text_color(rgb(pal.text_secondary))
+                                        .truncate()
+                                        .child(cmd.description),
+                                )
+                            })
+                    }))
+                    .into_any_element(),
+            )
+        } else if self.hermes_slash_enabled
+            && self.bot_slash_commands.is_empty()
+            && self.hermes_ac_visible
+            && !self.hermes_ac_matches.is_empty()
+        {
             let pal = self.palette;
             let matches = self.hermes_ac_matches.clone();
             let total_matches = matches.len();

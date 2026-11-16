@@ -18,7 +18,7 @@ use crate::views::sidebar::gemini_unified_sidebar::{
     render_expanded_gemini_search_bar, render_expanded_gemini_top_bar, UnifiedNavSnapshot,
 };
 use crate::views::sidebar::sidebar_search_view::{
-    render_apps_catalog_section, render_search_panel, render_search_results_list,
+    render_apps_catalog_section_with_recent, render_search_panel, render_search_results_list,
 };
 
 fn render_sidebar_dialog_row(
@@ -54,6 +54,12 @@ fn render_sidebar_dialog_row(
         },
         move |this, cx| {
             this.toggle_forum_topics(did);
+            cx.notify();
+        },
+        move |this, uri, cx| {
+            this.context_menu = None;
+            this.search_focused = false;
+            this.pending_launch_dialog_miniapp = Some((did, uri));
             cx.notify();
         },
     )
@@ -257,8 +263,9 @@ impl Render for ChatSidebar {
                 || q_lower.contains("miniapp");
             let mut items: Vec<AnyElement> = Vec::new();
             if show_apps_catalog {
-                items.extend(render_apps_catalog_section(
+                items.extend(render_apps_catalog_section_with_recent(
                     &query,
+                    &self.recent_mini_apps,
                     &self.catalog_mini_apps,
                     &palette,
                     &lang_id,
@@ -270,12 +277,7 @@ impl Render for ChatSidebar {
                     },
                     |this, app, cx| {
                         this.search_focused = false;
-                        this.pending_install_open_miniapp = Some(app);
-                        cx.notify();
-                    },
-                    |this, app, cx| {
-                        this.search_focused = false;
-                        this.pending_open_miniapp_only = Some(app);
+                        this.pending_open_bot_profile = Some(app.bot_username);
                         cx.notify();
                     },
                 ));
@@ -539,6 +541,9 @@ impl Render for ChatSidebar {
                     .min_h(px(0.0))
                     .w_full()
                     .overflow_y_scroll()
+                    .when(palette.mode.is_fabushi_style(), |el| {
+                        el.px(px(palette.scaled_px(6.0))).gap(px(1.0))
+                    })
                     .flex()
                     .flex_col()
                     .children(scroll_children),

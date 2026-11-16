@@ -4,7 +4,7 @@
 //! floating overlay handles, and theme/locale visual state into cohesive sub-structs
 //! so `AppShell` stays concise and modular.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::Entity;
 use gpui_telegram_agent::TalkCoordinator;
@@ -14,11 +14,14 @@ use gpui_telegram_proto::computer_contracts::{
     BotComputerProfileDto, ComputerNodeDto, PendingComputerCommandDto,
 };
 use gpui_telegram_proto::contracts::auth::ContactDto;
-use gpui_telegram_proto::miniapp_contracts::{BotRegistryEntry, MiniAppEntry};
+use gpui_telegram_proto::miniapp_contracts::{
+    BotPublicProfileDto, BotRegistryEntry, FabushiBotSummaryDto, MiniAppEntry, MiniAppLaunchMode,
+};
 use gpui_telegram_webrtc::WebRtcCallEngine;
 
 use crate::components::bots::bot_attach_web_view::BotAttachWebView;
 use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::views::boxes::peers::bot_profile_box::BotProfileBox;
 use crate::views::boxes::peers::create_managed_bot_box::CreateManagedBotBoxPeers;
 use crate::views::iv::IvViewer;
 use crate::views::stage::cards::{DeliveryStatus, MessageItemModel, ReactionItem};
@@ -127,16 +130,48 @@ impl ShellSessionSyncState {
     }
 }
 
+/// Pending Mini App launch waiting for first-time ToS confirmation modal.
+#[derive(Clone, Debug)]
+pub struct PendingMiniAppConfirm {
+    pub bot_id: u64,
+    pub bot_username: String,
+    pub bot_display_name: String,
+    pub app_id: Option<String>,
+    pub short_name: String,
+    pub app_title: String,
+    pub source_chat_id: Option<u64>,
+    pub launch_mode: MiniAppLaunchMode,
+    pub start_param: Option<String>,
+}
+
+/// Virtual pre-start bot conversation state before a DB DM chat is created on click of `开始`.
+#[derive(Clone, Debug)]
+pub struct PrestartBotTarget {
+    pub bot_id: u64,
+    pub bot_username: String,
+    pub display_name: String,
+    pub description: String,
+    pub is_viewer_owner_fabushi: bool,
+}
+
 /// Active Mini App WebView sheets, NL bot creator modal, and catalog/bot registry caches.
 #[derive(Default)]
 pub struct ShellMiniAppState {
     pub miniapp_overlay: Option<Entity<BotAttachWebView>>,
     pub is_miniapp_minimized: bool,
     pub create_bot_box: Option<Entity<CreateManagedBotBoxPeers>>,
+    pub bot_profile_box: Option<Entity<BotProfileBox>>,
     pub catalog_miniapps: Vec<MiniAppEntry>,
     pub installed_miniapps: Vec<MiniAppEntry>,
+    pub recent_mini_apps: Vec<MiniAppEntry>,
     pub attach_menu_bots: Vec<BotRegistryEntry>,
     pub my_bots: Vec<BotRegistryEntry>,
+    pub fabushi_bots: Vec<FabushiBotSummaryDto>,
+    pub bot_profiles_cache: HashMap<String, BotPublicProfileDto>,
+    pub pending_miniapp_confirm: Option<PendingMiniAppConfirm>,
+    pub miniapp_tos_modal_open: bool,
+    pub accepted_app_tos_bots: HashSet<u64>,
+    pub pending_prestart_bot: Option<PrestartBotTarget>,
 }
 
 impl ShellMiniAppState {
@@ -308,6 +343,7 @@ pub struct ShellComputersState {
     pub current_host_node_id: Option<String>,
     pub relay_loop_started: bool,
     pub relay_generation: u64,
+    pub tailnet_status: Option<gpui_telegram_proto::TailnetNodeStatus>,
 }
 
 impl ShellComputersState {
@@ -322,6 +358,7 @@ impl ShellComputersState {
         self.current_host_node_id = None;
         self.relay_loop_started = false;
         self.relay_generation = self.relay_generation.wrapping_add(1);
+        self.tailnet_status = None;
     }
 }
 
@@ -429,5 +466,14 @@ mod tests {
         let theme = ShellThemeVisualState::default();
         assert_eq!(theme.bubble_radius_px, 12);
         assert_eq!(theme.active_lang_id(), "en");
+
+        let mut computers = ShellComputersState::new();
+        computers.tailnet_status = Some(gpui_telegram_proto::TailnetNodeStatus {
+            running: true,
+            tailnet_ip: "100.64.0.10".to_string(),
+            ..Default::default()
+        });
+        computers.reset_on_logout();
+        assert!(computers.tailnet_status.is_none());
     }
 }

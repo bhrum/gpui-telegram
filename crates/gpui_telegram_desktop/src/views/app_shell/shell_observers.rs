@@ -45,7 +45,7 @@ impl AppShell {
         });
     }
 
-    fn enqueue_localized_toast(
+    pub(crate) fn enqueue_localized_toast(
         &mut self,
         zh: &'static str,
         en: &'static str,
@@ -260,7 +260,8 @@ impl AppShell {
                 selected_dialog, selection_rev, story_peer, search_focused, has_creation_modal,
                 pending_contact, pending_group, search_query, search_cat, search_seq,
                 open_menu, open_new_channel, context_action, is_collapsed, collapse_rev,
-                open_botfather, install_open_app, open_app_only, open_search_hit,
+                open_botfather, install_open_app, open_app_only, open_bot_profile,
+                launch_dialog_miniapp, open_search_hit,
             ) = sb.update(cx, |s, _| (
                 s.selected_dialog().cloned(), s.selection_revision, s.story_clicked_peer.take(),
                 s.search_focused, s.active_creation_modal.is_some(),
@@ -270,6 +271,7 @@ impl AppShell {
                 s.take_pending_context_action(), s.is_collapsed, s.collapse_state_revision,
                 std::mem::take(&mut s.pending_open_botfather),
                 s.pending_install_open_miniapp.take(), s.pending_open_miniapp_only.take(),
+                s.pending_open_bot_profile.take(), s.pending_launch_dialog_miniapp.take(),
                 s.pending_open_search_hit.take(),
             ));
             if open_botfather {
@@ -287,6 +289,17 @@ impl AppShell {
                 } else {
                     shell.install_and_launch_miniapp(app_item, cx);
                 }
+            }
+            if let Some(bot_un) = open_bot_profile {
+                shell.open_bot_profile_popup(&bot_un, cx);
+            }
+            if let Some((cid, uri)) = launch_dialog_miniapp {
+                let _ = shell.launch_miniapp_from_uri(
+                    &uri,
+                    Some(cid),
+                    MiniAppLaunchMode::MainMiniApp,
+                    cx,
+                );
             }
             if let Some(hit) = open_search_hit {
                 shell.handle_sidebar_search_hit(hit, cx);
@@ -387,6 +400,10 @@ impl AppShell {
 
     fn observe_stage_composer_inspector_entities(&self, cx: &mut Context<Self>) {
         cx.observe(&self.stage, |shell, st, cx| {
+            let bot_start_clicked = st.update(cx, |s, _| std::mem::take(&mut s.pending_bot_start));
+            if bot_start_clicked {
+                shell.materialize_prestart_bot_and_start(cx);
+            }
             shell.handle_stage_pending_actions(cx);
             let insp_open = st.read(cx).is_inspector_open;
             shell.inspector.update(cx, |insp, insp_cx| {

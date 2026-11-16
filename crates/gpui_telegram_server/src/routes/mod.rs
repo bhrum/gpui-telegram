@@ -11,7 +11,10 @@ pub mod analytics_wallet;
 pub mod acp;
 pub mod hermes;
 pub mod bots_miniapps;
+pub mod fabushi_miniapp_api;
+pub mod telegram_bot_api;
 pub mod computers;
+pub mod tailnet;
 
 use crate::db::schema::{ChatMemberRecord, ChatRecord, UserRecord};
 use crate::server::AppState;

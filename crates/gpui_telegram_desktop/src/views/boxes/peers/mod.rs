@@ -5,6 +5,8 @@ pub mod add_participants_box;
 pub use add_participants_box::AddParticipantsBoxPeers;
 pub mod add_to_community_box;
 pub use add_to_community_box::AddToCommunityBoxPeers;
+pub mod bot_profile_box;
+pub use bot_profile_box::{BotProfileBox, BotProfileBoxAction};
 pub mod channel_ownership_transfer;
 pub use channel_ownership_transfer::ChannelOwnershipTransferPeers;
 pub mod choose_peer_box;

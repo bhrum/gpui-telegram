@@ -69,6 +69,14 @@ pub enum CreationInputField {
     TertiaryPromptOrPhone,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BotGrokAvatarVisual {
+    pub agent_id: String,
+    pub shape: String,
+    pub color: String,
+    pub execution_state: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAddContactRequest {
     pub local_dialog_id: u64,
@@ -78,6 +86,8 @@ pub struct PendingAddContactRequest {
     pub phone: Option<String>,
     pub is_bot: bool,
     pub system_prompt: Option<String>,
+    pub avatar_shape: Option<String>,
+    pub avatar_color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +112,7 @@ pub struct CategorizedSearchResult {
     pub is_bot: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SidebarCatalogAppItem {
     pub bot_id: u64,
     pub bot_username: String,
@@ -113,6 +123,8 @@ pub struct SidebarCatalogAppItem {
     pub icon_initials: String,
     pub avatar_color: u32,
     pub installs_count: u64,
+    pub mau_count: u64,
+    pub is_verified: bool,
     pub is_installed: bool,
     pub is_mine: bool,
     pub webview_url: String,
@@ -204,6 +216,9 @@ pub struct ChatSidebar {
     pub creation_primary_input: String,
     pub creation_secondary_input: String,
     pub creation_tertiary_input: String,
+    pub creation_avatar_shape: String,
+    pub creation_avatar_color: String,
+    pub creation_use_dynamic_avatar: bool,
     pub pending_add_contact_request: Option<PendingAddContactRequest>,
     pub pending_create_group_request: Option<PendingCreateGroupRequest>,
     pub pending_open_new_channel: bool,
@@ -214,9 +229,13 @@ pub struct ChatSidebar {
     pub active_search_tag: String,
     pub remote_search_results: Vec<CategorizedSearchResult>,
     pub catalog_mini_apps: Vec<SidebarCatalogAppItem>,
+    pub recent_mini_apps: Vec<SidebarCatalogAppItem>,
     pub pending_open_botfather: bool,
     pub pending_install_open_miniapp: Option<SidebarCatalogAppItem>,
     pub pending_open_miniapp_only: Option<SidebarCatalogAppItem>,
+    pub pending_open_bot_profile: Option<String>,
+    pub bot_main_app_uris: std::collections::HashMap<u64, String>,
+    pub pending_launch_dialog_miniapp: Option<(u64, String)>,
     pub pending_open_search_hit: Option<CategorizedSearchResult>,
     pub search_request_seq: u64,
     pub search_in_ui: ChatSearchInUi,
@@ -237,6 +256,8 @@ pub struct ChatSidebar {
     pub verified_ids: std::collections::HashSet<u64>,
     pub premium_ids: std::collections::HashSet<u64>,
     pub bot_ids: std::collections::HashSet<u64>,
+    pub bot_fabushi_visuals: std::collections::HashMap<u64, (String, u32)>,
+    pub bot_grok_avatars: std::collections::HashMap<u64, BotGrokAvatarVisual>,
     pub contact_chat_ids: std::collections::HashSet<u64>,
     pub group_chat_ids: std::collections::HashSet<u64>,
     pub channel_chat_ids: std::collections::HashSet<u64>,
@@ -288,6 +309,9 @@ impl ChatSidebar {
             creation_primary_input: String::new(),
             creation_secondary_input: String::new(),
             creation_tertiary_input: String::new(),
+            creation_avatar_shape: "blob".to_string(),
+            creation_avatar_color: "blue".to_string(),
+            creation_use_dynamic_avatar: true,
             pending_add_contact_request: None,
             pending_create_group_request: None,
             pending_open_new_channel: false,
@@ -296,9 +320,13 @@ impl ChatSidebar {
             active_search_tag: "all".to_string(),
             remote_search_results: Vec::new(),
             catalog_mini_apps: Vec::new(),
+            recent_mini_apps: Vec::new(),
             pending_open_botfather: false,
             pending_install_open_miniapp: None,
             pending_open_miniapp_only: None,
+            pending_open_bot_profile: None,
+            bot_main_app_uris: std::collections::HashMap::new(),
+            pending_launch_dialog_miniapp: None,
             pending_open_search_hit: None,
             search_request_seq: 0,
             search_in_ui: ChatSearchInUi::new(),
@@ -317,6 +345,8 @@ impl ChatSidebar {
             verified_ids: std::collections::HashSet::new(),
             premium_ids: std::collections::HashSet::new(),
             bot_ids: std::collections::HashSet::new(),
+            bot_fabushi_visuals: std::collections::HashMap::new(),
+            bot_grok_avatars: std::collections::HashMap::new(),
             contact_chat_ids: std::collections::HashSet::new(),
             group_chat_ids: std::collections::HashSet::new(),
             channel_chat_ids: std::collections::HashSet::new(),
@@ -405,9 +435,13 @@ impl ChatSidebar {
         self.active_creation_modal = None;
         self.remote_search_results.clear();
         self.catalog_mini_apps.clear();
+        self.recent_mini_apps.clear();
         self.pending_open_botfather = false;
         self.pending_install_open_miniapp = None;
         self.pending_open_miniapp_only = None;
+        self.pending_open_bot_profile = None;
+        self.bot_main_app_uris.clear();
+        self.pending_launch_dialog_miniapp = None;
         self.pending_open_search_hit = None;
         self.search_in_ui.clear_scope();
         self.search_tags_ui.clear_selection();
@@ -485,6 +519,14 @@ impl ChatSidebar {
 
     pub fn set_catalog_mini_apps(&mut self, apps: Vec<SidebarCatalogAppItem>) {
         self.catalog_mini_apps = apps;
+    }
+
+    pub fn set_recent_mini_apps(&mut self, apps: Vec<SidebarCatalogAppItem>) {
+        self.recent_mini_apps = apps;
+    }
+
+    pub fn set_bot_main_app_uris(&mut self, uris: std::collections::HashMap<u64, String>) {
+        self.bot_main_app_uris = uris;
     }
 
     pub fn select_search_tag(&mut self, tag: impl Into<String>) {

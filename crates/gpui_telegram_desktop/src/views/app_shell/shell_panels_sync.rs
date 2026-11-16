@@ -260,7 +260,7 @@ impl AppShell {
                             })
                             .cloned()
                         {
-                            self.launch_miniapp(
+                            self.request_launch_miniapp_with_confirm(
                                 &app.bot_username,
                                 &app.short_name,
                                 Some(cid),
@@ -334,6 +334,45 @@ impl AppShell {
                     self.append_outgoing_text(slash, cx);
                 }
             }
+            InspectorAction::FocusBotComposer => {
+                self.composer.update(cx, |c, c_cx| {
+                    c.is_input_focused = true;
+                    c_cx.notify();
+                });
+            }
+            InspectorAction::OpenMiniAppTos => {
+                self.miniapps.miniapp_tos_modal_open = true;
+            }
+            InspectorAction::OpenBotPrivacyPolicy(url) => {
+                self.open_external_url_with_toast(&url, cx);
+            }
+            InspectorAction::OpenBotSettings(_bot_id) => {
+                if active_chat.is_some() {
+                    self.append_outgoing_text("/settings".to_string(), cx);
+                } else {
+                    self.enqueue_localized_toast(
+                        "请先点击下方开始或打开机器人对话以配置设置",
+                        "Start or open the bot chat first to manage settings",
+                        2200,
+                        cx,
+                    );
+                }
+            }
+            InspectorAction::OpenAddBotToGroup(_bot_id) => {
+                let title = tr_str(lang, "添加到群组", "Add to Group");
+                self.open_modal_dialog(title, ModalDialogKind::NewGroup, 420.0, 380.0, cx);
+            }
+            InspectorAction::ReportBot(_bot_id) => {
+                self.enqueue_localized_toast(
+                    "已提交举报，感谢您的反馈",
+                    "Report submitted. Thank you for your feedback.",
+                    2200,
+                    cx,
+                );
+            }
+            InspectorAction::ToggleBlockBot(bot_id) => {
+                self.toggle_bot_block_status(bot_id, cx);
+            }
             act @ (InspectorAction::OpenBotComputersSubpage
             | InspectorAction::CloseBotComputersSubpage
             | InspectorAction::OpenRemoteWorkbench { .. }
@@ -342,6 +381,49 @@ impl AppShell {
             | InspectorAction::BindBotToComputer { .. }
             | InspectorAction::SaveBotComputerConfig { .. }) => {
                 let _ = self.handle_computer_inspector_action(act, cx);
+            }
+            InspectorAction::PatchFabushiBot { bot_id, req } => {
+                let Some(fence) = session_fence(self) else {
+                    return;
+                };
+                let client = self.client.clone();
+                let lang_owned = lang.to_string();
+                cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+                    let res = client.patch_fabushi_bot(bot_id, &req).await;
+                    let _ = weak.update(app, |shell, cx| {
+                        if !fence_matches(&fence, shell) {
+                            return;
+                        }
+                        match res {
+                            Ok(updated) => {
+                                if let Some(slot) = shell
+                                    .miniapps
+                                    .fabushi_bots
+                                    .iter_mut()
+                                    .find(|b| b.bot_user_id == updated.bot_user_id)
+                                {
+                                    *slot = updated.clone();
+                                } else {
+                                    shell.miniapps.fabushi_bots.push(updated.clone());
+                                }
+                                shell.sync_fabushi_bots_to_views(cx);
+                                shell.refresh_miniapps_catalog(None, cx);
+                                shell.window_runtime.enqueue_toast(
+                                    tr_str(&lang_owned, "已更新 Fabushi 智能体配置", "Updated Fabushi bot settings"),
+                                    1800,
+                                );
+                            }
+                            Err(e) => {
+                                shell.window_runtime.enqueue_toast(
+                                    format!("{}: {}", tr_str(&lang_owned, "更新失败", "Update failed"), e),
+                                    2600,
+                                );
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
             }
         }
         cx.notify();

@@ -14,6 +14,10 @@ use crate::mcp::{ToolPermissionDock, ToolRiskLevel};
 use crate::talk::TalkSessionState;
 use crate::tasks::{CronExecutionRecord, CronRoutine};
 
+use mahayana_host_runtime::agents::agent_messaging::{
+    SAND_CREATE_AGENT_TOOL_NAME, SAND_SEND_TO_AGENT_TOOL_NAME, SAND_UPDATE_AGENT_TOOL_NAME,
+};
+
 use super::security::{scan_content_for_injection, ApprovalMode};
 use super::toolsets::{
     HermesInlineButton, HermesToolContext, HermesToolResult, HermesUiAction,
@@ -180,7 +184,166 @@ pub async fn execute_agentic_tool(
         "memory" => tool_memory(args, ctx).await,
         "skill_manage" => tool_skill_manage(args, ctx).await,
         "honcho_profile" => tool_honcho_profile(args, ctx).await,
+        name if name == SAND_SEND_TO_AGENT_TOOL_NAME => tool_fabushi_send_to_agent(args, ctx),
+        name if name == SAND_CREATE_AGENT_TOOL_NAME => tool_fabushi_create_agent(args, ctx),
+        name if name == SAND_UPDATE_AGENT_TOOL_NAME => tool_fabushi_update_agent(args, ctx),
         _ => HermesToolResult::err(name, format!("Unknown agentic tool '{name}'")),
+    }
+}
+
+fn tool_fabushi_send_to_agent(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let Some(handler) = ctx.teammate_handler.as_ref() else {
+        return HermesToolResult::err(
+            SAND_SEND_TO_AGENT_TOOL_NAME,
+            "Fabushi teammate runtime handler is not attached",
+        );
+    };
+    let target_id = args
+        .get("targetId")
+        .or_else(|| args.get("target_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    let message = args
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if target_id.is_empty() || message.is_empty() {
+        return HermesToolResult::err(
+            SAND_SEND_TO_AGENT_TOOL_NAME,
+            "SendToAgent requires non-empty targetId and message",
+        );
+    }
+    let priority = args
+        .get("priority")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let from_agent_id = ctx
+        .bound_agent_id
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| ctx.bot_id.map(|id| format!("bot-{id}")))
+        .unwrap_or_else(|| "main".to_string());
+
+    match handler.send_to_agent(
+        &from_agent_id,
+        ctx.chat_id,
+        target_id,
+        message,
+        priority,
+        ctx.caller_depth,
+    ) {
+        Ok(payload) => HermesToolResult::ok(
+            SAND_SEND_TO_AGENT_TOOL_NAME,
+            serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            Some(payload),
+        ),
+        Err(err) => HermesToolResult::err(SAND_SEND_TO_AGENT_TOOL_NAME, err),
+    }
+}
+
+fn tool_fabushi_create_agent(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let Some(handler) = ctx.teammate_handler.as_ref() else {
+        return HermesToolResult::err(
+            SAND_CREATE_AGENT_TOOL_NAME,
+            "Fabushi teammate runtime handler is not attached",
+        );
+    };
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    let description = args
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if name.is_empty() {
+        return HermesToolResult::err(
+            SAND_CREATE_AGENT_TOOL_NAME,
+            "CreateAgent requires a non-empty name",
+        );
+    }
+    let avatar_shape = args
+        .get("avatarShape")
+        .or_else(|| args.get("avatar_shape"))
+        .and_then(Value::as_str);
+    let avatar_color = args
+        .get("avatarColor")
+        .or_else(|| args.get("avatar_color"))
+        .and_then(Value::as_str);
+    let creator_id = ctx
+        .bound_agent_id
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| ctx.bot_id.map(|id| format!("bot-{id}")))
+        .unwrap_or_else(|| "main".to_string());
+
+    match handler.create_agent(
+        &creator_id,
+        ctx.chat_id,
+        name,
+        description,
+        avatar_shape,
+        avatar_color,
+    ) {
+        Ok(payload) => HermesToolResult::ok(
+            SAND_CREATE_AGENT_TOOL_NAME,
+            serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            Some(payload),
+        ),
+        Err(err) => HermesToolResult::err(SAND_CREATE_AGENT_TOOL_NAME, err),
+    }
+}
+
+fn tool_fabushi_update_agent(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+    let Some(handler) = ctx.teammate_handler.as_ref() else {
+        return HermesToolResult::err(
+            SAND_UPDATE_AGENT_TOOL_NAME,
+            "Fabushi teammate runtime handler is not attached",
+        );
+    };
+    let caller_id = ctx
+        .bound_agent_id
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| ctx.bot_id.map(|id| format!("bot-{id}")))
+        .unwrap_or_else(|| "main".to_string());
+    let target_id = args
+        .get("targetId")
+        .or_else(|| args.get("target_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&caller_id);
+
+    let name = args.get("name").and_then(Value::as_str);
+    let description = args.get("description").and_then(Value::as_str);
+    let avatar_shape = args
+        .get("avatarShape")
+        .or_else(|| args.get("avatar_shape"))
+        .and_then(Value::as_str);
+    let avatar_color = args
+        .get("avatarColor")
+        .or_else(|| args.get("avatar_color"))
+        .and_then(Value::as_str);
+
+    match handler.update_agent(
+        &caller_id,
+        target_id,
+        name,
+        description,
+        avatar_shape,
+        avatar_color,
+    ) {
+        Ok(payload) => HermesToolResult::ok(
+            SAND_UPDATE_AGENT_TOOL_NAME,
+            serde_json::to_string_pretty(&payload).unwrap_or_default(),
+            Some(payload),
+        ),
+        Err(err) => HermesToolResult::err(SAND_UPDATE_AGENT_TOOL_NAME, err),
     }
 }
 

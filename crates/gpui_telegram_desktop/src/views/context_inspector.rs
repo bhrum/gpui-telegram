@@ -3,7 +3,7 @@
 use crate::components::ui::{TextInputController, delete_prev_word, pop_last_char};
 use crate::i18n::tr_str;
 use crate::theme::assets::{IconName, tg_icon};
-use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+use crate::theme::palette::TdesktopThemePalette;
 use crate::views::drawer::bot_computer_inspector::{
     render_bot_computers_subpage, render_bot_config_editor, render_bot_profile_main,
 };
@@ -12,6 +12,7 @@ use crate::views::drawer::inspector_panels::{
 };
 use crate::views::drawer::inspector_tabs::*;
 use crate::views::drawer::statistics::info_statistics_inner_widget::ChartDataPoint;
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_telegram_proto::{BotComputerProfileDto, ComputerNodeDto, ComputerRunPolicy};
 
@@ -52,6 +53,7 @@ pub struct ContextInspector {
     pub bot_draft_allow_cloud_self_config: bool,
     pub persona_input: Option<Entity<TextInputController>>,
     pub model_input: Option<Entity<TextInputController>>,
+    pub active_fabushi_bot: Option<gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto>,
 }
 
 impl ContextInspector {
@@ -74,7 +76,7 @@ impl ContextInspector {
             channel_boost_level: 0,
             channel_boosts_current: 0,
             channel_boosts_target: 30,
-            palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
+            palette: TdesktopThemePalette::default(),
             language_id: "en".to_string(),
             computers: Vec::new(),
             bot_computer_profile: None,
@@ -86,6 +88,7 @@ impl ContextInspector {
             bot_draft_allow_cloud_self_config: true,
             persona_input: None,
             model_input: None,
+            active_fabushi_bot: None,
         }
     }
 
@@ -111,6 +114,14 @@ impl ContextInspector {
             miniapp_title: None,
             miniapp_url: None,
             in_attach_menu: false,
+            bot_mau_count: 0,
+            bot_has_main_app: false,
+            bot_privacy_policy_url: String::new(),
+            bot_has_settings: false,
+            bot_can_join_groups: false,
+            is_viewer_owner: false,
+            is_verified: false,
+            is_blocked: false,
         };
         s.members.members = vec![
             MemberItem { id: 1, name: "Alice Smith".into(), initials: "AS".into(), color: 0x2AABEE, role: "Owner".into(), is_online: true },
@@ -128,6 +139,9 @@ impl ContextInspector {
             facts: Vec::new(), is_notifications_enabled: true,
             is_bot: false, bot_id: 0, bot_persona_prompt: String::new(), bot_commands: Vec::new(),
             miniapp_title: None, miniapp_url: None, in_attach_menu: false,
+            bot_mau_count: 0, bot_has_main_app: false, bot_privacy_policy_url: String::new(),
+            bot_has_settings: false, bot_can_join_groups: false, is_viewer_owner: false,
+            is_verified: false, is_blocked: false,
         }
     }
     fn empty_members() -> MembersTabModel {
@@ -163,6 +177,7 @@ impl ContextInspector {
         self.bot_draft_approval_mode = ComputerRunPolicy::AskEveryTime;
         self.bot_draft_allow_cross_device = true;
         self.bot_draft_allow_cloud_self_config = true;
+        self.active_fabushi_bot = None;
     }
 
     pub fn clear_peer(&mut self) { self.is_open = false; self.active_tab = InspectorTab::Profile; self.clear_peer_facts(); }
@@ -170,6 +185,7 @@ impl ContextInspector {
     pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
     pub fn set_language(&mut self, lang: impl Into<String>) { self.language_id = lang.into(); }
     pub fn take_action(&mut self) -> Option<InspectorAction> { self.pending_action.take() }
+    pub fn set_active_fabushi_bot(&mut self, bot: Option<gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto>) { self.active_fabushi_bot = bot; }
     pub fn set_tab(&mut self, tab: InspectorTab) { self.active_tab = tab; }
     pub fn toggle_open(&mut self) { self.is_open = !self.is_open; }
     pub fn open(&mut self) { self.is_open = true; }
@@ -209,6 +225,39 @@ impl ContextInspector {
         self.profile.miniapp_title = miniapp_title;
         self.profile.miniapp_url = miniapp_url;
         self.profile.in_attach_menu = in_attach_menu;
+        if !is_bot {
+            self.profile.bot_mau_count = 0;
+            self.profile.bot_has_main_app = false;
+            self.profile.bot_privacy_policy_url.clear();
+            self.profile.bot_has_settings = false;
+            self.profile.bot_can_join_groups = false;
+            self.profile.is_viewer_owner = false;
+            self.profile.is_verified = false;
+            self.profile.is_blocked = false;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_bot_profile_extra(
+        &mut self,
+        mau_count: i64,
+        has_main_app: bool,
+        privacy_policy_url: String,
+        has_settings: bool,
+        can_join_groups: bool,
+        is_viewer_owner: bool,
+        is_verified: bool,
+        is_blocked: bool,
+    ) {
+        self.profile.bot_mau_count = mau_count;
+        self.profile.bot_has_main_app = has_main_app;
+        self.profile.bot_privacy_policy_url = privacy_policy_url;
+        self.profile.bot_has_settings = has_settings;
+        self.profile.bot_can_join_groups = can_join_groups;
+        self.profile.is_viewer_owner = is_viewer_owner;
+        self.profile.is_verified = is_verified;
+        self.profile.is_blocked = is_blocked;
+        self.is_contact_blocked = is_blocked;
     }
 
     pub fn sync_shared_content(&mut self, media: Vec<SharedMediaItem>, files: Vec<SharedFileItem>, links: Vec<SharedLinkItem>, voice_notes: Vec<SharedVoiceItem>, music_items: Vec<SharedFileItem>) {
@@ -438,9 +487,24 @@ impl Render for ContextInspector {
             return div().w(px(0.0)).h_full().overflow_hidden().into_any_element();
         }
         let pal = self.palette;
+        if !self.members.is_group_or_channel && self.active_tab == InspectorTab::Members {
+            self.active_tab = InspectorTab::Profile;
+        }
+        let has_bot_media = self.shared_media.media_count > 0
+            || !self.shared_media.files.is_empty()
+            || !self.shared_media.links.is_empty();
+        if self.profile.is_bot {
+            if matches!(self.active_tab, InspectorTab::Members | InspectorTab::Settings)
+                || (self.active_tab == InspectorTab::SharedMedia && !has_bot_media)
+            {
+                self.active_tab = InspectorTab::Profile;
+            }
+        }
         let active_tab = self.active_tab;
         let is_bot_profile_tab = active_tab == InspectorTab::Profile && self.profile.is_bot;
-        let subpage = if is_bot_profile_tab {
+        let allow_owner_subpages =
+            self.profile.is_viewer_owner && self.active_fabushi_bot.is_some();
+        let subpage = if is_bot_profile_tab && allow_owner_subpages {
             self.subpage
         } else {
             InspectorSubpage::Main
@@ -478,11 +542,15 @@ impl Render for ContextInspector {
             InspectorTab::SharedMedia => render_shared_media_panel(&self.shared_media, pal, lang, cx),
             InspectorTab::Settings => render_settings_and_stats_panel(&self.settings, self.channel_boost_level, self.channel_boosts_current, self.channel_boosts_target, &self.channel_stats, pal, lang, cx),
         };
-        let title = match active_tab {
-            InspectorTab::Profile => tr_str(lang, "个人资料", "Profile"),
-            InspectorTab::Members => tr_str(lang, "成员列表", "Members"),
-            InspectorTab::SharedMedia => tr_str(lang, "共享内容", "Shared"),
-            InspectorTab::Settings => tr_str(lang, "更多设置", "Settings"),
+        let title = if self.profile.is_bot {
+            tr_str(lang, "机器人信息", "Bot Info")
+        } else {
+            match active_tab {
+                InspectorTab::Profile => tr_str(lang, "个人资料", "Profile"),
+                InspectorTab::Members => tr_str(lang, "成员列表", "Members"),
+                InspectorTab::SharedMedia => tr_str(lang, "共享内容", "Shared"),
+                InspectorTab::Settings => tr_str(lang, "更多设置", "Settings"),
+            }
         };
 
         let header_left = if subpage != InspectorSubpage::Main {
@@ -513,7 +581,7 @@ impl Render for ContextInspector {
                                 cx.notify();
                             }),
                         )
-                        .child(tr_str(lang, "个人资料", "Profile").to_string()),
+                        .child(tr_str(lang, "机器人信息", "Bot Info").to_string()),
                 )
                 .child(tg_icon(IconName::ChevronRight, 13.0, pal.text_secondary))
                 .child(
@@ -533,7 +601,7 @@ impl Render for ContextInspector {
                 .into_any_element()
         };
 
-        let show_tabs = subpage == InspectorSubpage::Main;
+        let show_tabs = subpage == InspectorSubpage::Main && (!self.profile.is_bot || has_bot_media);
         let mut root = div()
             .w(px(DRAWER_WIDTH))
             .flex_shrink_0()
@@ -559,37 +627,43 @@ impl Render for ContextInspector {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
-                            .child(
-                                div()
-                                    .id("inspector-header-more")
-                                    .cursor_pointer()
-                                    .w(px(28.0))
-                                    .h(px(28.0))
-                                    .rounded_full()
-                                    .hover(move |s| s.bg(rgb(pal.dialogs_hover_bg)))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            if this.profile.is_bot {
-                                                if this.subpage == InspectorSubpage::Main {
-                                                    this.subpage = InspectorSubpage::ComputersList;
-                                                    this.pending_action = Some(
-                                                        InspectorAction::OpenBotComputersSubpage,
-                                                    );
-                                                } else {
-                                                    this.subpage = InspectorSubpage::Main;
-                                                    this.bot_config_focus =
-                                                        BotConfigFocusField::None;
+                            .when(!self.profile.is_bot || allow_owner_subpages, |row| {
+                                row.child(
+                                    div()
+                                        .id("inspector-header-more")
+                                        .cursor_pointer()
+                                        .w(px(28.0))
+                                        .h(px(28.0))
+                                        .rounded_full()
+                                        .hover(move |s| s.bg(rgb(pal.dialogs_hover_bg)))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                if this.profile.is_bot
+                                                    && this.profile.is_viewer_owner
+                                                    && this.active_fabushi_bot.is_some()
+                                                {
+                                                    if this.subpage == InspectorSubpage::Main {
+                                                        this.subpage =
+                                                            InspectorSubpage::ComputersList;
+                                                        this.pending_action = Some(
+                                                            InspectorAction::OpenBotComputersSubpage,
+                                                        );
+                                                    } else {
+                                                        this.subpage = InspectorSubpage::Main;
+                                                        this.bot_config_focus =
+                                                            BotConfigFocusField::None;
+                                                    }
+                                                    cx.notify();
                                                 }
-                                                cx.notify();
-                                            }
-                                        }),
-                                    )
-                                    .child(tg_icon(IconName::MoreVertical, 15.0, pal.icon_fg)),
-                            )
+                                            }),
+                                        )
+                                        .child(tg_icon(IconName::MoreVertical, 15.0, pal.icon_fg)),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("inspector-header-close")
@@ -615,21 +689,57 @@ impl Render for ContextInspector {
             );
 
         if show_tabs {
-            root = root.child(
-                div()
-                    .h(px(40.0))
-                    .flex_shrink_0()
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .justify_around()
-                    .border_b_1()
-                    .border_color(rgb(pal.border_fg))
-                    .child(Self::tab_btn(tr_str(lang, "资料", "Profile"), InspectorTab::Profile, active_tab, pal, cx))
-                    .child(Self::tab_btn(tr_str(lang, "成员", "Members"), InspectorTab::Members, active_tab, pal, cx))
-                    .child(Self::tab_btn(tr_str(lang, "媒体", "Media"), InspectorTab::SharedMedia, active_tab, pal, cx))
-                    .child(Self::tab_btn(tr_str(lang, "设置", "Settings"), InspectorTab::Settings, active_tab, pal, cx)),
-            );
+            let mut tabs_row = div()
+                .h(px(40.0))
+                .flex_shrink_0()
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .justify_around()
+                .border_b_1()
+                .border_color(rgb(pal.border_fg))
+                .child(Self::tab_btn(
+                    tr_str(lang, "资料", "Profile"),
+                    InspectorTab::Profile,
+                    active_tab,
+                    pal,
+                    cx,
+                ));
+            if self.profile.is_bot {
+                tabs_row = tabs_row.child(Self::tab_btn(
+                    tr_str(lang, "媒体", "Media"),
+                    InspectorTab::SharedMedia,
+                    active_tab,
+                    pal,
+                    cx,
+                ));
+            } else {
+                if self.members.is_group_or_channel {
+                    tabs_row = tabs_row.child(Self::tab_btn(
+                        tr_str(lang, "成员", "Members"),
+                        InspectorTab::Members,
+                        active_tab,
+                        pal,
+                        cx,
+                    ));
+                }
+                tabs_row = tabs_row
+                    .child(Self::tab_btn(
+                        tr_str(lang, "媒体", "Media"),
+                        InspectorTab::SharedMedia,
+                        active_tab,
+                        pal,
+                        cx,
+                    ))
+                    .child(Self::tab_btn(
+                        tr_str(lang, "设置", "Settings"),
+                        InspectorTab::Settings,
+                        active_tab,
+                        pal,
+                        cx,
+                    ));
+            }
+            root = root.child(tabs_row);
         }
 
         root.child(

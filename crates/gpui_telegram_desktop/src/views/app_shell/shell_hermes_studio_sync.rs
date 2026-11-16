@@ -70,11 +70,12 @@ fn fence_matches(fence: &SessionRequestFence, shell: &AppShell) -> bool {
 
 fn spawn_honcho_request(
     client: Arc<TelegramClient>,
+    bot_id: Option<u64>,
     req: HermesHonchoRequest,
     cx: &mut Context<AppShell>,
 ) {
     cx.spawn(async move |weak: WeakEntity<AppShell>, app: &mut AsyncApp| {
-        let res = client.hermes_post_honcho(&req).await;
+        let res = client.hermes_post_honcho_for_bot(bot_id, &req).await;
         let _ = weak.update(app, |s, cx| {
             if let Ok(h) = res {
                 s.tasks_workspace.update(cx, |w, w_cx| {
@@ -130,34 +131,24 @@ impl AppShell {
         self.panel_state.tasks_loading = true;
         self.panel_state.mcp_loading = true;
         self.tasks_workspace.update(cx, |w, _| w.set_loading(true, None));
-        let active_chat = resolve_active_target_chat_id(
-            self.stage.read(cx).active_chat_id,
-            self.sidebar.read(cx).active_chat_id,
-        );
-        let active_bot_id = active_chat.and_then(|cid| {
-            self.session_sync
-                .rich_chats_by_id
-                .get(&cid)
-                .and_then(|rc| if rc.is_bot { rc.peer_user_id.or(Some(cid)) } else { None })
-                .or_else(|| self.session_sync.chat_peer_user_ids.get(&cid).copied())
-        });
+        let active_bot_id = self.active_chat_bot_id(cx);
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let tasks_res = client.list_tasks().await;
             let servers_res = client.list_mcp_servers().await;
             let tools_res = client.list_mcp_tools().await;
-            let status_res = client.hermes_status().await.ok();
+            let status_res = client.hermes_status_for_bot(active_bot_id).await.ok();
             let kanban_res = client.hermes_kanban_boards().await.ok();
-            let approvals_res = client.hermes_list_approvals().await.ok();
-            let skills_res = client.hermes_list_skills().await.ok();
-            let memory_res = client.hermes_get_memory().await.ok();
+            let approvals_res = client.hermes_list_approvals_for_bot(active_bot_id).await.ok();
+            let skills_res = client.hermes_list_skills_for_bot(active_bot_id).await.ok();
+            let memory_res = client.hermes_get_memory_for_bot(active_bot_id).await.ok();
             let soul_res = client.hermes_get_soul(active_bot_id).await.ok();
-            let honcho_res = client.hermes_get_honcho().await.ok();
-            let toolsets_res = client.hermes_list_toolsets().await.ok();
+            let honcho_res = client.hermes_get_honcho_for_bot(active_bot_id).await.ok();
+            let toolsets_res = client.hermes_list_toolsets_for_bot(active_bot_id).await.ok();
             let procs_res = client.hermes_terminal_processes().await.ok();
             let cron_res = client.hermes_list_cron().await.ok();
             let hb_res = client.hermes_get_heartbeat().await.ok();
-            let sessions_res = client.hermes_list_sessions().await.ok();
+            let sessions_res = client.hermes_list_sessions_for_bot(active_bot_id).await.ok();
             let providers_res = client.hermes_list_providers().await.ok();
             let usage_res = client.hermes_usage_stats().await.ok();
             let cmds_res = client.hermes_list_commands(None).await.ok();
@@ -227,6 +218,7 @@ impl AppShell {
             self.stage.read(cx).active_chat_id,
             self.sidebar.read(cx).active_chat_id,
         );
+        let active_bot_id = self.active_chat_bot_id(cx);
         let active_session = self.rtc_talk.active_talk_session_id.clone();
         match action {
             TasksWorkspaceAction::RefreshAll => self.refresh_tasks_and_mcp(cx),
@@ -315,14 +307,17 @@ impl AppShell {
             } => {
                 spawn_and_refresh!(
                     cx,
-                    client.hermes_save_skill(&HermesSaveSkillRequest {
-                        name,
-                        description: None,
-                        category: Some("workspace".into()),
-                        content,
-                        enabled: Some(enabled),
-                        tags: None,
-                    })
+                    client.hermes_save_skill_for_bot(
+                        active_bot_id,
+                        &HermesSaveSkillRequest {
+                            name,
+                            description: None,
+                            category: Some("workspace".into()),
+                            content,
+                            enabled: Some(enabled),
+                            tags: None,
+                        }
+                    )
                 );
             }
             TasksWorkspaceAction::ToggleSkillEnabled { name, enabled } => {
@@ -335,7 +330,7 @@ impl AppShell {
                 spawn_and_refresh!(cx, client.hermes.approve_skill(&token, &name));
             }
             TasksWorkspaceAction::DeleteSkill(name) => {
-                spawn_and_refresh!(cx, client.hermes_delete_skill(&name));
+                spawn_and_refresh!(cx, client.hermes_delete_skill_for_bot(active_bot_id, &name));
             }
             TasksWorkspaceAction::LearnSkillFromSession(name) => {
                 let cmd = if name.trim().is_empty() {
@@ -349,7 +344,7 @@ impl AppShell {
                             command: cmd,
                             session_id: active_session,
                             chat_id: active_chat.map(|id| id as i64),
-                            bot_id: None,
+                            bot_id: active_bot_id,
                         })
                         .await;
                     let _ = weak.update(app, |s, cx| {
@@ -377,7 +372,7 @@ impl AppShell {
                         command: cmd,
                         session_id: active_session,
                         chat_id: active_chat.map(|id| id as i64),
-                        bot_id: None,
+                        bot_id: active_bot_id,
                     })
                 );
             }
@@ -391,17 +386,22 @@ impl AppShell {
                     }
                 };
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
-                    let saved = client.hermes.save_memory(&token, &mem_md, Some(&user_md)).await;
+                    let saved = client
+                        .hermes_save_memory_for_bot(active_bot_id, &mem_md, Some(&user_md))
+                        .await;
                     let updated = match saved {
                         Ok(m) => Ok(m),
                         Err(_) => {
                             client
-                                .hermes_mutate_memory(&HermesMemoryMutationRequest {
-                                    action: "set_raw".into(),
-                                    scope: Some(scope),
-                                    content: Some(content),
-                                    ..Default::default()
-                                })
+                                .hermes_mutate_memory_for_bot(
+                                    active_bot_id,
+                                    &HermesMemoryMutationRequest {
+                                        action: "set_raw".into(),
+                                        scope: Some(scope),
+                                        content: Some(content),
+                                        ..Default::default()
+                                    },
+                                )
                                 .await
                         }
                     };
@@ -427,7 +427,7 @@ impl AppShell {
             }
             TasksWorkspaceAction::ReloadFrozenSnapshot => {
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
-                    if let Ok(m) = client.hermes_get_memory().await {
+                    if let Ok(m) = client.hermes_get_memory_for_bot(active_bot_id).await {
                         let _ = weak.update(app, |s, cx| {
                             s.tasks_workspace.update(cx, |w, w_cx| {
                                 w.sync_memory_state(m);
@@ -439,7 +439,10 @@ impl AppShell {
                 })
                 .detach();
             }
-            TasksWorkspaceAction::SaveSoul(soul) => {
+            TasksWorkspaceAction::SaveSoul(mut soul) => {
+                if soul.bot_id.is_none() {
+                    soul.bot_id = active_bot_id;
+                }
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
                     let res = client.hermes_save_soul(&soul).await;
                     let _ = weak.update(app, |s, cx| {
@@ -464,6 +467,7 @@ impl AppShell {
             }
             TasksWorkspaceAction::QueryHoncho(query) => spawn_honcho_request(
                 client,
+                active_bot_id,
                 HermesHonchoRequest {
                     action: Some("query".into()),
                     enabled: None,
@@ -475,6 +479,7 @@ impl AppShell {
             ),
             TasksWorkspaceAction::ToggleHoncho(enabled) => spawn_honcho_request(
                 client,
+                active_bot_id,
                 HermesHonchoRequest {
                     action: Some("toggle".into()),
                     enabled: Some(enabled),
@@ -487,11 +492,14 @@ impl AppShell {
             TasksWorkspaceAction::ToggleToolset { name, enabled } => {
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
                     let res = client
-                        .hermes_update_toolsets(&HermesUpdateToolsetsRequest {
-                            enabled_toolsets: None,
-                            toolset: Some(name),
-                            enabled: Some(enabled),
-                        })
+                        .hermes_update_toolsets_for_bot(
+                            active_bot_id,
+                            &HermesUpdateToolsetsRequest {
+                                enabled_toolsets: None,
+                                toolset: Some(name),
+                                enabled: Some(enabled),
+                            },
+                        )
                         .await;
                     let _ = weak.update(app, |s, cx| {
                         if let Ok(ts) = res {
@@ -509,11 +517,14 @@ impl AppShell {
                 let enabled_toolsets = preset_toolsets_for_name(&preset);
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
                     let res = client
-                        .hermes_update_toolsets(&HermesUpdateToolsetsRequest {
-                            enabled_toolsets: Some(enabled_toolsets),
-                            toolset: None,
-                            enabled: None,
-                        })
+                        .hermes_update_toolsets_for_bot(
+                            active_bot_id,
+                            &HermesUpdateToolsetsRequest {
+                                enabled_toolsets: Some(enabled_toolsets),
+                                toolset: None,
+                                enabled: None,
+                            },
+                        )
                         .await;
                     let _ = weak.update(app, |s, cx| {
                         if let Ok(ts) = res {
@@ -540,7 +551,7 @@ impl AppShell {
                             command: format!("/terminal backend {}", backend),
                             session_id: active_session,
                             chat_id: active_chat.map(|id| id as i64),
-                            bot_id: None,
+                            bot_id: active_bot_id,
                         })
                         .await;
                     let _ = weak.update(app, |s, cx| {
@@ -572,7 +583,7 @@ impl AppShell {
                             command: format!("/process kill {}", process_id),
                             session_id: active_session,
                             chat_id: active_chat.map(|id| id as i64),
-                            bot_id: None,
+                            bot_id: active_bot_id,
                         })
                         .await;
                     if let Ok(procs) = client.hermes_terminal_processes().await {

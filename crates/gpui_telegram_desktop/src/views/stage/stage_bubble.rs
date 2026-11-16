@@ -2,10 +2,12 @@
 
 use gpui::*;
 use gpui::prelude::FluentBuilder;
+use gpui_telegram_proto::miniapp_contracts::FabushiBotSummaryDto;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::components::grok_bot_avatar::{render_grok_persona_avatar, GrokPersonaState};
 use crate::theme::{tg_icon, IconName, TdesktopThemePalette};
 use super::cards::models::{
     DeliveryStatus, MessageContent, MessageDirection, MessageItemModel,
@@ -185,7 +187,8 @@ fn compute_definite_bubble_width(
         _ => return None,
     }
 
-    let horiz_pad = palette.scaled_px(22.0) + 6.0;
+    let pad_base = if palette.mode.is_fabushi_style() { 25.0 } else { 22.0 };
+    let horiz_pad = palette.scaled_px(pad_base) + 6.0;
     let mut needed_w = eff_min_w;
 
     let meta_font = palette.scaled_px(10.5);
@@ -363,6 +366,7 @@ fn compute_definite_bubble_width(
 pub fn render_message_row_1to1<V: 'static>(
     msg: &MessageItemModel,
     meta: Option<&MessageRichMeta>,
+    active_fabushi_bot: Option<&FabushiBotSummaryDto>,
     group: BubbleGroupLayout,
     stage_w: f32,
     is_selected: bool,
@@ -413,13 +417,25 @@ pub fn render_message_row_1to1<V: 'static>(
             .into_any_element();
     }
 
-    let r_lg = palette.scaled_px(palette.bubble_radius_px as f32);
-    let r_sm = palette.scaled_px(4.0f32);
+    let is_fabushi = palette.mode.is_fabushi_style();
+    let eff_r = if is_fabushi && palette.bubble_radius_px == 12 {
+        17.0
+    } else {
+        palette.bubble_radius_px as f32
+    };
+    let r_lg = palette.scaled_px(eff_r);
+    let r_sm = palette.scaled_px(if is_fabushi { 6.0 } else { 4.0 });
     let (tl, tr, br, bl) = if is_outgoing {
         (
             r_lg,
             if group.attached_to_prev { r_sm } else { r_lg },
-            if group.attached_to_next { r_sm } else if group.show_tail { 2.0 } else { r_lg },
+            if group.attached_to_next {
+                r_sm
+            } else if group.show_tail && !is_fabushi {
+                2.0
+            } else {
+                r_lg
+            },
             r_lg,
         )
     } else {
@@ -427,7 +443,13 @@ pub fn render_message_row_1to1<V: 'static>(
             if group.attached_to_prev { r_sm } else { r_lg },
             r_lg,
             r_lg,
-            if group.attached_to_next { r_sm } else if group.show_tail { 2.0 } else { r_lg },
+            if group.attached_to_next {
+                r_sm
+            } else if group.show_tail && !is_fabushi {
+                2.0
+            } else {
+                r_lg
+            },
         )
     };
 
@@ -480,13 +502,16 @@ pub fn render_message_row_1to1<V: 'static>(
         .when(definite_w.is_none(), |el| {
             el.min_w(px(eff_min_w)).max_w(px(eff_max_w))
         })
-        .px(px(palette.scaled_px(11.0)))
-        .py(px(palette.scaled_px(7.0)))
+        .px(px(palette.scaled_px(if is_fabushi { 12.5 } else { 11.0 })))
+        .py(px(palette.scaled_px(if is_fabushi { 8.0 } else { 7.0 })))
         .rounded_tl(px(tl))
         .rounded_tr(px(tr))
         .rounded_br(px(br))
         .rounded_bl(px(bl))
         .bg(rgb(bubble_hex))
+        .when(is_fabushi && (!is_outgoing || !palette.mode.is_dark()) && !is_selected && highlight_alpha <= 0.01, |el| {
+            el.border_1().border_color(rgb(palette.border_fg))
+        })
         .when(is_selected, |el| el.border_1().border_color(rgb(palette.accent)))
         .when(highlight_alpha > 0.01, |el| {
             el.border_2().border_color(TdesktopThemePalette::rgba_with_alpha(palette.accent, highlight_alpha))
@@ -525,18 +550,20 @@ pub fn render_message_row_1to1<V: 'static>(
         } else {
             format!("Forwarded from {}", fwd.sender_name)
         };
+        let fwd_color = if is_fabushi { palette.text_secondary } else { palette.accent };
+        let fwd_weight = if is_fabushi { FontWeight::MEDIUM } else { FontWeight::SEMIBOLD };
         bubble = bubble.child(
             div()
                 .mb(px(palette.scaled_px(3.0)))
                 .flex()
                 .items_center()
                 .gap(px(palette.scaled_px(4.0)))
-                .child(tg_icon(IconName::Forward, palette.scaled_px(12.0), palette.accent))
+                .child(tg_icon(IconName::Forward, palette.scaled_px(12.0), fwd_color))
                 .child(
                     div()
                         .text_size(px(palette.scaled_px(11.5)))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(palette.accent))
+                        .font_weight(fwd_weight)
+                        .text_color(rgb(fwd_color))
                         .child(fwd_label),
                 ),
         );
@@ -545,6 +572,16 @@ pub fn render_message_row_1to1<V: 'static>(
     if let Some(reply) = &msg.reply_to {
         let target_id = reply.message_id;
         let act_reply = on_action.clone();
+        let reply_bg = if is_fabushi {
+            TdesktopThemePalette::rgba_with_alpha(
+                palette.text_primary,
+                if palette.mode.is_dark() { 0.07 } else { 0.05 },
+            )
+        } else {
+            TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.30)
+        };
+        let reply_bar = if is_fabushi { palette.accent } else { palette.reply_bar_fg };
+        let reply_sender_fg = if is_fabushi { palette.text_primary } else { palette.reply_bar_fg };
         bubble = bubble.child(
             div()
                 .id(SharedString::from(format!("reply-hdr-{}", msg_id)))
@@ -556,9 +593,9 @@ pub fn render_message_row_1to1<V: 'static>(
                 .pr(px(8.0))
                 .py(px(4.0))
                 .rounded(px(6.0))
-                .bg(TdesktopThemePalette::rgba_with_alpha(palette.reply_bar_bg, 0.30))
+                .bg(reply_bg)
                 .border_l_2()
-                .border_color(rgb(palette.reply_bar_fg))
+                .border_color(rgb(reply_bar))
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -567,8 +604,8 @@ pub fn render_message_row_1to1<V: 'static>(
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(palette.reply_bar_fg))
+                        .font_weight(if is_fabushi { FontWeight::SEMIBOLD } else { FontWeight::BOLD })
+                        .text_color(rgb(reply_sender_fg))
                         .truncate()
                         .child(reply.sender_name.clone()),
                 )
@@ -631,17 +668,28 @@ pub fn render_message_row_1to1<V: 'static>(
             let act_rx = on_action.clone();
             let is_chosen = pill.chosen;
             let is_paid = pill.paid;
-            let bg_color = if is_paid {
-                rgba(0xFFA5002E)
+            let bg_color: Rgba = if is_paid {
+                rgba(0xFFA5002E).into()
+            } else if is_fabushi && is_chosen {
+                TdesktopThemePalette::rgba_with_alpha(
+                    palette.accent,
+                    if palette.mode.is_dark() { 0.20 } else { 0.14 },
+                )
             } else if is_chosen {
-                rgb(palette.reaction_active_bg)
+                rgb(palette.reaction_active_bg).into()
             } else {
-                rgb(palette.reaction_bg)
+                rgb(palette.reaction_bg).into()
             };
             let fg_hex = if is_chosen && !is_paid {
-                0xFFFFFF
+                if is_fabushi {
+                    palette.accent
+                } else {
+                    0xFFFFFF
+                }
             } else if is_paid {
                 0xD97706
+            } else if is_fabushi {
+                palette.text_secondary
             } else {
                 palette.text_primary
             };
@@ -653,6 +701,9 @@ pub fn render_message_row_1to1<V: 'static>(
                     .rounded_full()
                     .bg(bg_color)
                     .when(is_chosen, |el| el.border_1().border_color(rgb(palette.accent)))
+                    .when(is_fabushi && !is_chosen && !is_paid, |el| {
+                        el.border_1().border_color(rgb(palette.border_fg))
+                    })
                     .when(is_paid && !is_chosen, |el| el.border_1().border_color(rgb(0xFFA500)))
                     .flex()
                     .items_center()
@@ -678,7 +729,7 @@ pub fn render_message_row_1to1<V: 'static>(
         bubble = bubble.child(rx_bar);
     }
 
-    if group.show_tail {
+    if group.show_tail && !is_fabushi {
         let tail_el = if is_outgoing {
             div().absolute().bottom(px(0.0)).right(px(-6.0)).child(tg_icon(IconName::BubbleTailOut, 12.0, bubble_hex))
         } else {
@@ -831,24 +882,51 @@ pub fn render_message_row_1to1<V: 'static>(
         let av_src = meta.and_then(|m| m.avatar_url.as_deref()).and_then(|u| resolve_image_source(u, None));
         row = row.child(
             div().w(px(MSG_PHOTO_SKIP)).flex().justify_start().when(group.show_bottom_avatar, |el| {
-                el.child(
-                    div()
-                        .w(px(MSG_PHOTO_SIZE))
-                        .h(px(MSG_PHOTO_SIZE))
-                        .rounded_full()
-                        .overflow_hidden()
-                        .bg(rgb(palette.peer_avatar_color(msg.sender_id as i64)))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFFFFFF))
-                        .when_some(av_src, |a, s| a.child(img(s).size_full().object_fit(ObjectFit::Cover)))
-                        .when(meta.and_then(|m| m.avatar_url.as_ref()).is_none(), |a| {
-                            a.child(msg.avatar_initials.clone())
-                        }),
-                )
+                if let Some(src) = av_src {
+                    el.child(
+                        div()
+                            .w(px(MSG_PHOTO_SIZE))
+                            .h(px(MSG_PHOTO_SIZE))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(rgb(palette.peer_avatar_color(msg.sender_id as i64)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(img(src).size_full().object_fit(ObjectFit::Cover)),
+                    )
+                } else if let Some(fab) = active_fabushi_bot
+                    .filter(|f| !f.avatar_shape.eq_ignore_ascii_case("classic"))
+                {
+                    el.child(render_grok_persona_avatar(
+                        &fab.agent_id,
+                        &fab.avatar_shape,
+                        &fab.avatar_color,
+                        &msg.avatar_initials,
+                        MSG_PHOTO_SIZE,
+                        GrokPersonaState::from_activity_str(&fab.execution_state, false),
+                        palette.stage_bg,
+                        false,
+                    ))
+                } else {
+                    el.child(
+                        div()
+                            .w(px(MSG_PHOTO_SIZE))
+                            .h(px(MSG_PHOTO_SIZE))
+                            .rounded_full()
+                            .overflow_hidden()
+                            .bg(rgb(palette.peer_avatar_color(msg.sender_id as i64)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(rgb(0xFFFFFF))
+                            .when(meta.and_then(|m| m.avatar_url.as_ref()).is_none(), |a| {
+                                a.child(msg.avatar_initials.clone())
+                            }),
+                    )
+                }
             }),
         );
     }
@@ -881,8 +959,9 @@ pub fn render_message_row_1to1<V: 'static>(
                         .py(px(3.0))
                         .rounded_full()
                         .bg(palette.service_pill_rgba())
+                        .when(is_fabushi, |el| el.border_1().border_color(rgb(palette.border_fg)))
                         .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(if is_fabushi { FontWeight::MEDIUM } else { FontWeight::SEMIBOLD })
                         .text_color(rgb(palette.service_pill_fg))
                         .child(label.to_string()),
                 ),

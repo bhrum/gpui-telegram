@@ -13,6 +13,231 @@ pub const BOTFATHER_USER_ID: i64 = 777_001;
 /// Canonical `@BotFather` username.
 pub const BOTFATHER_USERNAME: &str = "BotFather";
 
+/// Canonical Fabushi geometric avatar shapes (`profile.json` -> `avatarShape`).
+pub const FABUSHI_AVATAR_SHAPES: [&str; 8] = [
+    "squircle",
+    "blob",
+    "pebble",
+    "tablet",
+    "hex",
+    "cloud",
+    "teardrop",
+    "wedge",
+];
+
+/// Canonical Fabushi avatar accent palette (`profile.json` -> `avatarColor`).
+pub const FABUSHI_AVATAR_COLORS: [&str; 8] = [
+    "#4F46E5",
+    "#0EA5E9",
+    "#10B981",
+    "#F59E0B",
+    "#EC4899",
+    "#8B5CF6",
+    "#14B8A6",
+    "#F97316",
+];
+
+fn stable_seed_hash(seed: &str) -> usize {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in seed.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash as usize
+}
+
+/// Deterministic Fabushi avatar shape from an arbitrary seed (e.g. `agent_id` or `@username`).
+pub fn default_fabushi_avatar_shape(seed: &str) -> &'static str {
+    let idx = stable_seed_hash(seed) % FABUSHI_AVATAR_SHAPES.len();
+    FABUSHI_AVATAR_SHAPES[idx]
+}
+
+/// Deterministic Fabushi avatar hex color from an arbitrary seed.
+pub fn default_fabushi_avatar_color(seed: &str) -> &'static str {
+    let idx = (stable_seed_hash(seed) / FABUSHI_AVATAR_SHAPES.len()) % FABUSHI_AVATAR_COLORS.len();
+    FABUSHI_AVATAR_COLORS[idx]
+}
+
+/// Canonical Grok Bot 0.18 dynamic avatar shapes (`character.tsx` / `scene.ts`).
+pub const GROK_AVATAR_SHAPES: [&str; 8] = [
+    "blob",
+    "pebble",
+    "squircle",
+    "tablet",
+    "wedge",
+    "hex",
+    "cloud",
+    "teardrop",
+];
+
+/// Canonical Grok Bot 0.18 avatar color IDs (11 palette colors including `black`).
+pub const GROK_AVATAR_COLOR_IDS: [&str; 11] = [
+    "black",
+    "brown",
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "cyan",
+    "blue",
+    "violet",
+    "magenta",
+    "gray",
+];
+
+/// Grok Bot 0.18 deterministic fallback color IDs (10 non-black palette colors).
+pub const GROK_AVATAR_FALLBACK_COLOR_IDS: [&str; 10] = [
+    "brown",
+    "red",
+    "orange",
+    "yellow",
+    "green",
+    "cyan",
+    "blue",
+    "violet",
+    "magenta",
+    "gray",
+];
+
+/// Sentinel shape value opting out of Grok dynamic avatars in favor of classic circular initials.
+pub const CLASSIC_INITIALS_AVATAR_SHAPE: &str = "classic";
+
+/// Grok Bot 0.18 FNV-1a 32-bit hash over UTF-16 code units (exact JS `charCodeAt` parity).
+pub fn grok_shipped_hash(value: &str) -> u32 {
+    let mut hash: u32 = 2_166_136_261;
+    for cu in value.encode_utf16() {
+        hash = (hash ^ u32::from(cu)).wrapping_mul(16_777_619);
+    }
+    hash
+}
+
+/// Deterministic Grok Bot 0.18 fallback color index (`0..=9`) into `GROK_AVATAR_FALLBACK_COLOR_IDS`.
+pub fn grok_shipped_color_index(value: &str) -> usize {
+    let seed = grok_shipped_hash(value) ^ 2_654_435_769;
+    let s2 = (seed ^ 2_654_435_769).wrapping_add(1_831_565_813);
+    let mut next = (s2 ^ (s2 >> 15)).wrapping_mul(1 | s2);
+    next ^= next.wrapping_add((next ^ (next >> 7)).wrapping_mul(61 | next));
+    let r = f64::from(next ^ (next >> 14)) / 4_294_967_296.0;
+    ((r * 10.0).floor() as usize).min(9)
+}
+
+/// Deterministic Grok Bot 0.18 avalanche shape hash for indexing `GROK_AVATAR_SHAPES`.
+pub fn grok_shipped_shape_hash(value: &str) -> u32 {
+    let mut hash = grok_shipped_hash(value);
+    hash = (hash ^ (hash >> 16)).wrapping_mul(73_244_475);
+    hash = (hash ^ (hash >> 13)).wrapping_mul(3_266_489_909);
+    hash ^ (hash >> 16)
+}
+
+/// Resolves an optional persona avatar color into a Grok color ID or uppercase `#RRGGBB` hex,
+/// falling back deterministically via `grok_shipped_color_index(agent_id)`.
+pub fn resolve_grok_persona_color(agent_id: &str, color: Option<&str>) -> String {
+    if let Some(raw) = color {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let lower = trimmed.to_ascii_lowercase();
+            if GROK_AVATAR_COLOR_IDS.contains(&lower.as_str()) {
+                return lower;
+            }
+            if trimmed.len() == 7
+                && trimmed.starts_with('#')
+                && trimmed[1..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return trimmed.to_ascii_uppercase();
+            }
+            if trimmed.len() == 4
+                && trimmed.starts_with('#')
+                && trimmed[1..].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                let bytes = trimmed.as_bytes();
+                let r = (bytes[1] as char).to_ascii_uppercase();
+                let g = (bytes[2] as char).to_ascii_uppercase();
+                let b = (bytes[3] as char).to_ascii_uppercase();
+                return format!("#{r}{r}{g}{g}{b}{b}");
+            }
+        }
+    }
+    GROK_AVATAR_FALLBACK_COLOR_IDS[grok_shipped_color_index(agent_id)].to_string()
+}
+
+/// Resolves an optional persona avatar shape into a Grok dynamic shape ID or `"classic"`,
+/// mapping legacy aliases and falling back deterministically via `grok_shipped_shape_hash(agent_id)`.
+pub fn resolve_grok_persona_shape(agent_id: &str, shape: Option<&str>) -> String {
+    if let Some(raw) = shape {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if normalized == CLASSIC_INITIALS_AVATAR_SHAPE {
+            return CLASSIC_INITIALS_AVATAR_SHAPE.to_string();
+        }
+        let mapped = match normalized.as_str() {
+            "circle" | "round" => "blob",
+            "rounded" | "square" | "box" => "squircle",
+            "hexagon" => "hex",
+            "shield" | "diamond" | "spark" => "wedge",
+            other => other,
+        };
+        if GROK_AVATAR_SHAPES.contains(&mapped) {
+            return mapped.to_string();
+        }
+    }
+    GROK_AVATAR_SHAPES[(grok_shipped_shape_hash(agent_id) as usize) % GROK_AVATAR_SHAPES.len()]
+        .to_string()
+}
+
+/// Normalizes an optional avatar shape against the Grok/Fabushi shape catalog.
+pub fn normalize_fabushi_avatar_shape(raw: &str, seed: &str) -> String {
+    let trimmed = raw.trim();
+    let opt = (!trimmed.is_empty()).then_some(trimmed);
+    resolve_grok_persona_shape(seed, opt)
+}
+
+/// Normalizes an optional avatar color string (Grok color ID or `#RRGGBB` / `#RGB`) with deterministic fallback.
+pub fn normalize_fabushi_avatar_color(raw: &str, seed: &str) -> String {
+    let trimmed = raw.trim();
+    let opt = (!trimmed.is_empty()).then_some(trimmed);
+    resolve_grok_persona_color(seed, opt)
+}
+
+/// Derives a safe Mahayana/Fabushi `agent_id` slug (`[a-z0-9][a-z0-9._-]*`).
+pub fn derive_safe_agent_id(
+    preferred: Option<&str>,
+    username: &str,
+    bot_user_id: i64,
+) -> String {
+    let sanitize = |raw: &str| -> String {
+        let trimmed = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+        let mut out = String::with_capacity(trimmed.len().min(48));
+        let mut prev_sep = false;
+        for ch in trimmed.chars() {
+            if ch.is_ascii_alphanumeric() {
+                out.push(ch);
+                prev_sep = false;
+            } else if matches!(ch, '_' | '-' | '.') && !out.is_empty() && !prev_sep {
+                out.push(if ch == '.' { '.' } else { '-' });
+                prev_sep = true;
+            }
+            if out.len() >= 48 {
+                break;
+            }
+        }
+        while out.ends_with('-') || out.ends_with('.') || out.ends_with('_') {
+            out.pop();
+        }
+        out
+    };
+
+    if let Some(pref) = preferred {
+        let clean = sanitize(pref);
+        if !clean.is_empty() && clean != "." && clean != ".." {
+            return clean;
+        }
+    }
+    let from_user = sanitize(username);
+    if !from_user.is_empty() && from_user != "." && from_user != ".." {
+        return from_user;
+    }
+    format!("fabushi-agent-{}", bot_user_id.max(0))
+}
+
 /// Telegram Mini App CloudStorage limits (1:1 parity).
 pub const CLOUD_STORAGE_MAX_KEYS: usize = 1024;
 pub const CLOUD_STORAGE_MAX_KEY_BYTES: usize = 128;
@@ -62,6 +287,42 @@ pub struct BotRegistryEntry {
     pub commands: Vec<BotCommandSpec>,
     #[serde(default)]
     pub created_at: i64,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub avatar_shape: String,
+    #[serde(default)]
+    pub avatar_color: String,
+    #[serde(default)]
+    pub preferred_model: String,
+    #[serde(default)]
+    pub thinking_level: String,
+    #[serde(default)]
+    pub approval_mode: String,
+    #[serde(default)]
+    pub toolset_preset: String,
+    #[serde(default)]
+    pub is_fabushi_bot: bool,
+    #[serde(default)]
+    pub menu_button_type: String,
+    #[serde(default)]
+    pub has_main_app: bool,
+    #[serde(default)]
+    pub main_app_short_name: String,
+    #[serde(default)]
+    pub privacy_policy_url: String,
+    #[serde(default)]
+    pub has_settings: bool,
+    #[serde(default)]
+    pub can_join_groups: bool,
+    #[serde(default)]
+    pub mau_count: i64,
+    #[serde(default)]
+    pub allows_write_to_pm: bool,
+    #[serde(default)]
+    pub app_tos_accepted: bool,
+    #[serde(default)]
+    pub is_blocked_by_viewer: bool,
 }
 
 /// Returned ONLY to the bot owner upon bot creation or token fetch/revocation.
@@ -249,6 +510,22 @@ pub struct MiniAppEntry {
     pub created_by_nl: bool,
     #[serde(default)]
     pub updated_at: i64,
+    #[serde(default)]
+    pub mau_count: i64,
+    #[serde(default)]
+    pub is_main_app: bool,
+    #[serde(default)]
+    pub is_recent_used: bool,
+    #[serde(default)]
+    pub last_launched_at: i64,
+    #[serde(default)]
+    pub privacy_policy_url: String,
+    #[serde(default)]
+    pub app_tos_accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_color: Option<String>,
 }
 
 impl MiniAppEntry {
@@ -294,6 +571,8 @@ pub enum MiniAppLaunchMode {
     InlineKeyboard,
     #[serde(alias = "direct_link")]
     DirectLink,
+    #[serde(alias = "main_mini_app")]
+    MainMiniApp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -471,6 +750,121 @@ pub struct CreateBotRequest {
     pub attach_peer_types: Vec<String>,
     #[serde(default)]
     pub commands: Vec<BotCommandSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolset_preset: Option<String>,
+}
+
+/// First-class Fabushi Bot creation payload (`POST /api/v1/fabushi-bots`).
+/// `username` is optional; when blank, the server auto-assigns a unique `@<slug>_bot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CreateFabushiBotRequest {
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolset_preset: Option<String>,
+}
+
+/// Partial update payload for a first-class Fabushi Bot (`PATCH /api/v1/fabushi-bots/{bot_id}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PatchFabushiBotRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolset_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_agent_updates: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_from_sidebar: Option<bool>,
+}
+
+/// Unified first-class Fabushi Bot summary exposed over REST and cached in Desktop UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FabushiBotSummaryDto {
+    pub bot_user_id: i64,
+    pub owner_user_id: i64,
+    pub agent_id: String,
+    pub username: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub avatar_shape: String,
+    #[serde(default)]
+    pub avatar_color: String,
+    #[serde(default)]
+    pub preferred_model: String,
+    #[serde(default)]
+    pub thinking_level: String,
+    #[serde(default)]
+    pub approval_mode: String,
+    #[serde(default)]
+    pub toolset_preset: String,
+    #[serde(default)]
+    pub notify_on_agent_updates: bool,
+    #[serde(default)]
+    pub hidden_from_sidebar: bool,
+    #[serde(default)]
+    pub memory_entries_count: usize,
+    #[serde(default)]
+    pub skills_count: usize,
+    #[serde(default)]
+    pub execution_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_chat_id: Option<i64>,
+}
+
+/// Response returned when creating a first-class Fabushi Bot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FabushiBotCreateResponse {
+    pub bot: FabushiBotSummaryDto,
+    pub registry: BotRegistryEntry,
+    pub bot_token: String,
+    pub companion_chat_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -497,6 +891,10 @@ pub struct CreateMiniAppRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct NaturalLanguageCreateRequest {
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -583,6 +981,75 @@ pub struct PeerBotActionResult {
     pub updated_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_keyboard: Option<Vec<Vec<InlineKeyboardButton>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BotPublicProfileDto {
+    pub bot: BotRegistryEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_app: Option<MiniAppEntry>,
+    #[serde(default)]
+    pub apps: Vec<MiniAppEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_chat_id: Option<i64>,
+    #[serde(default)]
+    pub has_started_chat: bool,
+    #[serde(default)]
+    pub allows_write_to_pm: bool,
+    #[serde(default)]
+    pub app_tos_accepted: bool,
+    #[serde(default)]
+    pub is_blocked: bool,
+    #[serde(default)]
+    pub is_muted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CanSendMessageResponse {
+    #[serde(default)]
+    pub can_send: bool,
+    #[serde(default)]
+    pub allows_write_to_pm: bool,
+    #[serde(default)]
+    pub has_started_chat: bool,
+    #[serde(default)]
+    pub is_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AllowSendMessageRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_app_name: Option<String>,
+    #[serde(default)]
+    pub from_attachment_menu: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AllowSendMessageResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub chat_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_message_id: Option<i64>,
+    #[serde(default)]
+    pub service_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AcceptMiniAppTosRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_write_access: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BlockBotRequest {
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 /// Validates a Telegram bot username (5-32 ASCII alphanumeric/underscore chars, ends with `bot`).
@@ -852,5 +1319,269 @@ mod tests {
         let decoded: MiniAppLaunchContext =
             serde_json::from_str(&encoded).expect("deserialize launch context");
         assert_eq!(ctx, decoded);
+    }
+
+    #[test]
+    fn test_grok_persona_avatar_deterministic_parity_and_resolution() {
+        // UTF-16 FNV-1a parity check for ASCII and surrogate-pair emoji
+        assert_eq!(grok_shipped_hash(""), 2_166_136_261);
+        assert_eq!(grok_shipped_hash("alpha-agent"), grok_shipped_hash("alpha-agent"));
+        assert_ne!(grok_shipped_hash("alpha-agent"), grok_shipped_hash("beta-agent"));
+        assert_eq!(grok_shipped_hash("🤖"), {
+            let mut h: u32 = 2_166_136_261;
+            for cu in [0xD83E_u16, 0xDD16_u16] {
+                h = (h ^ u32::from(cu)).wrapping_mul(16_777_619);
+            }
+            h
+        });
+
+        // Deterministic color index in 0..=9 (excludes "black") and shape hash parity
+        for seed in ["", "fabushi", "alpha-agent", "coffee_helper_bot", "agent-🚀"] {
+            let c_idx = grok_shipped_color_index(seed);
+            assert!(c_idx < GROK_AVATAR_FALLBACK_COLOR_IDS.len());
+            let fallback_color = resolve_grok_persona_color(seed, None);
+            assert_eq!(fallback_color, GROK_AVATAR_FALLBACK_COLOR_IDS[c_idx]);
+            assert_ne!(fallback_color, "black");
+
+            let s_hash = grok_shipped_shape_hash(seed);
+            let fallback_shape = resolve_grok_persona_shape(seed, None);
+            assert_eq!(
+                fallback_shape,
+                GROK_AVATAR_SHAPES[(s_hash as usize) % GROK_AVATAR_SHAPES.len()]
+            );
+            assert_eq!(normalize_fabushi_avatar_color("", seed), fallback_color);
+            assert_eq!(normalize_fabushi_avatar_shape("   ", seed), fallback_shape);
+        }
+
+        // All 11 Grok color IDs accepted (trimmed, case-insensitive)
+        for &cid in &GROK_AVATAR_COLOR_IDS {
+            assert_eq!(resolve_grok_persona_color("agent", Some(cid)), cid);
+            assert_eq!(
+                resolve_grok_persona_color("agent", Some(&format!("  {} ", cid.to_ascii_uppercase()))),
+                cid
+            );
+            assert_eq!(normalize_fabushi_avatar_color(cid, "agent"), cid);
+        }
+
+        // #RRGGBB preservation (uppercased)
+        for hex in ["#10B981", "#ec4899", " #ff6b6b ", "#8B5CF6"] {
+            assert_eq!(
+                resolve_grok_persona_color("agent", Some(hex)),
+                hex.trim().to_ascii_uppercase()
+            );
+            assert_eq!(
+                normalize_fabushi_avatar_color(hex, "agent"),
+                hex.trim().to_ascii_uppercase()
+            );
+        }
+
+        // #RGB expansion to uppercase #RRGGBB
+        assert_eq!(resolve_grok_persona_color("agent", Some("#abc")), "#AABBCC");
+        assert_eq!(resolve_grok_persona_color("agent", Some(" #0f8 ")), "#00FF88");
+        assert_eq!(normalize_fabushi_avatar_color("#3aF", "agent"), "#33AAFF");
+
+        // Invalid colors fall back deterministically
+        assert_eq!(
+            resolve_grok_persona_color("agent-x", Some("not-a-color")),
+            resolve_grok_persona_color("agent-x", None)
+        );
+        assert_eq!(
+            resolve_grok_persona_color("agent-x", Some("#12")),
+            resolve_grok_persona_color("agent-x", None)
+        );
+
+        // "classic" sentinel and shape aliases
+        assert_eq!(
+            resolve_grok_persona_shape("agent", Some("classic")),
+            CLASSIC_INITIALS_AVATAR_SHAPE
+        );
+        assert_eq!(
+            resolve_grok_persona_shape("agent", Some(" CLASSIC ")),
+            CLASSIC_INITIALS_AVATAR_SHAPE
+        );
+        assert_eq!(normalize_fabushi_avatar_shape("classic", "agent"), "classic");
+
+        assert_eq!(resolve_grok_persona_shape("agent", Some("circle")), "blob");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("round")), "blob");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("rounded")), "squircle");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("square")), "squircle");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("box")), "squircle");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("hexagon")), "hex");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("shield")), "wedge");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("diamond")), "wedge");
+        assert_eq!(resolve_grok_persona_shape("agent", Some("spark")), "wedge");
+
+        for &shape in &GROK_AVATAR_SHAPES {
+            assert_eq!(resolve_grok_persona_shape("agent", Some(shape)), shape);
+            assert_eq!(normalize_fabushi_avatar_shape(shape, "agent"), shape);
+        }
+    }
+
+    #[test]
+    fn test_natural_language_create_request_avatar_serde() {
+        let legacy: NaturalLanguageCreateRequest =
+            serde_json::from_str(r#"{"prompt":"make a todo bot"}"#).expect("legacy json");
+        assert_eq!(legacy.prompt, "make a todo bot");
+        assert_eq!(legacy.avatar_shape, None);
+        assert_eq!(legacy.avatar_color, None);
+        let legacy_encoded = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_encoded.get("avatar_shape").is_none());
+        assert!(legacy_encoded.get("avatar_color").is_none());
+
+        let with_avatar = NaturalLanguageCreateRequest {
+            prompt: "make a coffee bot".to_string(),
+            avatar_shape: Some("pebble".to_string()),
+            avatar_color: Some("orange".to_string()),
+        };
+        let roundtrip: NaturalLanguageCreateRequest =
+            serde_json::from_str(&serde_json::to_string(&with_avatar).unwrap()).unwrap();
+        assert_eq!(roundtrip, with_avatar);
+    }
+
+    #[test]
+    fn test_miniapp_parity_dto_backward_compatibility_and_roundtrip() {
+        // Legacy BotRegistryEntry without any new fields must deserialize cleanly
+        let legacy_bot_json = serde_json::json!({
+            "bot_user_id": 777001,
+            "owner_user_id": 0,
+            "username": "BotFather",
+            "display_name": "BotFather"
+        });
+        let bot: BotRegistryEntry =
+            serde_json::from_value(legacy_bot_json).expect("legacy BotRegistryEntry");
+        assert_eq!(bot.menu_button_type, "");
+        assert!(!bot.has_main_app);
+        assert_eq!(bot.main_app_short_name, "");
+        assert_eq!(bot.privacy_policy_url, "");
+        assert!(!bot.has_settings);
+        assert!(!bot.can_join_groups);
+        assert_eq!(bot.mau_count, 0);
+        assert!(!bot.allows_write_to_pm);
+        assert!(!bot.app_tos_accepted);
+        assert!(!bot.is_blocked_by_viewer);
+
+        // Legacy MiniAppEntry without any new fields must deserialize cleanly
+        let legacy_app_json = serde_json::json!({
+            "app_id": "app_1",
+            "bot_user_id": 800001,
+            "bot_username": "SampleBot",
+            "bot_display_name": "Sample Bot",
+            "short_name": "main",
+            "title": "Sample App"
+        });
+        let app: MiniAppEntry =
+            serde_json::from_value(legacy_app_json).expect("legacy MiniAppEntry");
+        assert_eq!(app.mau_count, 0);
+        assert!(!app.is_main_app);
+        assert!(!app.is_recent_used);
+        assert_eq!(app.last_launched_at, 0);
+        assert_eq!(app.privacy_policy_url, "");
+        assert!(!app.app_tos_accepted);
+        assert_eq!(app.header_color, None);
+        assert_eq!(app.background_color, None);
+
+        // MiniAppLaunchMode::MainMiniApp supports both PascalCase and snake_case alias
+        let mode_snake: MiniAppLaunchMode =
+            serde_json::from_str(r#""main_mini_app""#).expect("snake_case MainMiniApp");
+        assert_eq!(mode_snake, MiniAppLaunchMode::MainMiniApp);
+        let mode_roundtrip: MiniAppLaunchMode =
+            serde_json::from_str(&serde_json::to_string(&MiniAppLaunchMode::MainMiniApp).unwrap())
+                .expect("roundtrip MainMiniApp");
+        assert_eq!(mode_roundtrip, MiniAppLaunchMode::MainMiniApp);
+
+        // New DTO roundtrips
+        let profile = BotPublicProfileDto {
+            bot: BotRegistryEntry {
+                bot_user_id: 800001,
+                owner_user_id: 100001,
+                username: "SampleBot".to_string(),
+                display_name: "Sample Bot".to_string(),
+                menu_button_type: "web_app".to_string(),
+                has_main_app: true,
+                main_app_short_name: "main".to_string(),
+                privacy_policy_url: "https://example.com/privacy".to_string(),
+                has_settings: true,
+                can_join_groups: true,
+                mau_count: 12_345,
+                allows_write_to_pm: true,
+                app_tos_accepted: true,
+                is_blocked_by_viewer: false,
+                ..Default::default()
+            },
+            main_app: Some(MiniAppEntry {
+                app_id: "app_1".to_string(),
+                bot_user_id: 800001,
+                bot_username: "SampleBot".to_string(),
+                bot_display_name: "Sample Bot".to_string(),
+                short_name: "main".to_string(),
+                title: "Sample App".to_string(),
+                mau_count: 12_345,
+                is_main_app: true,
+                is_recent_used: true,
+                last_launched_at: 1_731_600_000,
+                privacy_policy_url: "https://example.com/privacy".to_string(),
+                app_tos_accepted: true,
+                header_color: Some("#2481cc".to_string()),
+                background_color: Some("#ffffff".to_string()),
+                ..Default::default()
+            }),
+            apps: vec![app],
+            existing_chat_id: Some(900001),
+            has_started_chat: true,
+            allows_write_to_pm: true,
+            app_tos_accepted: true,
+            is_blocked: false,
+            is_muted: true,
+        };
+        let profile_rt: BotPublicProfileDto =
+            serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(profile, profile_rt);
+
+        let can_send = CanSendMessageResponse {
+            can_send: true,
+            allows_write_to_pm: true,
+            has_started_chat: false,
+            is_blocked: false,
+        };
+        assert_eq!(
+            can_send,
+            serde_json::from_str(&serde_json::to_string(&can_send).unwrap()).unwrap()
+        );
+
+        let allow_req = AllowSendMessageRequest {
+            app_id: Some("app_1".to_string()),
+            web_app_name: Some("main".to_string()),
+            from_attachment_menu: false,
+        };
+        assert_eq!(
+            allow_req,
+            serde_json::from_str(&serde_json::to_string(&allow_req).unwrap()).unwrap()
+        );
+
+        let allow_resp = AllowSendMessageResponse {
+            ok: true,
+            chat_id: 900001,
+            service_message_id: Some(42),
+            service_text: "您已允许该机器人在其网页应用中向您发送消息。".to_string(),
+        };
+        assert_eq!(
+            allow_resp,
+            serde_json::from_str(&serde_json::to_string(&allow_resp).unwrap()).unwrap()
+        );
+
+        let tos_req = AcceptMiniAppTosRequest {
+            app_id: Some("app_1".to_string()),
+            allow_write_access: Some(true),
+        };
+        assert_eq!(
+            tos_req,
+            serde_json::from_str(&serde_json::to_string(&tos_req).unwrap()).unwrap()
+        );
+
+        let block_req = BlockBotRequest { blocked: true };
+        assert_eq!(
+            block_req,
+            serde_json::from_str(&serde_json::to_string(&block_req).unwrap()).unwrap()
+        );
     }
 }

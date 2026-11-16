@@ -41,12 +41,17 @@ impl TdesktopThemeMode {
         matches!(self, Self::Night | Self::Tinted)
     }
 
-    /// Returns the default upstream accent hex (`0xRRGGBB`) for this mode.
+    /// Returns `true` for themes using the Fabushi visual system (`Night`, `Tinted`, `Day`).
+    pub const fn is_fabushi_style(&self) -> bool {
+        matches!(self, Self::Night | Self::Tinted | Self::Day)
+    }
+
+    /// Returns the default accent hex (`0xRRGGBB`) for this mode.
     pub const fn default_accent(&self) -> u32 {
         match self {
-            Self::Night => 0x5288C1,
-            Self::Tinted => 0x3FC1B0,
-            Self::Day | Self::Classic => 0x40A7E3,
+            Self::Night | Self::Day => 0x1084FE,
+            Self::Tinted => 0x1687FF,
+            Self::Classic => 0x40A7E3,
         }
     }
 }
@@ -58,12 +63,12 @@ pub struct AccentSwatch {
     pub hex: u32,
 }
 
-/// Curated Telegram Desktop accent swatches.
+/// Curated accent swatches led by Fabushi Blue.
 pub const ACCENT_SWATCHES: &[AccentSwatch] = &[
+    AccentSwatch { name: "Fabushi Blue", hex: 0x1084FE },
     AccentSwatch { name: "Sky Blue", hex: 0x40A7E3 },
-    AccentSwatch { name: "Classic Blue", hex: 0x5288C1 },
     AccentSwatch { name: "Teal Mint", hex: 0x3FC1B0 },
-    AccentSwatch { name: "Emerald", hex: 0x4FAD2D },
+    AccentSwatch { name: "Emerald", hex: 0x00C972 },
     AccentSwatch { name: "Amber Gold", hex: 0xE5A030 },
     AccentSwatch { name: "Coral Orange", hex: 0xE86C52 },
     AccentSwatch { name: "Crimson Rose", hex: 0xE16794 },
@@ -85,26 +90,26 @@ pub struct WallpaperPreset {
 pub const WALLPAPER_PRESETS: &[WallpaperPreset] = &[
     WallpaperPreset {
         id: "default_night",
-        name: "Midnight Ocean",
-        top_hex: 0x0E1621,
-        bottom_hex: 0x16222E,
-        pattern_hex: 0x223244,
+        name: "Fabushi Obsidian",
+        top_hex: 0x070707,
+        bottom_hex: 0x0A0A0A,
+        pattern_hex: 0x1A1A1A,
         is_dark: true,
     },
     WallpaperPreset {
         id: "default_tinted",
-        name: "Deep Forest",
-        top_hex: 0x1C2227,
-        bottom_hex: 0x232B30,
-        pattern_hex: 0x313E46,
+        name: "Fabushi Graphite",
+        top_hex: 0x0E1013,
+        bottom_hex: 0x13161B,
+        pattern_hex: 0x22262E,
         is_dark: true,
     },
     WallpaperPreset {
         id: "default_day",
-        name: "Daylight Sky",
-        top_hex: 0xE5EFF7,
-        bottom_hex: 0xDCEAF4,
-        pattern_hex: 0xC2D7E8,
+        name: "Fabushi Paper",
+        top_hex: 0xFCFCFC,
+        bottom_hex: 0xFAFAFA,
+        pattern_hex: 0xEAEAEA,
         is_dark: false,
     },
     WallpaperPreset {

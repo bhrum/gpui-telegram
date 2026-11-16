@@ -1,6 +1,7 @@
 pub mod wallet;
 pub mod acp;
 pub mod computer;
+pub mod fabushi_bot;
 pub mod hermes;
 pub mod mcp;
 pub mod talk;

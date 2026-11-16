@@ -340,6 +340,9 @@ pub const ALL_MIGRATIONS: &[&str] = &[
     crate::db::schema_parity_extra::MIGRATION_V26_PEER_BLOCKS_TTL_USER_SETTINGS,
     crate::db::schema_parity_extra::MIGRATION_V27_BOTFATHER_MINIAPPS,
     crate::db::computer_store::MIGRATION_V28_COMPUTER_CONTROL,
+    crate::db::schema_parity_extra::MIGRATION_V29_FABUSHI_BOT_PROFILES,
+    crate::db::computer_store::MIGRATION_V30_TAILNET_MESH,
+    crate::db::schema_parity_extra::MIGRATION_V31_TELEGRAM_MINIAPPS_PARITY,
 ];
 
 // --- Database Row Representation Models ---

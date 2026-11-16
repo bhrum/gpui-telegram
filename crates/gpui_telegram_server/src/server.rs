@@ -45,7 +45,10 @@ pub struct AppState {
     pub talk_coordinator: Arc<RwLock<gpui_telegram_agent::TalkCoordinator>>,
     pub acp_runner: Arc<gpui_telegram_agent::acp::AcpRunner>,
     pub hermes: Arc<gpui_telegram_agent::hermes::HermesEngine>,
+    pub fabushi_bots: Arc<gpui_telegram_agent::fabushi_bot::FabushiBotHost>,
+    pub self_weak: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>>,
     pub computers: Arc<crate::routes::computers::ComputerControlService>,
+    pub tailnet: Arc<crate::routes::tailnet::TailnetCoordService>,
     pub task_registry: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::TaskFsm>>>,
     pub approval_gates: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::ApprovalGate>>>,
 }
@@ -124,7 +127,35 @@ impl AppState {
         let computers = Arc::new(crate::routes::computers::ComputerControlService::new(
             db.clone(),
         ));
+        let tailnet = Arc::new(crate::routes::tailnet::TailnetCoordService::new(
+            db.clone(),
+        ));
+        computers.set_tailnet_service(tailnet.clone());
         hermes.set_computer_provider(computers.clone());
+
+        let fabushi_bots = if config.is_in_memory() {
+            Arc::new(
+                gpui_telegram_agent::fabushi_bot::FabushiBotHost::new_ephemeral(hermes.clone())
+                    .expect("Failed to initialize ephemeral FabushiBotHost"),
+            )
+        } else {
+            let db_path = std::path::PathBuf::from(config.resolve_db_path());
+            let parent = db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let agents_dir = parent.join("fabushi_agents");
+            Arc::new(
+                gpui_telegram_agent::fabushi_bot::FabushiBotHost::new_with_dir(
+                    agents_dir,
+                    hermes.clone(),
+                )
+                .expect("Failed to initialize FabushiBotHost"),
+            )
+        };
+        fabushi_bots.set_computer_provider(computers.clone());
+        let self_weak: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>> =
+            Arc::new(std::sync::OnceLock::new());
 
         let provider_snap = hermes.providers().snapshot();
         let active_api_mode = provider_snap
@@ -239,8 +270,15 @@ impl AppState {
                 }
             }
         }
+        if let Err(e) = db.pool().with_conn(|conn| {
+            fabushi_miniapp::storage::init_fabushi_tables(conn)
+                .map_err(|err| gpui_telegram_core::error::TelegramError::Database(err.to_string()))
+        }) {
+            tracing::warn!(error = %e, "Failed to initialize fabushi_miniapp tables");
+        }
         let _ = db.seed_default_catalog_if_empty();
         let _ = db.seed_botfather_and_flagship_apps();
+        let _ = ensure_default_ai_bot(&db);
 
         let signaling_hub = Arc::new(crate::webrtc::signaling_hub::SignalingHub::new());
         let pts_engine = Arc::new(crate::sync::pts_engine::PtsEngine::new(db.clone()));
@@ -252,6 +290,14 @@ impl AppState {
         gateway_hub.set_pipeline(message_pipeline.clone(), db.clone());
         gateway_hub.set_search_indexer(search_indexer.clone());
         gateway_hub.set_signaling_hub(signaling_hub.clone());
+
+        let teammate_bridge = Arc::new(ServerFabushiTeammateBridge {
+            db: db.clone(),
+            fabushi_bots: fabushi_bots.clone(),
+            state_weak: self_weak.clone(),
+        });
+        fabushi_bots.set_teammate_handler(teammate_bridge);
+        hydrate_all_fabushi_bots(&db, &fabushi_bots);
 
         if let Ok(rt_handle) = tokio::runtime::Handle::try_current() {
             let hermes_weak = Arc::downgrade(&hermes);
@@ -360,7 +406,10 @@ impl AppState {
             talk_coordinator: Arc::new(RwLock::new(gpui_telegram_agent::TalkCoordinator::new())),
             acp_runner,
             hermes,
+            fabushi_bots,
+            self_weak,
             computers,
+            tailnet,
             task_registry,
             approval_gates,
         }
@@ -533,6 +582,8 @@ pub fn build_router() -> Router {
 /// Build the production Axum router mounting all public, protected, and WebSocket routes
 pub fn build_router_with_state(state: Arc<AppState>) -> Router {
     use crate::routes;
+
+    let _ = state.self_weak.set(Arc::downgrade(&state));
 
     Router::new()
         // --- Public Routes ---
@@ -778,6 +829,20 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
             post(routes::computers::computer_agent_exec)
                 .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
+        // --- Tailscale-style Mesh Coordination, STUN & Built-in DERP WebSocket ---
+        .route(
+            "/api/v1/tailnet/register",
+            post(routes::tailnet::tailnet_register),
+        )
+        .route(
+            "/api/v1/tailnet/netmap",
+            get(routes::tailnet::tailnet_netmap),
+        )
+        .route("/api/v1/tailnet/stun", get(routes::tailnet::tailnet_stun))
+        .route(
+            "/api/v1/tailnet/derp",
+            get(routes::tailnet::tailnet_derp_ws),
+        )
         // --- BotFather, Companion AI Bots & Telegram Mini Apps (1:1 + Beyond) ---
         .route(
             "/api/v1/miniapps",
@@ -786,6 +851,10 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/miniapps/installed",
             get(routes::bots_miniapps::miniapps_installed),
+        )
+        .route(
+            "/api/v1/miniapps/recent",
+            get(routes::bots_miniapps::miniapps_recent),
         )
         .route(
             "/api/v1/miniapps/{bot_username}/{short_name}/install",
@@ -817,6 +886,36 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
             get(routes::bots_miniapps::bots_attach_menu),
         )
         .route(
+            "/api/v1/bots/profile/{target}",
+            get(routes::bots_miniapps::bots_public_profile),
+        )
+        .route(
+            "/api/v1/bots/{bot_id}/can-send-message",
+            get(routes::bots_miniapps::bots_can_send_message),
+        )
+        .route(
+            "/api/v1/bots/{bot_id}/allow-send-message",
+            post(routes::bots_miniapps::bots_allow_send_message),
+        )
+        .route(
+            "/api/v1/bots/{bot_id}/accept-app-tos",
+            post(routes::bots_miniapps::bots_accept_app_tos),
+        )
+        .route(
+            "/api/v1/bots/{bot_id}/block",
+            post(routes::bots_miniapps::bots_block),
+        )
+        .route(
+            "/api/v1/fabushi-bots",
+            get(routes::bots_miniapps::fabushi_bots_list)
+                .post(routes::bots_miniapps::fabushi_bots_create),
+        )
+        .route(
+            "/api/v1/fabushi-bots/{bot_id}",
+            get(routes::bots_miniapps::fabushi_bot_get)
+                .patch(routes::bots_miniapps::fabushi_bot_patch),
+        )
+        .route(
             "/api/v1/botfather/nl-create",
             post(routes::bots_miniapps::botfather_nl_create),
         )
@@ -827,6 +926,77 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route(
             "/miniapps/{bot_username}/{short_name}",
             get(routes::bots_miniapps::serve_miniapp_html),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/app.wasm",
+            get(routes::fabushi_miniapp_api::serve_app_wasm),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/assets/{*name}",
+            get(routes::fabushi_miniapp_api::serve_asset),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/bootstrap",
+            get(routes::fabushi_miniapp_api::bootstrap),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/transfer",
+            post(routes::fabushi_miniapp_api::record_transfer_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/practice/session",
+            post(routes::fabushi_miniapp_api::practice_session_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/practice/record",
+            get(routes::fabushi_miniapp_api::list_practice_records_handler)
+                .post(routes::fabushi_miniapp_api::create_practice_record_handler)
+                .put(routes::fabushi_miniapp_api::update_practice_record_body),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/practice/record/{id}",
+            put(routes::fabushi_miniapp_api::update_practice_record_by_id)
+                .delete(routes::fabushi_miniapp_api::delete_practice_record_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/profile",
+            get(routes::fabushi_miniapp_api::get_profile_handler)
+                .put(routes::fabushi_miniapp_api::update_profile_handler)
+                .post(routes::fabushi_miniapp_api::update_profile_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/membership",
+            post(routes::fabushi_miniapp_api::activate_membership_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/follow",
+            post(routes::fabushi_miniapp_api::follow_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/leaderboard",
+            get(routes::fabushi_miniapp_api::leaderboard_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/heartbeat",
+            post(routes::fabushi_miniapp_api::heartbeat_handler),
+        )
+        .route(
+            "/api/v1/fabushi-miniapp/ai-chat",
+            post(routes::fabushi_miniapp_api::ai_chat_handler),
+        )
+        .route(
+            "/js/telegram-web-app.js",
+            get(routes::telegram_bot_api::serve_telegram_web_app_js),
+        )
+        .route(
+            "/bot/{token}/{method}",
+            get(routes::telegram_bot_api::telegram_bot_api_dispatch_split)
+                .post(routes::telegram_bot_api::telegram_bot_api_dispatch_split),
+        )
+        .route(
+            "/{bot_token_seg}/{method}",
+            get(routes::telegram_bot_api::telegram_bot_api_dispatch)
+                .post(routes::telegram_bot_api::telegram_bot_api_dispatch),
         )
         // --- WebSocket Upgrade Route ---
         .route("/api/v1/ws", get(ws_upgrade_handler))
@@ -2517,6 +2687,453 @@ pub(crate) fn ensure_default_ai_bot(db: &crate::db::ServerDatabase) -> UserId {
     bot_id
 }
 
+pub(crate) fn hydrate_all_fabushi_bots(
+    db: &crate::db::ServerDatabase,
+    host: &gpui_telegram_agent::fabushi_bot::FabushiBotHost,
+) {
+    if let Ok(bot_uids) = db.list_all_bot_user_ids_from_users() {
+        for uid in bot_uids {
+            if uid != crate::db::miniapp_store::BOTFATHER_USER_ID as i64 {
+                let _ = db.ensure_bot_registry_for_existing_bot_user(uid, 0, "");
+            }
+        }
+    }
+    if let Ok(records) = db.list_all_bots() {
+        for rec in &records {
+            if rec.bot_user_id != crate::db::miniapp_store::BOTFATHER_USER_ID as i64
+                && !rec.is_standard_bot
+            {
+                let _ = crate::routes::bots_miniapps::provision_fabushi_bot_with_host(db, host, rec);
+            }
+        }
+    }
+}
+
+struct ServerFabushiTeammateBridge {
+    db: Arc<crate::db::ServerDatabase>,
+    fabushi_bots: Arc<gpui_telegram_agent::fabushi_bot::FabushiBotHost>,
+    state_weak: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>>,
+}
+
+impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFabushiTeammateBridge {
+    fn send_to_agent(
+        &self,
+        from_agent_id: &str,
+        active_chat_id: Option<i64>,
+        target_id: &str,
+        message: &str,
+        priority: bool,
+        caller_depth: usize,
+    ) -> Result<Value, String> {
+        if caller_depth >= 3 {
+            return Err("Maximum Fabushi teammate handoff depth reached".to_string());
+        }
+        let target = self
+            .fabushi_bots
+            .get_by_agent_id_or_username(target_id)
+            .ok_or_else(|| format!("Fabushi teammate '{}' not found", target_id))?;
+        let caller = self.fabushi_bots.get_by_agent_id_or_username(from_agent_id);
+        let caller_name = caller
+            .as_ref()
+            .map(|c| c.profile().name)
+            .unwrap_or_else(|| from_agent_id.to_string());
+        let caller_bot_uid = caller
+            .as_ref()
+            .map(|c| c.bot_user_id as u64)
+            .unwrap_or_else(|| target.settings().owner_user_id.max(0) as u64);
+
+        let target_cid = active_chat_id.filter(|cid| *cid > 0).or_else(|| {
+            let owner_uid = target.settings().owner_user_id;
+            if owner_uid > 0 {
+                self.db
+                    .find_companion_chat_id_for_user(target.bot_user_id, owner_uid)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.0)
+            } else {
+                None
+            }
+        });
+
+        let handoff_prompt = format!(
+            "[Teammate Handshake from @{from_agent_id} ({caller_name})]\n{message}"
+        );
+        if let Some(cid) = target_cid {
+            if let Ok(Some(chat)) = self.db.get_chat(ChatId(cid)) {
+                if chat.chat_type != 0 && chat.chat_type != 4 {
+                    let now_ms = Utc::now().timestamp_millis();
+                    let _ = self.db.add_chat_member(&crate::db::ChatMemberRecord {
+                        chat_id: ChatId(cid),
+                        user_id: UserId(target.bot_user_id as u64),
+                        role: "member".to_string(),
+                        permissions_bitmask: 0,
+                        admin_title: None,
+                        admin_rights: 0,
+                        banned_rights: 0,
+                        until_date_ms: None,
+                        joined_at_ms: now_ms,
+                        invited_by: Some(UserId(caller_bot_uid)),
+                        updated_at_ms: now_ms,
+                    });
+                }
+            }
+            if let (Some(app_state), Ok(handle)) = (
+                self.state_weak.get().and_then(|w| w.upgrade()),
+                tokio::runtime::Handle::try_current(),
+            ) {
+                let target_uid = UserId(target.bot_user_id as u64);
+                let sender_uid = UserId(if caller_bot_uid > 0 {
+                    caller_bot_uid
+                } else {
+                    target.settings().owner_user_id.max(1) as u64
+                });
+                handle.spawn(async move {
+                    crate::routes::bots_miniapps::handle_ai_bot_reply(
+                        &app_state,
+                        ChatId(cid),
+                        sender_uid,
+                        target_uid,
+                        &handoff_prompt,
+                    )
+                    .await;
+                });
+            }
+        } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let target_clone = Arc::clone(&target);
+            handle.spawn(async move {
+                let mut req =
+                    gpui_telegram_agent::hermes::HermesTurnRequest::new(&handoff_prompt);
+                req.source = "teammate_handoff".to_string();
+                let _ = target_clone.hermes().run_turn(req).await;
+            });
+        }
+
+        Ok(json!({
+            "ok": true,
+            "delivered": true,
+            "from": from_agent_id,
+            "target_agent_id": target.agent_id,
+            "target_bot_id": target.bot_user_id,
+            "chat_id": target_cid,
+            "priority": priority,
+            "status": "dispatched"
+        }))
+    }
+
+    fn create_agent(
+        &self,
+        creator_agent_id: &str,
+        active_chat_id: Option<i64>,
+        name: &str,
+        description: &str,
+        avatar_shape: Option<&str>,
+        avatar_color: Option<&str>,
+    ) -> Result<Value, String> {
+        let clean_name = name.trim();
+        if clean_name.is_empty() {
+            return Err("Teammate name cannot be empty".to_string());
+        }
+        let creator = self
+            .fabushi_bots
+            .get_by_agent_id_or_username(creator_agent_id);
+        let owner_user_id = creator
+            .as_ref()
+            .map(|c| c.settings().owner_user_id)
+            .unwrap_or(0);
+        let username = self
+            .db
+            .generate_unique_bot_username(clean_name)
+            .map_err(|e| e.to_string())?;
+        let cmds_json = serde_json::to_string(&[
+            gpui_telegram_proto::miniapp_contracts::BotCommandSpec {
+                command: "start".into(),
+                description: "开始对话".into(),
+            },
+            gpui_telegram_proto::miniapp_contracts::BotCommandSpec {
+                command: "help".into(),
+                description: "查看帮助".into(),
+            },
+        ])
+        .unwrap_or_else(|_| "[]".into());
+        let mut bot = self
+            .db
+            .create_registered_bot(
+                owner_user_id,
+                &username,
+                clean_name,
+                description,
+                "Fabushi Teammate Bot",
+                description,
+                "",
+                "",
+                &cmds_json,
+                false,
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+        if avatar_shape.is_some() || avatar_color.is_some() {
+            if let Ok(updated) = self.db.update_bot_fabushi_fields(
+                bot.bot_user_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                avatar_shape,
+                avatar_color,
+                None,
+                None,
+                None,
+                None,
+            ) {
+                bot = updated;
+            }
+        }
+        let inst = crate::routes::bots_miniapps::provision_fabushi_bot_with_host(
+            &self.db,
+            &self.fabushi_bots,
+            &bot,
+        );
+        if let Some(cid) = active_chat_id.filter(|cid| *cid > 0) {
+            if let Ok(Some(chat)) = self.db.get_chat(ChatId(cid)) {
+                if chat.chat_type != 0 && chat.chat_type != 4 {
+                    let now_ms = Utc::now().timestamp_millis();
+                    let _ = self.db.add_chat_member(&crate::db::ChatMemberRecord {
+                        chat_id: ChatId(cid),
+                        user_id: UserId(bot.bot_user_id as u64),
+                        role: "member".to_string(),
+                        permissions_bitmask: 0,
+                        admin_title: None,
+                        admin_rights: 0,
+                        banned_rights: 0,
+                        until_date_ms: None,
+                        joined_at_ms: now_ms,
+                        invited_by: creator.as_ref().map(|c| UserId(c.bot_user_id as u64)),
+                        updated_at_ms: now_ms,
+                    });
+                }
+            }
+        }
+        let prof = inst.as_ref().map(|i| i.profile());
+        Ok(json!({
+            "ok": true,
+            "created": true,
+            "bot_user_id": bot.bot_user_id,
+            "agent_id": inst.as_ref().map(|i| i.agent_id.clone()).unwrap_or(bot.agent_id),
+            "username": bot.username,
+            "display_name": bot.display_name,
+            "avatar_shape": prof.as_ref().map(|p| p.avatar_shape.clone()).unwrap_or(bot.avatar_shape),
+            "avatar_color": prof.as_ref().map(|p| p.avatar_color.clone()).unwrap_or(bot.avatar_color),
+        }))
+    }
+
+    fn update_agent(
+        &self,
+        _caller_agent_id: &str,
+        target_agent_id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        avatar_shape: Option<&str>,
+        avatar_color: Option<&str>,
+    ) -> Result<Value, String> {
+        let target = self
+            .fabushi_bots
+            .get_by_agent_id_or_username(target_agent_id)
+            .ok_or_else(|| format!("Fabushi teammate '{}' not found", target_agent_id))?;
+        let _ = self
+            .db
+            .update_bot_fabushi_fields(
+                target.bot_user_id,
+                name,
+                description,
+                None,
+                description,
+                None,
+                avatar_shape,
+                avatar_color,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        let updated = self
+            .fabushi_bots
+            .update_bot(
+                target.bot_user_id,
+                gpui_telegram_agent::fabushi_bot::FabushiBotPatch {
+                    display_name: name.map(ToString::to_string),
+                    description: description.map(ToString::to_string),
+                    title: None,
+                    avatar_shape: avatar_shape.map(ToString::to_string),
+                    avatar_color: avatar_color.map(ToString::to_string),
+                    preferred_model: None,
+                    thinking_level: None,
+                    approval_mode: None,
+                    toolset_preset: None,
+                    notify_on_agent_updates: None,
+                    hidden_from_sidebar: None,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let prof = updated.profile();
+        Ok(json!({
+            "ok": true,
+            "updated": true,
+            "bot_user_id": updated.bot_user_id,
+            "agent_id": updated.agent_id,
+            "name": prof.name,
+            "description": prof.description,
+            "avatar_shape": prof.avatar_shape,
+            "avatar_color": prof.avatar_color,
+        }))
+    }
+}
+
+fn extract_at_mentions(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'@' {
+            let prev_is_ident = i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+            if !prev_is_ident {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric()
+                        || bytes[end] == b'_'
+                        || bytes[end] == b'-')
+                {
+                    end += 1;
+                }
+                if end > start {
+                    out.push(text[start..end].to_string());
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Identifies ALL target AI Bots that should reply in `chat_id` (supporting Multi-Bot Shared Rooms
+/// via `@username` / `@agent_id` mentions, reply-to-bot targeting, `@all`, and 1:1 fallbacks).
+pub(crate) fn detect_target_bots_in_chat(
+    state: &AppState,
+    chat_id: ChatId,
+    sender_id: UserId,
+    text: &str,
+    reply_to_msg_id: Option<MsgId>,
+) -> Vec<UserId> {
+    if state
+        .db
+        .get_user(sender_id)
+        .ok()
+        .flatten()
+        .is_some_and(|u| u.is_bot)
+    {
+        return Vec::new();
+    }
+
+    let mut bot_members: Vec<UserId> = Vec::new();
+    if let Ok(members) = state.db.get_chat_members(chat_id) {
+        for member_id in members {
+            if member_id != sender_id
+                && state
+                    .db
+                    .get_user(member_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|u| u.is_bot)
+            {
+                bot_members.push(member_id);
+            }
+        }
+    }
+
+    let mut explicit_targets: Vec<UserId> = Vec::new();
+    let mut push_unique = |uid: UserId| {
+        if !explicit_targets.contains(&uid) {
+            explicit_targets.push(uid);
+        }
+    };
+
+    if let Some(rid) = reply_to_msg_id {
+        if let Ok(Some(orig)) = state.db.get_message(chat_id, rid) {
+            if orig.sender_id != sender_id
+                && state
+                    .db
+                    .get_user(orig.sender_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|u| u.is_bot)
+            {
+                push_unique(orig.sender_id);
+            }
+        }
+    }
+
+    let mentions = extract_at_mentions(text);
+    for token in &mentions {
+        let lower = token.to_ascii_lowercase();
+        if (lower == "all" || lower == "everyone") && !bot_members.is_empty() {
+            for &buid in &bot_members {
+                push_unique(buid);
+            }
+            continue;
+        }
+        if let Some(inst) = state.fabushi_bots.get_by_agent_id_or_username(token) {
+            let buid = UserId(inst.bot_user_id as u64);
+            if bot_members.is_empty() || bot_members.contains(&buid) {
+                push_unique(buid);
+                continue;
+            }
+        }
+        for &buid in &bot_members {
+            let matches_user = state
+                .db
+                .get_user(buid)
+                .ok()
+                .flatten()
+                .and_then(|u| u.username)
+                .is_some_and(|un| un.eq_ignore_ascii_case(token));
+            let matches_reg = state
+                .db
+                .get_bot_by_user_id(buid.0 as i64)
+                .ok()
+                .flatten()
+                .is_some_and(|b| {
+                    b.username.eq_ignore_ascii_case(token)
+                        || b.agent_id.eq_ignore_ascii_case(token)
+                });
+            if matches_user || matches_reg {
+                push_unique(buid);
+            }
+        }
+    }
+
+    if !explicit_targets.is_empty() {
+        return explicit_targets;
+    }
+
+    if !bot_members.is_empty() {
+        if bot_members.len() == 1 {
+            return bot_members;
+        }
+        if text.trim().starts_with('/') {
+            return vec![bot_members[0]];
+        }
+        return Vec::new();
+    }
+
+    detect_bot_in_chat(&state.db, chat_id, sender_id, text)
+        .into_iter()
+        .collect()
+}
+
 /// Identifies if a message sent to `chat_id` should trigger an AI Bot response.
 /// Checks:
 /// 1. Chat members for any member marked with `is_bot == true` (excluding sender).
@@ -2639,18 +3256,36 @@ pub(crate) async fn maybe_trigger_bot_reply(
     sender_id: UserId,
     text: &str,
 ) {
-    let Some(bot_user_id) = detect_bot_in_chat(&state.db, chat_id, sender_id, text) else {
-        return;
-    };
+    maybe_trigger_bot_reply_with_reply_to(state, chat_id, sender_id, text, None).await;
+}
 
-    crate::routes::bots_miniapps::handle_ai_bot_reply(
-        state,
-        chat_id,
-        sender_id,
-        bot_user_id,
-        text,
-    )
-    .await;
+pub(crate) async fn maybe_trigger_bot_reply_with_reply_to(
+    state: &Arc<AppState>,
+    chat_id: ChatId,
+    sender_id: UserId,
+    text: &str,
+    reply_to_msg_id: Option<MsgId>,
+) {
+    let targets = detect_target_bots_in_chat(state, chat_id, sender_id, text, reply_to_msg_id);
+    for bot_user_id in targets {
+        if state
+            .db
+            .get_bot_by_user_id(bot_user_id.0 as i64)
+            .ok()
+            .flatten()
+            .is_some_and(|b| b.is_standard_bot)
+        {
+            continue;
+        }
+        crate::routes::bots_miniapps::handle_ai_bot_reply(
+            state,
+            chat_id,
+            sender_id,
+            bot_user_id,
+            text,
+        )
+        .await;
+    }
 }
 
 /// Returns true if `chat_id` is in the reserved `700_000_000..750_000_000` range for per-user
@@ -4049,11 +4684,25 @@ async fn chats_agent_runs(
                 .flatten()
                 .is_some_and(|u| u.is_bot)
         })
-        .or_else(|| detect_bot_in_chat(&state.db, chat_id, auth.user_id, &prompt))
+        .or_else(|| {
+            detect_target_bots_in_chat(&state, chat_id, auth.user_id, &prompt, None)
+                .into_iter()
+                .next()
+        })
         .unwrap_or_else(|| ensure_default_ai_bot(&state.db));
 
     let typing_guard =
         crate::routes::hermes::BotTypingGuard::start(Arc::clone(&state), chat_id, bot_user_id);
+
+    let bot_instance =
+        crate::routes::bots_miniapps::ensure_fabushi_bot_hydrated(&state, bot_user_id.0 as i64);
+    let _exec_guard = state.fabushi_bots.begin_bot_execution(
+        bot_user_id.0 as i64,
+        chat_id.0,
+        auth.user_id.0 as i64,
+        &prompt,
+        None,
+    );
 
     let (bot_sp, bot_model, _) = crate::routes::hermes::load_bot_persona_config(&state, bot_user_id);
     let explicit_model = crate::routes::hermes::sanitize_model_override(
@@ -4064,7 +4713,14 @@ async fn chats_agent_runs(
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
     );
-    let sanitized_bot_model = crate::routes::hermes::sanitize_model_override(&state, bot_model);
+    let fallback_instance_model = bot_model.or_else(|| {
+        bot_instance
+            .as_ref()
+            .map(|i| i.settings().preferred_model)
+            .filter(|m| !m.trim().is_empty())
+    });
+    let sanitized_bot_model =
+        crate::routes::hermes::sanitize_model_override(&state, fallback_instance_model);
     let explicit_sp = payload
         .get("system_prompt")
         .and_then(|v| v.as_str())
@@ -4084,6 +4740,17 @@ async fn chats_agent_runs(
         &[],
         false,
     );
+    let (final_sp, profile_delta_prefix) = state.fabushi_bots.build_turn_system_prompt(
+        bot_user_id.0 as i64,
+        chat_id.0,
+        enriched_sp.as_deref().unwrap_or(""),
+        &[],
+        &[],
+    );
+    let effective_prompt = match profile_delta_prefix {
+        Some(ref prefix) => format!("{prefix}\n\n{prompt}"),
+        None => prompt.clone(),
+    };
     let explicit_sid = payload
         .get("session_id")
         .and_then(|v| v.as_str())
@@ -4108,7 +4775,7 @@ async fn chats_agent_runs(
     .map(|(sid, _)| sid)
     .or(explicit_sid);
 
-    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&prompt)
+    let mut req = gpui_telegram_agent::hermes::HermesTurnRequest::new(&effective_prompt)
         .with_chat_bot(chat_id.0, bot_user_id.0.to_string());
     req.bot_name = bot_display_name;
     if let Some(sid) = resolved_sid {
@@ -4116,11 +4783,29 @@ async fn chats_agent_runs(
     }
     req.user_id = Some(auth.user_id.0.to_string());
     req.source = "chat_agent_run".to_string();
-    req.preset = Some(gpui_telegram_agent::hermes::toolsets::ToolsetPreset::HermesTelegram);
+    req.preset = Some(
+        bot_instance
+            .as_ref()
+            .map(|i| {
+                gpui_telegram_agent::fabushi_bot::FabushiBotHost::toolset_preset_for_name(
+                    &i.settings().toolset_preset,
+                )
+            })
+            .unwrap_or(gpui_telegram_agent::hermes::toolsets::ToolsetPreset::HermesTelegram),
+    );
+    req.thinking_budget_tokens = bot_instance.as_ref().and_then(|i| {
+        gpui_telegram_agent::fabushi_bot::FabushiBotHost::thinking_budget_for_level(
+            &i.settings().thinking_level,
+        )
+    });
     req.model = effective_model;
-    req.system_prompt = enriched_sp;
+    req.system_prompt = Some(final_sp);
 
-    let turn_res = state.hermes.run_turn(req).await;
+    let target_hermes = bot_instance
+        .as_ref()
+        .map(|i| i.hermes())
+        .unwrap_or_else(|| Arc::clone(&state.hermes));
+    let turn_res = target_hermes.run_turn(req).await;
     typing_guard.finish();
 
     let res = match turn_res {

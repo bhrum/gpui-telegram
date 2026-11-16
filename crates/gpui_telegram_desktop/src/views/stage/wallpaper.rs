@@ -11,6 +11,7 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
         linear_color_stop(rgb(palette.wallpaper_top), 0.0),
         linear_color_stop(rgb(palette.wallpaper_bottom), 1.0),
     );
+    let is_fabushi = palette.mode.is_fabushi_style();
     let pattern_rgba = TdesktopThemePalette::rgba_with_alpha(
         palette.wallpaper_pattern,
         if palette.mode.is_dark() { 0.14 } else { 0.10 },
@@ -18,57 +19,59 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
 
     let pattern_opacity = if palette.blur_wallpaper { 0.16 } else { 0.45 };
 
-    // Seamless full-area diagonal gradient + subtle geometric Telegram pattern motif
+    // Clean flat/gradient Fabushi canvas, or subtle geometric Telegram pattern motif for Classic mode
     div()
         .absolute()
         .inset_0()
         .overflow_hidden()
         .bg(gradient_bg)
-        .child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .flex_col()
-                .justify_around()
-                .px(px(28.0))
-                .py(px(24.0))
-                .children((0..5).map(move |row| {
-                    let offset_left = if row % 2 == 0 { 0.0 } else { 36.0 };
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_around()
-                        .pl(px(offset_left))
-                        .opacity(pattern_opacity)
-                        .child(
-                            div()
-                                .w(px(12.0))
-                                .h(px(12.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(pattern_rgba),
-                        )
-                        .child(
-                            div()
-                                .w(px(14.0))
-                                .h(px(14.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(pattern_rgba),
-                        )
-                        .child(tg_icon(IconName::HeartReaction, 16.0, palette.wallpaper_pattern))
-                        .child(tg_icon(IconName::SmileEmoji, 18.0, palette.wallpaper_pattern))
-                        .child(
-                            div()
-                                .w(px(8.0))
-                                .h(px(8.0))
-                                .rounded_full()
-                                .bg(pattern_rgba),
-                        )
-                        .child(tg_icon(IconName::PremiumStar, 14.0, palette.wallpaper_pattern))
-                })),
-        )
+        .when(!is_fabushi, |el| {
+            el.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .flex_col()
+                    .justify_around()
+                    .px(px(28.0))
+                    .py(px(24.0))
+                    .children((0..5).map(move |row| {
+                        let offset_left = if row % 2 == 0 { 0.0 } else { 36.0 };
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_around()
+                            .pl(px(offset_left))
+                            .opacity(pattern_opacity)
+                            .child(
+                                div()
+                                    .w(px(12.0))
+                                    .h(px(12.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(pattern_rgba),
+                            )
+                            .child(
+                                div()
+                                    .w(px(14.0))
+                                    .h(px(14.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(pattern_rgba),
+                            )
+                            .child(tg_icon(IconName::HeartReaction, 16.0, palette.wallpaper_pattern))
+                            .child(tg_icon(IconName::SmileEmoji, 18.0, palette.wallpaper_pattern))
+                            .child(
+                                div()
+                                    .w(px(8.0))
+                                    .h(px(8.0))
+                                    .rounded_full()
+                                    .bg(pattern_rgba),
+                            )
+                            .child(tg_icon(IconName::PremiumStar, 14.0, palette.wallpaper_pattern))
+                    })),
+            )
+        })
         .when(palette.blur_wallpaper, |el| {
             let veil = TdesktopThemePalette::rgba_with_alpha(
                 palette.window_bg,
@@ -86,6 +89,7 @@ pub fn render_themed_wallpaper(palette: &TdesktopThemePalette) -> AnyElement {
 }
 
 pub fn render_empty_no_chat_pill(palette: &TdesktopThemePalette, lang_id: &str) -> AnyElement {
+    let is_fabushi = palette.mode.is_fabushi_style();
     div()
         .size_full()
         .relative()
@@ -100,6 +104,7 @@ pub fn render_empty_no_chat_pill(palette: &TdesktopThemePalette, lang_id: &str) 
                 .py(px(8.0))
                 .rounded_full()
                 .bg(palette.service_pill_rgba())
+                .when(is_fabushi, |el| el.border_1().border_color(rgb(palette.border_fg)))
                 .shadow_sm()
                 .text_size(px(13.0))
                 .font_weight(FontWeight::MEDIUM)
@@ -117,6 +122,12 @@ pub fn render_empty_history_placeholder(
     palette: &TdesktopThemePalette,
     lang_id: &str,
 ) -> AnyElement {
+    let is_fabushi = palette.mode.is_fabushi_style();
+    let title_fg = if is_fabushi {
+        palette.text_primary
+    } else {
+        palette.service_pill_fg
+    };
     div()
         .flex_1()
         .flex()
@@ -134,12 +145,13 @@ pub fn render_empty_history_placeholder(
                 .py(px(20.0))
                 .rounded(px(16.0))
                 .bg(palette.service_pill_rgba())
+                .when(is_fabushi, |el| el.border_1().border_color(rgb(palette.border_fg)))
                 .child(tg_icon(IconName::FolderChat, 38.0, palette.accent))
                 .child(
                     div()
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(rgb(palette.service_pill_fg))
+                        .text_color(rgb(title_fg))
                         .child(tr_key_or(lang_id, "lng_empty_history_title", "No messages here yet...")),
                 )
                 .child(

@@ -2,10 +2,11 @@ use crate::db::{ChatMemberRecord, ChatRecord, ServerDatabase, SqliteResultExt};
 use gpui_telegram_core::error::{Result, TelegramError};
 use gpui_telegram_core::types::{ChatId, MsgId, UserId};
 use gpui_telegram_proto::miniapp_contracts::{
-    validate_bot_username, validate_miniapp_short_name, CloudStorageItem, MiniAppActionButton,
-    MiniAppThemeParams, MiniAppUiSchema, MiniAppUiWidget, MiniAppWidgetType,
-    CLOUD_STORAGE_MAX_KEYS, CLOUD_STORAGE_MAX_KEY_BYTES, CLOUD_STORAGE_MAX_TOTAL_BYTES,
-    CLOUD_STORAGE_MAX_VALUE_BYTES,
+    default_fabushi_avatar_color, default_fabushi_avatar_shape, derive_safe_agent_id,
+    normalize_fabushi_avatar_color, normalize_fabushi_avatar_shape, validate_bot_username,
+    validate_miniapp_short_name, CloudStorageItem, MiniAppActionButton, MiniAppThemeParams,
+    MiniAppUiSchema, MiniAppUiWidget, MiniAppWidgetType, CLOUD_STORAGE_MAX_KEYS,
+    CLOUD_STORAGE_MAX_KEY_BYTES, CLOUD_STORAGE_MAX_TOTAL_BYTES, CLOUD_STORAGE_MAX_VALUE_BYTES,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,22 @@ pub struct BotRegistryRecord {
     pub commands_json: String,
     pub created_at: i64,
     pub updated_at: i64,
+    pub agent_id: String,
+    pub avatar_shape: String,
+    pub avatar_color: String,
+    pub preferred_model: String,
+    pub thinking_level: String,
+    pub approval_mode: String,
+    pub toolset_preset: String,
+    pub menu_button_type: String,
+    pub has_main_app: bool,
+    pub main_app_short_name: String,
+    pub privacy_policy_url: String,
+    pub has_settings: bool,
+    pub can_join_groups: bool,
+    pub webhook_url: String,
+    pub webhook_secret_token: String,
+    pub is_standard_bot: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +90,35 @@ pub struct MiniAppRecord {
     pub created_by_nl: bool,
     pub created_at: i64,
     pub updated_at: i64,
+    pub header_color: String,
+    pub background_color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserBotPermissionRecord {
+    pub user_id: i64,
+    pub bot_user_id: i64,
+    pub allows_write_to_pm: bool,
+    pub app_tos_accepted_at: i64,
+    pub has_started_chat: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotApiUpdateRecord {
+    pub update_id: i64,
+    pub bot_user_id: i64,
+    pub payload_json: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniAppUsageEventRecord {
+    pub user_id: i64,
+    pub app_id: String,
+    pub bot_user_id: i64,
+    pub last_launched_at: i64,
+    pub launch_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,6 +607,38 @@ fn row_to_bot(row: &rusqlite::Row<'_>) -> rusqlite::Result<BotRegistryRecord> {
         commands_json: row.get(14)?,
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
+        agent_id: row.get::<_, String>(17).unwrap_or_default(),
+        avatar_shape: row.get::<_, String>(18).unwrap_or_default(),
+        avatar_color: row.get::<_, String>(19).unwrap_or_default(),
+        preferred_model: row.get::<_, String>(20).unwrap_or_default(),
+        thinking_level: row
+            .get::<_, String>(21)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "medium".to_string()),
+        approval_mode: row
+            .get::<_, String>(22)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "prompt".to_string()),
+        toolset_preset: row
+            .get::<_, String>(23)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "full".to_string()),
+        menu_button_type: row
+            .get::<_, String>(24)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "default".to_string()),
+        has_main_app: row.get::<_, i64>(25).unwrap_or(0) != 0,
+        main_app_short_name: row.get::<_, String>(26).unwrap_or_default(),
+        privacy_policy_url: row.get::<_, String>(27).unwrap_or_default(),
+        has_settings: row.get::<_, i64>(28).unwrap_or(0) != 0,
+        can_join_groups: row.get::<_, i64>(29).unwrap_or(1) != 0,
+        webhook_url: row.get::<_, String>(30).unwrap_or_default(),
+        webhook_secret_token: row.get::<_, String>(31).unwrap_or_default(),
+        is_standard_bot: row.get::<_, i64>(32).unwrap_or(0) != 0,
     })
 }
 
@@ -583,6 +661,8 @@ fn row_to_mini_app(row: &rusqlite::Row<'_>) -> rusqlite::Result<MiniAppRecord> {
         created_by_nl: row.get::<_, i64>(14)? != 0,
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
+        header_color: row.get::<_, String>(17).unwrap_or_default(),
+        background_color: row.get::<_, String>(18).unwrap_or_default(),
     })
 }
 
@@ -615,11 +695,11 @@ fn row_to_mini_app_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<MiniAppS
     })
 }
 
-const BOT_COLS: &str = "bot_user_id, owner_user_id, username, display_name, bot_token, description, about, ai_persona, menu_button_text, menu_button_url, is_official, is_inline, allow_attach_menu, attach_peer_types_json, commands_json, created_at, updated_at";
-const MINIAPP_COLS: &str = "app_id, bot_user_id, bot_username, short_name, title, description, category, icon_emoji, web_url, ui_schema_json, peer_types_json, is_published, is_attach_enabled, install_count, created_by_nl, created_at, updated_at";
+const BOT_COLS: &str = "bot_user_id, owner_user_id, username, display_name, bot_token, description, about, ai_persona, menu_button_text, menu_button_url, is_official, is_inline, allow_attach_menu, attach_peer_types_json, commands_json, created_at, updated_at, agent_id, avatar_shape, avatar_color, preferred_model, thinking_level, approval_mode, toolset_preset, menu_button_type, has_main_app, main_app_short_name, privacy_policy_url, has_settings, can_join_groups, webhook_url, webhook_secret_token, is_standard_bot";
+const MINIAPP_COLS: &str = "app_id, bot_user_id, bot_username, short_name, title, description, category, icon_emoji, web_url, ui_schema_json, peer_types_json, is_published, is_attach_enabled, install_count, created_by_nl, created_at, updated_at, header_color, background_color";
 
 impl ServerDatabase {
-    /// Seeds official @BotFather (777_001) and 3 ready-to-launch flagship official Mini Apps idempotently.
+    /// Seeds ONLY official @BotFather (777_001) idempotently and unpublishes any legacy built-in demo Mini Apps.
     pub fn seed_botfather_and_flagship_apps(&self) -> Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         self.pool.with_transaction(|tx| {
@@ -638,6 +718,8 @@ impl ServerDatabase {
                 { "command": "setabouttext", "description": "修改机器人 About 资料" },
                 { "command": "setcommands", "description": "设置机器人斜杠命令列表" },
                 { "command": "setmenubutton", "description": "配置机器人聊天输入框菜单按钮" },
+                { "command": "setprivacypolicy", "description": "设置机器人隐私政策链接" },
+                { "command": "setmainapp", "description": "设置机器人主 Mini App" },
                 { "command": "setinline", "description": "切换机器人 Inline 模式" },
                 { "command": "deletebot", "description": "删除我创建的机器人" },
                 { "command": "deleteapp", "description": "删除我创建的小程序" },
@@ -671,9 +753,11 @@ impl ServerDatabase {
                     bot_user_id, owner_user_id, username, display_name, bot_token,
                     description, about, ai_persona, menu_button_text, menu_button_url,
                     is_official, is_inline, allow_attach_menu, attach_peer_types_json,
-                    commands_json, created_at, updated_at
-                ) VALUES (?1, 0, 'BotFather', 'BotFather', ?2, ?3, ?4, ?5, '', '', 1, 0, 0, '["users","bots"]', ?6, ?7, ?7)
-                ON CONFLICT(bot_user_id) DO NOTHING"#,
+                    commands_json, created_at, updated_at, menu_button_type, is_standard_bot
+                ) VALUES (?1, 0, 'BotFather', 'BotFather', ?2, ?3, ?4, ?5, '', '', 1, 0, 0, '["users","bots"]', ?6, ?7, ?7, 'default', 0)
+                ON CONFLICT(bot_user_id) DO UPDATE SET
+                    commands_json = excluded.commands_json,
+                    updated_at = excluded.updated_at"#,
                 params![
                     BOTFATHER_USER_ID as i64,
                     bf_token,
@@ -686,145 +770,12 @@ impl ServerDatabase {
             )
             .map_db()?;
 
-            // 2. Seed 3 official flagship Companion AI Bots + Mini Apps
-            struct SeedApp<'a> {
-                bot_id: u64,
-                username: &'a str,
-                display_name: &'a str,
-                description: &'a str,
-                ai_persona: &'a str,
-                short_name: &'a str,
-                app_title: &'a str,
-                app_desc: &'a str,
-                category: &'a str,
-                icon: &'a str,
-                commands: Value,
-                schema: Value,
-            }
-
-            let seeds = [
-                SeedApp {
-                    bot_id: POMODORO_BOT_USER_ID,
-                    username: "PomodoroFocusBot",
-                    display_name: "番茄专注 AI",
-                    description: "智能番茄钟计时器与深度专注复盘搭档，随时陪你进入心流状态。",
-                    ai_persona: "你是番茄专注 AI 助手，擅长拆解任务、鼓励深度专注，并根据用户的番茄专注统计给出精准休息与计划建议。",
-                    short_name: "focus",
-                    app_title: "番茄专注 AI",
-                    app_desc: "25分钟深度心流计时 + 每日战绩统计 + AI 复盘教练",
-                    category: "productivity",
-                    icon: "🍅",
-                    commands: json!([
-                        { "command": "start", "description": "打开番茄专注 AI 搭档" },
-                        { "command": "app", "description": "立即启动「番茄专注 AI」小程序" },
-                        { "command": "stats", "description": "查看今日专注数据与 AI 点评" },
-                        { "command": "help", "description": "使用帮助" }
-                    ]),
-                    schema: default_pomodoro_ui_schema(),
-                },
-                SeedApp {
-                    bot_id: SPLITBILL_BOT_USER_ID,
-                    username: "SplitBillBot",
-                    display_name: "AA 记账分账助手",
-                    description: "聚餐拼单、旅行 AA 分账与群聊账单自动核算 AI 助手。",
-                    ai_persona: "你是 AA 记账分账助手，擅长清晰核算聚会消费、均摊金额、提醒未结算项目并生成可复制的群聊账单汇总。",
-                    short_name: "split",
-                    app_title: "AA 记账分账",
-                    app_desc: "多笔聚餐旅游消费自动按人数 AA 分摊，一键发群聊账单",
-                    category: "finance",
-                    icon: "💸",
-                    commands: json!([
-                        { "command": "start", "description": "认识 AA 记账分账助手" },
-                        { "command": "app", "description": "打开「AA 记账分账」小程序" },
-                        { "command": "ledger", "description": "汇总当前账本并算出每人应付" },
-                        { "command": "help", "description": "使用帮助" }
-                    ]),
-                    schema: default_splitbill_ui_schema(),
-                },
-                SeedApp {
-                    bot_id: POLLMASTER_BOT_USER_ID,
-                    username: "PollMasterBot",
-                    display_name: "团队投票助手",
-                    description: "快速发起团队匿名/实名投票、收集反馈并用 AI 自动总结决策结论。",
-                    ai_persona: "你是团队投票决策助手，擅长梳理投票选项、分析得票趋势并帮助团队快速形成明确结论。",
-                    short_name: "poll",
-                    app_title: "团队投票助手",
-                    app_desc: "团队快速投票与 AI 意见收敛看板",
-                    category: "team",
-                    icon: "📊",
-                    commands: json!([
-                        { "command": "start", "description": "了解团队投票助手" },
-                        { "command": "app", "description": "启动「团队投票助手」小程序" },
-                        { "command": "summary", "description": "AI 总结最新投票结果" },
-                        { "command": "help", "description": "使用帮助" }
-                    ]),
-                    schema: default_pollmaster_ui_schema(),
-                },
-            ];
-
-            for s in seeds {
-                tx.execute(
-                    r#"INSERT INTO users (
-                        user_id, username, phone, first_name, last_name, bio,
-                        password_hash, is_bot, is_verified, is_support, is_scam, is_fake,
-                        profile_photo_file_id, account_generation, created_at_ms, updated_at_ms
-                    ) VALUES (?1, ?2, NULL, ?3, NULL, ?4, NULL, 1, 1, 0, 0, 0, NULL, 1, ?5, ?5)
-                    ON CONFLICT(user_id) DO NOTHING"#,
-                    params![s.bot_id as i64, s.username, s.display_name, s.description, now_ms],
-                )
-                .map_db()?;
-
-                let bot_token = format!("{}:AAOfficial{}TokenV1", s.bot_id, s.short_name);
-                let web_url = format!("/miniapps/{}/{}", s.username, s.short_name);
-                tx.execute(
-                    r#"INSERT INTO bots_registry (
-                        bot_user_id, owner_user_id, username, display_name, bot_token,
-                        description, about, ai_persona, menu_button_text, menu_button_url,
-                        is_official, is_inline, allow_attach_menu, attach_peer_types_json,
-                        commands_json, created_at, updated_at
-                    ) VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, 1, '["users","bots","groups","channels"]', ?10, ?11, ?11)
-                    ON CONFLICT(bot_user_id) DO NOTHING"#,
-                    params![
-                        s.bot_id as i64,
-                        s.username,
-                        s.display_name,
-                        bot_token,
-                        s.description,
-                        s.app_desc,
-                        s.ai_persona,
-                        format!("打开 {}", s.app_title),
-                        web_url,
-                        s.commands.to_string(),
-                        now_ms
-                    ],
-                )
-                .map_db()?;
-
-                let app_id = format!("{}_{}", s.bot_id, s.short_name);
-                tx.execute(
-                    r#"INSERT INTO mini_apps (
-                        app_id, bot_user_id, bot_username, short_name, title,
-                        description, category, icon_emoji, web_url, ui_schema_json,
-                        peer_types_json, is_published, is_attach_enabled, install_count,
-                        created_by_nl, created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '["users","bots","groups","channels"]', 1, 1, 128, 0, ?11, ?11)
-                    ON CONFLICT(app_id) DO NOTHING"#,
-                    params![
-                        app_id,
-                        s.bot_id as i64,
-                        s.username,
-                        s.short_name,
-                        s.app_title,
-                        s.app_desc,
-                        s.category,
-                        s.icon,
-                        web_url,
-                        s.schema.to_string(),
-                        now_ms
-                    ],
-                )
-                .map_db()?;
-            }
+            // 2. Ensure legacy built-in host demo Mini Apps (777010, 777011, 777012) are unpublished on existing local DBs.
+            tx.execute(
+                "UPDATE mini_apps SET is_published = 0 WHERE bot_user_id IN (777010, 777011, 777012)",
+                [],
+            )
+            .map_db()?;
 
             Ok(())
         })
@@ -846,6 +797,46 @@ impl ServerDatabase {
         is_inline: bool,
         allow_attach_menu: bool,
     ) -> Result<BotRegistryRecord> {
+        let menu_type = if menu_button_url.trim().is_empty() {
+            "default"
+        } else {
+            "web_app"
+        };
+        self.create_registered_bot_with_options(
+            owner_user_id,
+            username,
+            display_name,
+            description,
+            about,
+            ai_persona,
+            menu_type,
+            menu_button_text,
+            menu_button_url,
+            commands_json,
+            is_inline,
+            allow_attach_menu,
+            false,
+        )
+    }
+
+    /// Creates a registered bot with explicit `menu_button_type` and `is_standard_bot` flag.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_registered_bot_with_options(
+        &self,
+        owner_user_id: i64,
+        username: &str,
+        display_name: &str,
+        description: &str,
+        about: &str,
+        ai_persona: &str,
+        menu_button_type: &str,
+        menu_button_text: &str,
+        menu_button_url: &str,
+        commands_json: &str,
+        is_inline: bool,
+        allow_attach_menu: bool,
+        is_standard_bot: bool,
+    ) -> Result<BotRegistryRecord> {
         let clean_un = validate_bot_username(username).map_err(TelegramError::Validation)?;
         let clean_name = display_name.trim();
         if clean_name.is_empty() {
@@ -853,6 +844,11 @@ impl ServerDatabase {
                 "Bot display name cannot be empty".into(),
             ));
         }
+        let normalized_menu_type = match menu_button_type.trim() {
+            "commands" => "commands",
+            "web_app" => "web_app",
+            _ => "default",
+        };
         let now_ms = chrono::Utc::now().timestamp_millis();
 
         self.pool.with_transaction(|tx| {
@@ -902,13 +898,22 @@ impl ServerDatabase {
             )
             .map_db()?;
 
+            let derived_agent_id = derive_safe_agent_id(None, &clean_un, bot_user_id);
+            let derived_shape = default_fabushi_avatar_shape(&derived_agent_id);
+            let derived_color = default_fabushi_avatar_color(&derived_agent_id);
+
             tx.execute(
                 r#"INSERT INTO bots_registry (
                     bot_user_id, owner_user_id, username, display_name, bot_token,
                     description, about, ai_persona, menu_button_text, menu_button_url,
                     is_official, is_inline, allow_attach_menu, attach_peer_types_json,
-                    commands_json, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, '["users","bots","groups","channels"]', ?13, ?14, ?14)"#,
+                    commands_json, created_at, updated_at,
+                    agent_id, avatar_shape, avatar_color,
+                    preferred_model, thinking_level, approval_mode, toolset_preset,
+                    menu_button_type, has_main_app, main_app_short_name,
+                    privacy_policy_url, has_settings, can_join_groups,
+                    webhook_url, webhook_secret_token, is_standard_bot
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, '["users","bots","groups","channels"]', ?13, ?14, ?14, ?15, ?16, ?17, '', 'medium', 'prompt', 'full', ?18, 0, '', '', 0, 1, '', '', ?19)"#,
                 params![
                     bot_user_id,
                     owner_user_id,
@@ -923,7 +928,12 @@ impl ServerDatabase {
                     is_inline as i64,
                     allow_attach_menu as i64,
                     commands_json,
-                    now_ms
+                    now_ms,
+                    derived_agent_id,
+                    derived_shape,
+                    derived_color,
+                    normalized_menu_type,
+                    is_standard_bot as i64,
                 ],
             )
             .map_db()?;
@@ -933,6 +943,22 @@ impl ServerDatabase {
                 params![bot_user_id],
                 row_to_bot,
             )
+            .map_db()
+        })
+    }
+
+    pub fn get_bot_by_token(&self, token: &str) -> Result<Option<BotRegistryRecord>> {
+        let clean = token.trim();
+        if clean.is_empty() {
+            return Ok(None);
+        }
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_token = ?1"),
+                params![clean],
+                row_to_bot,
+            )
+            .optional()
             .map_db()
         })
     }
@@ -1159,11 +1185,127 @@ impl ServerDatabase {
         text: &str,
         url: &str,
     ) -> Result<BotRegistryRecord> {
+        let menu_type = if url.trim().is_empty() {
+            "default"
+        } else {
+            "web_app"
+        };
+        self.update_bot_menu_button_typed(bot_user_id, menu_type, text, url)
+    }
+
+    pub fn update_bot_menu_button_typed(
+        &self,
+        bot_user_id: i64,
+        menu_button_type: &str,
+        text: &str,
+        url: &str,
+    ) -> Result<BotRegistryRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let norm_type = match menu_button_type.trim() {
+            "commands" => "commands",
+            "web_app" => "web_app",
+            _ => "default",
+        };
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "UPDATE bots_registry SET menu_button_type = ?1, menu_button_text = ?2, menu_button_url = ?3, updated_at = ?4 WHERE bot_user_id = ?5",
+                params![norm_type, text.trim(), url.trim(), now_ms, bot_user_id],
+            )
+            .map_db()?;
+            conn.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .map_db()
+        })
+    }
+
+    pub fn update_bot_main_app(
+        &self,
+        bot_user_id: i64,
+        has_main_app: bool,
+        main_app_short_name: &str,
+    ) -> Result<BotRegistryRecord> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         self.pool.with_conn(|conn| {
             conn.execute(
-                "UPDATE bots_registry SET menu_button_text = ?1, menu_button_url = ?2, updated_at = ?3 WHERE bot_user_id = ?4",
-                params![text.trim(), url.trim(), now_ms, bot_user_id],
+                "UPDATE bots_registry SET has_main_app = ?1, main_app_short_name = ?2, updated_at = ?3 WHERE bot_user_id = ?4",
+                params![has_main_app as i64, main_app_short_name.trim(), now_ms, bot_user_id],
+            )
+            .map_db()?;
+            conn.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .map_db()
+        })
+    }
+
+    pub fn update_bot_privacy_policy(
+        &self,
+        bot_user_id: i64,
+        privacy_policy_url: &str,
+    ) -> Result<BotRegistryRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "UPDATE bots_registry SET privacy_policy_url = ?1, updated_at = ?2 WHERE bot_user_id = ?3",
+                params![privacy_policy_url.trim(), now_ms, bot_user_id],
+            )
+            .map_db()?;
+            conn.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .map_db()
+        })
+    }
+
+    pub fn update_bot_webhook(
+        &self,
+        bot_user_id: i64,
+        webhook_url: &str,
+        webhook_secret_token: &str,
+    ) -> Result<BotRegistryRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "UPDATE bots_registry SET webhook_url = ?1, webhook_secret_token = ?2, updated_at = ?3 WHERE bot_user_id = ?4",
+                params![webhook_url.trim(), webhook_secret_token.trim(), now_ms, bot_user_id],
+            )
+            .map_db()?;
+            conn.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .map_db()
+        })
+    }
+
+    pub fn update_bot_settings_flags(
+        &self,
+        bot_user_id: i64,
+        has_settings: Option<bool>,
+        can_join_groups: Option<bool>,
+    ) -> Result<BotRegistryRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"UPDATE bots_registry
+                   SET has_settings = COALESCE(?1, has_settings),
+                       can_join_groups = COALESCE(?2, can_join_groups),
+                       updated_at = ?3
+                   WHERE bot_user_id = ?4"#,
+                params![
+                    has_settings.map(|v| v as i64),
+                    can_join_groups.map(|v| v as i64),
+                    now_ms,
+                    bot_user_id
+                ],
             )
             .map_db()?;
             conn.query_row(
@@ -1189,6 +1331,434 @@ impl ServerDatabase {
                 row_to_bot,
             )
             .map_db()
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_bot_fabushi_fields(
+        &self,
+        bot_user_id: i64,
+        display_name: Option<&str>,
+        description: Option<&str>,
+        about: Option<&str>,
+        ai_persona: Option<&str>,
+        agent_id: Option<&str>,
+        avatar_shape: Option<&str>,
+        avatar_color: Option<&str>,
+        preferred_model: Option<&str>,
+        thinking_level: Option<&str>,
+        approval_mode: Option<&str>,
+        toolset_preset: Option<&str>,
+    ) -> Result<BotRegistryRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_transaction(|tx| {
+            let current = tx
+                .query_row(
+                    &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                    params![bot_user_id],
+                    row_to_bot,
+                )
+                .map_db()?;
+
+            let next_name = display_name
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&current.display_name)
+                .to_string();
+            let next_desc = description
+                .map(str::trim)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| current.description.clone());
+            let next_about = about
+                .map(str::trim)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| current.about.clone());
+            let next_persona = ai_persona
+                .map(str::trim)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| current.ai_persona.clone());
+            let next_agent_id = agent_id
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| derive_safe_agent_id(Some(s), &current.username, bot_user_id))
+                .unwrap_or_else(|| {
+                    if current.agent_id.trim().is_empty() {
+                        derive_safe_agent_id(None, &current.username, bot_user_id)
+                    } else {
+                        current.agent_id.clone()
+                    }
+                });
+            let next_shape = avatar_shape
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| normalize_fabushi_avatar_shape(s, &next_agent_id))
+                .unwrap_or_else(|| {
+                    normalize_fabushi_avatar_shape(&current.avatar_shape, &next_agent_id)
+                });
+            let next_color = avatar_color
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| normalize_fabushi_avatar_color(s, &next_agent_id))
+                .unwrap_or_else(|| {
+                    normalize_fabushi_avatar_color(&current.avatar_color, &next_agent_id)
+                });
+            let next_model = preferred_model
+                .map(str::trim)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| current.preferred_model.clone());
+            let next_thinking = thinking_level
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if current.thinking_level.is_empty() {
+                        "medium"
+                    } else {
+                        current.thinking_level.as_str()
+                    }
+                })
+                .to_string();
+            let next_approval = approval_mode
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if current.approval_mode.is_empty() {
+                        "prompt"
+                    } else {
+                        current.approval_mode.as_str()
+                    }
+                })
+                .to_string();
+            let next_preset = toolset_preset
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if current.toolset_preset.is_empty() {
+                        "full"
+                    } else {
+                        current.toolset_preset.as_str()
+                    }
+                })
+                .to_string();
+
+            tx.execute(
+                r#"UPDATE bots_registry
+                   SET display_name = ?1,
+                       description = ?2,
+                       about = ?3,
+                       ai_persona = ?4,
+                       agent_id = ?5,
+                       avatar_shape = ?6,
+                       avatar_color = ?7,
+                       preferred_model = ?8,
+                       thinking_level = ?9,
+                       approval_mode = ?10,
+                       toolset_preset = ?11,
+                       updated_at = ?12
+                   WHERE bot_user_id = ?13"#,
+                params![
+                    next_name,
+                    next_desc,
+                    next_about,
+                    next_persona,
+                    next_agent_id,
+                    next_shape,
+                    next_color,
+                    next_model,
+                    next_thinking,
+                    next_approval,
+                    next_preset,
+                    now_ms,
+                    bot_user_id
+                ],
+            )
+            .map_db()?;
+
+            let bio_text = if !next_desc.is_empty() {
+                next_desc.as_str()
+            } else {
+                next_about.as_str()
+            };
+            tx.execute(
+                "UPDATE users SET first_name = ?1, bio = ?2, updated_at_ms = ?3 WHERE user_id = ?4",
+                params![next_name, bio_text, now_ms, bot_user_id],
+            )
+            .map_db()?;
+
+            tx.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .map_db()
+        })
+    }
+
+    /// Ensures any existing `users` row with `is_bot = 1` (e.g. default AI bot `777_000` or
+    /// custom contact bots created via `/api/v1/contacts/add`) has a corresponding `bots_registry`
+    /// entry with Fabushi identity columns populated.
+    pub fn ensure_bot_registry_for_existing_bot_user(
+        &self,
+        bot_user_id: i64,
+        owner_user_id: i64,
+        default_persona: &str,
+    ) -> Result<Option<BotRegistryRecord>> {
+        if bot_user_id == BOTFATHER_USER_ID as i64 {
+            return self.get_bot_by_user_id(bot_user_id);
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_transaction(|tx| {
+            let user_row: Option<(Option<String>, String, String, String, i64)> = tx
+                .query_row(
+                    "SELECT username, first_name, COALESCE(last_name, ''), COALESCE(bio, ''), is_bot FROM users WHERE user_id = ?1",
+                    params![bot_user_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()
+                .map_db()?;
+            let Some((username_opt, first_name, last_name, bio, is_bot)) = user_row else {
+                return Ok(None);
+            };
+            if is_bot == 0 {
+                return Ok(None);
+            }
+
+            let existing: Option<BotRegistryRecord> = tx
+                .query_row(
+                    &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                    params![bot_user_id],
+                    row_to_bot,
+                )
+                .optional()
+                .map_db()?;
+
+            if let Some(rec) = existing {
+                if !rec.agent_id.trim().is_empty()
+                    && !rec.avatar_shape.trim().is_empty()
+                    && !rec.avatar_color.trim().is_empty()
+                {
+                    return Ok(Some(rec));
+                }
+                let derived_id = if rec.agent_id.trim().is_empty() {
+                    derive_safe_agent_id(None, &rec.username, bot_user_id)
+                } else {
+                    rec.agent_id.clone()
+                };
+                let derived_shape = normalize_fabushi_avatar_shape(&rec.avatar_shape, &derived_id);
+                let derived_color = normalize_fabushi_avatar_color(&rec.avatar_color, &derived_id);
+                tx.execute(
+                    r#"UPDATE bots_registry
+                       SET agent_id = ?1,
+                           avatar_shape = ?2,
+                           avatar_color = ?3,
+                           thinking_level = CASE WHEN thinking_level = '' THEN 'medium' ELSE thinking_level END,
+                           approval_mode = CASE WHEN approval_mode = '' THEN 'prompt' ELSE approval_mode END,
+                           toolset_preset = CASE WHEN toolset_preset = '' THEN 'full' ELSE toolset_preset END
+                       WHERE bot_user_id = ?4"#,
+                    params![derived_id, derived_shape, derived_color, bot_user_id],
+                )
+                .map_db()?;
+                return tx
+                    .query_row(
+                        &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                        params![bot_user_id],
+                        row_to_bot,
+                    )
+                    .optional()
+                    .map_db();
+            }
+
+            let raw_un = username_opt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim_start_matches('@').to_string())
+                .unwrap_or_else(|| format!("fabushi_{bot_user_id}_bot"));
+            let full_name = if last_name.trim().is_empty() {
+                first_name.trim().to_string()
+            } else {
+                format!("{} {}", first_name.trim(), last_name.trim())
+            };
+            let display_name = if full_name.is_empty() {
+                raw_un.clone()
+            } else {
+                full_name
+            };
+            let desc = if !bio.trim().is_empty() {
+                bio.trim().to_string()
+            } else if !default_persona.trim().is_empty() {
+                default_persona.trim().to_string()
+            } else {
+                format!("Fabushi Bot {display_name}")
+            };
+            let is_official = (777_000..778_000).contains(&bot_user_id);
+            let derived_id = derive_safe_agent_id(None, &raw_un, bot_user_id);
+            let derived_shape = default_fabushi_avatar_shape(&derived_id);
+            let derived_color = default_fabushi_avatar_color(&derived_id);
+            let bot_token = generate_bot_token(bot_user_id);
+
+            tx.execute(
+                r#"INSERT INTO bots_registry (
+                    bot_user_id, owner_user_id, username, display_name, bot_token,
+                    description, about, ai_persona, menu_button_text, menu_button_url,
+                    is_official, is_inline, allow_attach_menu, attach_peer_types_json,
+                    commands_json, created_at, updated_at,
+                    agent_id, avatar_shape, avatar_color,
+                    preferred_model, thinking_level, approval_mode, toolset_preset
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '', '', ?9, 0, 0, '["users","bots","groups","channels"]', '[]', ?10, ?10, ?11, ?12, ?13, '', 'medium', 'prompt', 'full')"#,
+                params![
+                    bot_user_id,
+                    owner_user_id,
+                    raw_un,
+                    display_name,
+                    bot_token,
+                    desc,
+                    bio.trim(),
+                    default_persona.trim(),
+                    is_official as i64,
+                    now_ms,
+                    derived_id,
+                    derived_shape,
+                    derived_color,
+                ],
+            )
+            .map_db()?;
+
+            tx.query_row(
+                &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
+                params![bot_user_id],
+                row_to_bot,
+            )
+            .optional()
+            .map_db()
+        })
+    }
+
+    /// Generates a unique valid `<slug>_bot` username from a display name or preferred slug.
+    pub fn generate_unique_bot_username(&self, desired_or_name: &str) -> Result<String> {
+        let trimmed = desired_or_name.trim().trim_start_matches('@');
+        if let Ok(valid) = validate_bot_username(trimmed) {
+            let taken = self.pool.with_conn(|conn| {
+                let exists: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?1)",
+                        params![valid],
+                        |r| r.get(0),
+                    )
+                    .map_db()?;
+                Ok(exists > 0)
+            })?;
+            if !taken {
+                return Ok(valid);
+            }
+        }
+
+        let mut base = String::new();
+        let mut last_underscore = false;
+        for ch in trimmed.chars() {
+            if ch.is_ascii_alphanumeric() {
+                base.push(ch.to_ascii_lowercase());
+                last_underscore = false;
+            } else if !last_underscore && !base.is_empty() {
+                base.push('_');
+                last_underscore = true;
+            }
+        }
+        while base.ends_with('_') {
+            base.pop();
+        }
+        if base.is_empty() || base.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            base = if base.is_empty() {
+                "fabushi_agent".to_string()
+            } else {
+                format!("bot_{base}")
+            };
+        }
+        if let Some(stripped) = base.strip_suffix("_bot") {
+            base = stripped.to_string();
+        } else if let Some(stripped) = base.strip_suffix("bot") {
+            if stripped.len() >= 3 {
+                base = stripped.to_string();
+            }
+        }
+        while base.ends_with('_') {
+            base.pop();
+        }
+        if base.is_empty() {
+            base = "fabushi_agent".to_string();
+        }
+
+        for attempt in 0..200usize {
+            let suffix = if attempt == 0 {
+                "_bot".to_string()
+            } else {
+                format!("_{}_bot", attempt + 1)
+            };
+            let max_prefix = 32usize.saturating_sub(suffix.len());
+            let mut prefix: String = base.chars().take(max_prefix).collect();
+            while prefix.ends_with('_') {
+                prefix.pop();
+            }
+            if prefix.is_empty() {
+                prefix = "agent".to_string();
+            }
+            let candidate = format!("{prefix}{suffix}");
+            if validate_bot_username(&candidate).is_err() {
+                continue;
+            }
+            let taken = self.pool.with_conn(|conn| {
+                let exists: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?1)",
+                        params![candidate],
+                        |r| r.get(0),
+                    )
+                    .map_db()?;
+                Ok(exists > 0)
+            })?;
+            if !taken {
+                return Ok(candidate);
+            }
+        }
+
+        Ok(format!(
+            "fabushi_{}_bot",
+            (chrono::Utc::now().timestamp_millis() % 1_000_000).abs()
+        ))
+    }
+
+    pub fn find_companion_chat_id_for_user(
+        &self,
+        bot_user_id: i64,
+        user_id: i64,
+    ) -> Result<Option<ChatId>> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                r#"SELECT c.chat_id FROM chats c
+                   JOIN chat_members m1 ON m1.chat_id = c.chat_id AND m1.user_id = ?1
+                   JOIN chat_members m2 ON m2.chat_id = c.chat_id AND m2.user_id = ?2
+                   WHERE c.chat_type IN (0, 4)
+                     AND (SELECT COUNT(*) FROM chat_members mx WHERE mx.chat_id = c.chat_id) = 2
+                   ORDER BY c.chat_id ASC
+                   LIMIT 1"#,
+                params![user_id, bot_user_id],
+                |r| r.get::<_, i64>(0).map(ChatId),
+            )
+            .optional()
+            .map_db()
+        })
+    }
+
+    pub fn list_all_bot_user_ids_from_users(&self) -> Result<Vec<i64>> {
+        self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT user_id FROM users WHERE is_bot = 1 ORDER BY user_id ASC")
+                .map_db()?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, i64>(0))
+                .map_db()?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_db()?;
+            Ok(rows)
         })
     }
 
@@ -1223,6 +1793,26 @@ impl ServerDatabase {
             .map_db()?;
             tx.execute(
                 "DELETE FROM user_mini_apps WHERE bot_user_id = ?1",
+                params![bot_user_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM user_bot_permissions WHERE bot_user_id = ?1",
+                params![bot_user_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM mini_app_usage_events WHERE bot_user_id = ?1",
+                params![bot_user_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM bot_api_updates WHERE bot_user_id = ?1",
+                params![bot_user_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM mini_app_hosted_bundles WHERE app_id IN (SELECT app_id FROM mini_apps WHERE bot_user_id = ?1)",
                 params![bot_user_id],
             )
             .map_db()?;
@@ -1411,6 +2001,46 @@ impl ServerDatabase {
         is_attach_enabled: bool,
         created_by_nl: bool,
     ) -> Result<MiniAppRecord> {
+        self.create_or_upsert_mini_app_with_options(
+            bot_user_id,
+            bot_username,
+            short_name,
+            title,
+            description,
+            category,
+            icon_emoji,
+            web_url,
+            ui_schema_json,
+            is_published,
+            is_attach_enabled,
+            created_by_nl,
+            "",
+            "",
+            None,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_or_upsert_mini_app_with_options(
+        &self,
+        bot_user_id: i64,
+        bot_username: &str,
+        short_name: &str,
+        title: &str,
+        description: &str,
+        category: &str,
+        icon_emoji: &str,
+        web_url: Option<&str>,
+        ui_schema_json: &str,
+        is_published: bool,
+        is_attach_enabled: bool,
+        created_by_nl: bool,
+        header_color: &str,
+        background_color: &str,
+        set_as_main_app: Option<bool>,
+        auto_menu_button: bool,
+    ) -> Result<MiniAppRecord> {
         let clean_short = validate_miniapp_short_name(short_name.trim_start_matches('/'))
             .map_err(TelegramError::Validation)?;
         let clean_title = title.trim();
@@ -1443,8 +2073,8 @@ impl ServerDatabase {
                     app_id, bot_user_id, bot_username, short_name, title,
                     description, category, icon_emoji, web_url, ui_schema_json,
                     peer_types_json, is_published, is_attach_enabled, install_count,
-                    created_by_nl, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '["users","bots","groups","channels"]', ?11, ?12, 0, ?13, ?14, ?14)
+                    created_by_nl, created_at, updated_at, header_color, background_color
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '["users","bots","groups","channels"]', ?11, ?12, 0, ?13, ?14, ?14, ?15, ?16)
                 ON CONFLICT(bot_username, short_name) DO UPDATE SET
                     title = excluded.title,
                     description = excluded.description,
@@ -1454,6 +2084,8 @@ impl ServerDatabase {
                     ui_schema_json = excluded.ui_schema_json,
                     is_published = excluded.is_published,
                     is_attach_enabled = excluded.is_attach_enabled,
+                    header_color = CASE WHEN excluded.header_color != '' THEN excluded.header_color ELSE mini_apps.header_color END,
+                    background_color = CASE WHEN excluded.background_color != '' THEN excluded.background_color ELSE mini_apps.background_color END,
                     updated_at = excluded.updated_at"#,
                 params![
                     app_id,
@@ -1469,29 +2101,62 @@ impl ServerDatabase {
                     is_published as i64,
                     is_attach_enabled as i64,
                     created_by_nl as i64,
-                    now_ms
+                    now_ms,
+                    header_color.trim(),
+                    background_color.trim(),
                 ],
             )
             .map_db()?;
 
-            // Ensure companion bot exposes Menu Button + attach support automatically when its Mini App is published
-            let default_btn_text = format!("打开 {}", clean_title);
-            tx.execute(
-                r#"UPDATE bots_registry
-                   SET menu_button_text = CASE WHEN menu_button_text = '' THEN ?1 ELSE menu_button_text END,
-                       menu_button_url = CASE WHEN menu_button_url = '' THEN ?2 ELSE menu_button_url END,
-                       allow_attach_menu = CASE WHEN ?3 != 0 THEN 1 ELSE allow_attach_menu END,
-                       updated_at = ?4
-                   WHERE bot_user_id = ?5"#,
-                params![
-                    default_btn_text,
-                    resolved_url,
-                    is_attach_enabled as i64,
-                    now_ms,
-                    bot_user_id
-                ],
-            )
-            .map_db()?;
+            let (is_standard, has_main_app): (i64, i64) = tx
+                .query_row(
+                    "SELECT is_standard_bot, has_main_app FROM bots_registry WHERE bot_user_id = ?1",
+                    params![bot_user_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_db()?
+                .unwrap_or((0, 0));
+
+            let should_set_main = match set_as_main_app {
+                Some(v) => v,
+                None => has_main_app == 0,
+            };
+            if should_set_main {
+                tx.execute(
+                    "UPDATE bots_registry SET has_main_app = 1, main_app_short_name = ?1, updated_at = ?2 WHERE bot_user_id = ?3",
+                    params![clean_short, now_ms, bot_user_id],
+                )
+                .map_db()?;
+            }
+
+            // Only auto-configure Menu Button for non-standard AI companion bots when requested.
+            if auto_menu_button && is_standard == 0 {
+                let default_btn_text = format!("打开 {}", clean_title);
+                tx.execute(
+                    r#"UPDATE bots_registry
+                       SET menu_button_type = CASE WHEN menu_button_url = '' THEN 'web_app' ELSE menu_button_type END,
+                           menu_button_text = CASE WHEN menu_button_text = '' THEN ?1 ELSE menu_button_text END,
+                           menu_button_url = CASE WHEN menu_button_url = '' THEN ?2 ELSE menu_button_url END,
+                           allow_attach_menu = CASE WHEN ?3 != 0 THEN 1 ELSE allow_attach_menu END,
+                           updated_at = ?4
+                       WHERE bot_user_id = ?5"#,
+                    params![
+                        default_btn_text,
+                        resolved_url,
+                        is_attach_enabled as i64,
+                        now_ms,
+                        bot_user_id
+                    ],
+                )
+                .map_db()?;
+            } else if is_attach_enabled {
+                tx.execute(
+                    "UPDATE bots_registry SET allow_attach_menu = 1, updated_at = ?1 WHERE bot_user_id = ?2",
+                    params![now_ms, bot_user_id],
+                )
+                .map_db()?;
+            }
 
             tx.query_row(
                 &format!("SELECT {MINIAPP_COLS} FROM mini_apps WHERE app_id = ?1"),
@@ -1541,13 +2206,13 @@ impl ServerDatabase {
     pub fn list_mini_apps_by_owner(&self, owner_user_id: i64) -> Result<Vec<MiniAppRecord>> {
         self.pool.with_conn(|conn| {
             let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at
+                .prepare(
+                    "SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color
                      FROM mini_apps m
                      JOIN bots_registry b ON b.bot_user_id = m.bot_user_id
                      WHERE b.owner_user_id = ?1
-                     ORDER BY m.created_at DESC"
-                ))
+                     ORDER BY m.created_at DESC",
+                )
                 .map_db()?;
             let rows = stmt
                 .query_map(params![owner_user_id], row_to_mini_app)
@@ -1633,6 +2298,16 @@ impl ServerDatabase {
             .map_db()?;
             tx.execute(
                 "DELETE FROM mini_app_sessions WHERE app_id = ?1",
+                params![app_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM mini_app_usage_events WHERE app_id = ?1",
+                params![app_id],
+            )
+            .map_db()?;
+            tx.execute(
+                "DELETE FROM mini_app_hosted_bundles WHERE app_id = ?1",
                 params![app_id],
             )
             .map_db()?;
@@ -1894,9 +2569,9 @@ impl ServerDatabase {
         self.pool.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    r#"SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at,
+                    r#"SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color,
                               u.user_id, u.app_id, u.bot_user_id, u.companion_chat_id, u.allow_write_access, u.installed_at, u.last_launched_at,
-                              b.bot_user_id, b.owner_user_id, b.username, b.display_name, b.bot_token, b.description, b.about, b.ai_persona, b.menu_button_text, b.menu_button_url, b.is_official, b.is_inline, b.allow_attach_menu, b.attach_peer_types_json, b.commands_json, b.created_at, b.updated_at
+                              b.bot_user_id, b.owner_user_id, b.username, b.display_name, b.bot_token, b.description, b.about, b.ai_persona, b.menu_button_text, b.menu_button_url, b.is_official, b.is_inline, b.allow_attach_menu, b.attach_peer_types_json, b.commands_json, b.created_at, b.updated_at, b.agent_id, b.avatar_shape, b.avatar_color, b.preferred_model, b.thinking_level, b.approval_mode, b.toolset_preset, b.menu_button_type, b.has_main_app, b.main_app_short_name, b.privacy_policy_url, b.has_settings, b.can_join_groups, b.webhook_url, b.webhook_secret_token, b.is_standard_bot
                        FROM user_mini_apps u
                        JOIN mini_apps m ON m.app_id = u.app_id
                        JOIN bots_registry b ON b.bot_user_id = m.bot_user_id
@@ -1924,34 +2599,68 @@ impl ServerDatabase {
                         created_by_nl: r.get::<_, i64>(14)? != 0,
                         created_at: r.get(15)?,
                         updated_at: r.get(16)?,
+                        header_color: r.get::<_, String>(17).unwrap_or_default(),
+                        background_color: r.get::<_, String>(18).unwrap_or_default(),
                     };
                     let install = UserMiniAppRecord {
-                        user_id: r.get(17)?,
-                        app_id: r.get(18)?,
-                        bot_user_id: r.get(19)?,
-                        companion_chat_id: r.get(20)?,
-                        allow_write_access: r.get::<_, i64>(21)? != 0,
-                        installed_at: r.get(22)?,
-                        last_launched_at: r.get(23)?,
+                        user_id: r.get(19)?,
+                        app_id: r.get(20)?,
+                        bot_user_id: r.get(21)?,
+                        companion_chat_id: r.get(22)?,
+                        allow_write_access: r.get::<_, i64>(23)? != 0,
+                        installed_at: r.get(24)?,
+                        last_launched_at: r.get(25)?,
                     };
                     let bot = BotRegistryRecord {
-                        bot_user_id: r.get(24)?,
-                        owner_user_id: r.get(25)?,
-                        username: r.get(26)?,
-                        display_name: r.get(27)?,
-                        bot_token: r.get(28)?,
-                        description: r.get(29)?,
-                        about: r.get(30)?,
-                        ai_persona: r.get(31)?,
-                        menu_button_text: r.get(32)?,
-                        menu_button_url: r.get(33)?,
-                        is_official: r.get::<_, i64>(34)? != 0,
-                        is_inline: r.get::<_, i64>(35)? != 0,
-                        allow_attach_menu: r.get::<_, i64>(36)? != 0,
-                        attach_peer_types_json: r.get(37)?,
-                        commands_json: r.get(38)?,
-                        created_at: r.get(39)?,
-                        updated_at: r.get(40)?,
+                        bot_user_id: r.get(26)?,
+                        owner_user_id: r.get(27)?,
+                        username: r.get(28)?,
+                        display_name: r.get(29)?,
+                        bot_token: r.get(30)?,
+                        description: r.get(31)?,
+                        about: r.get(32)?,
+                        ai_persona: r.get(33)?,
+                        menu_button_text: r.get(34)?,
+                        menu_button_url: r.get(35)?,
+                        is_official: r.get::<_, i64>(36)? != 0,
+                        is_inline: r.get::<_, i64>(37)? != 0,
+                        allow_attach_menu: r.get::<_, i64>(38)? != 0,
+                        attach_peer_types_json: r.get(39)?,
+                        commands_json: r.get(40)?,
+                        created_at: r.get(41)?,
+                        updated_at: r.get(42)?,
+                        agent_id: r.get::<_, String>(43).unwrap_or_default(),
+                        avatar_shape: r.get::<_, String>(44).unwrap_or_default(),
+                        avatar_color: r.get::<_, String>(45).unwrap_or_default(),
+                        preferred_model: r.get::<_, String>(46).unwrap_or_default(),
+                        thinking_level: r
+                            .get::<_, String>(47)
+                            .ok()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "medium".to_string()),
+                        approval_mode: r
+                            .get::<_, String>(48)
+                            .ok()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "prompt".to_string()),
+                        toolset_preset: r
+                            .get::<_, String>(49)
+                            .ok()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "full".to_string()),
+                        menu_button_type: r
+                            .get::<_, String>(50)
+                            .ok()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "default".to_string()),
+                        has_main_app: r.get::<_, i64>(51).unwrap_or(0) != 0,
+                        main_app_short_name: r.get::<_, String>(52).unwrap_or_default(),
+                        privacy_policy_url: r.get::<_, String>(53).unwrap_or_default(),
+                        has_settings: r.get::<_, i64>(54).unwrap_or(0) != 0,
+                        can_join_groups: r.get::<_, i64>(55).unwrap_or(1) != 0,
+                        webhook_url: r.get::<_, String>(56).unwrap_or_default(),
+                        webhook_secret_token: r.get::<_, String>(57).unwrap_or_default(),
+                        is_standard_bot: r.get::<_, i64>(58).unwrap_or(0) != 0,
                     };
                     Ok((app, install, bot))
                 })
@@ -2202,6 +2911,358 @@ impl ServerDatabase {
                 )
                 .map_db()?;
             }
+            Ok(())
+        })
+    }
+
+    // --- Telegram Bot Permissions, Usage Events, MAU, Bot API Updates & Hosted Bundles ---
+
+    pub fn get_user_bot_permission(
+        &self,
+        user_id: i64,
+        bot_user_id: i64,
+    ) -> Result<UserBotPermissionRecord> {
+        self.pool.with_conn(|conn| {
+            let rec = conn
+                .query_row(
+                    "SELECT user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at FROM user_bot_permissions WHERE user_id = ?1 AND bot_user_id = ?2",
+                    params![user_id, bot_user_id],
+                    |r| {
+                        Ok(UserBotPermissionRecord {
+                            user_id: r.get(0)?,
+                            bot_user_id: r.get(1)?,
+                            allows_write_to_pm: r.get::<_, i64>(2)? != 0,
+                            app_tos_accepted_at: r.get(3)?,
+                            has_started_chat: r.get::<_, i64>(4)? != 0,
+                            updated_at: r.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_db()?;
+            Ok(rec.unwrap_or(UserBotPermissionRecord {
+                user_id,
+                bot_user_id,
+                allows_write_to_pm: false,
+                app_tos_accepted_at: 0,
+                has_started_chat: false,
+                updated_at: 0,
+            }))
+        })
+    }
+
+    pub fn set_user_bot_write_access(
+        &self,
+        user_id: i64,
+        bot_user_id: i64,
+        allows_write_to_pm: bool,
+    ) -> Result<UserBotPermissionRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_transaction(|tx| {
+            tx.execute(
+                r#"INSERT INTO user_bot_permissions (user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at)
+                   VALUES (?1, ?2, ?3, 0, 0, ?4)
+                   ON CONFLICT(user_id, bot_user_id) DO UPDATE SET
+                       allows_write_to_pm = excluded.allows_write_to_pm,
+                       updated_at = excluded.updated_at"#,
+                params![user_id, bot_user_id, allows_write_to_pm as i64, now_ms],
+            )
+            .map_db()?;
+            tx.execute(
+                "UPDATE user_mini_apps SET allow_write_access = ?1 WHERE user_id = ?2 AND bot_user_id = ?3",
+                params![allows_write_to_pm as i64, user_id, bot_user_id],
+            )
+            .map_db()?;
+            tx.query_row(
+                "SELECT user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at FROM user_bot_permissions WHERE user_id = ?1 AND bot_user_id = ?2",
+                params![user_id, bot_user_id],
+                |r| {
+                    Ok(UserBotPermissionRecord {
+                        user_id: r.get(0)?,
+                        bot_user_id: r.get(1)?,
+                        allows_write_to_pm: r.get::<_, i64>(2)? != 0,
+                        app_tos_accepted_at: r.get(3)?,
+                        has_started_chat: r.get::<_, i64>(4)? != 0,
+                        updated_at: r.get(5)?,
+                    })
+                },
+            )
+            .map_db()
+        })
+    }
+
+    pub fn set_user_bot_tos_accepted(
+        &self,
+        user_id: i64,
+        bot_user_id: i64,
+    ) -> Result<UserBotPermissionRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO user_bot_permissions (user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at)
+                   VALUES (?1, ?2, 0, ?3, 0, ?3)
+                   ON CONFLICT(user_id, bot_user_id) DO UPDATE SET
+                       app_tos_accepted_at = CASE WHEN user_bot_permissions.app_tos_accepted_at > 0 THEN user_bot_permissions.app_tos_accepted_at ELSE excluded.app_tos_accepted_at END,
+                       updated_at = excluded.updated_at"#,
+                params![user_id, bot_user_id, now_ms],
+            )
+            .map_db()?;
+            conn.query_row(
+                "SELECT user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at FROM user_bot_permissions WHERE user_id = ?1 AND bot_user_id = ?2",
+                params![user_id, bot_user_id],
+                |r| {
+                    Ok(UserBotPermissionRecord {
+                        user_id: r.get(0)?,
+                        bot_user_id: r.get(1)?,
+                        allows_write_to_pm: r.get::<_, i64>(2)? != 0,
+                        app_tos_accepted_at: r.get(3)?,
+                        has_started_chat: r.get::<_, i64>(4)? != 0,
+                        updated_at: r.get(5)?,
+                    })
+                },
+            )
+            .map_db()
+        })
+    }
+
+    pub fn mark_user_started_bot_chat(
+        &self,
+        user_id: i64,
+        bot_user_id: i64,
+    ) -> Result<UserBotPermissionRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO user_bot_permissions (user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at)
+                   VALUES (?1, ?2, 0, 0, 1, ?3)
+                   ON CONFLICT(user_id, bot_user_id) DO UPDATE SET
+                       has_started_chat = 1,
+                       updated_at = excluded.updated_at"#,
+                params![user_id, bot_user_id, now_ms],
+            )
+            .map_db()?;
+            conn.query_row(
+                "SELECT user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at FROM user_bot_permissions WHERE user_id = ?1 AND bot_user_id = ?2",
+                params![user_id, bot_user_id],
+                |r| {
+                    Ok(UserBotPermissionRecord {
+                        user_id: r.get(0)?,
+                        bot_user_id: r.get(1)?,
+                        allows_write_to_pm: r.get::<_, i64>(2)? != 0,
+                        app_tos_accepted_at: r.get(3)?,
+                        has_started_chat: r.get::<_, i64>(4)? != 0,
+                        updated_at: r.get(5)?,
+                    })
+                },
+            )
+            .map_db()
+        })
+    }
+
+    pub fn record_mini_app_launch(
+        &self,
+        user_id: i64,
+        app_id: &str,
+        bot_user_id: i64,
+    ) -> Result<i64> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO mini_app_usage_events (user_id, app_id, bot_user_id, last_launched_at, launch_count)
+                   VALUES (?1, ?2, ?3, ?4, 1)
+                   ON CONFLICT(user_id, app_id) DO UPDATE SET
+                       last_launched_at = excluded.last_launched_at,
+                       launch_count = mini_app_usage_events.launch_count + 1"#,
+                params![user_id, app_id, bot_user_id, now_ms],
+            )
+            .map_db()?;
+            Ok(now_ms)
+        })
+    }
+
+    pub fn list_recent_mini_apps(
+        &self,
+        user_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(MiniAppRecord, i64)>> {
+        let lim = limit.clamp(1, 100) as i64;
+        self.pool.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color, e.last_launched_at
+                     FROM mini_app_usage_events e
+                     JOIN mini_apps m ON m.app_id = e.app_id
+                     WHERE e.user_id = ?1 AND m.is_published = 1
+                     ORDER BY e.last_launched_at DESC
+                     LIMIT ?2",
+                )
+                .map_db()?;
+            let rows = stmt
+                .query_map(params![user_id, lim], |r| {
+                    let app = row_to_mini_app(r)?;
+                    let launched_at: i64 = r.get(19)?;
+                    Ok((app, launched_at))
+                })
+                .map_db()?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_db()?;
+            Ok(rows)
+        })
+    }
+
+    pub fn get_mini_app_usage_for_user(
+        &self,
+        user_id: i64,
+        app_id: &str,
+    ) -> Result<Option<i64>> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT last_launched_at FROM mini_app_usage_events WHERE user_id = ?1 AND app_id = ?2",
+                params![user_id, app_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_db()
+        })
+    }
+
+    pub fn compute_bot_mau_30d(&self, bot_user_id: i64) -> Result<i64> {
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - 30 * 86_400_000;
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                r#"SELECT COUNT(DISTINCT user_id) FROM (
+                       SELECT user_id FROM mini_app_usage_events WHERE bot_user_id = ?1 AND last_launched_at >= ?2
+                       UNION
+                       SELECT user_id FROM user_bot_permissions WHERE bot_user_id = ?1 AND updated_at >= ?2 AND (has_started_chat = 1 OR allows_write_to_pm = 1)
+                   )"#,
+                params![bot_user_id, cutoff_ms],
+                |r| r.get(0),
+            )
+            .map_db()
+        })
+    }
+
+    pub fn compute_app_mau_30d(&self, app_id: &str) -> Result<i64> {
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - 30 * 86_400_000;
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(DISTINCT user_id) FROM mini_app_usage_events WHERE app_id = ?1 AND last_launched_at >= ?2",
+                params![app_id, cutoff_ms],
+                |r| r.get(0),
+            )
+            .map_db()
+        })
+    }
+
+    pub fn upsert_mini_app_hosted_bundle(&self, app_id: &str, html_content: &str) -> Result<()> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO mini_app_hosted_bundles (app_id, html_content, updated_at)
+                   VALUES (?1, ?2, ?3)
+                   ON CONFLICT(app_id) DO UPDATE SET
+                       html_content = excluded.html_content,
+                       updated_at = excluded.updated_at"#,
+                params![app_id, html_content, now_ms],
+            )
+            .map_db()?;
+            Ok(())
+        })
+    }
+
+    pub fn get_mini_app_hosted_bundle(&self, app_id: &str) -> Result<Option<String>> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT html_content FROM mini_app_hosted_bundles WHERE app_id = ?1",
+                params![app_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_db()
+        })
+    }
+
+    pub fn enqueue_bot_api_update(
+        &self,
+        bot_user_id: i64,
+        payload_json: &str,
+    ) -> Result<BotApiUpdateRecord> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO bot_api_updates (bot_user_id, payload_json, created_at_ms) VALUES (?1, ?2, ?3)",
+                params![bot_user_id, payload_json, now_ms],
+            )
+            .map_db()?;
+            let update_id = conn.last_insert_rowid();
+            Ok(BotApiUpdateRecord {
+                update_id,
+                bot_user_id,
+                payload_json: payload_json.to_string(),
+                created_at_ms: now_ms,
+            })
+        })
+    }
+
+    pub fn get_bot_api_updates(
+        &self,
+        bot_user_id: i64,
+        offset: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<BotApiUpdateRecord>> {
+        let lim = limit.clamp(1, 100) as i64;
+        self.pool.with_transaction(|tx| {
+            if let Some(off) = offset {
+                tx.execute(
+                    "DELETE FROM bot_api_updates WHERE bot_user_id = ?1 AND update_id < ?2",
+                    params![bot_user_id, off],
+                )
+                .map_db()?;
+            }
+            let min_id = offset.unwrap_or(0);
+            let mut stmt = tx
+                .prepare(
+                    "SELECT update_id, bot_user_id, payload_json, created_at_ms
+                     FROM bot_api_updates
+                     WHERE bot_user_id = ?1 AND update_id >= ?2
+                     ORDER BY update_id ASC
+                     LIMIT ?3",
+                )
+                .map_db()?;
+            let rows = stmt
+                .query_map(params![bot_user_id, min_id, lim], |r| {
+                    Ok(BotApiUpdateRecord {
+                        update_id: r.get(0)?,
+                        bot_user_id: r.get(1)?,
+                        payload_json: r.get(2)?,
+                        created_at_ms: r.get(3)?,
+                    })
+                })
+                .map_db()?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_db()?;
+            Ok(rows)
+        })
+    }
+
+    pub fn count_bot_api_updates(&self, bot_user_id: i64) -> Result<i64> {
+        self.pool.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM bot_api_updates WHERE bot_user_id = ?1",
+                params![bot_user_id],
+                |r| r.get(0),
+            )
+            .map_db()
+        })
+    }
+
+    pub fn clear_bot_api_updates(&self, bot_user_id: i64) -> Result<()> {
+        self.pool.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM bot_api_updates WHERE bot_user_id = ?1",
+                params![bot_user_id],
+            )
+            .map_db()?;
             Ok(())
         })
     }

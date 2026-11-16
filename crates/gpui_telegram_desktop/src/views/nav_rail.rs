@@ -305,18 +305,31 @@ fn render_rail_tile(
     dark_rail: bool,
     palette: &TdesktopThemePalette,
 ) -> Div {
-    let active_bg = if dark_rail {
+    let is_fabushi = palette.mode.is_fabushi_style();
+    let active_bg: Rgba = if is_fabushi {
+        rgb(palette.dialogs_active_bg)
+    } else if dark_rail {
         rgba(0xFFFFFF1E)
     } else {
         rgb(palette.dialogs_active_bg)
     };
-    let hover_bg = if dark_rail {
+    let hover_bg: Rgba = if is_fabushi {
+        rgb(palette.dialogs_hover_bg)
+    } else if dark_rail {
         rgba(0xFFFFFF12)
     } else {
         rgb(palette.dialogs_hover_bg)
     };
     let icon_color = if is_active {
-        palette.active_button_fg
+        if is_fabushi {
+            if dark_rail {
+                palette.text_primary
+            } else {
+                palette.accent
+            }
+        } else {
+            palette.active_button_fg
+        }
     } else {
         palette.icon_fg
     };

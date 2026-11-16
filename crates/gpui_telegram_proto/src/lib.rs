@@ -4,6 +4,7 @@ pub mod contracts;
 pub mod message;
 pub mod miniapp_contracts;
 pub mod sync;
+pub mod tailnet_contracts;
 pub mod tdrp;
 pub mod ws;
 
@@ -23,6 +24,7 @@ pub use sync::{
     ChatActionEvent, PtsUpdate, ReadHistoryEvent, ReactionEvent, SyncFilter,
     SyncGetDifferenceRequest, SyncGetDifferenceResponse, TypingAction, TypingEvent, UpdateEvent,
 };
+pub use tailnet_contracts::*;
 pub use ws::{
     DeleteMessagesRequest, EditMessageRequest, ReactionRequest, ReadHistoryRequest,
     SendMessageRequest, WsClientFrame, WsServerFrame,
