@@ -33,6 +33,7 @@ pub enum SettingsSectionType {
     LocalStorage,
     Business,
     Computers,
+    AiProviders,
     Language,
     Search,
 }
@@ -63,6 +64,7 @@ impl SettingsSectionType {
             Self::LocalStorage => "local_storage",
             Self::Business => "business",
             Self::Computers => "computers",
+            Self::AiProviders => "ai_providers",
             Self::Language => "language",
             Self::Search => "search",
         }
@@ -98,6 +100,7 @@ impl SettingsSectionType {
                 Self::LocalStorage => "数据与存储",
                 Self::Business => "商业功能",
                 Self::Computers => "电脑",
+                Self::AiProviders => "AI 订阅与模型供应商",
                 Self::Language => "界面语言",
                 Self::Search => "搜索设置",
             }
@@ -126,6 +129,7 @@ impl SettingsSectionType {
                 Self::LocalStorage => "Data and Storage",
                 Self::Business => "Business",
                 Self::Computers => "Computers",
+                Self::AiProviders => "AI Subscriptions & Providers",
                 Self::Language => "Language",
                 Self::Search => "Search Settings",
             }
@@ -153,6 +157,7 @@ impl SettingsSectionType {
             Self::Websites => "🌐",
             Self::Business => "💼",
             Self::Computers => "💻",
+            Self::AiProviders => "🤖",
             Self::Language => "🗣️",
             Self::Search => "🔍",
         }
@@ -179,6 +184,7 @@ impl SettingsSectionType {
             Self::Websites => IconName::BotRobot,
             Self::Business => IconName::ChannelMegaphone,
             Self::Computers => IconName::ComputerDesktop,
+            Self::AiProviders => IconName::BotRobot,
             Self::Language => IconName::Translate,
             Self::Search => IconName::Search,
         }

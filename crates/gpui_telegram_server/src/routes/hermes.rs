@@ -1186,6 +1186,7 @@ struct StreamConsumerState {
     approval_notice: Option<String>,
     event_buttons: Vec<Vec<InlineActionButton>>,
     terminal_error: Option<String>,
+    needs_provider_button: bool,
     saw_terminal_event: bool,
     bot_msg_id: Option<MsgId>,
     last_rendered: String,
@@ -1206,6 +1207,7 @@ impl StreamConsumerState {
             approval_notice: None,
             event_buttons: Vec::new(),
             terminal_error: None,
+            needs_provider_button: false,
             saw_terminal_event: false,
             bot_msg_id: None,
             last_rendered: String::new(),
@@ -1346,6 +1348,9 @@ impl StreamConsumerState {
             HermesEvent::Error { code, message } => {
                 self.saw_terminal_event = true;
                 self.terminal_error = Some(format!("⚠️ **执行失败 ({code})**：{message}"));
+                if code == "PROVIDER_ERROR" {
+                    self.needs_provider_button = true;
+                }
                 true
             }
         }
@@ -1740,6 +1745,13 @@ pub(crate) async fn execute_bot_turn_streamed(
             }
             let mut err_consumer = StreamConsumerState::new();
             err_consumer.terminal_error = Some(format!("⚠️ **无法启动 AI 回复**：{err}"));
+            if target_engine.providers().needs_provider_selection() {
+                err_consumer.event_buttons.push(vec![InlineActionButton {
+                    text: "⚙️ 选择 AI 供应商 (Magpie)".to_string(),
+                    callback_data: "hermes:open_ai_providers".to_string(),
+                    url: None,
+                }]);
+            }
             flush_streamed_bot_message(state, &params, &mut err_consumer, true);
             typing_guard.finish();
             return;
@@ -1780,6 +1792,20 @@ pub(crate) async fn execute_bot_turn_streamed(
                 }
                 consumer.dirty = true;
                 if consumer.saw_terminal_event {
+                    if consumer.needs_provider_button
+                        && target_engine.providers().needs_provider_selection()
+                        && !consumer
+                            .event_buttons
+                            .iter()
+                            .flatten()
+                            .any(|b| b.callback_data == "hermes:open_ai_providers")
+                    {
+                        consumer.event_buttons.push(vec![InlineActionButton {
+                            text: "⚙️ 选择 AI 供应商 (Magpie)".to_string(),
+                            callback_data: "hermes:open_ai_providers".to_string(),
+                            url: None,
+                        }]);
+                    }
                     flush_streamed_bot_message(state, &params, &mut consumer, true);
                     break;
                 } else if flush_now
@@ -1794,6 +1820,20 @@ pub(crate) async fn execute_bot_turn_streamed(
     }
 
     if !consumer.saw_terminal_event {
+        if consumer.needs_provider_button
+            && target_engine.providers().needs_provider_selection()
+            && !consumer
+                .event_buttons
+                .iter()
+                .flatten()
+                .any(|b| b.callback_data == "hermes:open_ai_providers")
+        {
+            consumer.event_buttons.push(vec![InlineActionButton {
+                text: "⚙️ 选择 AI 供应商 (Magpie)".to_string(),
+                callback_data: "hermes:open_ai_providers".to_string(),
+                url: None,
+            }]);
+        }
         flush_streamed_bot_message(state, &params, &mut consumer, true);
     }
 
@@ -2017,6 +2057,9 @@ pub async fn hermes_status(
             "active_provider": active_provider,
             "api_mode": api_mode.as_str(),
             "allow_local_fallback": snap.allow_local_fallback,
+            "has_active_subscription": engine.providers().has_active_subscription(),
+            "has_configured_provider": engine.providers().has_configured_provider(),
+            "needs_provider_selection": engine.providers().needs_provider_selection(),
             "available_models": available_models,
             "providers": providers,
             "toolsets_count": toolsets_count,
@@ -2202,7 +2245,21 @@ pub async fn hermes_turns_create(
             }
             (StatusCode::OK, Json(turn_result_to_json(&res))).into_response()
         }
-        Err(e) => map_telegram_err(e),
+        Err(e) => {
+            if engine.providers().needs_provider_selection() {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": "provider_not_configured",
+                        "message": e.to_string(),
+                        "needs_provider_selection": true,
+                        "action": "hermes:open_ai_providers",
+                    })),
+                )
+                    .into_response();
+            }
+            map_telegram_err(e)
+        }
     }
 }
 
@@ -4564,7 +4621,7 @@ pub async fn hermes_talk_turn(
 // OpenAI-Compatible API Gateway & ACP JSON-RPC
 // ============================================================================
 
-fn resolve_optional_bearer_user(headers: &HeaderMap, state: &AppState) -> Option<UserId> {
+pub(crate) fn resolve_optional_bearer_user(headers: &HeaderMap, state: &AppState) -> Option<UserId> {
     let auth_hdr = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = auth_hdr
         .strip_prefix("Bearer ")
@@ -4964,6 +5021,7 @@ mod tests {
             fallback_models: Vec::new(),
             timeout_secs: 30,
             enabled: true,
+            ..Default::default()
         });
         state
             .hermes
@@ -4986,6 +5044,7 @@ mod tests {
             fallback_models: Vec::new(),
             timeout_secs: 30,
             enabled: true,
+            ..Default::default()
         });
         state
             .hermes

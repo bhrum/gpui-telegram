@@ -217,6 +217,7 @@ impl SettingsRouter {
             SettingsSectionType::Shortcuts => self.ensure_shortcuts(cx).into_any_element(),
             SettingsSectionType::Business => self.ensure_business(cx).into_any_element(),
             SettingsSectionType::Computers => self.ensure_computers(cx).into_any_element(),
+            SettingsSectionType::AiProviders => self.ensure_ai_providers(cx).into_any_element(),
             SettingsSectionType::Search => self.ensure_search(cx).into_any_element(),
             SettingsSectionType::Language => self.render_language_settings(cx).into_any_element(),
         }

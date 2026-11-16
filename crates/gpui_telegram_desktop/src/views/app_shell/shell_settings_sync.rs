@@ -369,6 +369,7 @@ impl AppShell {
             token,
             user_id: uid,
         };
+        let tok_magpie = fence.token.clone();
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let me_res = client.get_my_profile().await.ok();
@@ -380,6 +381,7 @@ impl AppShell {
             let proxies_res = client.list_proxies().await.ok();
             let bal_res = client.wallet_balance().await.ok();
             let txs_res = client.wallet_transactions().await.unwrap_or_default();
+            let magpie_res = client.hermes.magpie_state(&tok_magpie).await.ok();
 
             let _ = weak.update(app, |shell, cx| {
                 if !fence.matches(
@@ -655,6 +657,10 @@ impl AppShell {
 
                 if let Some(b) = bal_res {
                     apply_wallet_to_shell(shell, &b, &txs_res, cx);
+                }
+
+                if let Some(ms) = magpie_res {
+                    shell.apply_magpie_state_to_views(ms, cx);
                 }
 
                 cx.notify();

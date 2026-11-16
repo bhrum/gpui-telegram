@@ -63,7 +63,8 @@ impl SettingsSearch {
     pub fn take_selected_section(&mut self) -> Option<SettingsSectionType> { self.pending_selected_section.take() }
 
     pub fn init_search_index(&mut self) {
-        let rows: [(&str, &str, SettingsSectionType, &str, &[&str]); 22] = [
+        let rows: [(&str, &str, SettingsSectionType, &str, &[&str]); 23] = [
+            ("ai_providers_magpie", "AI Subscriptions & Providers (Magpie)", SettingsSectionType::AiProviders, "Settings > AI Providers", &["ai", "magpie", "provider", "subscription", "model", "api", "key", "deepseek", "kimi", "moonshot", "zhipu", "glm", "qwen", "openai", "anthropic", "claude", "gemini", "ollama", "codex", "masking", "routing", "供应商", "模型", "订阅", "密钥", "脱敏", "路由"]),
             ("account_name", "Edit Name", SettingsSectionType::Information, "Account > Edit Profile", &["first", "last", "name", "profile", "编辑资料", "姓名", "昵称", "个人资料", "手机号", "phone"]),
             ("account_username", "Username", SettingsSectionType::Information, "Account > Edit Profile", &["username", "handle", "t.me", "用户名", "账号"]),
             ("account_bio", "Bio", SettingsSectionType::Information, "Account > Edit Profile", &["bio", "about", "status", "简介", "签名", "个人简介"]),
@@ -101,6 +102,7 @@ impl SettingsSearch {
             return (&item.title, &item.subtitle);
         }
         match item.id.as_str() {
+            "ai_providers_magpie" => ("AI 订阅与模型供应商 (Magpie)", "设置 > AI 订阅与模型供应商"),
             "account_name" => ("编辑姓名与手机号", "账号 > 编辑资料"),
             "account_username" => ("用户名 (@Username)", "账号 > 编辑资料"),
             "account_bio" => ("个人简介 (Bio)", "账号 > 编辑资料"),

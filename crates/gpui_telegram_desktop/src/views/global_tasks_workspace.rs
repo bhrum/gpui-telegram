@@ -5,7 +5,7 @@ use gpui_telegram_client::net::hermes_client::{
     HermesKanbanBoardDto, HermesMemoryStateDto, HermesProviderConfigDto, HermesSaveCronRequest,
     HermesSaveProviderRequest, HermesSessionDto, HermesSessionExportResponse, HermesSkillDto,
     HermesSoulDto, HermesStatusDto, HermesTerminalProcessDto, HermesToolsetDto,
-    HermesUsageSummaryDto,
+    HermesUsageSummaryDto, MagpieStateDto,
 };
 
 use crate::components::tool_permission_dock::{PendingToolApproval, ToolApprovalDecision};
@@ -157,6 +157,9 @@ pub enum TasksWorkspaceAction {
     RollbackSession(String),
     SetApiMode(String),
     SaveProviderConfig(HermesSaveProviderRequest),
+    OpenAiProvidersSettings,
+    ScanMagpieSubscriptions,
+    ProbeMagpieProvider(String),
 }
 
 pub fn default_28_hermes_toolsets() -> Vec<HermesToolsetDto> {
@@ -256,6 +259,7 @@ pub struct GlobalTasksWorkspace {
     pub selected_session_id: Option<String>,
     pub session_export_preview: Option<HermesSessionExportResponse>,
     pub providers: Vec<HermesProviderConfigDto>,
+    pub magpie_state: Option<MagpieStateDto>,
     pub active_api_mode: String,
     pub fallback_chain_draft: String,
     pub usage_summary: HermesUsageSummaryDto,
@@ -335,6 +339,7 @@ impl GlobalTasksWorkspace {
             selected_session_id: None,
             session_export_preview: None,
             providers: Vec::new(),
+            magpie_state: None,
             active_api_mode: "local_hermes".to_string(),
             fallback_chain_draft: "local_hermes -> openai -> anthropic".to_string(),
             usage_summary: HermesUsageSummaryDto::default(),
@@ -509,6 +514,22 @@ impl GlobalTasksWorkspace {
             }
         }
         self.providers = providers;
+    }
+
+    pub fn sync_magpie_state(&mut self, state: MagpieStateDto) {
+        self.status_summary.active_provider = state.active_provider.clone();
+        self.status_summary.active_model = state.active_model.clone();
+        self.status_summary.allow_local_fallback = state.allow_local_fallback;
+        self.status_summary.has_active_subscription = state.has_active_subscription;
+        self.status_summary.has_configured_provider = state.has_configured_provider;
+        self.status_summary.needs_provider_selection = state.needs_provider_selection;
+        if let Some(active) = state.providers.iter().find(|p| p.is_active) {
+            if !active.api_mode.trim().is_empty() {
+                self.active_api_mode = active.api_mode.clone();
+                self.status_summary.api_mode = active.api_mode.clone();
+            }
+        }
+        self.magpie_state = Some(state);
     }
 
     pub fn sync_usage_summary(&mut self, usage: HermesUsageSummaryDto) {

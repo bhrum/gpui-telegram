@@ -8,9 +8,9 @@ use crate::views::boxes::modal_types::ModalDialogKind;
 use crate::views::settings::sections::{
     settings_notifications::BadgeCountType,
     settings_notifications_reactions::ReactionsNotifySource,
-    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsBlockedPeersSections,
-    SettingsBusinessSections, SettingsCallsSections, SettingsChatSections,
-    SettingsComputersSections, SettingsCreditsSections,
+    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsAiProvidersSections,
+    SettingsBlockedPeersSections, SettingsBusinessSections, SettingsCallsSections,
+    SettingsChatSections, SettingsComputersSections, SettingsCreditsSections,
     SettingsFoldersSections, SettingsGlobalTtlSections, SettingsInformationSections,
     SettingsLocalPasscodeSections, SettingsLocalStorageSections, SettingsMainSections,
     SettingsNotificationsReactionsSections, SettingsNotificationsSections,
@@ -904,6 +904,25 @@ impl SettingsRouter {
              cx: &mut Context<SettingsRouter>| {
                 if let Some(ev) = sc.update(cx, |s, _| s.take_event()) {
                     cx.emit(SettingsRouterEvent::Computers(ev));
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// Subscribes to AI subscription & Magpie provider actions and forwards events to `AppShell`.
+    pub(super) fn observe_ai_providers(
+        ent: &Entity<SettingsAiProvidersSections>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.observe(
+            ent,
+            |_router: &mut SettingsRouter,
+             ap: Entity<SettingsAiProvidersSections>,
+             cx: &mut Context<SettingsRouter>| {
+                if let Some(ev) = ap.update(cx, |s, _| s.take_event()) {
+                    cx.emit(SettingsRouterEvent::AiProviders(ev));
                     cx.notify();
                 }
             },

@@ -10,6 +10,7 @@ pub mod users;
 pub mod analytics_wallet;
 pub mod acp;
 pub mod hermes;
+pub mod magpie_api;
 pub mod bots_miniapps;
 pub mod fabushi_miniapp_api;
 pub mod telegram_bot_api;

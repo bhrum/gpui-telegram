@@ -8,20 +8,21 @@ use crate::components::ui::TextInputController;
 use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
 use crate::views::boxes::modal_types::ModalDialogKind;
 use crate::views::settings::sections::{
+    settings_ai_providers::SettingsAiProvidersEvent,
     settings_computers::SettingsComputersEvent,
     settings_folders::ChatFolderItem,
     settings_information::ProfileEditField,
     settings_local_passcode::AutoLockTimeout,
     settings_notifications::BadgeCountType,
     settings_notifications_reactions::ReactionsNotifySource,
-    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsBlockedPeersSections,
-    SettingsBusinessSections, SettingsCallsSections, SettingsChatSections,
-    SettingsComputersSections, SettingsCreditsSections, SettingsFoldersSections,
-    SettingsGlobalTtlSections, SettingsInformationSections, SettingsLocalPasscodeSections,
-    SettingsLocalStorageSections, SettingsMainSections, SettingsNotificationsReactionsSections,
-    SettingsNotificationsSections, SettingsNotificationsTypeSections, SettingsPasskeysSections,
-    SettingsPremiumSections, SettingsPrivacySecuritySections, SettingsShortcutsSections,
-    SettingsWebsitesSections,
+    SettingsActiveSessionsSections, SettingsAdvancedSections, SettingsAiProvidersSections,
+    SettingsBlockedPeersSections, SettingsBusinessSections, SettingsCallsSections,
+    SettingsChatSections, SettingsComputersSections, SettingsCreditsSections,
+    SettingsFoldersSections, SettingsGlobalTtlSections, SettingsInformationSections,
+    SettingsLocalPasscodeSections, SettingsLocalStorageSections, SettingsMainSections,
+    SettingsNotificationsReactionsSections, SettingsNotificationsSections,
+    SettingsNotificationsTypeSections, SettingsPasskeysSections, SettingsPremiumSections,
+    SettingsPrivacySecuritySections, SettingsShortcutsSections, SettingsWebsitesSections,
 };
 use crate::views::settings::settings_power_saving::SettingsPowerSaving;
 use crate::views::settings::settings_search::SettingsSearch;
@@ -142,12 +143,13 @@ pub enum SettingsRouterEvent {
     },
     UpdateBusinessPrefs(Vec<String>),
     Computers(SettingsComputersEvent),
+    AiProviders(SettingsAiProvidersEvent),
     SelectLanguage(&'static str),
     ToggleLanguage,
     Navigated(SettingsSectionType),
 }
 
-/// Manages settings navigation stack, modal rendering, and lazy instantiation of all 23 sections.
+/// Manages settings navigation stack, modal rendering, and lazy instantiation of all settings sections.
 pub struct SettingsRouter {
     pub settings_section: SettingsSectionType,
     pub settings_stack: Vec<SettingsSectionType>,
@@ -178,6 +180,7 @@ pub struct SettingsRouter {
     pub settings_shortcuts: Option<Entity<SettingsShortcutsSections>>,
     pub settings_business: Option<Entity<SettingsBusinessSections>>,
     pub settings_computers: Option<Entity<SettingsComputersSections>>,
+    pub settings_ai_providers: Option<Entity<SettingsAiProvidersSections>>,
     pub settings_search: Option<Entity<SettingsSearch>>,
 }
 
@@ -274,6 +277,7 @@ impl SettingsRouter {
             settings_shortcuts: None,
             settings_business: None,
             settings_computers: None,
+            settings_ai_providers: None,
             settings_search: None,
         }
     }
@@ -315,6 +319,7 @@ impl SettingsRouter {
             self.settings_shortcuts,
             self.settings_business,
             self.settings_computers,
+            self.settings_ai_providers,
             self.settings_search,
         );
         cx.notify();
@@ -650,6 +655,20 @@ impl SettingsRouter {
         lazy_section!(self, cx, settings_computers, |pal, lang| SettingsComputersSections::new_live(pal, lang), Self::observe_computers)
     }
 
+    /// Lazily materializes `SettingsAiProvidersSections`, applies theme/locale, and attaches its observer.
+    pub fn ensure_ai_providers(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<SettingsAiProvidersSections> {
+        lazy_section!(
+            self,
+            cx,
+            settings_ai_providers,
+            |pal, lang| SettingsAiProvidersSections::new_live(pal, lang),
+            Self::observe_ai_providers
+        )
+    }
+
     /// Lazily materializes `SettingsSearch`, applies theme/locale, and attaches its observer.
     pub fn ensure_search(&mut self, cx: &mut Context<Self>) -> Entity<SettingsSearch> {
         lazy_section!(self, cx, settings_search, |pal, lang| SettingsSearch::new_live(pal, lang), Self::observe_search)
@@ -756,6 +775,10 @@ impl SettingsRouter {
                 .settings_computers
                 .as_ref()
                 .is_some_and(|sc| sc.read(cx).is_input_active()),
+            SettingsSectionType::AiProviders => self
+                .settings_ai_providers
+                .as_ref()
+                .is_some_and(|ap| ap.read(cx).is_input_active()),
             SettingsSectionType::Search => true,
             _ => false,
         }
@@ -791,6 +814,11 @@ impl SettingsRouter {
                 .as_ref()
                 .map(|sc| sc.read(cx).active_field_text().to_string())
                 .unwrap_or_default(),
+            SettingsSectionType::AiProviders => self
+                .settings_ai_providers
+                .as_ref()
+                .map(|ap| ap.read(cx).active_field_text().to_string())
+                .unwrap_or_default(),
             SettingsSectionType::Search => self
                 .settings_search
                 .as_ref()
@@ -801,19 +829,30 @@ impl SettingsRouter {
         Some(ime.text_and_preedit(committed))
     }
 
-    /// Mirrors IME preedit text onto the active `SettingsComputersSections` input controller.
-    pub fn set_computers_ime_preedit(
+    /// Mirrors IME preedit text onto the active settings section input controller (`Computers` or `AiProviders`).
+    pub fn set_active_input_ime_preedit(
         &mut self,
         preedit: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.settings_section != SettingsSectionType::Computers || !self.is_input_active(cx) {
+        if !self.is_input_active(cx) {
             return false;
         }
-        let sc = self.ensure_computers(cx);
-        sc.update(cx, |sc, sc_cx| sc.set_ime_preedit(preedit, sc_cx));
-        cx.notify();
-        true
+        match self.settings_section {
+            SettingsSectionType::Computers => {
+                let sc = self.ensure_computers(cx);
+                sc.update(cx, |sc, sc_cx| sc.set_ime_preedit(preedit, sc_cx));
+                cx.notify();
+                true
+            }
+            SettingsSectionType::AiProviders => {
+                let ap = self.ensure_ai_providers(cx);
+                ap.update(cx, |ap, ap_cx| ap.set_ime_preedit(preedit, ap_cx));
+                cx.notify();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Clears the active settings input field and returns `true` if a settings input was active.
@@ -847,6 +886,12 @@ impl SettingsRouter {
                 let sc = self.ensure_computers(cx);
                 sc.update(cx, |sc, sc_cx| {
                     sc.clear_active_input(sc_cx);
+                });
+            }
+            SettingsSectionType::AiProviders => {
+                let ap = self.ensure_ai_providers(cx);
+                ap.update(cx, |ap, ap_cx| {
+                    ap.clear_active_input(ap_cx);
                 });
             }
             SettingsSectionType::Search => {
@@ -893,6 +938,12 @@ impl SettingsRouter {
                 let sc = self.ensure_computers(cx);
                 sc.update(cx, |sc, sc_cx| {
                     sc.push_input_text(text, sc_cx);
+                });
+            }
+            SettingsSectionType::AiProviders => {
+                let ap = self.ensure_ai_providers(cx);
+                ap.update(cx, |ap, ap_cx| {
+                    ap.push_input_text(text, ap_cx);
                 });
             }
             SettingsSectionType::Search => {
@@ -997,6 +1048,16 @@ impl SettingsRouter {
                 let sc = self.ensure_computers(cx);
                 let handled = sc.update(cx, |sc, sc_cx| {
                     sc.handle_non_char_key(key, _is_shift, false, sc_cx)
+                });
+                handled
+            }
+            SettingsSectionType::AiProviders => {
+                if !matches!(key, "backspace" | "delete" | "tab" | "enter") {
+                    return Some(false);
+                }
+                let ap = self.ensure_ai_providers(cx);
+                let handled = ap.update(cx, |ap, ap_cx| {
+                    ap.handle_non_char_key(key, _is_shift, false, ap_cx)
                 });
                 handled
             }

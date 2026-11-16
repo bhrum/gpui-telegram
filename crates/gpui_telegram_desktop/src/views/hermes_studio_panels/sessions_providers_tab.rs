@@ -24,8 +24,31 @@ pub fn render_sessions_providers_tab(
         "chat_completions",
         "codex_responses",
         "anthropic_messages",
+        "gemini_generate_content",
         "local_hermes",
     ];
+    let needs_provider_sel = ws
+        .magpie_state
+        .as_ref()
+        .map_or(ws.status_summary.needs_provider_selection, |m| {
+            m.needs_provider_selection
+        });
+    let active_subs = ws
+        .magpie_state
+        .as_ref()
+        .map_or(0, |m| m.subscriptions.iter().filter(|s| s.active).count());
+    let routing_strat = ws
+        .magpie_state
+        .as_ref()
+        .map(|m| m.routing_strategy.clone())
+        .unwrap_or_else(|| "smart".to_string());
+    let masking_on = ws.magpie_state.as_ref().is_some_and(|m| m.masking.enabled);
+    let active_pid_for_probe = ws
+        .magpie_state
+        .as_ref()
+        .map(|m| m.active_provider.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ws.status_summary.active_provider.clone());
 
     div()
         .flex()
@@ -85,12 +108,98 @@ pub fn render_sessions_providers_tab(
                     })),
             ),
         )
-        // 2. API Mode, Fallback Chain & Providers
+        // 2. API Mode, Fallback Chain & Magpie Providers
         .child(
             studio_section_card(
-                tr_str(&lang, "API 协议模式与模型供应商", "API Modes, Providers & Fallback Chain"),
+                tr_str(&lang, "API 协议模式与模型供应商 (Magpie)", "API Modes, Magpie Providers & Fallback Chain"),
                 IconName::SettingsGear,
                 pal,
+            )
+            .child(
+                div()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(pal.window_bg))
+                    .border_1()
+                    .border_color(rgb(if needs_provider_sel { pal.danger } else { pal.accent }))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(if needs_provider_sel {
+                                        pal.danger
+                                    } else {
+                                        pal.text_primary
+                                    }))
+                                    .child(if needs_provider_sel {
+                                        tr_str(
+                                            &lang,
+                                            "未检测到激活的 AI 订阅或供应商 — 请选择供应商",
+                                            "No AI subscription or provider configured — Choose a Provider",
+                                        )
+                                        .to_string()
+                                    } else {
+                                        format!(
+                                            "{}: {} / {} · {} subs · route={} · mask={}",
+                                            tr_str(&lang, "Magpie 已就绪", "Magpie Ready"),
+                                            ws.status_summary.active_provider,
+                                            ws.status_summary.active_model,
+                                            active_subs,
+                                            routing_strat,
+                                            if masking_on { "on" } else { "off" }
+                                        )
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(6.0))
+                            .child(action_btn(
+                                tr_str(&lang, "选择 AI 供应商 (Magpie)", "Configure AI Providers (Magpie)"),
+                                pal.accent,
+                                pal.active_button_fg,
+                                |this, _| {
+                                    this.pending_action =
+                                        Some(TasksWorkspaceAction::OpenAiProvidersSettings);
+                                },
+                                cx,
+                            ))
+                            .child(action_btn(
+                                tr_str(&lang, "扫描本地订阅", "Scan Subscriptions"),
+                                pal.input_bg,
+                                pal.text_primary,
+                                |this, _| {
+                                    this.pending_action =
+                                        Some(TasksWorkspaceAction::ScanMagpieSubscriptions);
+                                },
+                                cx,
+                            ))
+                            .when(!active_pid_for_probe.is_empty(), |row| {
+                                let pid = active_pid_for_probe.clone();
+                                row.child(action_btn(
+                                    tr_str(&lang, "探测当前供应商", "Probe Active"),
+                                    pal.input_bg,
+                                    pal.accent,
+                                    move |this, _| {
+                                        this.pending_action = Some(
+                                            TasksWorkspaceAction::ProbeMagpieProvider(pid.clone()),
+                                        );
+                                    },
+                                    cx,
+                                ))
+                            }),
+                    ),
             )
             .child(
                 div()

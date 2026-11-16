@@ -132,6 +132,7 @@ impl AppShell {
         self.panel_state.mcp_loading = true;
         self.tasks_workspace.update(cx, |w, _| w.set_loading(true, None));
         let active_bot_id = self.active_chat_bot_id(cx);
+        let tok_magpie = fence.token.clone();
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let tasks_res = client.list_tasks().await;
@@ -152,6 +153,7 @@ impl AppShell {
             let providers_res = client.hermes_list_providers().await.ok();
             let usage_res = client.hermes_usage_stats().await.ok();
             let cmds_res = client.hermes_list_commands(None).await.ok();
+            let magpie_res = client.hermes.magpie_state(&tok_magpie).await.ok();
             let _ = weak.update(app, |shell, cx| {
                 if !fence_matches(&fence, shell) {
                     return;
@@ -199,6 +201,9 @@ impl AppShell {
                         c.set_hermes_commands(cmds);
                         c_cx.notify();
                     });
+                }
+                if let Some(ms) = magpie_res {
+                    shell.apply_magpie_state_to_views(ms, cx);
                 }
                 cx.notify();
             });
@@ -771,6 +776,15 @@ impl AppShell {
             }
             TasksWorkspaceAction::SaveProviderConfig(req) => {
                 spawn_and_refresh!(cx, client.hermes_save_provider(&req));
+            }
+            TasksWorkspaceAction::OpenAiProvidersSettings => {
+                self.open_ai_providers_settings(cx);
+            }
+            TasksWorkspaceAction::ScanMagpieSubscriptions => {
+                self.run_magpie_subscription_scan(cx);
+            }
+            TasksWorkspaceAction::ProbeMagpieProvider(pid) => {
+                self.run_magpie_probe(pid, None, cx);
             }
         }
     }

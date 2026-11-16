@@ -311,6 +311,7 @@ fn test_global_tasks_workspace_6_hermes_studio_tabs_and_state_sync() {
         sessions_count: 4,
         pending_approvals_count: 1,
         heartbeat_enabled: true,
+        ..Default::default()
     });
     assert_eq!(ws.active_api_mode, "anthropic_messages");
 
@@ -677,4 +678,73 @@ fn test_markdown_heading_divider_list_blockquote_and_link_parsing() {
         }
         other => panic!("expected Paragraph block with link, got {other:?}"),
     }
+}
+
+#[test]
+fn magpie_ai_providers_settings_search_main_and_studio_sync_work() {
+    use gpui_telegram_client::net::hermes_client::{
+        MagpieProviderDto, MagpieStateDto, MagpieSubscriptionDto,
+    };
+    use gpui_telegram_desktop::views::settings::{
+        sections::SettingsMainSections, settings_search::SettingsSearch,
+        settings_type::SettingsSectionType,
+    };
+
+    assert_eq!(SettingsSectionType::AiProviders.id_str(), "ai_providers");
+    assert_eq!(
+        SettingsSectionType::AiProviders.display_title_localized(true),
+        "AI 订阅与模型供应商"
+    );
+    assert_eq!(
+        SettingsSectionType::AiProviders.breadcrumb_path(),
+        vec![SettingsSectionType::Main, SettingsSectionType::AiProviders]
+    );
+
+    let mut search = SettingsSearch::with_default_entries();
+    let zh_hits = search.search("供应商");
+    assert!(
+        zh_hits.iter().any(|r| r.section == SettingsSectionType::AiProviders),
+        "expected Chinese query 供应商 to match AiProviders"
+    );
+    let en_hits = search.search("magpie");
+    assert!(
+        en_hits.iter().any(|r| r.section == SettingsSectionType::AiProviders),
+        "expected English query magpie to match AiProviders"
+    );
+
+    let mut main = SettingsMainSections::new();
+    main.sync_ai_providers_status(Some("请选择供应商".to_string()), true);
+    assert!(main.needs_provider_selection);
+    assert_eq!(main.ai_providers_summary.as_deref(), Some("请选择供应商"));
+
+    let mut ws = GlobalTasksWorkspace::new();
+    ws.sync_magpie_state(MagpieStateDto {
+        active_provider: "deepseek".to_string(),
+        active_model: "deepseek-chat".to_string(),
+        needs_provider_selection: false,
+        has_configured_provider: true,
+        has_active_subscription: true,
+        providers: vec![MagpieProviderDto {
+            provider_id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            api_mode: "chat_completions".to_string(),
+            default_model: "deepseek-chat".to_string(),
+            is_active: true,
+            enabled: true,
+            ..Default::default()
+        }],
+        subscriptions: vec![MagpieSubscriptionDto {
+            id: "sub-codex".to_string(),
+            kind: "codex_chatgpt".to_string(),
+            label: "Codex ChatGPT".to_string(),
+            active: true,
+            ..Default::default()
+        }],
+        routing_strategy: "smart".to_string(),
+        ..Default::default()
+    });
+    assert_eq!(ws.active_api_mode, "chat_completions");
+    assert!(!ws.status_summary.needs_provider_selection);
+    assert!(ws.status_summary.has_active_subscription);
+    assert!(ws.status_summary.has_configured_provider);
 }

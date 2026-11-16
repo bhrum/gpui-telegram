@@ -901,6 +901,7 @@ impl AppShell {
                 self.update_preferences(cx, |p| p.localization.language_code = code.to_string()),
             SettingsRouterEvent::ToggleLanguage => self.toggle_language_pref(cx),
             SettingsRouterEvent::Computers(ev) => self.handle_computer_settings_event(ev, cx),
+            SettingsRouterEvent::AiProviders(ev) => self.handle_ai_providers_settings_event(ev, cx),
             SettingsRouterEvent::Navigated(sec) => {
                 if *sec != SettingsSectionType::Calls {
                     self.stop_settings_mic_test_capture(cx);
@@ -908,6 +909,8 @@ impl AppShell {
                 if *sec == SettingsSectionType::Computers {
                     self.refresh_computers(cx);
                     self.sync_computers_to_views(cx);
+                } else if *sec == SettingsSectionType::AiProviders {
+                    self.refresh_magpie_state(cx);
                 }
                 cx.notify();
             }

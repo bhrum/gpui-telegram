@@ -556,7 +556,7 @@ impl AppShell {
         if self.is_settings_input_active(cx) {
             if key == "backspace" && self.ime.ime_preedit.take().is_some() {
                 self.settings_router.update(cx, |sr, scx| {
-                    let _ = sr.set_computers_ime_preedit(None, scx);
+                    let _ = sr.set_active_input_ime_preedit(None, scx);
                 });
                 cx.notify();
                 return true;
@@ -770,7 +770,7 @@ impl EntityInputHandler for AppShell {
                 });
             } else if self.is_settings_input_active(cx) {
                 self.settings_router.update(cx, |sr, scx| {
-                    let _ = sr.set_computers_ime_preedit(None, scx);
+                    let _ = sr.set_active_input_ime_preedit(None, scx);
                 });
             } else if self.is_inspector_bot_input_active(cx) {
                 self.inspector.update(cx, |ins, icx| ins.set_bot_ime_preedit(None, icx));
@@ -800,7 +800,7 @@ impl EntityInputHandler for AppShell {
                 });
             } else if self.is_settings_input_active(cx) {
                 self.settings_router.update(cx, |sr, scx| {
-                    let _ = sr.set_computers_ime_preedit(Some(new_text), scx);
+                    let _ = sr.set_active_input_ime_preedit(Some(new_text), scx);
                 });
             } else if self.is_inspector_bot_input_active(cx) {
                 self.inspector.update(cx, |ins, icx| ins.set_bot_ime_preedit(Some(new_text), icx));

@@ -486,6 +486,18 @@ impl AppShell {
 
         if matches!(
             lower.as_str(),
+            "hermes:open_ai_providers"
+                | "open_ai_providers"
+                | "action_open_ai_providers"
+                | "/providers"
+                | "/magpie"
+        ) {
+            self.open_ai_providers_settings(cx);
+            return;
+        }
+
+        if matches!(
+            lower.as_str(),
             "action_talk_mode" | "talk_mode" | "talk:start" | "/talk" | "launch talk mode"
         ) || lower.contains("talk_mode")
             || lower.starts_with("talk:")

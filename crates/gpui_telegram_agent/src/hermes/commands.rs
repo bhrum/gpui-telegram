@@ -837,7 +837,7 @@ impl SlashCommandRegistry {
         // --- Model, Provider & MoA ---
         self.add("model", &["m"], "/model [provider/model]", ModelAndProvider, "View or switch the active LLM model", true);
         self.add("provider", &[], "/provider [list|use <id>]", ModelAndProvider, "Inspect or switch active inference provider", true);
-        self.add("api-mode", &["apimode"], "/api-mode [chat_completions|codex_responses|anthropic_messages|local_hermes]", ModelAndProvider, "Switch wire protocol mode", true);
+        self.add("api-mode", &["apimode"], "/api-mode [chat_completions|codex_responses|anthropic_messages|gemini_generate_content|local_hermes]", ModelAndProvider, "Switch wire protocol mode", true);
         self.add("moa", &[], "/moa <prompt>", ModelAndProvider, "Run Mixture-of-Agents across multiple models/perspectives and synthesize", true);
 
         // --- Tools, Toolsets, Skills & MCP ---
@@ -1147,7 +1147,7 @@ impl SlashCommandRegistry {
                     CommandExecutionOutcome::ok(
                         "api-mode",
                         format!(
-                            "Current API mode: `{}`.\nSupported: `chat_completions`, `codex_responses`, `anthropic_messages`, `local_hermes`.",
+                            "Current API mode: `{}`.\nSupported: `chat_completions`, `codex_responses`, `anthropic_messages`, `gemini_generate_content`, `local_hermes`.",
                             info.api_mode
                         ),
                     )
@@ -1410,7 +1410,7 @@ impl SlashCommandRegistry {
 
             "version" => CommandExecutionOutcome::ok(
                 "version",
-                "Hermes Pure-Rust Agent Engine v1.0.0 (Wire Protocols: chat_completions, codex_responses, anthropic_messages, local_hermes | 28 Toolsets | 61+ Slash Commands)",
+                "Hermes Pure-Rust Agent Engine v1.0.0 (Wire Protocols: chat_completions, codex_responses, anthropic_messages, gemini_generate_content, local_hermes | 28 Toolsets | 61+ Slash Commands)",
             ),
 
             "cron" | "jobs" => {

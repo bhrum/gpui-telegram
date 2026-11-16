@@ -26,7 +26,7 @@ pub use hermes::context::{
     WorkspaceContextDiscovery,
 };
 pub use hermes::memory::{HonchoDialectics, MemoryManager, MemoryTarget, SoulProfile};
-pub use hermes::providers::{ApiMode, MoaCoordinator, ProviderConfig, ProviderRouter};
+pub use hermes::providers::{ApiMode, MagpiePresetApplyInput, MoaCoordinator, ProviderConfig, ProviderRouter};
 pub use hermes::security::{ApprovalDecisionAction, ApprovalMode, SecurityEngine};
 pub use hermes::skills::SkillsManager;
 pub use hermes::state_db::HermesStateStore;

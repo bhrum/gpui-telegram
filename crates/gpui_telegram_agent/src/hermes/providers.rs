@@ -1,12 +1,25 @@
 use crate::computer::{parse_cloud_credentials_from_prompt, redact_cloud_secrets};
 use chrono::Utc;
+pub use magpie_gateway::{
+    all_presets, find_preset, parse_dotenv_providers, parse_magpie_import_link,
+    resolve_preset_endpoints, MaskResult, MaskingAction, MaskingConfig, MaskingEngine,
+    MaskingHit, ProtocolKind, RouteDecisionTrace, RouteRuntimeMetrics, RoutingGroup,
+    RoutingGroupMember, RoutingStrategy, StreamingUnmasker, SubscriptionAccount,
+    SubscriptionKind, SubscriptionRegistry,
+};
+use magpie_gateway::{
+    build_gemini_generate_content_payload, discover_subscriptions_in_home,
+    parse_gemini_response_json, parse_gemini_sse_data, resolve_anthropic_messages_url,
+    resolve_gemini_endpoint_url, resolve_group_targets, UnifiedMessage, UnifiedRequest,
+    UnifiedRole, UnifiedToolCall, UnifiedToolSpec,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -19,6 +32,7 @@ pub enum ApiMode {
     ChatCompletions,
     CodexResponses,
     AnthropicMessages,
+    GeminiGenerateContent,
     LocalHermes,
 }
 
@@ -34,6 +48,7 @@ impl ApiMode {
             Self::ChatCompletions => "chat_completions",
             Self::CodexResponses => "codex_responses",
             Self::AnthropicMessages => "anthropic_messages",
+            Self::GeminiGenerateContent => "gemini_generate_content",
             Self::LocalHermes => "local_hermes",
         }
     }
@@ -45,6 +60,9 @@ impl ApiMode {
             "anthropic_messages" | "anthropic" | "claude" | "messages" => {
                 Some(Self::AnthropicMessages)
             }
+            "gemini_generate_content" | "gemini" | "google_gemini" | "generate_content" => {
+                Some(Self::GeminiGenerateContent)
+            }
             "local_hermes" | "local" | "hermes" | "offline" => Some(Self::LocalHermes),
             _ => None,
         }
@@ -55,8 +73,28 @@ impl ApiMode {
             Self::ChatCompletions,
             Self::CodexResponses,
             Self::AnthropicMessages,
+            Self::GeminiGenerateContent,
             Self::LocalHermes,
         ]
+    }
+
+    pub fn from_protocol_kind(kind: ProtocolKind) -> Self {
+        match kind {
+            ProtocolKind::ChatCompletions => Self::ChatCompletions,
+            ProtocolKind::CodexResponses => Self::CodexResponses,
+            ProtocolKind::AnthropicMessages => Self::AnthropicMessages,
+            ProtocolKind::GeminiGenerateContent => Self::GeminiGenerateContent,
+        }
+    }
+
+    pub fn to_protocol_kind(&self) -> Option<ProtocolKind> {
+        match self {
+            Self::ChatCompletions => Some(ProtocolKind::ChatCompletions),
+            Self::CodexResponses => Some(ProtocolKind::CodexResponses),
+            Self::AnthropicMessages => Some(ProtocolKind::AnthropicMessages),
+            Self::GeminiGenerateContent => Some(ProtocolKind::GeminiGenerateContent),
+            Self::LocalHermes => None,
+        }
     }
 }
 
@@ -559,10 +597,42 @@ pub struct ProviderConfig {
     pub timeout_secs: u64,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default)]
+    pub is_subscription: bool,
+    #[serde(default)]
+    pub no_key_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_strategy: Option<RoutingStrategy>,
 }
 
 fn default_timeout_secs() -> u64 {
     90
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            api_mode: ApiMode::ChatCompletions,
+            base_url: String::new(),
+            default_model: String::new(),
+            headers: HashMap::new(),
+            credentials: CredentialPool::new(),
+            fallback_models: Vec::new(),
+            timeout_secs: default_timeout_secs(),
+            enabled: true,
+            preset_id: None,
+            region_id: None,
+            is_subscription: false,
+            no_key_required: false,
+            routing_strategy: None,
+        }
+    }
 }
 
 impl ProviderConfig {
@@ -578,6 +648,11 @@ impl ProviderConfig {
             fallback_models: Vec::new(),
             timeout_secs: 30,
             enabled: true,
+            preset_id: None,
+            region_id: None,
+            is_subscription: false,
+            no_key_required: true,
+            routing_strategy: None,
         }
     }
 
@@ -605,6 +680,11 @@ impl ProviderConfig {
             fallback_models: Vec::new(),
             timeout_secs: 90,
             enabled: true,
+            preset_id: None,
+            region_id: None,
+            is_subscription: false,
+            no_key_required: false,
+            routing_strategy: None,
         }
     }
 
@@ -631,6 +711,52 @@ impl ProviderConfig {
         cfg.api_mode = ApiMode::AnthropicMessages;
         cfg
     }
+
+    pub fn gemini(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        let mut cfg = Self::openai_compatible(id, name, base_url, default_model, api_key);
+        cfg.api_mode = ApiMode::GeminiGenerateContent;
+        cfg
+    }
+}
+
+/// Request parameters for applying a built-in Magpie preset to `ProviderRouter`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MagpiePresetApplyInput {
+    pub preset_id: String,
+    #[serde(default)]
+    pub region_id: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub model_override: Option<String>,
+    #[serde(default)]
+    pub base_url_override: Option<String>,
+    #[serde(default)]
+    pub protocol_override: Option<ApiMode>,
+    #[serde(default)]
+    pub custom_headers: HashMap<String, String>,
+    #[serde(default)]
+    pub provider_id_override: Option<String>,
+    #[serde(default)]
+    pub display_name_override: Option<String>,
+    #[serde(default)]
+    pub activate: bool,
+}
+
+impl MagpiePresetApplyInput {
+    pub fn new(preset_id: impl Into<String>) -> Self {
+        Self {
+            preset_id: preset_id.into(),
+            activate: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -639,10 +765,11 @@ pub struct FallbackTarget {
     pub model: String,
 }
 
-/// Manages active provider/model, credential rotation, model fallback chain, and HTTP/local execution.
+/// Manages active provider/model, credential rotation, model fallback chain, Magpie routing/masking, and HTTP/local execution.
 #[derive(Clone)]
 pub struct ProviderRouter {
     inner: Arc<Mutex<ProviderRouterState>>,
+    route_metrics: Arc<Mutex<RouteRuntimeMetrics>>,
     http_client: reqwest::Client,
 }
 
@@ -656,6 +783,16 @@ pub struct ProviderRouterState {
     pub allow_local_fallback: bool,
     #[serde(default)]
     pub offline_rule_bot_allowed: bool,
+    #[serde(default)]
+    pub subscriptions: Vec<SubscriptionAccount>,
+    #[serde(default)]
+    pub routing_groups: HashMap<String, RoutingGroup>,
+    #[serde(default)]
+    pub routing_strategy: RoutingStrategy,
+    #[serde(default)]
+    pub masking: MaskingConfig,
+    #[serde(default)]
+    pub recent_route_traces: Vec<RouteDecisionTrace>,
 }
 
 impl Default for ProviderRouter {
@@ -747,26 +884,56 @@ impl ProviderRouter {
                 fallback_chain: Vec::new(),
                 allow_local_fallback: true,
                 offline_rule_bot_allowed: true,
+                subscriptions: Vec::new(),
+                routing_groups: HashMap::new(),
+                routing_strategy: RoutingStrategy::Smart,
+                masking: MaskingConfig::default(),
+                recent_route_traces: Vec::new(),
             })),
+            route_metrics: Arc::new(Mutex::new(RouteRuntimeMetrics::default())),
             http_client,
         }
     }
 
-    /// Discovers API keys, `.env` files, and local Codex/Magpie gateways without hardcoding credentials.
+    /// Discovers API keys, `.env` files, and local Codex/Magpie gateways & subscriptions without hardcoding credentials.
     pub fn from_env() -> Self {
         let router = Self::new();
         let offline_test = is_offline_test_mode();
-        if !offline_test {
-            router.set_allow_local_fallback(false);
-            router.set_offline_rule_bot_allowed(false);
+        if offline_test {
+            return router;
         }
+        router.set_allow_local_fallback(false);
+        router.set_offline_rule_bot_allowed(false);
 
-        let env = if offline_test {
-            EnvLookup::empty()
-        } else {
-            EnvLookup::from_standard_paths()
-        };
+        let env = EnvLookup::from_standard_paths();
+        let home_dir = resolve_home_dir();
+        let codex_home_override = env.get("CODEX_HOME").map(PathBuf::from);
+        router.populate_from_env_and_home(
+            &env,
+            home_dir.as_deref(),
+            codex_home_override.as_deref(),
+            true,
+        );
 
+        let (prov, mdl, mode) = router.active_info();
+        let allow_local = router.snapshot().allow_local_fallback;
+        tracing::info!(
+            provider = %prov,
+            model = %mdl,
+            api_mode = %mode,
+            allow_local_fallback = allow_local,
+            "Hermes ProviderRouter initialized"
+        );
+        router
+    }
+
+    fn populate_from_env_and_home(
+        &self,
+        env: &EnvLookup,
+        home_dir: Option<&Path>,
+        codex_home_override: Option<&Path>,
+        probe_local_magpie: bool,
+    ) {
         let mut active_set = false;
         let has_explicit_primary_env = env.get("OPENAI_API_KEY").is_some()
             || env.get("ANTHROPIC_API_KEY").is_some()
@@ -781,15 +948,17 @@ impl ProviderRouter {
             let model = env
                 .get("ANTHROPIC_MODEL")
                 .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-            router.register_provider(ProviderConfig::anthropic(
+            let mut cfg = ProviderConfig::anthropic(
                 "anthropic",
                 "Anthropic Messages",
                 base,
                 model.clone(),
                 trimmed,
-            ));
+            );
+            cfg.preset_id = Some("anthropic".to_string());
+            self.register_provider(cfg);
             if !active_set {
-                let _ = router.set_active("anthropic", Some(&model));
+                let _ = self.set_active("anthropic", Some(&model));
                 active_set = true;
             }
         }
@@ -801,22 +970,26 @@ impl ProviderRouter {
             let model = env
                 .get("OPENAI_MODEL")
                 .unwrap_or_else(|| "gpt-4o".to_string());
-            router.register_provider(ProviderConfig::openai_compatible(
+            let mut chat_cfg = ProviderConfig::openai_compatible(
                 "openai",
                 "OpenAI Chat Completions",
                 base.clone(),
                 model.clone(),
                 trimmed.clone(),
-            ));
-            router.register_provider(ProviderConfig::codex_responses(
+            );
+            chat_cfg.preset_id = Some("openai".to_string());
+            self.register_provider(chat_cfg);
+            let mut resp_cfg = ProviderConfig::codex_responses(
                 "openai_responses",
                 "OpenAI Codex Responses",
                 base,
                 "codex-mini-latest",
                 trimmed,
-            ));
+            );
+            resp_cfg.preset_id = Some("openai".to_string());
+            self.register_provider(resp_cfg);
             if !active_set {
-                let _ = router.set_active("openai", Some(&model));
+                let _ = self.set_active("openai", Some(&model));
                 active_set = true;
             }
         }
@@ -828,15 +1001,17 @@ impl ProviderRouter {
             let model = env
                 .get("OPENROUTER_MODEL")
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4".to_string());
-            router.register_provider(ProviderConfig::openai_compatible(
+            let mut cfg = ProviderConfig::openai_compatible(
                 "openrouter",
                 "OpenRouter",
                 base,
                 model.clone(),
                 trimmed,
-            ));
+            );
+            cfg.preset_id = Some("openrouter".to_string());
+            self.register_provider(cfg);
             if !active_set {
-                let _ = router.set_active("openrouter", Some(&model));
+                let _ = self.set_active("openrouter", Some(&model));
                 active_set = true;
             }
         }
@@ -848,15 +1023,17 @@ impl ProviderRouter {
             let model = env
                 .get("DEEPSEEK_MODEL")
                 .unwrap_or_else(|| "deepseek-chat".to_string());
-            router.register_provider(ProviderConfig::openai_compatible(
+            let mut cfg = ProviderConfig::openai_compatible(
                 "deepseek",
                 "DeepSeek",
                 base,
                 model.clone(),
                 trimmed,
-            ));
+            );
+            cfg.preset_id = Some("deepseek".to_string());
+            self.register_provider(cfg);
             if !active_set {
-                let _ = router.set_active("deepseek", Some(&model));
+                let _ = self.set_active("deepseek", Some(&model));
                 active_set = true;
             }
         }
@@ -868,15 +1045,17 @@ impl ProviderRouter {
             let model = env
                 .get("NOUS_MODEL")
                 .unwrap_or_else(|| "Hermes-3-Llama-3.1-70B".to_string());
-            router.register_provider(ProviderConfig::openai_compatible(
+            let mut cfg = ProviderConfig::openai_compatible(
                 "nous",
                 "Nous Research",
                 base,
                 model.clone(),
                 trimmed,
-            ));
+            );
+            cfg.preset_id = Some("nous".to_string());
+            self.register_provider(cfg);
             if !active_set {
-                let _ = router.set_active("nous", Some(&model));
+                let _ = self.set_active("nous", Some(&model));
                 active_set = true;
             }
         }
@@ -901,21 +1080,25 @@ impl ProviderRouter {
             if base.contains("/codex-") || base.contains("ai.ombhrum.com") {
                 cfg.api_mode = ApiMode::CodexResponses;
             }
-            router.register_provider(cfg);
+            self.register_provider(cfg);
             if !active_set {
-                let _ = router.set_active("hermes_cloud", Some(&model));
+                let _ = self.set_active("hermes_cloud", Some(&model));
                 active_set = true;
             }
         }
 
-        if !offline_test {
-            let codex_discovery = discover_codex_and_magpie(&env);
+        // Scan additional Magpie vendor/relay environment variables cleanly via table-driven presets.
+        register_magpie_env_vendors(self, env, &mut active_set);
+
+        if probe_local_magpie {
+            let codex_discovery = discover_codex_and_magpie(env);
             let mut magpie_registered = false;
             let mut codex_registered = false;
 
-            if let Some(magpie) = codex_discovery.magpie_local {
+            if let Some(mut magpie) = codex_discovery.magpie_local {
+                magpie.config.preset_id = Some("remote-magpie".to_string());
                 for model_id in magpie.discovered_models.iter().take(32) {
-                    router.register_model_profile(ModelProfile {
+                    self.register_model_profile(ModelProfile {
                         id: model_id.clone(),
                         provider_id: "magpie_local".to_string(),
                         model: model_id.clone(),
@@ -928,12 +1111,13 @@ impl ProviderRouter {
                         supports_caching: true,
                     });
                 }
-                router.register_provider(magpie.config);
+                self.register_provider(magpie.config);
                 magpie_registered = true;
             }
 
-            if let Some(codex_cfg) = codex_discovery.codex_oauth {
-                router.register_model_profile(ModelProfile {
+            if let Some(mut codex_cfg) = codex_discovery.codex_oauth {
+                codex_cfg.is_subscription = true;
+                self.register_model_profile(ModelProfile {
                     id: codex_cfg.default_model.clone(),
                     provider_id: "codex_oauth".to_string(),
                     model: codex_cfg.default_model.clone(),
@@ -945,38 +1129,49 @@ impl ProviderRouter {
                     supports_reasoning: true,
                     supports_caching: true,
                 });
-                router.register_provider(codex_cfg);
+                self.register_provider(codex_cfg);
                 codex_registered = true;
             }
 
             if magpie_registered && !has_explicit_primary_env {
-                let _ = router.set_active("magpie_local", None);
+                let _ = self.set_active("magpie_local", None);
             } else if !active_set && codex_registered {
-                let _ = router.set_active("codex_oauth", None);
+                let _ = self.set_active("codex_oauth", None);
             }
+        }
+
+        if let Some(home) = home_dir {
+            let _ = self.refresh_local_subscriptions_in_home(home, codex_home_override);
         }
 
         if let Some(explicit_provider) = env.get("HERMES_PROVIDER") {
             let model_override = env.get("HERMES_MODEL");
-            let _ = router.set_active(&explicit_provider, model_override.as_deref());
+            let _ = self.set_active(&explicit_provider, model_override.as_deref());
         }
 
         if let Some(mode_raw) = env.get("HERMES_API_MODE") {
             if let Some(mode) = ApiMode::parse(&mode_raw) {
-                let _ = router.set_api_mode_for_active(mode);
+                let _ = self.set_api_mode_for_active(mode);
             }
         }
 
-        // Populate ordered fallback chain across other registered non-local providers.
-        let snap = router.snapshot();
+        self.rebuild_default_fallback_chain();
+    }
+
+    fn rebuild_default_fallback_chain(&self) {
+        let snap = self.snapshot();
         let active_id = snap.active_provider_id.clone();
         let priority_order = [
             "magpie_local",
             "codex_oauth",
             "openai",
             "anthropic",
+            "google",
             "openrouter",
             "deepseek",
+            "moonshot",
+            "zhipu",
+            "qwen",
             "nous",
             "hermes_cloud",
         ];
@@ -986,7 +1181,10 @@ impl ProviderRouter {
                 continue;
             }
             if let Some(cfg) = snap.providers.get(pid) {
-                if cfg.enabled && cfg.api_mode != ApiMode::LocalHermes && !cfg.credentials.is_empty() {
+                if cfg.enabled
+                    && cfg.api_mode != ApiMode::LocalHermes
+                    && (!cfg.credentials.is_empty() || cfg.no_key_required)
+                {
                     chain.push(FallbackTarget {
                         provider_id: cfg.id.clone(),
                         model: cfg.default_model.clone(),
@@ -999,7 +1197,7 @@ impl ProviderRouter {
                 || pid == "local_hermes"
                 || !cfg.enabled
                 || cfg.api_mode == ApiMode::LocalHermes
-                || cfg.credentials.is_empty()
+                || (cfg.credentials.is_empty() && !cfg.no_key_required)
                 || chain.iter().any(|t| t.provider_id == *pid)
             {
                 continue;
@@ -1009,21 +1207,7 @@ impl ProviderRouter {
                 model: cfg.default_model.clone(),
             });
         }
-        router.set_fallback_chain(chain);
-
-        if !offline_test {
-            let (prov, mdl, mode) = router.active_info();
-            let allow_local = router.snapshot().allow_local_fallback;
-            tracing::info!(
-                provider = %prov,
-                model = %mdl,
-                api_mode = %mode,
-                allow_local_fallback = allow_local,
-                "Hermes ProviderRouter initialized"
-            );
-        }
-
-        router
+        self.set_fallback_chain(chain);
     }
 
     pub fn register_provider(&self, config: ProviderConfig) {
@@ -1153,14 +1337,20 @@ impl ProviderRouter {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Synchronizes providers, model profiles, fallback chain, and active defaults from an
-    /// upstream `ProviderRouter` (used to propagate host-level Cloud/Local API keys into every
-    /// isolated per-Bot Fabushi instance while keeping per-bot runtime isolated).
+    /// Synchronizes providers, model profiles, fallback chain, subscriptions, routing groups,
+    /// masking config, and active defaults from an upstream `ProviderRouter`.
     pub fn sync_from_state(&self, state: &ProviderRouterState) {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        for (id, cfg) in &state.providers {
-            guard.providers.insert(id.clone(), cfg.clone());
-        }
+        let local_backup = guard
+            .providers
+            .get("local_hermes")
+            .cloned()
+            .unwrap_or_else(ProviderConfig::local_hermes);
+        guard.providers = state.providers.clone();
+        guard
+            .providers
+            .entry("local_hermes".to_string())
+            .or_insert(local_backup);
         for (id, profile) in &state.model_profiles {
             guard.model_profiles.insert(id.clone(), profile.clone());
         }
@@ -1169,6 +1359,11 @@ impl ProviderRouter {
         guard.fallback_chain = state.fallback_chain.clone();
         guard.allow_local_fallback = state.allow_local_fallback;
         guard.offline_rule_bot_allowed = state.offline_rule_bot_allowed;
+        guard.subscriptions = state.subscriptions.clone();
+        guard.routing_groups = state.routing_groups.clone();
+        guard.routing_strategy = state.routing_strategy;
+        guard.masking = state.masking.clone();
+        guard.recent_route_traces = state.recent_route_traces.clone();
     }
 
     pub fn active_info(&self) -> (String, String, ApiMode) {
@@ -1190,6 +1385,266 @@ impl ProviderRouter {
         let mut list: Vec<_> = guard.providers.values().cloned().collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
+    }
+
+    pub fn has_active_subscription(&self) -> bool {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.subscriptions.iter().any(|s| s.active)
+            || guard.providers.values().any(|p| {
+                p.enabled
+                    && p.is_subscription
+                    && p.api_mode != ApiMode::LocalHermes
+                    && (!p.credentials.is_empty() || p.no_key_required)
+            })
+    }
+
+    pub fn has_configured_provider(&self) -> bool {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.providers.values().any(|p| {
+            p.enabled
+                && p.id != "local_hermes"
+                && p.api_mode != ApiMode::LocalHermes
+                && (!p.credentials.is_empty() || p.no_key_required)
+        })
+    }
+
+    pub fn needs_provider_selection(&self) -> bool {
+        !self.has_active_subscription() && !self.has_configured_provider()
+    }
+
+    /// Apply a built-in Magpie preset (with optional region, key, model, base URL, and protocol overrides).
+    pub fn apply_magpie_preset(
+        &self,
+        input: MagpiePresetApplyInput,
+    ) -> Result<ProviderConfig, ProviderError> {
+        let preset = find_preset(&input.preset_id).ok_or_else(|| {
+            ProviderError::Configuration(format!("Unknown Magpie preset '{}'", input.preset_id))
+        })?;
+        let preferred_proto = input.protocol_override.and_then(|m| m.to_protocol_kind());
+        let resolved =
+            resolve_preset_endpoints(&preset.id, input.region_id.as_deref(), preferred_proto)
+                .ok_or_else(|| {
+                    ProviderError::Configuration(format!(
+                        "No usable endpoint for Magpie preset '{}'",
+                        preset.id
+                    ))
+                })?;
+
+        let provider_id = input
+            .provider_id_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&preset.id)
+            .to_string();
+        let display_name = input
+            .display_name_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&resolved.display_name)
+            .to_string();
+        let api_mode = input
+            .protocol_override
+            .unwrap_or_else(|| ApiMode::from_protocol_kind(resolved.protocol));
+        let base_url = input
+            .base_url_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&resolved.base_url)
+            .to_string();
+        let default_model = input
+            .model_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&resolved.default_model)
+            .to_string();
+
+        let existing = {
+            let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard.providers.get(&provider_id).cloned()
+        };
+
+        let mut credentials = existing
+            .as_ref()
+            .map(|e| e.credentials.clone())
+            .unwrap_or_else(CredentialPool::new);
+        if let Some(key_raw) = input.api_key.as_deref().map(str::trim) {
+            if !key_raw.is_empty() {
+                credentials.add_entry(CredentialEntry::new(
+                    format!("{provider_id}_key_1"),
+                    key_raw.to_string(),
+                    "primary",
+                ));
+            }
+        }
+
+        let mut headers = existing
+            .as_ref()
+            .map(|e| e.headers.clone())
+            .unwrap_or_default();
+        for (hk, hv) in input.custom_headers {
+            let k = hk.trim();
+            let v = hv.trim();
+            if !k.is_empty() && !v.is_empty() {
+                headers.insert(k.to_string(), v.to_string());
+            }
+        }
+
+        let mut fallback_models = Vec::new();
+        for m in &resolved.suggested_models {
+            if m != &default_model && !fallback_models.contains(m) {
+                fallback_models.push(m.clone());
+            }
+        }
+
+        let cfg = ProviderConfig {
+            id: provider_id.clone(),
+            name: display_name,
+            api_mode,
+            base_url,
+            default_model: default_model.clone(),
+            headers,
+            credentials,
+            fallback_models,
+            timeout_secs: existing.as_ref().map(|e| e.timeout_secs).unwrap_or(90),
+            enabled: true,
+            preset_id: Some(preset.id.clone()),
+            region_id: resolved.region_id,
+            is_subscription: false,
+            no_key_required: preset.no_key,
+            routing_strategy: existing.and_then(|e| e.routing_strategy),
+        };
+
+        {
+            let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard.providers.insert(provider_id.clone(), cfg.clone());
+            for model_id in resolved
+                .suggested_models
+                .iter()
+                .chain(std::iter::once(&default_model))
+            {
+                if model_id.trim().is_empty() {
+                    continue;
+                }
+                guard.model_profiles.insert(
+                    model_id.clone(),
+                    ModelProfile {
+                        id: model_id.clone(),
+                        provider_id: provider_id.clone(),
+                        model: model_id.clone(),
+                        api_mode,
+                        input_cost_per_1m: 0.0,
+                        output_cost_per_1m: 0.0,
+                        context_window: 128_000,
+                        supports_tools: true,
+                        supports_reasoning: true,
+                        supports_caching: true,
+                    },
+                );
+            }
+            if input.activate {
+                guard.active_provider_id = provider_id.clone();
+                guard.active_model = default_model.clone();
+            }
+        }
+
+        if input.activate {
+            self.rebuild_default_fallback_chain();
+        }
+        Ok(cfg)
+    }
+
+    pub fn upsert_routing_group(&self, mut group: RoutingGroup) -> Result<RoutingGroup, ProviderError> {
+        let canonical = group.canonical_id();
+        if canonical.is_empty() {
+            return Err(ProviderError::Configuration(
+                "Routing group id cannot be empty".to_string(),
+            ));
+        }
+        group.id = canonical.clone();
+        let qualified = group.qualified_model_name();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let active_pid = guard.active_provider_id.clone();
+        guard.routing_groups.insert(canonical.clone(), group.clone());
+        guard.model_profiles.insert(
+            qualified.clone(),
+            ModelProfile {
+                id: qualified.clone(),
+                provider_id: active_pid,
+                model: qualified,
+                api_mode: ApiMode::ChatCompletions,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                context_window: 128_000,
+                supports_tools: true,
+                supports_reasoning: true,
+                supports_caching: true,
+            },
+        );
+        Ok(group)
+    }
+
+    pub fn delete_routing_group(&self, group_id: &str) -> bool {
+        let canonical = group_id
+            .trim()
+            .strip_prefix("group/")
+            .unwrap_or(group_id.trim())
+            .to_string();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = guard.routing_groups.remove(&canonical).is_some();
+        guard.model_profiles.remove(&format!("group/{canonical}"));
+        removed
+    }
+
+    pub fn set_masking_config(&self, config: MaskingConfig) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.masking = config;
+    }
+
+    pub fn set_routing_strategy(&self, strategy: RoutingStrategy) {
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.routing_strategy = strategy;
+    }
+
+    pub fn refresh_local_subscriptions(&self) -> SubscriptionRegistry {
+        if is_offline_test_mode() {
+            let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            return SubscriptionRegistry {
+                accounts: guard.subscriptions.clone(),
+                scanned_at_ms: Utc::now().timestamp_millis(),
+            };
+        }
+        let Some(home) = resolve_home_dir() else {
+            return SubscriptionRegistry {
+                accounts: Vec::new(),
+                scanned_at_ms: Utc::now().timestamp_millis(),
+            };
+        };
+        let codex_override = std::env::var_os("CODEX_HOME")
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        self.refresh_local_subscriptions_in_home(&home, codex_override.as_deref())
+    }
+
+    pub fn refresh_local_subscriptions_in_home(
+        &self,
+        home: &Path,
+        codex_home_override: Option<&Path>,
+    ) -> SubscriptionRegistry {
+        let reg = discover_subscriptions_in_home(home, codex_home_override);
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.subscriptions = reg.accounts.clone();
+        reg
+    }
+
+    pub fn route_metrics_snapshot(&self) -> RouteRuntimeMetrics {
+        self.route_metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn add_credential(&self, provider_id: &str, entry: CredentialEntry) -> Result<(), ProviderError> {
@@ -1215,12 +1670,16 @@ impl ProviderRouter {
         }
         let now_ms = Utc::now().timestamp_millis();
         if cfg.credentials.is_empty() {
+            if cfg.no_key_required {
+                return Ok(None);
+            }
             return Err(ProviderError::Authentication(format!(
                 "No API credentials configured for provider '{provider_id}'"
             )));
         }
         match cfg.credentials.acquire(now_ms) {
             Some(entry) => Ok(Some(entry)),
+            None if cfg.no_key_required => Ok(None),
             None => Err(ProviderError::RateLimited {
                 status: 429,
                 retry_after_secs: Some(5),
@@ -1256,127 +1715,344 @@ impl ProviderRouter {
         }
     }
 
-    /// Execute a completion using the active provider/model and walking the fallback chain on failure.
+    fn record_route_success(
+        &self,
+        requested_model: &str,
+        provider_id: &str,
+        model: &str,
+        strategy: RoutingStrategy,
+        reason: &str,
+        candidates_considered: usize,
+        masking_hits: usize,
+        tokens: u64,
+        latency_ms: u64,
+    ) {
+        let now_ms = Utc::now().timestamp_millis();
+        let seat_key = format!("{provider_id}/{model}");
+        let traces_vec = {
+            let mut m = self.route_metrics.lock().unwrap_or_else(|e| e.into_inner());
+            m.record_usage(&seat_key, tokens, Some(latency_ms), now_ms);
+            m.push_trace(RouteDecisionTrace {
+                timestamp_ms: now_ms,
+                requested_model: requested_model.to_string(),
+                resolved_provider_id: provider_id.to_string(),
+                resolved_model: model.to_string(),
+                strategy,
+                reason: reason.to_string(),
+                candidates_considered,
+                masking_hits,
+            });
+            m.traces.iter().cloned().collect::<Vec<_>>()
+        };
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.recent_route_traces = traces_vec;
+    }
+
+    fn record_route_failure(&self, provider_id: &str, model: &str, err: &ProviderError) {
+        let now_ms = Utc::now().timestamp_millis();
+        let seat_key = format!("{provider_id}/{model}");
+        let mut m = self.route_metrics.lock().unwrap_or_else(|e| e.into_inner());
+        m.record_failure(&seat_key, err.http_status(), err.retry_after_secs(), now_ms);
+    }
+
+    /// Execute a completion using the active provider/model (or Magpie `group/<id>` routing + privacy masking) and walking the fallback chain on failure.
     pub async fn complete(
         &self,
         request: ProviderRequest,
         stream_tx: Option<mpsc::Sender<ProviderStreamEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
         let state = self.snapshot();
+        if self.needs_provider_selection() && !state.allow_local_fallback {
+            return Err(ProviderError::Configuration(
+                "未检测到已配置的 AI 订阅或模型供应商。请打开「设置 → AI 订阅与模型供应商」选择供应商（如 DeepSeek、Kimi、智谱 GLM、OpenAI、Anthropic、Gemini 或本地 Ollama）后使用。 / No AI subscription or provider configured.".to_string(),
+            ));
+        }
+
         let active_cfg = state.providers.get(&state.active_provider_id);
-        let requested_model = match active_cfg {
-            Some(cfg)
-                if cfg.api_mode != ApiMode::LocalHermes
-                    && is_legacy_placeholder_model(&request.model, &cfg.id, &cfg.base_url) =>
-            {
-                if !is_legacy_placeholder_model(&state.active_model, &cfg.id, &cfg.base_url)
-                    && !state.active_model.trim().is_empty()
+        let requested_model_raw = if request.model.trim().is_empty() {
+            state.active_model.clone()
+        } else {
+            request.model.trim().to_string()
+        };
+        let group_lookup_key = requested_model_raw
+            .strip_prefix("group/")
+            .unwrap_or(&requested_model_raw);
+        let is_explicit_group = requested_model_raw.starts_with("group/")
+            || state.routing_groups.contains_key(group_lookup_key);
+
+        let now_ms = Utc::now().timestamp_millis();
+        let mut routed_targets: Vec<(String, String, RoutingStrategy, String)> = Vec::new();
+
+        if is_explicit_group && !state.routing_groups.is_empty() {
+            let prompt_preview = request
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ProviderMessageRole::User)
+                .map(|m| m.content.as_str())
+                .unwrap_or("");
+            let session_key = request
+                .metadata
+                .get("session_id")
+                .and_then(Value::as_str);
+            let resolved_res = {
+                let mut metrics_guard = self.route_metrics.lock().unwrap_or_else(|e| e.into_inner());
+                resolve_group_targets(
+                    &requested_model_raw,
+                    &state.routing_groups,
+                    &mut metrics_guard,
+                    &state.active_provider_id,
+                    session_key,
+                    prompt_preview,
+                    request.messages.len(),
+                    request.tools.len(),
+                    now_ms,
+                )
+            };
+            match resolved_res {
+                Ok(group_candidates) => {
+                    for cand in group_candidates {
+                        if !routed_targets
+                            .iter()
+                            .any(|(p, m, _, _)| p == &cand.provider_id && m == &cand.model)
+                        {
+                            routed_targets.push((
+                                cand.provider_id,
+                                cand.model,
+                                cand.strategy,
+                                cand.reason,
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(ProviderError::Configuration(e.to_string()));
+                }
+            }
+        }
+
+        if routed_targets.is_empty() {
+            let requested_model = match active_cfg {
+                Some(cfg)
+                    if cfg.api_mode != ApiMode::LocalHermes
+                        && is_legacy_placeholder_model(&request.model, &cfg.id, &cfg.base_url) =>
                 {
-                    state.active_model.clone()
-                } else {
-                    cfg.default_model.clone()
+                    if !is_legacy_placeholder_model(&state.active_model, &cfg.id, &cfg.base_url)
+                        && !state.active_model.trim().is_empty()
+                    {
+                        state.active_model.clone()
+                    } else {
+                        cfg.default_model.clone()
+                    }
                 }
-            }
-            _ => {
-                if request.model.trim().is_empty() {
-                    state.active_model.clone()
-                } else {
-                    request.model.trim().to_string()
-                }
-            }
-        };
+                _ => requested_model_raw.clone(),
+            };
 
-        let mut targets = Vec::new();
-        let mut push_unique_target = |provider_id: String, model: String| {
-            if !model.trim().is_empty()
-                && !targets
-                    .iter()
-                    .any(|t: &FallbackTarget| t.provider_id == provider_id && t.model == model)
-            {
-                targets.push(FallbackTarget { provider_id, model });
-            }
-        };
+            let active_strategy = active_cfg
+                .and_then(|c| c.routing_strategy)
+                .unwrap_or(state.routing_strategy);
+            let mut push_unique_target = |provider_id: String, model: String, reason: &str| {
+                if !model.trim().is_empty()
+                    && !routed_targets
+                        .iter()
+                        .any(|(p, m, _, _)| p == &provider_id && m == &model)
+                {
+                    routed_targets.push((provider_id, model, active_strategy, reason.to_string()));
+                }
+            };
 
-        push_unique_target(state.active_provider_id.clone(), requested_model.clone());
-        if let Some(cfg) = active_cfg {
-            for fb_model in &cfg.fallback_models {
-                if !fb_model.trim().is_empty() {
-                    push_unique_target(state.active_provider_id.clone(), fb_model.clone());
+            push_unique_target(state.active_provider_id.clone(), requested_model.clone(), "primary");
+            if let Some(cfg) = active_cfg {
+                for fb_model in &cfg.fallback_models {
+                    if !fb_model.trim().is_empty() {
+                        push_unique_target(state.active_provider_id.clone(), fb_model.clone(), "provider_fallback");
+                    }
+                }
+                if cfg.id == "magpie_local"
+                    || (cfg.id == "codex_oauth" && is_local_magpie_url(&cfg.base_url))
+                {
+                    for m in ["auto/gemini-3.8-flash", "auto/gemini-3.1-pro-preview"] {
+                        push_unique_target(cfg.id.clone(), m.to_string(), "magpie_auto_fallback");
+                    }
                 }
             }
-            if cfg.id == "magpie_local"
-                || (cfg.id == "codex_oauth" && is_local_magpie_url(&cfg.base_url))
-            {
-                for m in ["auto/gemini-3.8-flash", "auto/gemini-3.1-pro-preview"] {
-                    push_unique_target(cfg.id.clone(), m.to_string());
+            for target in &state.fallback_chain {
+                push_unique_target(target.provider_id.clone(), target.model.clone(), "fallback_chain");
+            }
+            if state.active_provider_id == "magpie_local" || state.active_provider_id == "codex_oauth" {
+                let mut extra_providers: Vec<&ProviderConfig> = state
+                    .providers
+                    .values()
+                    .filter(|p| {
+                        p.enabled
+                            && p.id != state.active_provider_id
+                            && p.id != "local_hermes"
+                            && p.api_mode != ApiMode::LocalHermes
+                            && (!p.credentials.is_empty() || p.no_key_required)
+                    })
+                    .collect();
+                extra_providers.sort_by(|a, b| {
+                    let rank = |id: &str| match id {
+                        "magpie_local" => 0,
+                        "codex_oauth" => 1,
+                        _ => 2,
+                    };
+                    rank(&a.id).cmp(&rank(&b.id)).then_with(|| a.id.cmp(&b.id))
+                });
+                for p in extra_providers {
+                    push_unique_target(p.id.clone(), p.default_model.clone(), "extra_provider");
                 }
             }
         }
-        for target in &state.fallback_chain {
-            push_unique_target(target.provider_id.clone(), target.model.clone());
-        }
-        if state.active_provider_id == "magpie_local" || state.active_provider_id == "codex_oauth" {
-            let mut extra_providers: Vec<&ProviderConfig> = state
-                .providers
-                .values()
-                .filter(|p| {
-                    p.enabled
-                        && p.id != state.active_provider_id
-                        && p.id != "local_hermes"
-                        && p.api_mode != ApiMode::LocalHermes
-                        && !p.credentials.is_empty()
-                })
-                .collect();
-            extra_providers.sort_by(|a, b| {
-                let rank = |id: &str| match id {
-                    "magpie_local" => 0,
-                    "codex_oauth" => 1,
-                    _ => 2,
-                };
-                rank(&a.id).cmp(&rank(&b.id)).then_with(|| a.id.cmp(&b.id))
-            });
-            for p in extra_providers {
-                push_unique_target(p.id.clone(), p.default_model.clone());
-            }
-        }
+
         if state.allow_local_fallback {
-            push_unique_target("local_hermes".to_string(), "hermes-local-v1".to_string());
+            if !routed_targets
+                .iter()
+                .any(|(p, _, _, _)| p == "local_hermes")
+            {
+                routed_targets.push((
+                    "local_hermes".to_string(),
+                    "hermes-local-v1".to_string(),
+                    state.routing_strategy,
+                    "local_fallback".to_string(),
+                ));
+            }
         }
 
-        let targets_len = targets.len();
+        // Prepare outbound privacy masking engine if enabled
+        let masking_engine = state
+            .masking
+            .enabled
+            .then(|| Arc::new(MaskingEngine::new(state.masking.clone())));
+
+        let targets_len = routed_targets.len();
         let mut errors = Vec::new();
-        for target in targets {
+        for (provider_id, model, strategy, reason) in routed_targets {
             let Some(cfg) = self
                 .inner
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .providers
-                .get(&target.provider_id)
+                .get(&provider_id)
                 .cloned()
             else {
-                errors.push(format!("{}: provider not found", target.provider_id));
+                errors.push(format!("{provider_id}: provider not found"));
                 continue;
             };
             if !cfg.enabled {
-                errors.push(format!("{}: provider disabled", target.provider_id));
+                errors.push(format!("{provider_id}: provider disabled"));
                 continue;
             }
 
             let mut target_req = request.clone();
-            target_req.model = target.model.clone();
+            target_req.model = model.clone();
 
-            match self
-                .execute_single_provider(&cfg, target_req, stream_tx.as_ref())
-                .await
-            {
+            let mut masking_hits = 0usize;
+            if cfg.api_mode != ApiMode::LocalHermes {
+                if let Some(ref engine) = masking_engine {
+                    masking_hits = mask_outbound_request(&mut target_req, engine)?;
+                }
+            }
+
+            // If sensitive text was masked and caller asked for streaming deltas, pipe stream through StreamingUnmasker.
+            let (exec_tx, forward_handle) = if masking_hits > 0 {
+                if let (Some(outer_tx), Some(engine)) = (stream_tx.as_ref(), masking_engine.as_ref()) {
+                    let (utx, mut urx) = mpsc::channel::<ProviderStreamEvent>(64);
+                    let outer_clone = outer_tx.clone();
+                    let eng_clone = Arc::clone(engine);
+                    let handle = tokio::spawn(async move {
+                        let mut text_unmasker = StreamingUnmasker::new();
+                        let mut think_unmasker = StreamingUnmasker::new();
+                        while let Some(ev) = urx.recv().await {
+                            match ev {
+                                ProviderStreamEvent::TextDelta(chunk) => {
+                                    let clean = text_unmasker.push(&chunk, &eng_clone);
+                                    if !clean.is_empty() {
+                                        let _ = outer_clone
+                                            .send(ProviderStreamEvent::TextDelta(clean))
+                                            .await;
+                                    }
+                                }
+                                ProviderStreamEvent::ThinkingDelta(chunk) => {
+                                    let clean = think_unmasker.push(&chunk, &eng_clone);
+                                    if !clean.is_empty() {
+                                        let _ = outer_clone
+                                            .send(ProviderStreamEvent::ThinkingDelta(clean))
+                                            .await;
+                                    }
+                                }
+                                ProviderStreamEvent::ToolCallReady(mut tc) => {
+                                    tc.arguments = eng_clone.unmask_text(&tc.arguments);
+                                    let _ = outer_clone
+                                        .send(ProviderStreamEvent::ToolCallReady(tc))
+                                        .await;
+                                }
+                                ProviderStreamEvent::Usage(u) => {
+                                    let _ = outer_clone.send(ProviderStreamEvent::Usage(u)).await;
+                                }
+                            }
+                        }
+                        let rem_think = think_unmasker.finish(&eng_clone);
+                        if !rem_think.is_empty() {
+                            let _ = outer_clone
+                                .send(ProviderStreamEvent::ThinkingDelta(rem_think))
+                                .await;
+                        }
+                        let rem_text = text_unmasker.finish(&eng_clone);
+                        if !rem_text.is_empty() {
+                            let _ = outer_clone
+                                .send(ProviderStreamEvent::TextDelta(rem_text))
+                                .await;
+                        }
+                    });
+                    (Some(utx), Some(handle))
+                } else {
+                    (stream_tx.clone(), None)
+                }
+            } else {
+                (stream_tx.clone(), None)
+            };
+
+            let started = Instant::now();
+            let exec_res = self
+                .execute_single_provider(&cfg, target_req, exec_tx.as_ref())
+                .await;
+            drop(exec_tx);
+            if let Some(handle) = forward_handle {
+                let _ = handle.await;
+            }
+
+            match exec_res {
                 Ok(mut resp) => {
+                    if masking_hits > 0 {
+                        if let Some(ref engine) = masking_engine {
+                            resp.content = engine.unmask_text(&resp.content);
+                            resp.reasoning = resp.reasoning.map(|r| engine.unmask_text(&r));
+                            for tc in &mut resp.tool_calls {
+                                tc.arguments = engine.unmask_text(&tc.arguments);
+                            }
+                        }
+                    }
                     self.enrich_cost(&mut resp);
+                    let latency_ms = started.elapsed().as_millis() as u64;
+                    self.record_route_success(
+                        &requested_model_raw,
+                        &resp.provider_id,
+                        &resp.model,
+                        strategy,
+                        &reason,
+                        targets_len,
+                        masking_hits,
+                        resp.usage.total_tokens,
+                        latency_ms,
+                    );
                     return Ok(resp);
                 }
                 Err(err) => {
-                    errors.push(format!("{}/{}: {}", target.provider_id, target.model, err));
+                    self.record_route_failure(&provider_id, &model, &err);
+                    errors.push(format!("{provider_id}/{model}: {err}"));
                     if targets_len == 1
-                        && (!state.allow_local_fallback || target.provider_id == "local_hermes")
+                        && (!state.allow_local_fallback || provider_id == "local_hermes")
                     {
                         return Err(err);
                     }
@@ -1450,8 +2126,9 @@ impl ProviderRouter {
         let mut last_err = None;
 
         for _ in 0..max_key_attempts {
-            let cred = match self.acquire_credential(&cfg.id)? {
-                Some(c) => c,
+            let (cred_id_opt, api_key, base_url_override) = match self.acquire_credential(&cfg.id)? {
+                Some(c) => (Some(c.id), c.api_key, c.base_url_override),
+                None if cfg.no_key_required => (None, String::new(), None),
                 None => {
                     return Err(ProviderError::Authentication(format!(
                         "No credential available for '{}'",
@@ -1459,17 +2136,14 @@ impl ProviderRouter {
                     )));
                 }
             };
-            let base_url = cred
-                .base_url_override
-                .as_deref()
-                .unwrap_or(&cfg.base_url);
+            let base_url = base_url_override.as_deref().unwrap_or(&cfg.base_url);
             let res = match cfg.api_mode {
                 ApiMode::ChatCompletions => {
                     execute_chat_completions(
                         &self.http_client,
                         cfg,
                         base_url,
-                        &cred.api_key,
+                        &api_key,
                         &request,
                         stream_tx,
                     )
@@ -1480,7 +2154,7 @@ impl ProviderRouter {
                         &self.http_client,
                         cfg,
                         base_url,
-                        &cred.api_key,
+                        &api_key,
                         &request,
                         stream_tx,
                     )
@@ -1491,7 +2165,18 @@ impl ProviderRouter {
                         &self.http_client,
                         cfg,
                         base_url,
-                        &cred.api_key,
+                        &api_key,
+                        &request,
+                        stream_tx,
+                    )
+                    .await
+                }
+                ApiMode::GeminiGenerateContent => {
+                    execute_gemini_generate_content(
+                        &self.http_client,
+                        cfg,
+                        base_url,
+                        &api_key,
                         &request,
                         stream_tx,
                     )
@@ -1509,11 +2194,15 @@ impl ProviderRouter {
             };
             match res {
                 Ok(resp) => {
-                    self.report_credential_outcome(&cfg.id, &cred.id, None);
+                    if let Some(ref cred_id) = cred_id_opt {
+                        self.report_credential_outcome(&cfg.id, cred_id, None);
+                    }
                     return Ok(resp);
                 }
                 Err(err) => {
-                    self.report_credential_outcome(&cfg.id, &cred.id, Some(&err));
+                    if let Some(ref cred_id) = cred_id_opt {
+                        self.report_credential_outcome(&cfg.id, cred_id, Some(&err));
+                    }
                     let retry_key = err.is_retryable() || err.http_status() == Some(401);
                     last_err = Some(err);
                     if !retry_key {
@@ -1527,6 +2216,47 @@ impl ProviderRouter {
             ProviderError::Exhausted(format!("No usable credentials for '{}'", cfg.id))
         }))
     }
+}
+
+fn mask_outbound_request(
+    req: &mut ProviderRequest,
+    engine: &MaskingEngine,
+) -> Result<usize, ProviderError> {
+    let mut hits = 0usize;
+    for tier in &mut req.system_tiers {
+        let res = engine.mask_text(&tier.text);
+        if res.blocked {
+            return Err(ProviderError::Configuration(
+                res.block_reason
+                    .unwrap_or_else(|| "Outbound request blocked by privacy masking rule".to_string()),
+            ));
+        }
+        hits += res.hits.len();
+        tier.text = res.masked_text;
+    }
+    for msg in &mut req.messages {
+        let res = engine.mask_text(&msg.content);
+        if res.blocked {
+            return Err(ProviderError::Configuration(
+                res.block_reason
+                    .unwrap_or_else(|| "Outbound request blocked by privacy masking rule".to_string()),
+            ));
+        }
+        hits += res.hits.len();
+        msg.content = res.masked_text;
+        for tc in &mut msg.tool_calls {
+            let ares = engine.mask_text(&tc.arguments);
+            if ares.blocked {
+                return Err(ProviderError::Configuration(
+                    ares.block_reason
+                        .unwrap_or_else(|| "Outbound tool arguments blocked by privacy masking rule".to_string()),
+                ));
+            }
+            hits += ares.hits.len();
+            tc.arguments = ares.masked_text;
+        }
+    }
+    Ok(hits)
 }
 
 // ============================================================================
@@ -1655,12 +2385,19 @@ fn strip_inline_hash_comment(raw: &str) -> &str {
 
 struct EnvLookup {
     dotenv_vars: HashMap<String, String>,
+    allow_process_env: bool,
 }
 
 impl EnvLookup {
-    fn empty() -> Self {
+    #[cfg(test)]
+    fn from_pairs(pairs: &[(&str, &str)]) -> Self {
+        let dotenv_vars = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
         Self {
-            dotenv_vars: HashMap::new(),
+            dotenv_vars,
+            allow_process_env: false,
         }
     }
 
@@ -1682,7 +2419,10 @@ impl EnvLookup {
                 }
             }
         }
-        Self { dotenv_vars }
+        Self {
+            dotenv_vars,
+            allow_process_env: true,
+        }
     }
 
     fn from_standard_paths() -> Self {
@@ -1712,11 +2452,140 @@ impl EnvLookup {
     }
 
     fn get(&self, key: &str) -> Option<String> {
-        std::env::var(key)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| self.dotenv_vars.get(key).cloned())
+        if self.allow_process_env {
+            if let Ok(val) = std::env::var(key) {
+                let trimmed = val.trim().to_string();
+                if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+        self.dotenv_vars.get(key).cloned()
+    }
+}
+
+struct MagpieEnvVendorDescriptor {
+    preset_id: &'static str,
+    key_vars: &'static [&'static str],
+    base_url_vars: &'static [&'static str],
+    model_vars: &'static [&'static str],
+}
+
+const MAGPIE_ENV_VENDORS: &[MagpieEnvVendorDescriptor] = &[
+    MagpieEnvVendorDescriptor {
+        preset_id: "google",
+        key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        base_url_vars: &["GEMINI_BASE_URL", "GOOGLE_GEMINI_BASE_URL"],
+        model_vars: &["GEMINI_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "moonshot",
+        key_vars: &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+        base_url_vars: &["MOONSHOT_BASE_URL", "KIMI_BASE_URL"],
+        model_vars: &["MOONSHOT_MODEL", "KIMI_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "zhipu",
+        key_vars: &["ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
+        base_url_vars: &["ZHIPU_BASE_URL", "ZHIPUAI_BASE_URL"],
+        model_vars: &["ZHIPU_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "minimax",
+        key_vars: &["MINIMAX_API_KEY"],
+        base_url_vars: &["MINIMAX_BASE_URL"],
+        model_vars: &["MINIMAX_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "stepfun",
+        key_vars: &["STEPFUN_API_KEY"],
+        base_url_vars: &["STEPFUN_BASE_URL"],
+        model_vars: &["STEPFUN_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "qwen",
+        key_vars: &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+        base_url_vars: &["DASHSCOPE_BASE_URL", "QWEN_BASE_URL"],
+        model_vars: &["QWEN_MODEL", "DASHSCOPE_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "siliconflow",
+        key_vars: &["SILICONFLOW_API_KEY"],
+        base_url_vars: &["SILICONFLOW_BASE_URL"],
+        model_vars: &["SILICONFLOW_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "groq",
+        key_vars: &["GROQ_API_KEY"],
+        base_url_vars: &["GROQ_BASE_URL"],
+        model_vars: &["GROQ_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "xai",
+        key_vars: &["XAI_API_KEY"],
+        base_url_vars: &["XAI_BASE_URL"],
+        model_vars: &["XAI_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "mistral",
+        key_vars: &["MISTRAL_API_KEY"],
+        base_url_vars: &["MISTRAL_BASE_URL"],
+        model_vars: &["MISTRAL_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "together",
+        key_vars: &["TOGETHER_API_KEY"],
+        base_url_vars: &["TOGETHER_BASE_URL"],
+        model_vars: &["TOGETHER_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "fireworks",
+        key_vars: &["FIREWORKS_API_KEY"],
+        base_url_vars: &["FIREWORKS_BASE_URL"],
+        model_vars: &["FIREWORKS_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "nvidia",
+        key_vars: &["NVIDIA_API_KEY"],
+        base_url_vars: &["NVIDIA_BASE_URL"],
+        model_vars: &["NVIDIA_MODEL"],
+    },
+    MagpieEnvVendorDescriptor {
+        preset_id: "modelscope",
+        key_vars: &["MODELSCOPE_API_KEY"],
+        base_url_vars: &["MODELSCOPE_BASE_URL"],
+        model_vars: &["MODELSCOPE_MODEL"],
+    },
+];
+
+fn register_magpie_env_vendors(router: &ProviderRouter, env: &EnvLookup, active_set: &mut bool) {
+    for desc in MAGPIE_ENV_VENDORS {
+        let Some(api_key) = desc.key_vars.iter().find_map(|k| env.get(k)) else {
+            continue;
+        };
+        let base_override = desc.base_url_vars.iter().find_map(|k| env.get(k));
+        let model_override = desc.model_vars.iter().find_map(|k| env.get(k));
+        let protocol_override = if desc.preset_id == "google"
+            && base_override
+                .as_deref()
+                .is_some_and(|u| u.trim_end_matches('/').ends_with("/openai"))
+        {
+            Some(ApiMode::ChatCompletions)
+        } else {
+            None
+        };
+        let input = MagpiePresetApplyInput {
+            preset_id: desc.preset_id.to_string(),
+            api_key: Some(api_key),
+            model_override,
+            base_url_override: base_override,
+            protocol_override,
+            activate: !*active_set,
+            ..Default::default()
+        };
+        if router.apply_magpie_preset(input).is_ok() && !*active_set {
+            *active_set = true;
+        }
     }
 }
 
@@ -3144,6 +4013,12 @@ pub fn normalize_wire_model_for_provider(provider_id: &str, base_url: &str, mode
         if lower_pid == "openrouter" || lower_url.contains("openrouter.ai") {
             return "anthropic/claude-sonnet-4".to_string();
         }
+        if lower_pid == "google"
+            || lower_pid.contains("gemini")
+            || lower_url.contains("generativelanguage.googleapis.com")
+        {
+            return "gemini-2.5-flash".to_string();
+        }
         return m.to_string();
     }
 
@@ -3199,8 +4074,10 @@ async fn execute_chat_completions(
 
     let mut builder = client
         .post(&url)
-        .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !api_key.trim().is_empty() {
+        builder = builder.bearer_auth(api_key.trim());
+    }
     if request.stream {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
@@ -3816,8 +4693,10 @@ async fn execute_codex_responses(
 
     let mut builder = client
         .post(&url)
-        .bearer_auth(api_key)
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !api_key.trim().is_empty() {
+        builder = builder.bearer_auth(api_key.trim());
+    }
     if wants_stream {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
@@ -4470,16 +5349,18 @@ async fn execute_anthropic_messages(
     request: &ProviderRequest,
     stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
 ) -> Result<ProviderResponse, ProviderError> {
-    let url = resolve_endpoint_url(base_url, "messages");
+    let url = resolve_anthropic_messages_url(base_url);
     let wire_req = prepare_wire_request(cfg, base_url, api_key, request);
     let payload = build_anthropic_messages_payload(&wire_req);
 
     let mut builder = client
         .post(&url)
-        .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .header("anthropic-beta", "prompt-caching-2024-07-31")
         .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !api_key.trim().is_empty() {
+        builder = builder.header("x-api-key", api_key.trim());
+    }
     if request.stream {
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
@@ -4863,6 +5744,282 @@ pub fn parse_anthropic_messages_json(
         provider_id: provider_id.to_string(),
         model: model.to_string(),
         api_mode: ApiMode::AnthropicMessages,
+    })
+}
+
+fn provider_request_to_unified(req: &ProviderRequest) -> UnifiedRequest {
+    UnifiedRequest {
+        model: req.model.clone(),
+        system_prompt: req.combined_system_prompt(),
+        messages: req
+            .messages
+            .iter()
+            .map(|m| UnifiedMessage {
+                role: match m.role {
+                    ProviderMessageRole::System => UnifiedRole::System,
+                    ProviderMessageRole::User => UnifiedRole::User,
+                    ProviderMessageRole::Assistant => UnifiedRole::Assistant,
+                    ProviderMessageRole::Tool => UnifiedRole::Tool,
+                },
+                content: m.content.clone(),
+                name: m.name.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                tool_calls: m
+                    .tool_calls
+                    .iter()
+                    .map(|tc| UnifiedToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    })
+                    .collect(),
+                reasoning: m.reasoning.clone(),
+            })
+            .collect(),
+        tools: req
+            .tools
+            .iter()
+            .map(|t| UnifiedToolSpec {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.parameters.clone(),
+            })
+            .collect(),
+        temperature: req.temperature,
+        max_tokens: req.max_tokens,
+        thinking_budget_tokens: req.thinking_budget_tokens,
+        stream: req.stream,
+    }
+}
+
+fn unified_to_provider_response(
+    parsed: magpie_gateway::UnifiedResponse,
+    api_mode: ApiMode,
+) -> ProviderResponse {
+    ProviderResponse {
+        content: parsed.content,
+        reasoning: parsed.reasoning,
+        tool_calls: parsed
+            .tool_calls
+            .into_iter()
+            .map(|tc| ProviderToolCall {
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments,
+            })
+            .collect(),
+        finish_reason: parsed.finish_reason,
+        usage: TokenUsage {
+            input_tokens: parsed.usage.input_tokens,
+            output_tokens: parsed.usage.output_tokens,
+            cache_read_tokens: parsed.usage.cache_read_tokens,
+            cache_creation_tokens: 0,
+            total_tokens: parsed.usage.total_tokens,
+            estimated_cost_usd: 0.0,
+        },
+        provider_id: parsed.provider_id,
+        model: parsed.model,
+        api_mode,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_gemini_sse_line(
+    line: &str,
+    saw_sse_data: &mut bool,
+    non_sse_lines: &mut Vec<String>,
+    acc_content: &mut String,
+    acc_reasoning: &mut String,
+    tool_calls: &mut Vec<ProviderToolCall>,
+    finish_reason: &mut String,
+    usage: &mut TokenUsage,
+    stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+) -> Result<(), ProviderError> {
+    if line.starts_with("data:") {
+        *saw_sse_data = true;
+    } else if !*saw_sse_data && !line.trim().is_empty() && !line.starts_with(':') {
+        non_sse_lines.push(line.to_string());
+    }
+    let Some(delta) = parse_gemini_sse_data(line, tool_calls.len())
+        .map_err(|e| ProviderError::Protocol(e.to_string()))?
+    else {
+        return Ok(());
+    };
+    if !delta.thinking_delta.is_empty() {
+        acc_reasoning.push_str(&delta.thinking_delta);
+        if let Some(tx) = stream_tx {
+            let _ = tx
+                .send(ProviderStreamEvent::ThinkingDelta(delta.thinking_delta))
+                .await;
+        }
+    }
+    if !delta.text_delta.is_empty() {
+        acc_content.push_str(&delta.text_delta);
+        if let Some(tx) = stream_tx {
+            let _ = tx
+                .send(ProviderStreamEvent::TextDelta(delta.text_delta))
+                .await;
+        }
+    }
+    for tc in delta.tool_calls {
+        let ptc = ProviderToolCall {
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+        };
+        if let Some(tx) = stream_tx {
+            let _ = tx.send(ProviderStreamEvent::ToolCallReady(ptc.clone())).await;
+        }
+        tool_calls.push(ptc);
+    }
+    if let Some(fr) = delta.finish_reason {
+        *finish_reason = fr;
+    }
+    if let Some(u) = delta.usage {
+        usage.input_tokens = u.input_tokens;
+        usage.output_tokens = u.output_tokens;
+        usage.cache_read_tokens = u.cache_read_tokens;
+        usage.total_tokens = u.total_tokens;
+    }
+    Ok(())
+}
+
+async fn execute_gemini_generate_content(
+    client: &reqwest::Client,
+    cfg: &ProviderConfig,
+    base_url: &str,
+    api_key: &str,
+    request: &ProviderRequest,
+    stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+) -> Result<ProviderResponse, ProviderError> {
+    let wire_req = prepare_wire_request(cfg, base_url, api_key, request);
+    let url = resolve_gemini_endpoint_url(base_url, &wire_req.model, request.stream);
+    let unified = provider_request_to_unified(&wire_req);
+    let payload = build_gemini_generate_content_payload(&unified);
+
+    let mut builder = client
+        .post(&url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if !api_key.trim().is_empty() {
+        builder = builder.header("x-goog-api-key", api_key.trim());
+    }
+    if request.stream {
+        builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
+    }
+    for (k, v) in &cfg.headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+
+    let resp = tokio::time::timeout(
+        Duration::from_secs(cfg.timeout_secs.max(5)),
+        builder.json(&payload).send(),
+    )
+    .await
+    .map_err(|_| ProviderError::Transport(format!("Request to {url} timed out")))?
+    .map_err(|e| ProviderError::Transport(format!("HTTP request to {url} failed: {e}")))?;
+
+    let mut resp = check_http_error(resp).await?;
+
+    let is_sse = request.stream
+        && resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| !ct.to_ascii_lowercase().contains("application/json"))
+            .unwrap_or(true);
+
+    if !is_sse {
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ProviderError::Transport(format!("Read Gemini body failed: {e}")))?;
+        let parsed = parse_gemini_response_json(&cfg.id, &wire_req.model, &body)
+            .map_err(|e| ProviderError::Protocol(e.to_string()))?;
+        let out = unified_to_provider_response(parsed, ApiMode::GeminiGenerateContent);
+        emit_provider_response_stream_events(&out, stream_tx).await;
+        return Ok(out);
+    }
+
+    let mut acc_content = String::new();
+    let mut acc_reasoning = String::new();
+    let mut tool_calls = Vec::<ProviderToolCall>::new();
+    let mut finish_reason = "stop".to_string();
+    let mut usage = TokenUsage::default();
+    let mut raw_bytes = Vec::<u8>::new();
+    let mut non_sse_lines = Vec::<String>::new();
+    let mut saw_sse_data = false;
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ProviderError::Transport(format!("Gemini SSE error: {e}")))?
+    {
+        raw_bytes.extend_from_slice(&chunk);
+        while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
+            let line = String::from_utf8_lossy(&raw_bytes[..pos])
+                .trim_end_matches('\r')
+                .to_string();
+            raw_bytes.drain(..=pos);
+            process_gemini_sse_line(
+                &line,
+                &mut saw_sse_data,
+                &mut non_sse_lines,
+                &mut acc_content,
+                &mut acc_reasoning,
+                &mut tool_calls,
+                &mut finish_reason,
+                &mut usage,
+                stream_tx,
+            )
+            .await?;
+        }
+    }
+    if !raw_bytes.is_empty() {
+        let line = String::from_utf8_lossy(&raw_bytes)
+            .trim_end_matches('\r')
+            .to_string();
+        process_gemini_sse_line(
+            &line,
+            &mut saw_sse_data,
+            &mut non_sse_lines,
+            &mut acc_content,
+            &mut acc_reasoning,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+            stream_tx,
+        )
+        .await?;
+    }
+
+    if !saw_sse_data
+        && acc_content.is_empty()
+        && acc_reasoning.is_empty()
+        && tool_calls.is_empty()
+        && !non_sse_lines.is_empty()
+    {
+        let body = non_sse_lines.join("\n");
+        let parsed = parse_gemini_response_json(&cfg.id, &wire_req.model, &body)
+            .map_err(|e| ProviderError::Protocol(e.to_string()))?;
+        let out = unified_to_provider_response(parsed, ApiMode::GeminiGenerateContent);
+        emit_provider_response_stream_events(&out, stream_tx).await;
+        return Ok(out);
+    }
+
+    if !tool_calls.is_empty() {
+        finish_reason = "tool_calls".to_string();
+    }
+    usage.finalize_total();
+
+    Ok(ProviderResponse {
+        content: acc_content,
+        reasoning: (!acc_reasoning.is_empty()).then_some(acc_reasoning),
+        tool_calls,
+        finish_reason,
+        usage,
+        provider_id: cfg.id.clone(),
+        model: wire_req.model,
+        api_mode: ApiMode::GeminiGenerateContent,
     })
 }
 
@@ -6668,11 +7825,14 @@ http_headers = { "x-openai-actor-authorization" = "magpie", "X-Custom" = "yes" }
             .unwrap_err();
         assert!(matches!(err_direct, ProviderError::Configuration(_)));
 
-        // Production state (allow_local_fallback=false + offline_rule_bot_allowed=false) surfaces Configuration.
+        // Production state (allow_local_fallback=false + offline_rule_bot_allowed=false + no active provider/subscription)
+        // emits actionable Magpie provider-selection guidance.
         router.set_allow_local_fallback(false);
         let err_prod = router.complete(req, None).await.unwrap_err();
         assert!(matches!(err_prod, ProviderError::Configuration(_)));
-        assert!(err_prod.to_string().contains("未检测到可用的大模型推理凭证"));
+        assert!(err_prod
+            .to_string()
+            .contains("未检测到已配置的 AI 订阅或模型供应商"));
 
         let legacy_json = json!({
             "providers": {},
@@ -6685,5 +7845,203 @@ http_headers = { "x-openai-actor-authorization" = "magpie", "X-Custom" = "yes" }
         .to_string();
         let parsed: ProviderRouterState = serde_json::from_str(&legacy_json).expect("legacy state parses");
         assert!(!parsed.offline_rule_bot_allowed);
+        assert!(parsed.subscriptions.is_empty());
+        assert!(parsed.routing_groups.is_empty());
+        assert!(!parsed.masking.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_magpie_fusion_env_vendors_subscriptions_gemini_keyless_routing_and_masking() {
+        // 1. Env scan registers Magpie vendors (Gemini, Moonshot, Zhipu, MiniMax, StepFun, Qwen, SiliconFlow, Groq, xAI, Mistral, Together, Fireworks, Nvidia, ModelScope)
+        let router = ProviderRouter::new();
+        router.set_allow_local_fallback(false);
+        router.set_offline_rule_bot_allowed(false);
+        assert!(router.needs_provider_selection());
+
+        let env = EnvLookup::from_pairs(&[
+            ("GEMINI_API_KEY", "AIzaSyEnvGeminiKey1234567890123456"),
+            ("MOONSHOT_API_KEY", "sk-kimi-123"),
+            ("ZHIPU_API_KEY", "glm-key"),
+            ("MINIMAX_API_KEY", "mm-key"),
+            ("STEPFUN_API_KEY", "step-key"),
+            ("DASHSCOPE_API_KEY", "dash-key"),
+            ("SILICONFLOW_API_KEY", "sf-key"),
+            ("GROQ_API_KEY", "gsk-key"),
+            ("XAI_API_KEY", "xai-key"),
+            ("MISTRAL_API_KEY", "mis-key"),
+            ("TOGETHER_API_KEY", "tog-key"),
+            ("FIREWORKS_API_KEY", "fw-key"),
+            ("NVIDIA_API_KEY", "nv-key"),
+            ("MODELSCOPE_API_KEY", "ms-key"),
+        ]);
+        router.populate_from_env_and_home(&env, None, None, false);
+        assert!(router.has_configured_provider());
+        assert!(!router.needs_provider_selection());
+        for pid in [
+            "google", "moonshot", "zhipu", "minimax", "stepfun", "qwen",
+            "siliconflow", "groq", "xai", "mistral", "together", "fireworks", "nvidia", "modelscope",
+        ] {
+            assert!(
+                router.snapshot().providers.contains_key(pid),
+                "expected vendor {pid} from env scan"
+            );
+        }
+
+        // 2. Gemini GenerateContent wire execution (x-goog-api-key + SSE stream)
+        let g_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let g_addr = g_listener.local_addr().unwrap();
+        let g_srv = std::thread::spawn(move || {
+            let (mut sock, _) = g_listener.accept().unwrap();
+            let req = read_http_request_text(&mut sock);
+            assert!(req.contains("POST /v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"));
+            assert!(req.to_ascii_lowercase().contains("x-goog-api-key: gem-test-key"));
+            let sse = concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"check\"}]},\"finishReason\":null}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Namo Amitabha\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,\"totalTokenCount\":10}}\n\n"
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        });
+
+        let gem_router = ProviderRouter::new();
+        gem_router.set_allow_local_fallback(false);
+        gem_router
+            .apply_magpie_preset(MagpiePresetApplyInput {
+                preset_id: "google".to_string(),
+                api_key: Some("gem-test-key".to_string()),
+                base_url_override: Some(format!("http://{g_addr}/v1beta")),
+                activate: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let gem_resp = gem_router
+            .complete(
+                ProviderRequest::new("gemini-2.5-flash", vec![ProviderChatMessage::user("hi")]),
+                None,
+            )
+            .await
+            .expect("gemini sse response");
+        let _ = g_srv.join();
+        assert_eq!(gem_resp.api_mode, ApiMode::GeminiGenerateContent);
+        assert_eq!(gem_resp.content, "Namo Amitabha");
+        assert_eq!(gem_resp.reasoning.as_deref(), Some("check"));
+        assert_eq!(gem_resp.usage.total_tokens, 10);
+
+        // 3. Keyless local preset (Ollama) sends NO Authorization header
+        let ol_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let ol_addr = ol_listener.local_addr().unwrap();
+        let ol_srv = std::thread::spawn(move || {
+            let (mut sock, _) = ol_listener.accept().unwrap();
+            let req = read_http_request_text(&mut sock);
+            assert!(!req.to_ascii_lowercase().contains("authorization:"));
+            let body = json!({
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Local Ollama OK"},
+                    "finish_reason": "stop"
+                }]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        });
+        let local_router = ProviderRouter::new();
+        local_router.set_allow_local_fallback(false);
+        local_router
+            .apply_magpie_preset(MagpiePresetApplyInput {
+                preset_id: "ollama".to_string(),
+                base_url_override: Some(format!("http://{ol_addr}/v1")),
+                activate: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(local_router.has_configured_provider());
+        let mut ol_req = ProviderRequest::new("qwen3:8b", vec![ProviderChatMessage::user("ping")]);
+        ol_req.stream = false;
+        let ol_resp = local_router.complete(ol_req, None).await.expect("keyless ollama");
+        let _ = ol_srv.join();
+        assert_eq!(ol_resp.content, "Local Ollama OK");
+
+        // 4. Routing group (`group/<id>`) + Masking + StreamingUnmasker end-to-end
+        let m_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let m_addr = m_listener.local_addr().unwrap();
+        let secret_val = "sk-ant-api03-verysecretkeyvalue999";
+        let m_srv = std::thread::spawn(move || {
+            let (mut sock, _) = m_listener.accept().unwrap();
+            let req = read_http_request_text(&mut sock);
+            // Verify raw secret was NEVER transmitted to upstream!
+            assert!(!req.contains(secret_val), "raw secret leaked on wire: {req}");
+            // Extract issued placeholder from request body and echo it back across split SSE deltas
+            let idx = req.find("{{API_KEY_").expect("placeholder in masked request");
+            let end = req[idx..].find("}}").unwrap() + idx + 2;
+            let ph = &req[idx..end];
+            let half = ph.len() / 2;
+            let sse = format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"content\":\"Echo: {}\"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+                 data: [DONE]\n\n",
+                &ph[..half],
+                &ph[half..]
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        });
+
+        let routed_router = ProviderRouter::new();
+        routed_router.set_allow_local_fallback(false);
+        routed_router
+            .apply_magpie_preset(MagpiePresetApplyInput {
+                preset_id: "deepseek".to_string(),
+                api_key: Some("sk-ds-wire".to_string()),
+                base_url_override: Some(format!("http://{m_addr}/v1")),
+                activate: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let mut group = RoutingGroup::new("smart", "Smart Mix", RoutingStrategy::Smart);
+        group
+            .members
+            .push(RoutingGroupMember::new("deepseek/deepseek-chat"));
+        routed_router.upsert_routing_group(group).unwrap();
+        routed_router.set_masking_config(MaskingConfig {
+            enabled: true,
+            mask_secrets: true,
+            mask_personal: true,
+            ..Default::default()
+        });
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let routed_resp = routed_router
+            .complete(
+                ProviderRequest::new(
+                    "group/smart",
+                    vec![ProviderChatMessage::user(format!("Rotate key {secret_val}"))],
+                ),
+                Some(tx),
+            )
+            .await
+            .expect("masked routed stream");
+        drop(routed_router);
+        let mut streamed = String::new();
+        while let Some(ev) = rx.recv().await {
+            if let ProviderStreamEvent::TextDelta(t) = ev {
+                streamed.push_str(&t);
+            }
+        }
+        let _ = m_srv.join();
+        assert_eq!(routed_resp.content, format!("Echo: {secret_val}"));
+        assert_eq!(streamed, format!("Echo: {secret_val}"));
     }
 }

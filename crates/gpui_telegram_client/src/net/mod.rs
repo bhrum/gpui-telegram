@@ -79,8 +79,14 @@ pub use hermes_client::{
     HermesSessionDto, HermesSessionExportResponse, HermesSessionSearchRequest, HermesSkillDto,
     HermesSoulDto, HermesStatusDto, HermesTalkTurnRequest, HermesTalkTurnResponse,
     HermesTerminalProcessDto, HermesToolsetDto, HermesTurnRequest, HermesTurnResponse,
-    HermesUpdateToolsetsRequest, HermesUsageSummaryDto, OpenAiChatCompletionsRequest,
-    OpenAiChatMessage,
+    HermesUpdateToolsetsRequest, HermesUsageSummaryDto, MagpieDeleteProviderResponse,
+    MagpieGroupsRequest, MagpieGroupsResponse, MagpieImportRequest, MagpieImportResponse,
+    MagpieMaskingConfigDto, MagpieMaskingHitDto, MagpieMaskingPreviewRequest,
+    MagpieMaskingPreviewResponse, MagpieMaskingUpdateResponse, MagpiePresetDto,
+    MagpiePresetRegionDto, MagpieProbeRequest, MagpieProbeResponse, MagpieProviderDto,
+    MagpieRouteTraceDto, MagpieRoutingGroupDto, MagpieRoutingGroupMemberDto,
+    MagpieSaveProviderRequest, MagpieSaveProviderResponse, MagpieStateDto, MagpieSubscriptionDto,
+    MagpieSubscriptionsScanResponse, OpenAiChatCompletionsRequest, OpenAiChatMessage,
 };
 pub use ws_channel::WsChannel;
 pub use ws_transport::{ConnectionStatus, WsTransport};

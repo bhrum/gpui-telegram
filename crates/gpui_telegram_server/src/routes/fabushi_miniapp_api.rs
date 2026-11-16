@@ -1139,14 +1139,17 @@ pub async fn ai_chat_handler(
         .map(|b| b.bot_user_id.max(0) as u64);
     let hermes = crate::routes::hermes::resolve_hermes_for_bot(&state, bot_id_opt);
     let snap = hermes.providers().snapshot();
-    let has_external_llm = snap
-        .providers
-        .get(&snap.active_provider_id)
-        .is_some_and(|cfg| {
+    let has_external_llm = hermes.providers().has_configured_provider()
+        || hermes.providers().has_active_subscription()
+        || snap.providers.get(&snap.active_provider_id).is_some_and(|cfg| {
             cfg.enabled
                 && !matches!(cfg.api_mode, ApiMode::LocalHermes)
-                && !cfg.credentials.is_empty()
-        });
+                && (!cfg.credentials.is_empty() || cfg.no_key_required)
+        })
+        || (snap.active_model.starts_with("group/")
+            && snap
+                .routing_groups
+                .contains_key(snap.active_model.trim_start_matches("group/")));
 
     if has_external_llm {
         let mut ctx_lines = vec![DEFAULT_AI_SYSTEM_PROMPT.to_string()];

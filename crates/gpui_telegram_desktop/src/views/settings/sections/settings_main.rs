@@ -29,6 +29,8 @@ pub struct SettingsMainSections {
     pub toast_message: Option<String>,
     pub pending_copy_text: Option<String>,
     pub pending_scale_change: Option<u32>,
+    pub ai_providers_summary: Option<String>,
+    pub needs_provider_selection: bool,
     pub is_visible: bool,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
@@ -50,6 +52,8 @@ impl SettingsMainSections {
             toast_message: None,
             pending_copy_text: None,
             pending_scale_change: None,
+            ai_providers_summary: None,
+            needs_provider_selection: false,
             is_visible: true,
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".into(),
@@ -79,6 +83,11 @@ impl SettingsMainSections {
 
     pub fn sync_profile(&mut self, name: String, phone: String, username: String, bio: String, is_verified: bool, is_premium: bool) {
         self.profile = SettingsMainProfile { name, phone, username, bio, is_verified, is_premium };
+    }
+
+    pub fn sync_ai_providers_status(&mut self, summary: Option<String>, needs_selection: bool) {
+        self.ai_providers_summary = summary;
+        self.needs_provider_selection = needs_selection;
     }
 
     pub fn copy_phone(&mut self) -> String {
@@ -136,20 +145,29 @@ impl Render for SettingsMainSections {
             &self.profile.name
         };
 
+        let ai_badge = self.ai_providers_summary.clone().unwrap_or_else(|| {
+            if self.needs_provider_selection {
+                tr_str(lang, "请选择供应商", "Choose Provider").to_string()
+            } else {
+                String::new()
+            }
+        });
+
         let links = [
-            (IconName::ContactsUsers, tr_str(lang, "编辑资料", "Edit Profile"), SettingsSectionType::Information),
-            (IconName::Speaker, tr_str(lang, "通知与声音", "Notifications and Sounds"), SettingsSectionType::Notifications),
-            (IconName::Lock, tr_str(lang, "隐私与安全", "Privacy and Security"), SettingsSectionType::PrivacySecurity),
-            (IconName::NightMoon, tr_str(lang, "聊天设置", "Chat Settings"), SettingsSectionType::Chat),
-            (IconName::FolderAll, tr_str(lang, "聊天分组", "Folders"), SettingsSectionType::Folders),
-            (IconName::SettingsGear, tr_str(lang, "高级设置", "Advanced"), SettingsSectionType::Advanced),
-            (IconName::ComputerDesktop, tr_str(lang, "电脑", "Computers"), SettingsSectionType::Computers),
-            (IconName::PhoneCall, tr_str(lang, "音视频通话", "Speakers and Camera"), SettingsSectionType::Calls),
-            (IconName::ComputerDesktop, tr_str(lang, "键盘快捷键", "Keyboard Shortcuts"), SettingsSectionType::Shortcuts),
-            (IconName::BotRobot, tr_str(lang, "商业功能", "Business"), SettingsSectionType::Business),
-            (IconName::PremiumStar, tr_str(lang, "高级会员", "Premium"), SettingsSectionType::Premium),
-            (IconName::WalletStars, tr_str(lang, "星币钱包", "Stars"), SettingsSectionType::Credits),
-            (IconName::Translate, tr_str(lang, "语言", "Language"), SettingsSectionType::Language),
+            (IconName::BotRobot, tr_str(lang, "AI 订阅与模型供应商", "AI Subscriptions & Providers"), SettingsSectionType::AiProviders, ai_badge.as_str()),
+            (IconName::ContactsUsers, tr_str(lang, "编辑资料", "Edit Profile"), SettingsSectionType::Information, ""),
+            (IconName::Speaker, tr_str(lang, "通知与声音", "Notifications and Sounds"), SettingsSectionType::Notifications, ""),
+            (IconName::Lock, tr_str(lang, "隐私与安全", "Privacy and Security"), SettingsSectionType::PrivacySecurity, ""),
+            (IconName::NightMoon, tr_str(lang, "聊天设置", "Chat Settings"), SettingsSectionType::Chat, ""),
+            (IconName::FolderAll, tr_str(lang, "聊天分组", "Folders"), SettingsSectionType::Folders, ""),
+            (IconName::SettingsGear, tr_str(lang, "高级设置", "Advanced"), SettingsSectionType::Advanced, ""),
+            (IconName::ComputerDesktop, tr_str(lang, "电脑", "Computers"), SettingsSectionType::Computers, ""),
+            (IconName::PhoneCall, tr_str(lang, "音视频通话", "Speakers and Camera"), SettingsSectionType::Calls, ""),
+            (IconName::ComputerDesktop, tr_str(lang, "键盘快捷键", "Keyboard Shortcuts"), SettingsSectionType::Shortcuts, ""),
+            (IconName::BotRobot, tr_str(lang, "商业功能", "Business"), SettingsSectionType::Business, ""),
+            (IconName::PremiumStar, tr_str(lang, "高级会员", "Premium"), SettingsSectionType::Premium, ""),
+            (IconName::WalletStars, tr_str(lang, "星币钱包", "Stars"), SettingsSectionType::Credits, ""),
+            (IconName::Translate, tr_str(lang, "语言", "Language"), SettingsSectionType::Language, ""),
         ];
 
         settings_container(pal)
@@ -180,8 +198,9 @@ impl Render for SettingsMainSections {
                 }))
             .child(settings_card(pal)
                 .child(settings_subsection_title(tr_str(lang, "设置分类", "Sections"), pal))
-                .children(links.into_iter().map(|(icon, label, sec)| {
-                    settings_action_row(icon, label, "", pal, false, move |this| {
+                .children(links.into_iter().map(|(icon, label, sec, val)| {
+                    let is_warn = sec == SettingsSectionType::AiProviders && self.needs_provider_selection;
+                    settings_action_row(icon, label, val, pal, is_warn, move |this| {
                         this.navigate_to(sec);
                     }, cx)
                 })))

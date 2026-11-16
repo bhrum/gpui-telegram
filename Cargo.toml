@@ -12,6 +12,7 @@ members = [
     "crates/gpui_telegram_desktop",
     "crates/gpui_telegram_test_harness",
     "crates/fabushi_miniapp",
+    "crates/magpie_gateway",
 
     # Inherited Production Domain Crates (fabushi-unified-design-20261105)
     "inherited/host",
@@ -51,6 +52,7 @@ gpui_telegram_client = { path = "crates/gpui_telegram_client" }
 gpui_telegram_desktop = { path = "crates/gpui_telegram_desktop" }
 gpui_telegram_test_harness = { path = "crates/gpui_telegram_test_harness" }
 fabushi_miniapp = { path = "crates/fabushi_miniapp" }
+magpie_gateway = { path = "crates/magpie_gateway" }
 
 # --- Inherited Domain Crates ---
 fabushi-messaging-core = { path = "inherited/mahayana-messaging" }

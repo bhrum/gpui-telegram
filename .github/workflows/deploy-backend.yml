@@ -13,6 +13,7 @@ on:
       - "crates/gpui_telegram_server/**"
       - "crates/fabushi_miniapp/**"
       - "crates/fabushi_miniapp_wasm/**"
+      - "crates/magpie_gateway/**"
       - "inherited/**"
       - "Cargo.toml"
       - "Cargo.lock"

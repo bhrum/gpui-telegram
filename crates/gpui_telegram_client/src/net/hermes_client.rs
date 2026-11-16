@@ -3,6 +3,7 @@ use crate::net::http_helpers::percent_encode_rfc3986;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HermesInlineButtonDto {
@@ -59,6 +60,14 @@ pub struct HermesStatusDto {
     pub pending_approvals_count: usize,
     #[serde(default)]
     pub heartbeat_enabled: bool,
+    #[serde(default)]
+    pub allow_local_fallback: bool,
+    #[serde(default)]
+    pub has_active_subscription: bool,
+    #[serde(default)]
+    pub has_configured_provider: bool,
+    #[serde(default)]
+    pub needs_provider_selection: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +576,439 @@ pub struct HermesSaveProviderRequest {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub set_active: Option<bool>,
+}
+
+// ============================================================================
+// Magpie Gateway & Provider Selection DTOs
+// ============================================================================
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpiePresetRegionDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpiePresetDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_name: Option<String>,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini_url: Option<String>,
+    #[serde(default)]
+    pub default_protocol: String,
+    #[serde(default)]
+    pub supported_protocols: Vec<String>,
+    #[serde(default)]
+    pub default_model: String,
+    #[serde(default)]
+    pub suggested_models: Vec<String>,
+    #[serde(default)]
+    pub no_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_label: Option<String>,
+    #[serde(default)]
+    pub key_plans: bool,
+    #[serde(default)]
+    pub split_accounts: bool,
+    #[serde(default)]
+    pub regions: Vec<MagpiePresetRegionDto>,
+    #[serde(default)]
+    pub header_hints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+    #[serde(default)]
+    pub env_var_hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieProviderDto {
+    pub provider_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub api_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub default_model: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub has_api_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub masked_key: Option<String>,
+    #[serde(default)]
+    pub is_active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default)]
+    pub is_subscription: bool,
+    #[serde(default)]
+    pub no_key_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_strategy: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieSubscriptionDto {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub source_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieRoutingGroupMemberDto {
+    pub target: String,
+    #[serde(default = "default_magpie_weight")]
+    pub weight: u32,
+    #[serde(default = "default_magpie_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_cost_per_1m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_cost_per_1m: Option<f64>,
+    #[serde(default)]
+    pub free: bool,
+}
+
+fn default_magpie_weight() -> u32 {
+    1
+}
+
+fn default_magpie_true() -> bool {
+    true
+}
+
+fn default_sticky_ttl_ms() -> i64 {
+    300_000
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieRoutingGroupDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub strategy: String,
+    #[serde(default)]
+    pub members: Vec<MagpieRoutingGroupMemberDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_fast_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_deep_model: Option<String>,
+    #[serde(default = "default_sticky_ttl_ms")]
+    pub sticky_ttl_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieMaskingConfigDto {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_magpie_true")]
+    pub mask_secrets: bool,
+    #[serde(default = "default_magpie_true")]
+    pub mask_personal: bool,
+    #[serde(default)]
+    pub custom_words: Vec<String>,
+    #[serde(default)]
+    pub allow_list: Vec<String>,
+    #[serde(default = "default_mask_action")]
+    pub default_action: String,
+    #[serde(default)]
+    pub kind_actions: BTreeMap<String, String>,
+}
+
+fn default_mask_action() -> String {
+    "mask".to_string()
+}
+
+impl Default for MagpieMaskingConfigDto {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mask_secrets: true,
+            mask_personal: true,
+            custom_words: Vec::new(),
+            allow_list: Vec::new(),
+            default_action: default_mask_action(),
+            kind_actions: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieMaskingHitDto {
+    pub kind: String,
+    pub placeholder: String,
+    pub action: String,
+    pub preview_hint: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieMaskingPreviewResponse {
+    #[serde(default)]
+    pub masked_text: String,
+    #[serde(default)]
+    pub hits: Vec<MagpieMaskingHitDto>,
+    #[serde(default)]
+    pub hit_count: usize,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieRouteTraceDto {
+    #[serde(default)]
+    pub timestamp_ms: i64,
+    #[serde(default)]
+    pub requested_model: String,
+    #[serde(default)]
+    pub resolved_provider_id: String,
+    #[serde(default)]
+    pub resolved_model: String,
+    #[serde(default)]
+    pub strategy: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub candidates_considered: usize,
+    #[serde(default)]
+    pub masking_hits: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieStateDto {
+    #[serde(default)]
+    pub presets: Vec<MagpiePresetDto>,
+    #[serde(default)]
+    pub providers: Vec<MagpieProviderDto>,
+    #[serde(default)]
+    pub active_provider: String,
+    #[serde(default)]
+    pub active_model: String,
+    #[serde(default)]
+    pub allow_local_fallback: bool,
+    #[serde(default)]
+    pub has_active_subscription: bool,
+    #[serde(default)]
+    pub has_configured_provider: bool,
+    #[serde(default)]
+    pub needs_provider_selection: bool,
+    #[serde(default)]
+    pub subscriptions: Vec<MagpieSubscriptionDto>,
+    #[serde(default)]
+    pub routing_groups: Vec<MagpieRoutingGroupDto>,
+    #[serde(default)]
+    pub routing_strategy: String,
+    #[serde(default)]
+    pub masking: MagpieMaskingConfigDto,
+    #[serde(default)]
+    pub recent_route_traces: Vec<MagpieRouteTraceDto>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieSaveProviderRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub custom_headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_key_required: Option<bool>,
+    #[serde(default = "default_magpie_true")]
+    pub activate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_local_fallback: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieSaveProviderResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub provider: MagpieProviderDto,
+    #[serde(default)]
+    pub state: MagpieStateDto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieDeleteProviderResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub deleted_id: String,
+    #[serde(default)]
+    pub state: MagpieStateDto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieProbeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieProbeResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub latency_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieSubscriptionsScanResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub subscriptions: Vec<MagpieSubscriptionDto>,
+    #[serde(default)]
+    pub scanned_at_ms: i64,
+    #[serde(default)]
+    pub has_active_subscription: bool,
+    #[serde(default)]
+    pub needs_provider_selection: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieGroupsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<MagpieRoutingGroupDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_strategy: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieGroupsResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub routing_groups: Vec<MagpieRoutingGroupDto>,
+    #[serde(default)]
+    pub routing_strategy: String,
+    #[serde(default)]
+    pub state: MagpieStateDto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieMaskingPreviewRequest {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<MagpieMaskingConfigDto>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieMaskingUpdateResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub masking: MagpieMaskingConfigDto,
+    #[serde(default)]
+    pub state: MagpieStateDto,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagpieImportRequest {
+    pub raw: String,
+    #[serde(default)]
+    pub activate: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MagpieImportResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub imported_count: usize,
+    #[serde(default)]
+    pub imported_provider_ids: Vec<String>,
+    #[serde(default)]
+    pub state: MagpieStateDto,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1575,5 +2017,194 @@ impl HermesClient {
         self.http
             .request_vec_or_field(Method::GET, &path, Some(token), &["messages"])
             .await
+    }
+
+    pub async fn magpie_state(
+        &self,
+        token: &str,
+    ) -> Result<MagpieStateDto, HttpClientError> {
+        self.http
+            .request_json(
+                Method::GET,
+                "/api/v1/hermes/magpie/state",
+                Some(token),
+                None::<&()>,
+            )
+            .await
+    }
+
+    pub async fn magpie_save_provider(
+        &self,
+        token: &str,
+        req: &MagpieSaveProviderRequest,
+    ) -> Result<MagpieSaveProviderResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::POST,
+                "/api/v1/hermes/magpie/providers",
+                Some(token),
+                Some(req),
+            )
+            .await
+    }
+
+    pub async fn magpie_delete_provider(
+        &self,
+        token: &str,
+        provider_id: &str,
+    ) -> Result<MagpieDeleteProviderResponse, HttpClientError> {
+        let path = format!(
+            "/api/v1/hermes/magpie/providers/{}",
+            percent_encode_rfc3986(provider_id)
+        );
+        self.http
+            .request_json(Method::DELETE, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn magpie_probe_provider(
+        &self,
+        token: &str,
+        provider_id: &str,
+        req: Option<&MagpieProbeRequest>,
+    ) -> Result<MagpieProbeResponse, HttpClientError> {
+        let path = format!(
+            "/api/v1/hermes/magpie/providers/{}/probe",
+            percent_encode_rfc3986(provider_id)
+        );
+        self.http
+            .request_json(Method::POST, &path, Some(token), req)
+            .await
+    }
+
+    pub async fn magpie_scan_subscriptions(
+        &self,
+        token: &str,
+    ) -> Result<MagpieSubscriptionsScanResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::POST,
+                "/api/v1/hermes/magpie/subscriptions/scan",
+                Some(token),
+                None::<&()>,
+            )
+            .await
+    }
+
+    pub async fn magpie_upsert_group(
+        &self,
+        token: &str,
+        req: &MagpieGroupsRequest,
+    ) -> Result<MagpieGroupsResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::POST,
+                "/api/v1/hermes/magpie/groups",
+                Some(token),
+                Some(req),
+            )
+            .await
+    }
+
+    pub async fn magpie_delete_group(
+        &self,
+        token: &str,
+        group_id: &str,
+    ) -> Result<MagpieGroupsResponse, HttpClientError> {
+        let path = format!(
+            "/api/v1/hermes/magpie/groups/{}",
+            percent_encode_rfc3986(group_id)
+        );
+        self.http
+            .request_json(Method::DELETE, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn magpie_update_masking(
+        &self,
+        token: &str,
+        cfg: &MagpieMaskingConfigDto,
+    ) -> Result<MagpieMaskingUpdateResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::PUT,
+                "/api/v1/hermes/magpie/masking",
+                Some(token),
+                Some(cfg),
+            )
+            .await
+    }
+
+    pub async fn magpie_preview_masking(
+        &self,
+        token: &str,
+        req: &MagpieMaskingPreviewRequest,
+    ) -> Result<MagpieMaskingPreviewResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::POST,
+                "/api/v1/hermes/magpie/masking/preview",
+                Some(token),
+                Some(req),
+            )
+            .await
+    }
+
+    pub async fn magpie_import(
+        &self,
+        token: &str,
+        req: &MagpieImportRequest,
+    ) -> Result<MagpieImportResponse, HttpClientError> {
+        self.http
+            .request_json(
+                Method::POST,
+                "/api/v1/hermes/magpie/import",
+                Some(token),
+                Some(req),
+            )
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn magpie_client_dtos_roundtrip_json() {
+        let req = MagpieSaveProviderRequest {
+            preset_id: Some("deepseek".to_string()),
+            api_key: Some("sk-secret-123".to_string()),
+            activate: true,
+            ..Default::default()
+        };
+        let raw = serde_json::to_string(&req).expect("serialize save provider");
+        let parsed: MagpieSaveProviderRequest =
+            serde_json::from_str(&raw).expect("deserialize save provider");
+        assert_eq!(req, parsed);
+
+        let group_req = MagpieGroupsRequest {
+            group: Some(MagpieRoutingGroupDto {
+                id: "fast-pool".to_string(),
+                name: "Fast Pool".to_string(),
+                strategy: "smart".to_string(),
+                members: vec![MagpieRoutingGroupMemberDto {
+                    target: "deepseek/deepseek-chat".to_string(),
+                    weight: 2,
+                    enabled: true,
+                    input_cost_per_1m: Some(0.14),
+                    output_cost_per_1m: Some(0.28),
+                    free: false,
+                }],
+                intent_fast_model: Some("deepseek/deepseek-chat".to_string()),
+                intent_deep_model: Some("deepseek/deepseek-reasoner".to_string()),
+                sticky_ttl_ms: 300_000,
+            }),
+            routing_strategy: Some("smart".to_string()),
+        };
+        let group_json = serde_json::to_value(&group_req).expect("serialize group req");
+        let parsed_group: MagpieGroupsRequest =
+            serde_json::from_value(group_json).expect("deserialize group req");
+        assert_eq!(group_req, parsed_group);
     }
 }

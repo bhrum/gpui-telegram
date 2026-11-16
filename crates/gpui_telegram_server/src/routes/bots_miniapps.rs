@@ -4852,6 +4852,19 @@ pub async fn chat_callback(
         return (StatusCode::OK, Json(res)).into_response();
     }
 
+    if data == "hermes:open_ai_providers" {
+        return (
+            StatusCode::OK,
+            Json(PeerBotActionResult {
+                ok: true,
+                companion_chat_id: Some(chat_id),
+                toast: Some("请打开「设置 → AI 订阅与模型供应商」选择或配置模型供应商".to_string()),
+                ..Default::default()
+            }),
+        )
+            .into_response();
+    }
+
     if let Some(rest) = data.strip_prefix("hermes:approve:") {
         let mut parts = rest.splitn(2, ':');
         if let (Some(approval_id), Some(decision)) = (parts.next(), parts.next()) {

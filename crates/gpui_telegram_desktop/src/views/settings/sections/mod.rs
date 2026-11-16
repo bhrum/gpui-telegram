@@ -2,6 +2,7 @@
 
 pub mod settings_active_sessions;
 pub mod settings_advanced;
+pub mod settings_ai_providers;
 pub mod settings_blocked_peers;
 pub mod settings_business;
 pub mod settings_calls;
@@ -25,6 +26,10 @@ pub mod settings_websites;
 
 pub use settings_active_sessions::SettingsActiveSessionsSections;
 pub use settings_advanced::SettingsAdvancedSections;
+pub use settings_ai_providers::{
+    AiPresetCategory, AiProviderField, AiProvidersTab, SettingsAiProvidersEvent,
+    SettingsAiProvidersSections,
+};
 pub use settings_blocked_peers::SettingsBlockedPeersSections;
 pub use settings_business::SettingsBusinessSections;
 pub use settings_calls::SettingsCallsSections;

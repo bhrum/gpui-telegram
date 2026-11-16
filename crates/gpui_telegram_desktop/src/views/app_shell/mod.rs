@@ -33,6 +33,7 @@ pub mod shell_computers_sync;
 pub mod shell_dialogs_fetch;
 pub mod shell_hermes_studio_sync;
 pub mod shell_input_ime;
+pub mod shell_magpie_sync;
 pub mod shell_miniapp_catalog;
 pub mod shell_miniapps_bots;
 pub mod shell_modals;

@@ -267,6 +267,13 @@ def build_macos_app_bundle(
     <string>public.app-category.social-networking</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Contributors. Apache-2.0.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+    </dict>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

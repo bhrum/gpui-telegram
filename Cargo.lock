@@ -2925,6 +2925,7 @@ dependencies = [
  "gpui_telegram_core",
  "gpui_telegram_media",
  "gpui_telegram_proto",
+ "magpie_gateway",
  "mahayana-host-protocol",
  "mahayana-host-runtime",
  "mahayana-node-agent-coordinator",
@@ -3076,6 +3077,7 @@ dependencies = [
  "gpui_telegram_proto",
  "gpui_telegram_webrtc",
  "hkdf",
+ "magpie_gateway",
  "mahayana-host-runtime",
  "mahayana-node-agent-coordinator",
  "parking_lot",
@@ -4128,6 +4130,19 @@ name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c41e0c4fef86961ac6d6f8a82609f55f31b05e4fce149ac5710e439df7619ba4"
+
+[[package]]
+name = "magpie_gateway"
+version = "1.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "mahayana-computer"

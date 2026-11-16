@@ -1577,7 +1577,7 @@ impl CommandHost for EngineCommandHost<'_> {
 
     fn set_api_mode(&mut self, mode: &str) -> std::result::Result<String, String> {
         let parsed = ApiMode::parse(mode)
-            .ok_or_else(|| format!("Unknown API mode '{mode}'. Use chat_completions, codex_responses, anthropic_messages, or local_hermes."))?;
+            .ok_or_else(|| format!("Unknown API mode '{mode}'. Use chat_completions, codex_responses, anthropic_messages, gemini_generate_content, or local_hermes."))?;
         self.engine
             .providers()
             .set_api_mode_for_active(parsed)
@@ -2778,11 +2778,11 @@ impl HermesEngine {
         } else {
             ProviderRouter::new()
         };
-        if providers.active_info().0 == "local_hermes" {
-            if let Ok(Some(raw)) = store.kv_get("runtime", "providers_state") {
-                if let Ok(saved) =
-                    serde_json::from_str::<crate::hermes::providers::ProviderRouterState>(&raw)
-                {
+        if let Ok(Some(raw)) = store.kv_get("runtime", "providers_state") {
+            if let Ok(saved) =
+                serde_json::from_str::<crate::hermes::providers::ProviderRouterState>(&raw)
+            {
+                if providers.active_info().0 == "local_hermes" {
                     for (_id, cfg) in saved.providers {
                         if cfg.id != "local_hermes" && cfg.enabled {
                             providers.register_provider(cfg);
@@ -2793,6 +2793,14 @@ impl HermesEngine {
                             .then_some(saved.active_model.as_str());
                         let _ = providers.set_active(&saved.active_provider_id, model_opt);
                     }
+                    if !saved.fallback_chain.is_empty() {
+                        providers.set_fallback_chain(saved.fallback_chain);
+                    }
+                }
+                providers.set_routing_strategy(saved.routing_strategy);
+                providers.set_masking_config(saved.masking);
+                for (_gid, group) in saved.routing_groups {
+                    let _ = providers.upsert_routing_group(group);
                 }
             }
         }
