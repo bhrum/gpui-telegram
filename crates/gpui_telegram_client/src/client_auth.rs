@@ -301,6 +301,11 @@ impl TelegramClient {
         &self,
         proxy: crate::session_persistence::ProxyEndpointRecord,
     ) -> std::result::Result<(), HttpClientError> {
+        let active_cfg = if proxy.enabled {
+            crate::net::proxy::ClientProxyConfig::from_record(&proxy)
+        } else {
+            None
+        };
         let mut bridge = crate::session_persistence::SessionPersistenceBridge::new(
             self.http_client.base_url.clone(),
         );
@@ -315,6 +320,7 @@ impl TelegramClient {
             bridge.state.proxies.push(proxy);
         }
         bridge.save_to_disk();
+        self.apply_proxy(active_cfg)?;
         Ok(())
     }
 

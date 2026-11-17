@@ -86,6 +86,19 @@ impl AboutBox {
         }
     }
 
+    /// Creates the Fabushi desktop about box metadata referencing `bhrum/gpui-telegram`.
+    pub fn new_fabushi() -> Self {
+        let version = current_version_text(env!("CARGO_PKG_VERSION"), false, false, None);
+        Self {
+            version_text: version,
+            faq_url: "https://github.com/bhrum/gpui-telegram/releases".to_string(),
+            api_url: "https://github.com/bhrum/gpui-telegram".to_string(),
+            github_url: "https://github.com/bhrum/gpui-telegram".to_string(),
+            license_url: "https://github.com/bhrum/gpui-telegram/blob/main/LICENSE".to_string(),
+            is_closed: false,
+        }
+    }
+
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version_text = version.into();
         self

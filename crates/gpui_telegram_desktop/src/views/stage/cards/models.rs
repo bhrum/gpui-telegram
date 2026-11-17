@@ -186,6 +186,8 @@ pub enum MessageContent {
     BotKeyboard {
         rows: Vec<Vec<InlineKeyboardButton>>,
     },
+    /// 12. Generative UI (A2UI) Dynamic Card
+    GenerativeCard(gpui_telegram_proto::cards::GenerativeCard),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

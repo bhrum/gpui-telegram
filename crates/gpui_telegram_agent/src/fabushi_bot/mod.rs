@@ -15,7 +15,9 @@ use crate::acp::AcpRunner;
 use crate::computer::ComputerCloudProvider;
 use crate::hermes::memory::{MemoryTarget, SoulProfile};
 use crate::hermes::security::ApprovalMode;
-use crate::hermes::toolsets::{FabushiTeammateHandler, ToolsetPreset};
+use crate::hermes::toolsets::{
+    AgenticStateBackend, FabushiTeammateHandler, PlatformImBridge, ToolsetPreset,
+};
 use crate::hermes::{HermesEngine, HermesEngineConfig};
 use chrono::Utc;
 use fabushi_messaging_core::actor::ActorId;
@@ -233,6 +235,8 @@ pub struct FabushiBotHost {
     host_hermes: Arc<HermesEngine>,
     computer_provider: RwLock<Option<Arc<dyn ComputerCloudProvider>>>,
     teammate_handler: RwLock<Option<Arc<dyn FabushiTeammateHandler>>>,
+    platform_im_bridge: RwLock<Option<Arc<dyn PlatformImBridge>>>,
+    agentic_backend: RwLock<Option<Arc<dyn AgenticStateBackend>>>,
     instances: RwLock<HashMap<i64, Arc<FabushiBotInstance>>>,
     agent_id_index: RwLock<HashMap<String, i64>>,
     username_index: RwLock<HashMap<String, i64>>,
@@ -252,6 +256,8 @@ impl FabushiBotHost {
             host_hermes,
             computer_provider: RwLock::new(None),
             teammate_handler: RwLock::new(None),
+            platform_im_bridge: RwLock::new(None),
+            agentic_backend: RwLock::new(None),
             instances: RwLock::new(HashMap::new()),
             agent_id_index: RwLock::new(HashMap::new()),
             username_index: RwLock::new(HashMap::new()),
@@ -270,6 +276,8 @@ impl FabushiBotHost {
             host_hermes,
             computer_provider: RwLock::new(None),
             teammate_handler: RwLock::new(None),
+            platform_im_bridge: RwLock::new(None),
+            agentic_backend: RwLock::new(None),
             instances: RwLock::new(HashMap::new()),
             agent_id_index: RwLock::new(HashMap::new()),
             username_index: RwLock::new(HashMap::new()),
@@ -299,6 +307,30 @@ impl FabushiBotHost {
         if let Ok(instances) = self.instances.read() {
             for inst in instances.values() {
                 inst.hermes.set_teammate_handler(Arc::clone(&handler));
+            }
+        }
+    }
+
+    pub fn set_platform_im_bridge(&self, bridge: Arc<dyn PlatformImBridge>) {
+        if let Ok(mut guard) = self.platform_im_bridge.write() {
+            *guard = Some(Arc::clone(&bridge));
+        }
+        self.host_hermes.set_platform_im_bridge(Arc::clone(&bridge));
+        if let Ok(instances) = self.instances.read() {
+            for inst in instances.values() {
+                inst.hermes.set_platform_im_bridge(Arc::clone(&bridge));
+            }
+        }
+    }
+
+    pub fn set_agentic_backend(&self, backend: Arc<dyn AgenticStateBackend>) {
+        if let Ok(mut guard) = self.agentic_backend.write() {
+            *guard = Some(Arc::clone(&backend));
+        }
+        self.host_hermes.set_agentic_backend(Arc::clone(&backend));
+        if let Ok(instances) = self.instances.read() {
+            for inst in instances.values() {
+                inst.hermes.set_agentic_backend(Arc::clone(&backend));
             }
         }
     }
@@ -679,6 +711,16 @@ impl FabushiBotHost {
         }
         if let Some(handler) = self.teammate_handler.read().ok().and_then(|g| g.clone()) {
             bot_hermes.set_teammate_handler(handler);
+        }
+        if let Some(bridge) = self.platform_im_bridge.read().ok().and_then(|g| g.clone()) {
+            bot_hermes.set_platform_im_bridge(bridge);
+        } else if let Some(bridge) = self.host_hermes.platform_im_bridge() {
+            bot_hermes.set_platform_im_bridge(bridge);
+        }
+        if let Some(backend) = self.agentic_backend.read().ok().and_then(|g| g.clone()) {
+            bot_hermes.set_agentic_backend(backend);
+        } else if let Some(backend) = self.host_hermes.agentic_backend() {
+            bot_hermes.set_agentic_backend(backend);
         }
 
         // Seed SOUL.md in this bot's isolated MemoryManager if empty and persona is provided

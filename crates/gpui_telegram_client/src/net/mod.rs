@@ -2,14 +2,19 @@ pub mod api_acp;
 pub mod api_auth;
 pub mod api_chats;
 pub mod api_computers;
+pub mod api_e2ee;
 pub mod api_features;
 pub mod api_miniapps;
 pub mod hermes_client;
 pub mod http_client;
 pub mod http_helpers;
+pub mod proxy;
 pub mod tailnet;
 pub mod ws_channel;
 pub mod ws_transport;
+
+pub use api_chats::SendAsPeerDto;
+pub use proxy::{ClientProxyConfig, ClientProxyType, ProxyHealthReport};
 
 pub use api_computers::{
     detect_local_host_info, detect_local_hostname, detect_real_lan_ips, execute_local_computer_op,
@@ -43,7 +48,8 @@ pub use gpui_telegram_proto::miniapp_contracts::{
 
 pub use gpui_telegram_proto::contracts::{
     AuthResponse as ProtoAuthResponse, BlockedUserDto, CallInviteRequest, CallRecordDto,
-    CallSignalRequest, ChannelStatisticsDto, ChatDetailDto, ChatFolderDto, ContactDto,
+    CallSignalRequest, ChannelStatisticsDto, ChatDetailDto, ChatFolderDto, ChunkedUploadInitRequest,
+    ChunkedUploadStatusResponse, ContactDto,
     CreateChatRequest, CreatePollHttpRequest, DailyStatPoint, DraftDto, EditMessageHttpRequest,
     ForumTopicDto, GifResultDto, InlineKeyboardButton, InviteLinkDto, MediaUploadCompleteResponse,
     MediaUploadInitResponse, MemberDto, PhoneSendCodeRequest, PhoneSendCodeResponse,
@@ -89,4 +95,4 @@ pub use hermes_client::{
     MagpieSubscriptionsScanResponse, OpenAiChatCompletionsRequest, OpenAiChatMessage,
 };
 pub use ws_channel::WsChannel;
-pub use ws_transport::{ConnectionStatus, WsTransport};
+pub use ws_transport::{connect_ws_with_proxy, ConnectionStatus, WsConnectError, WsTransport};

@@ -1,11 +1,17 @@
-pub mod wallet;
 pub mod acp;
 pub mod computer;
 pub mod fabushi_bot;
 pub mod hermes;
 pub mod mcp;
+pub mod multi_agent;
 pub mod talk;
 pub mod tasks;
+pub mod wallet;
+
+pub use multi_agent::{
+    FloorControlQueue, FloorPriority, LoopBudget, LoopBudgetExceededError, ScopedCapabilityToken,
+    SharedGroupWorkspace, SharedWorkspaceEntry, DEFAULT_MAX_LOOP_HOPS,
+};
 
 pub use acp::{
     AcpRunner, AgentTurnInput, AgentTurnOutput, HostSubagentLineage, SubagentArtifactReceipt,
@@ -30,7 +36,14 @@ pub use hermes::providers::{ApiMode, MagpiePresetApplyInput, MoaCoordinator, Pro
 pub use hermes::security::{ApprovalDecisionAction, ApprovalMode, SecurityEngine};
 pub use hermes::skills::SkillsManager;
 pub use hermes::state_db::HermesStateStore;
-pub use hermes::toolsets::{HermesToolContext, HermesToolExecutor, ToolsetId, ToolsetPreset};
+pub use hermes::tools_agentic::{
+    DesktopPanelState, IntegrationConnection, KanbanBoard, KanbanCard, LocalAgenticStore,
+    LocalCronJob, LocalSkillEntry,
+};
+pub use hermes::toolsets::{
+    AgenticStateBackend, HermesToolContext, HermesToolExecutor, PlatformImBridge,
+    PlatformImCaller, ToolsetId, ToolsetPreset,
+};
 pub use hermes::trajectory::{SecretRedactor, TrajectoryExporter, TrajectoryFormat};
 pub use hermes::{
     CronRunOutcome, HeartbeatConfig, HeartbeatManager, HeartbeatTickOutcome, HermesEngine,

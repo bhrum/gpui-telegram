@@ -43,7 +43,7 @@ impl SettingsActiveSessionsSections {
             sessions: vec![
                 SessionRowData {
                     hash: 1001,
-                    app_name: "AI Chat Desktop 1.0".into(),
+                    app_name: "Fabushi Desktop 1.0".into(),
                     device_model: "MacBook Pro".into(),
                     platform: "macOS".into(),
                     ip: "192.168.1.100".into(),

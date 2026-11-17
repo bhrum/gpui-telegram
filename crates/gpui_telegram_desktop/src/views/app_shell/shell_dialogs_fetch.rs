@@ -429,6 +429,23 @@ impl AppShell {
             let _ = weak_shell.update(app, |shell, cx| {
                 match res {
                     Ok(msgs) => {
+                        let exp_pairs: Vec<(u64, i64)> = msgs
+                            .iter()
+                            .filter_map(|m| {
+                                let mid = m.message_id;
+                                let exp = m.expires_at_ms.or_else(|| {
+                                    m.ttl_seconds
+                                        .filter(|&ttl| ttl > 0)
+                                        .and_then(|ttl| {
+                                            m.date.map(|d| {
+                                                let base_ms = if d < 10_000_000_000 { d * 1000 } else { d };
+                                                base_ms.saturating_add(i64::from(ttl) * 1000)
+                                            })
+                                        })
+                                })?;
+                                Some((mid, exp))
+                            })
+                            .collect();
                         let protected_ids: HashSet<u64> = shell
                             .session_sync
                             .in_flight_reactions
@@ -453,6 +470,9 @@ impl AppShell {
                                     &protected_ids,
                                 );
                                 if res {
+                                    for (mid, exp) in exp_pairs {
+                                        st.message_expirations.insert(mid, exp);
+                                    }
                                     if let Some(ref rich) = rich_msgs {
                                         overlay_rich_message_metadata(&mut st.messages, rich);
                                         st.row_height_cache.mark_dirty();
@@ -460,6 +480,7 @@ impl AppShell {
                                             overlay_rich_message_metadata(hist, rich);
                                         }
                                     }
+                                    sb.recompute_folder_badges();
                                     st_cx.notify();
                                 }
                                 res

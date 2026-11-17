@@ -11,6 +11,7 @@ use gpui_telegram_proto::miniapp_contracts::{
     MiniAppActionResponse, MiniAppEntry, MiniAppLaunchContext, MiniAppLaunchMode,
     NaturalLanguageCreateRequest, NaturalLanguageCreateResponse, PatchFabushiBotRequest,
     PeerBotActionResult, ValidateInitDataRequest, ValidateInitDataResponse,
+    sanitize_webapp_custom_url,
 };
 use hmac::{Hmac, Mac};
 use reqwest::Method;
@@ -353,11 +354,34 @@ impl HttpClient {
         launch_mode: MiniAppLaunchMode,
         start_param: Option<&str>,
     ) -> Result<MiniAppLaunchContext, HttpClientError> {
+        self.launch_mini_app_with_url(
+            token,
+            bot_username,
+            short_name,
+            chat_id,
+            launch_mode,
+            start_param,
+            None,
+        )
+        .await
+    }
+
+    pub async fn launch_mini_app_with_url(
+        &self,
+        token: &str,
+        bot_username: &str,
+        short_name: &str,
+        chat_id: Option<i64>,
+        launch_mode: MiniAppLaunchMode,
+        start_param: Option<&str>,
+        custom_url: Option<&str>,
+    ) -> Result<MiniAppLaunchContext, HttpClientError> {
         let path = format!("{}/launch", miniapp_base_path(bot_username, short_name));
         let body = LaunchMiniAppRequest {
             chat_id,
             launch_mode,
             start_param: start_param.map(|s| s.to_string()),
+            custom_url: custom_url.and_then(sanitize_webapp_custom_url),
         };
         self.request_json(Method::POST, &path, Some(token), Some(&body))
             .await
@@ -692,9 +716,37 @@ impl TelegramClient {
         launch_mode: MiniAppLaunchMode,
         start_param: Option<&str>,
     ) -> std::result::Result<MiniAppLaunchContext, HttpClientError> {
+        self.launch_mini_app_with_url(
+            bot_username,
+            short_name,
+            chat_id,
+            launch_mode,
+            start_param,
+            None,
+        )
+        .await
+    }
+
+    pub async fn launch_mini_app_with_url(
+        &self,
+        bot_username: &str,
+        short_name: &str,
+        chat_id: Option<i64>,
+        launch_mode: MiniAppLaunchMode,
+        start_param: Option<&str>,
+        custom_url: Option<&str>,
+    ) -> std::result::Result<MiniAppLaunchContext, HttpClientError> {
         let token = self.require_token()?;
         self.http_client
-            .launch_mini_app(&token, bot_username, short_name, chat_id, launch_mode, start_param)
+            .launch_mini_app_with_url(
+                &token,
+                bot_username,
+                short_name,
+                chat_id,
+                launch_mode,
+                start_param,
+                custom_url,
+            )
             .await
     }
 

@@ -36,7 +36,7 @@ impl ServerDatabase {
     }
 
     pub fn list_contacts(&self, owner: UserId) -> Result<Vec<ContactDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 r#"SELECT c.contact_user_id, c.first_name, c.last_name, u.username, COALESCE(c.phone, u.phone), u.is_bot,
                           EXISTS(SELECT 1 FROM contacts c2 WHERE c2.owner_user_id = c.contact_user_id AND c2.contact_user_id = c.owner_user_id) AS mutual
@@ -98,7 +98,7 @@ impl ServerDatabase {
     }
 
     pub fn list_chat_invites(&self, chat_id: ChatId) -> Result<Vec<InviteLinkDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT invite_id, chat_id, creator_id, code, title, usage_limit, usage_count, expire_date_ms, request_needed, is_revoked, created_at_ms FROM chat_invites WHERE chat_id = ?1 ORDER BY created_at_ms DESC"
             ).map_db()?;
@@ -149,7 +149,7 @@ impl ServerDatabase {
     }
 
     pub fn list_folders(&self, user_id: UserId) -> Result<Vec<FolderDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 r#"SELECT folder_id, title, emoticon, pinned_chat_ids_json, included_chat_ids_json, excluded_chat_ids_json,
                           include_contacts, include_non_contacts, include_groups, include_channels, include_bots,
@@ -250,7 +250,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_chat_setting(&self, user_id: UserId, chat_id: ChatId) -> Result<(bool, bool, bool, Option<i64>)> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT is_archived, is_pinned, is_muted, mute_until_ms FROM user_chat_settings WHERE user_id = ?1 AND chat_id = ?2",
                 params![user_id.0 as i64, chat_id.0],
@@ -291,10 +291,55 @@ impl ServerDatabase {
     }
 
     pub fn list_pinned_messages(&self, chat_id: ChatId) -> Result<Vec<i64>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT message_id FROM pinned_messages WHERE chat_id = ?1 ORDER BY pinned_at_ms DESC, message_id DESC").map_db()?;
             let rows = stmt.query_map(params![chat_id.0], |r| r.get(0)).map_db()?;
             rows.collect::<std::result::Result<Vec<i64>, _>>().map_db()
+        })
+    }
+
+    pub fn list_pinned_message_dtos(
+        &self,
+        chat_id: ChatId,
+    ) -> Result<Vec<gpui_telegram_proto::contracts::chats::PinnedMessageDto>> {
+        self.pool.with_reader(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pm.message_id, pm.pinned_by, pm.pinned_at_ms, m.content_json
+                     FROM pinned_messages pm
+                     LEFT JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
+                     WHERE pm.chat_id = ?1
+                     ORDER BY pm.pinned_at_ms DESC, pm.message_id DESC",
+                )
+                .map_db()?;
+            let rows = stmt
+                .query_map(params![chat_id.0], |r| {
+                    let message_id: i64 = r.get(0)?;
+                    let pinned_by = r.get::<_, i64>(1)?.max(0) as u64;
+                    let pinned_at_ms: i64 = r.get(2)?;
+                    let content_json: Option<String> = r.get(3)?;
+                    let preview_text = content_json
+                        .as_deref()
+                        .and_then(|raw| {
+                            serde_json::from_str::<gpui_telegram_proto::message::MessageContent>(raw)
+                                .ok()
+                        })
+                        .map(|c| {
+                            let full = crate::server::extract_message_content_text(&c);
+                            full.lines().next().unwrap_or(&full).to_string()
+                        })
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "[Pinned message]".to_string());
+                    Ok(gpui_telegram_proto::contracts::chats::PinnedMessageDto {
+                        chat_id: chat_id.0,
+                        message_id,
+                        pinned_by,
+                        pinned_at_ms,
+                        preview_text,
+                    })
+                })
+                .map_db()?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_db()
         })
     }
 
@@ -330,7 +375,7 @@ impl ServerDatabase {
     }
 
     pub fn get_draft(&self, user_id: UserId, chat_id: ChatId, topic_id: i64) -> Result<Option<DraftDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT text, entities_json, reply_to_msg_id, date_ms FROM drafts WHERE user_id = ?1 AND chat_id = ?2 AND topic_id = ?3",
                 params![user_id.0 as i64, chat_id.0, topic_id],
@@ -389,7 +434,7 @@ impl ServerDatabase {
     }
 
     pub fn purge_expired_ttl_messages(&self, now_ms: i64) -> Result<Vec<(ChatId, Vec<MsgId>)>> {
-        let expired_pairs: Vec<(i64, i64)> = self.pool.with_conn(|conn| {
+        let expired_pairs: Vec<(i64, i64)> = self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"SELECT m.chat_id, m.message_id
@@ -512,7 +557,7 @@ impl ServerDatabase {
     }
 
     pub fn get_chat_ttl(&self, chat_id: ChatId) -> Result<u32> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT message_ttl_seconds FROM chats WHERE chat_id = ?1",
                 params![chat_id.0],
@@ -580,7 +625,7 @@ impl ServerDatabase {
     }
 
     pub fn is_user_blocked(&self, owner: UserId, target: UserId) -> Result<bool> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM blocked_users WHERE owner_user_id = ?1 AND blocked_user_id = ?2)",
                 params![owner.0 as i64, target.0 as i64],
@@ -591,7 +636,7 @@ impl ServerDatabase {
     }
 
     pub fn list_blocked_users(&self, owner: UserId) -> Result<Vec<BlockedUserDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"SELECT u.user_id, u.first_name, u.last_name, u.username, u.phone, b.blocked_at_ms
@@ -617,7 +662,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_privacy_settings(&self, user_id: UserId) -> Result<UserPrivacySettingsDto> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let raw: Option<String> = conn
                 .query_row(
                     "SELECT settings_json FROM user_privacy_settings WHERE user_id = ?1",

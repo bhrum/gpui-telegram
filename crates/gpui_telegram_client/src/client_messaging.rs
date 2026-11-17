@@ -5,6 +5,7 @@ use crate::net::{
     PollHttpResponse, ReactionHttpRequest, ReactionHttpResponse, ReadChatHttpRequest,
     ReadChatHttpResponse, RichSendMessageRequest, RichSendMessageResponse,
 };
+use crate::outbox::OutboxMessageRecord;
 use gpui_telegram_core::types::{ChatId, MessageId, PeerId, TopicId, UserId};
 use gpui_telegram_proto::message::{
     MessageContent, MessageEntity, MessageItem, ReactionCount, ReplyHeader,
@@ -13,14 +14,7 @@ use gpui_telegram_proto::sync::{SyncGetDifferenceRequest, SyncGetDifferenceRespo
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
 
 impl TelegramClient {
-    pub async fn send_message_durable(
-        &self,
-        mut req: RichSendMessageRequest,
-    ) -> std::result::Result<RichSendMessageResponse, HttpClientError> {
-        let token = self.require_token()?;
-        let nonce = req.client_nonce.unwrap_or_else(|| self.next_client_nonce());
-        req.client_nonce = Some(nonce);
-
+    fn stage_provisional_message(&self, req: &RichSendMessageRequest, nonce: u64) {
         let chat_id = ChatId(req.chat_id);
         let sender_id = UserId(self.current_user_id().unwrap_or(0));
         let content = req.content.clone().unwrap_or_else(|| {
@@ -46,14 +40,111 @@ impl TelegramClient {
             provisional = provisional.with_reply_to(rh);
         }
         self.local_store.insert_message(provisional);
+    }
 
-        let resp = self.http_client.send_message_rich(&token, &req).await?;
-        self.local_store
-            .ack_client_nonce(nonce, MessageId(resp.message_id));
-        if resp.pts > self.sync_coordinator.last_pts(chat_id) {
-            self.sync_coordinator.set_pts(chat_id, resp.pts);
+    pub fn enqueue_message(
+        &self,
+        mut req: RichSendMessageRequest,
+    ) -> gpui_telegram_core::error::Result<OutboxMessageRecord> {
+        let nonce = req.client_nonce.unwrap_or_else(|| self.next_client_nonce());
+        req.client_nonce = Some(nonce);
+        self.stage_provisional_message(&req, nonce);
+        self.outbox.enqueue(&req, nonce)
+    }
+
+    pub async fn send_message_durable(
+        &self,
+        mut req: RichSendMessageRequest,
+    ) -> std::result::Result<RichSendMessageResponse, HttpClientError> {
+        let nonce = req.client_nonce.unwrap_or_else(|| self.next_client_nonce());
+        req.client_nonce = Some(nonce);
+        self.stage_provisional_message(&req, nonce);
+        self.outbox.send_or_enqueue_direct(&req, nonce).await
+    }
+
+    pub async fn send_encrypted_dm(
+        &self,
+        chat_id: i64,
+        recipient_user_id: u64,
+        plaintext: &[u8],
+    ) -> std::result::Result<RichSendMessageResponse, HttpClientError> {
+        let env = self
+            .e2ee
+            .encrypt_dm(recipient_user_id, plaintext)
+            .await
+            .map_err(|e| HttpClientError::Api {
+                status: 400,
+                message: e.to_string(),
+            })?;
+        let req = RichSendMessageRequest {
+            chat_id,
+            text: None,
+            content: Some(MessageContent::Encrypted(env)),
+            entities: Vec::new(),
+            reply_to: None,
+            quote_text: None,
+            topic_id: None,
+            client_nonce: Some(self.next_client_nonce()),
+            forward_from_chat_id: None,
+            forward_from_msg_id: None,
+            silent: false,
+            scheduled_at_ms: None,
+            inline_keyboard: None,
+            send_as_peer_id: None,
+        };
+        self.send_message_durable(req).await
+    }
+
+    pub async fn send_encrypted_group(
+        &self,
+        chat_id: i64,
+        member_user_ids: &[u64],
+        plaintext: &[u8],
+    ) -> std::result::Result<RichSendMessageResponse, HttpClientError> {
+        let (dist_opt, group_env) = self
+            .e2ee
+            .encrypt_group(chat_id, member_user_ids, plaintext)
+            .await
+            .map_err(|e| HttpClientError::Api {
+                status: 400,
+                message: e.to_string(),
+            })?;
+        if let Some(dist_env) = dist_opt {
+            let dist_req = RichSendMessageRequest {
+                chat_id,
+                text: None,
+                content: Some(MessageContent::Encrypted(dist_env)),
+                entities: Vec::new(),
+                reply_to: None,
+                quote_text: None,
+                topic_id: None,
+                client_nonce: Some(self.next_client_nonce()),
+                forward_from_chat_id: None,
+                forward_from_msg_id: None,
+                silent: true,
+                scheduled_at_ms: None,
+                inline_keyboard: None,
+                send_as_peer_id: None,
+            };
+            self.send_message_durable(dist_req).await?;
         }
-        Ok(resp)
+        let msg_req = RichSendMessageRequest {
+            chat_id,
+            text: None,
+            content: Some(MessageContent::Encrypted(group_env)),
+            entities: Vec::new(),
+            reply_to: None,
+            quote_text: None,
+            topic_id: None,
+            client_nonce: Some(self.next_client_nonce()),
+            forward_from_chat_id: None,
+            forward_from_msg_id: None,
+            silent: false,
+            scheduled_at_ms: None,
+            inline_keyboard: None,
+            send_as_peer_id: None,
+        };
+        self.send_message_durable(msg_req).await
     }
 
     pub async fn send_text_message(
@@ -77,6 +168,7 @@ impl TelegramClient {
             silent: false,
             scheduled_at_ms: None,
             inline_keyboard: None,
+            send_as_peer_id: None,
         };
         self.send_message_durable(req).await
     }

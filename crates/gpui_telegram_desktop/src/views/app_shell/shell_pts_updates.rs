@@ -12,15 +12,18 @@ use gpui_telegram_webrtc::SignalingFrame;
 
 use crate::i18n::tr_str;
 use crate::views::app_shell::shell_actions::peer_avatar_color;
+use crate::views::app_shell::shell_settings_sync::apply_folders_to_shell;
 use crate::views::app_shell::shell_state::reconcile_stage_message_list;
 use crate::views::app_shell::shell_truth::{
     decode_inline_keyboard_json, derive_initials, overlay_rich_message_metadata,
-    SessionRequestFence,
+    proto_keyboard_to_stage, SessionRequestFence,
 };
 use crate::views::call_overlay::TalkModeState;
+use crate::views::conversation_stage::PinnedBannerEntry;
 use crate::views::shell::AppShell;
 use crate::views::stage::cards::{
-    DeliveryStatus, MessageContent, MessageDirection, MessageItemModel, ReactionItem,
+    DeliveryStatus, InlineKeyboardButton, MessageContent, MessageDirection, MessageItemModel,
+    ReactionItem, ServiceType,
 };
 use crate::views::{CallOverlay, ConversationStage};
 
@@ -411,11 +414,25 @@ pub(crate) fn format_sidebar_preview(raw: &str) -> String {
     truncate_preview(&collapsed, MAX_PREVIEW_CHARS)
 }
 
+fn extract_stage_message_snippet(msg: &MessageItemModel) -> Option<String> {
+    match &msg.content {
+        MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+        MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => {
+            Some(caption.clone().unwrap_or_else(|| "Media".to_string()))
+        }
+        MessageContent::Poll { question, .. } => Some(question.clone()),
+        MessageContent::Invoice { title, .. } => Some(title.clone()),
+        MessageContent::Service { text, .. } => Some(text.clone()),
+        _ => Some("Pinned message".to_string()),
+    }
+}
+
 fn apply_text_edit_to_stage(
     st: &mut ConversationStage,
     chat_u64: u64,
     target_id: u64,
     text: &str,
+    updated_kb: Option<Option<Vec<Vec<InlineKeyboardButton>>>>,
 ) -> bool {
     let mut is_latest_message = false;
     let is_active_chat = st.active_chat_id == Some(chat_u64);
@@ -426,6 +443,9 @@ fn apply_text_edit_to_stage(
                 text: text.to_string(),
                 is_edited: true,
             };
+            if let Some(ref kb) = updated_kb {
+                m.bot_keyboard = kb.clone();
+            }
             st.row_heights_probe.borrow_mut().remove(&target_id);
             st.row_height_cache.measured_heights.remove(&target_id);
             st.row_height_cache.mark_dirty();
@@ -443,6 +463,9 @@ fn apply_text_edit_to_stage(
                 text: text.to_string(),
                 is_edited: true,
             };
+            if let Some(ref kb) = updated_kb {
+                m.bot_keyboard = kb.clone();
+            }
         }
         if (!is_active_chat || st.messages.is_empty())
             && history.last().is_some_and(|m| m.id == target_id)
@@ -453,7 +476,218 @@ fn apply_text_edit_to_stage(
     is_latest_message
 }
 
+/// Evaluates whether an incoming message should trigger a desktop notification
+/// according to global preferences, chat category preferences, mute state, and window focus.
+pub fn should_dispatch_message_notification(
+    is_outgoing: bool,
+    is_current_chat: bool,
+    window_is_focused: bool,
+    is_muted: bool,
+    is_channel: bool,
+    is_group: bool,
+    prefs: &crate::app::preferences::NotificationPreferences,
+) -> bool {
+    if is_outgoing || !prefs.enabled || is_muted {
+        return false;
+    }
+    let category_enabled = if is_channel {
+        prefs.channels
+    } else if is_group {
+        prefs.groups
+    } else {
+        prefs.private_chats
+    };
+    if !category_enabled {
+        return false;
+    }
+    !(is_current_chat && window_is_focused)
+}
+
 impl AppShell {
+    fn apply_pinned_ids_update(
+        &mut self,
+        chat_u64: u64,
+        ids: Vec<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        if chat_u64 == 0 {
+            return;
+        }
+        let lang = self.active_lang_id().to_string();
+        let latest_id_u64 = ids.first().and_then(|&id| u64::try_from(id).ok());
+        let mut needs_http_hydrate = false;
+        let mut sidebar_notice: Option<String> = None;
+
+        self.stage.update(cx, |st, st_cx| {
+            let is_active = st.active_chat_id == Some(chat_u64);
+            let existing_target = latest_id_u64.and_then(|pid| {
+                if is_active {
+                    st.messages
+                        .iter()
+                        .find(|m| m.id == pid)
+                        .or_else(|| {
+                            st.chat_histories
+                                .get(&chat_u64)
+                                .and_then(|h| h.iter().find(|m| m.id == pid))
+                        })
+                } else {
+                    st.chat_histories
+                        .get(&chat_u64)
+                        .and_then(|h| h.iter().find(|m| m.id == pid))
+                }
+            });
+            let was_already_pinned = existing_target.is_some_and(|m| m.is_pinned);
+            let pinned_info = existing_target.and_then(|m| {
+                extract_stage_message_snippet(m).map(|s| (s, m.sender_name.clone()))
+            });
+
+            if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                for m in history.iter_mut() {
+                    m.is_pinned = ids.contains(&(m.id as i64));
+                }
+            }
+            if is_active {
+                st.pinned_tracker.set_pinned_ids(ids.clone());
+                for m in &mut st.messages {
+                    m.is_pinned = ids.contains(&(m.id as i64));
+                }
+            }
+
+            if ids.is_empty() {
+                st.chat_pinned_messages.insert(chat_u64, None);
+                if is_active {
+                    st.pinned_message = None;
+                }
+            } else if let Some((ref snippet, ref raw_sender)) = pinned_info {
+                st.chat_pinned_messages
+                    .insert(chat_u64, Some(snippet.clone()));
+                if is_active {
+                    st.pinned_message = Some(snippet.clone());
+                }
+                if !was_already_pinned {
+                    if let Some(new_pin_id) = latest_id_u64 {
+                        let sender_label = if !raw_sender.trim().is_empty() {
+                            raw_sender.clone()
+                        } else if is_active && !st.chat_title.trim().is_empty() {
+                            st.chat_title.clone()
+                        } else {
+                            "Bot".to_string()
+                        };
+                        let short_snippet = truncate_preview(snippet, 48);
+                        let notice_text = if lang.starts_with("zh") {
+                            format!("{sender_label} 置顶了「{short_snippet}」")
+                        } else {
+                            format!("{sender_label} pinned \"{short_snippet}\"")
+                        };
+                        sidebar_notice = Some(format!("📌 {notice_text}"));
+                        let service_id = 0x7FFF_0000_0000_0000 | new_pin_id;
+                        let service_msg = MessageItemModel {
+                            id: service_id,
+                            sender_id: 0,
+                            sender_name: sender_label,
+                            avatar_initials: String::new(),
+                            avatar_color: 0,
+                            direction: MessageDirection::Incoming,
+                            timestamp: String::new(),
+                            delivery_status: DeliveryStatus::Read,
+                            reply_to: None,
+                            reactions: Vec::new(),
+                            content: MessageContent::Service {
+                                text: notice_text,
+                                service_type: ServiceType::PinnedMessage,
+                            },
+                            bot_keyboard: None,
+                            is_pinned: false,
+                        };
+                        if is_active {
+                            if !st.messages.iter().any(|m| m.id == service_id) {
+                                st.add_message(service_msg);
+                            }
+                        } else {
+                            let hist = st.chat_histories.entry(chat_u64).or_default();
+                            if !hist.iter().any(|m| m.id == service_id) {
+                                hist.push(service_msg);
+                            }
+                        }
+                    }
+                }
+            } else {
+                needs_http_hydrate = true;
+            }
+            st_cx.notify();
+        });
+
+        if let Some(preview) = sidebar_notice {
+            self.sidebar.update(cx, |sb, sb_cx| {
+                if let Some(dialog) = sb.dialogs.iter_mut().find(|d| d.id == chat_u64) {
+                    dialog.last_message = preview;
+                    sb_cx.notify();
+                }
+            });
+        }
+
+        if needs_http_hydrate {
+            if let (Some(token), Some(uid)) = (
+                self.session_sync.session_token.clone(),
+                self.session_sync.user_id,
+            ) {
+                let fence = SessionRequestFence {
+                    auth_generation: self.session_sync.auth_generation,
+                    request_generation: 0,
+                    token,
+                    user_id: uid,
+                };
+                let client = self.client.clone();
+                let ids_clone = ids;
+                cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+                    if let Ok(pins) = client.list_pinned_messages(chat_u64 as i64).await {
+                        let _ = weak.update(app, |shell, cx| {
+                            if !fence.matches(
+                                shell.is_authenticated,
+                                shell.session_sync.auth_generation,
+                                0,
+                                shell.session_sync.session_token.as_deref(),
+                                shell.session_sync.user_id,
+                            ) {
+                                return;
+                            }
+                            let entries: Vec<PinnedBannerEntry> = pins
+                                .into_iter()
+                                .filter_map(|p| {
+                                    let msg_id = u64::try_from(p.message_id).ok()?;
+                                    let preview = if p.preview_text.trim().is_empty() {
+                                        format!("Pinned message #{msg_id}")
+                                    } else {
+                                        p.preview_text
+                                    };
+                                    Some(PinnedBannerEntry {
+                                        msg_id,
+                                        preview_text: preview,
+                                        sender_name: String::new(),
+                                        thumb_url: None,
+                                    })
+                                })
+                                .collect();
+                            shell.stage.update(cx, |st, st_cx| {
+                                st.set_pinned_entries(chat_u64, entries);
+                                if st.active_chat_id == Some(chat_u64) && !ids_clone.is_empty() {
+                                    for id in &ids_clone {
+                                        if !st.pinned_tracker.pinned_ids.contains(id) {
+                                            st.pinned_tracker.pinned_ids.push(*id);
+                                        }
+                                    }
+                                    st.pinned_tracker.reset_to_latest();
+                                }
+                                st_cx.notify();
+                            });
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
     fn has_stage_or_history_message(&self, chat_id: u64, msg_id: u64, cx: &App) -> bool {
         let st = self.stage.read(cx);
         let in_active = st.active_chat_id == Some(chat_id)
@@ -621,6 +855,10 @@ impl AppShell {
                     0
                 };
                 let target_id = u64::try_from(msg.id.0).unwrap_or(0);
+                let updated_kb = msg
+                    .inline_keyboard
+                    .as_deref()
+                    .map(proto_keyboard_to_stage);
                 if let gpui_telegram_proto::message::MessageContent::Text { text, .. } = msg.content
                 {
                     let mut is_latest_message = false;
@@ -629,7 +867,7 @@ impl AppShell {
                         has_history_for_chat = st.active_chat_id == Some(chat_u64)
                             || st.chat_histories.contains_key(&chat_u64);
                         is_latest_message =
-                            apply_text_edit_to_stage(st, chat_u64, target_id, &text);
+                            apply_text_edit_to_stage(st, chat_u64, target_id, &text, updated_kb);
                         st_cx.notify();
                     });
                     if chat_u64 > 0 && target_id > 0 {
@@ -652,15 +890,57 @@ impl AppShell {
                 cx.notify();
             }
             UpdateEvent::DeleteMessages(tombstone) => {
-                let chat_u64 = chat_id.0 as u64;
+                let tomb_chat_i64 = match tombstone.chat_id {
+                    gpui_telegram_core::types::PeerId::Chat(c) => c.0,
+                    gpui_telegram_core::types::PeerId::User(u) => u.0 as i64,
+                    gpui_telegram_core::types::PeerId::Channel(ch) => ch.0 as i64,
+                    gpui_telegram_core::types::PeerId::Fake(f) => f as i64,
+                };
+                let mut chat_u64 = if tomb_chat_i64 > 0 {
+                    tomb_chat_i64 as u64
+                } else if chat_id.0 > 0 {
+                    chat_id.0 as u64
+                } else {
+                    0
+                };
+                if chat_u64 == 0 {
+                    if let Some(first_id) = tombstone.message_ids.first() {
+                        if let Some(found) = self.client.local_store.find_chat_id_for_message(*first_id) {
+                            chat_u64 = u64::try_from(found.0).unwrap_or(0);
+                        }
+                    }
+                }
                 let ids_to_delete: HashSet<u64> =
-                    tombstone.message_ids.iter().map(|id| id.0 as u64).collect();
+                    tombstone.message_ids.iter().filter_map(|id| u64::try_from(id.0).ok()).collect();
+                if chat_u64 > 0 {
+                    self.client
+                        .local_store
+                        .delete_messages(ChatId(chat_u64 as i64), &tombstone.message_ids);
+                }
 
                 self.stage.update(cx, |st, st_cx| {
-                    st.messages.retain(|m| !ids_to_delete.contains(&m.id));
-                    if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
-                        history.retain(|m| !ids_to_delete.contains(&m.id));
+                    if chat_u64 == 0 || st.active_chat_id == Some(chat_u64) {
+                        st.messages.retain(|m| !ids_to_delete.contains(&m.id));
                     }
+                    if chat_u64 > 0 {
+                        if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
+                            history.retain(|m| !ids_to_delete.contains(&m.id));
+                        }
+                        if let Some(entries) = st.chat_pinned_entries.get_mut(&chat_u64) {
+                            entries.retain(|e| !ids_to_delete.contains(&e.msg_id));
+                        }
+                    } else {
+                        for history in st.chat_histories.values_mut() {
+                            history.retain(|m| !ids_to_delete.contains(&m.id));
+                        }
+                        for entries in st.chat_pinned_entries.values_mut() {
+                            entries.retain(|e| !ids_to_delete.contains(&e.msg_id));
+                        }
+                    }
+                    for id in &ids_to_delete {
+                        st.message_expirations.remove(id);
+                    }
+                    st.sync_pinned_tracker();
                     st.row_height_cache.mark_dirty();
                     st_cx.notify();
                 });
@@ -803,37 +1083,23 @@ impl AppShell {
                 chat_id: ev_chat,
                 pinned_ids,
             } => {
-                let chat_u64 = ev_chat.0 as u64;
+                let chat_u64 = if ev_chat.0 > 0 {
+                    ev_chat.0 as u64
+                } else {
+                    u64::try_from(chat_id.0).unwrap_or(0)
+                };
                 let ids: Vec<i64> = pinned_ids.iter().map(|id| id.0).collect();
-                self.stage.update(cx, |st, st_cx| {
-                    if let Some(history) = st.chat_histories.get_mut(&chat_u64) {
-                        for m in history.iter_mut() {
-                            m.is_pinned = ids.contains(&(m.id as i64));
-                        }
-                    }
-                    if st.active_chat_id == Some(chat_u64) {
-                        st.pinned_tracker.set_pinned_ids(ids.clone());
-                        for m in &mut st.messages {
-                            m.is_pinned = ids.contains(&(m.id as i64));
-                        }
-                    }
-                    st_cx.notify();
-                });
+                self.apply_pinned_ids_update(chat_u64, ids, cx);
                 cx.notify();
             }
             UpdateEvent::PinnedMessageChanged { message_id } => {
-                let pin_u64 = message_id.map(|id| id.0 as u64);
-                self.stage.update(cx, |st, st_cx| {
-                    if let Some(id) = pin_u64 {
-                        st.pinned_tracker.set_pinned_ids(vec![id as i64]);
-                    } else {
-                        st.pinned_tracker.set_pinned_ids(Vec::new());
-                    }
-                    for m in &mut st.messages {
-                        m.is_pinned = Some(m.id) == pin_u64;
-                    }
-                    st_cx.notify();
-                });
+                let chat_u64 = self
+                    .stage
+                    .read(cx)
+                    .active_chat_id
+                    .unwrap_or_else(|| u64::try_from(chat_id.0).unwrap_or(0));
+                let ids = message_id.map(|id| vec![id.0]).unwrap_or_default();
+                self.apply_pinned_ids_update(chat_u64, ids, cx);
                 cx.notify();
             }
             UpdateEvent::DraftUpdated {
@@ -848,7 +1114,33 @@ impl AppShell {
                 });
                 cx.notify();
             }
-            UpdateEvent::FolderChanged { .. } => {
+            UpdateEvent::ReadHistory(ev) => {
+                let target_chat = if ev.chat_id.0 > 0 { ev.chat_id } else { chat_id };
+                let target_u64 = u64::try_from(target_chat.0).unwrap_or(0);
+                if target_u64 > 0 {
+                    if ev.is_outbox {
+                        self.client.local_store.mark_read_outbox(target_chat, ev.max_id);
+                    } else {
+                        self.client
+                            .local_store
+                            .mark_read_inbox(target_chat, ev.max_id, Some(ev.unread_count));
+                        self.sidebar.update(cx, |sb, sb_cx| {
+                            if let Some(d) = sb.dialogs.iter_mut().find(|d| d.id == target_u64) {
+                                d.unread_count = ev.unread_count;
+                            }
+                            sb.recompute_folder_badges();
+                            sb_cx.notify();
+                        });
+                    }
+                }
+                cx.notify();
+            }
+            UpdateEvent::FolderChanged { folder } => {
+                self.client.local_store.upsert_folder(folder);
+                let cached = self.client.local_store.get_folders();
+                if !cached.is_empty() {
+                    apply_folders_to_shell(self, &cached, cx);
+                }
                 self.refresh_folders(cx);
             }
             UpdateEvent::PollUpdated {
@@ -935,17 +1227,29 @@ impl AppShell {
 
         let raw_text = match &msg.content {
             gpui_telegram_proto::message::MessageContent::Text { text, .. } => text.clone(),
+            gpui_telegram_proto::message::MessageContent::Encrypted(_) => {
+                "🔒 Encrypted message".to_string()
+            }
             _ => "[Media attachment]".to_string(),
         };
         let sidebar_preview = match &msg.content {
             gpui_telegram_proto::message::MessageContent::Text { text, .. } => {
                 format_sidebar_preview(text)
             }
+            gpui_telegram_proto::message::MessageContent::Encrypted(_) => {
+                "🔒 Encrypted message".to_string()
+            }
             _ => "[Media attachment]".to_string(),
         };
-        let inline_kb = serde_json::to_value(&msg.content)
-            .ok()
-            .and_then(|val| decode_inline_keyboard_json(&val));
+        let inline_kb = msg
+            .inline_keyboard
+            .as_deref()
+            .and_then(proto_keyboard_to_stage)
+            .or_else(|| {
+                serde_json::to_value(&msg.content)
+                    .ok()
+                    .and_then(|val| decode_inline_keyboard_json(&val))
+            });
 
         let (sender_name, avatar_initials, avatar_color) = if is_outgoing {
             let my_name = self
@@ -986,15 +1290,30 @@ impl AppShell {
             is_pinned: false,
         };
 
+        let expires_at_opt = msg.expires_at_ms.or_else(|| {
+            msg.ttl_seconds
+                .filter(|&ttl| ttl > 0)
+                .map(|ttl| msg.date.timestamp_millis().saturating_add(i64::from(ttl) * 1000))
+        });
         let is_current_chat = self.stage.read(cx).active_chat_id == Some(chat_u64);
 
         if is_current_chat {
             self.stage.update(cx, |st, st_cx| {
+                if let Some(exp) = expires_at_opt {
+                    if server_id > 0 {
+                        st.message_expirations.insert(server_id, exp);
+                    }
+                }
                 st.add_message(model.clone());
                 st_cx.notify();
             });
         } else {
             self.stage.update(cx, |st, _| {
+                if let Some(exp) = expires_at_opt {
+                    if server_id > 0 {
+                        st.message_expirations.insert(server_id, exp);
+                    }
+                }
                 let hist = st.chat_histories.entry(chat_u64).or_default();
                 if !reconcile_stage_message_list(hist, model.id, model.id, DeliveryStatus::Read) {
                     hist.push(model);
@@ -1018,19 +1337,66 @@ impl AppShell {
             }
         }
 
+        let sb_preview_for_dialog = sidebar_preview.clone();
         self.sidebar.update(cx, |sb, sb_cx| {
             if !is_outgoing {
                 sb.set_typing(chat_u64, None);
             }
             if let Some(dialog) = sb.dialogs.iter_mut().find(|d| d.id == chat_u64) {
-                dialog.last_message = sidebar_preview;
+                dialog.last_message = sb_preview_for_dialog;
                 dialog.timestamp = msg.date.format("%H:%M").to_string();
                 if !is_current_chat && !is_outgoing {
                     dialog.unread_count += 1;
                 }
             }
+            sb.recompute_folder_badges();
             sb_cx.notify();
         });
+
+        let dialog_info = self
+            .sidebar
+            .read(cx)
+            .dialogs
+            .iter()
+            .find(|d| d.id == chat_u64)
+            .map(|d| (d.is_muted, d.folder.clone()));
+        let is_muted = dialog_info.as_ref().map(|(m, _)| *m).unwrap_or(false);
+        let folder_name = dialog_info
+            .as_ref()
+            .map(|(_, f)| f.as_str())
+            .unwrap_or("");
+        let rich_chat = self.session_sync.rich_chats_by_id.get(&chat_u64);
+        let is_channel = rich_chat.map(|rc| rc.is_channel).unwrap_or(false)
+            || folder_name.eq_ignore_ascii_case("Channels");
+        let is_group = rich_chat.map(|rc| rc.is_group).unwrap_or(false)
+            || folder_name.eq_ignore_ascii_case("Groups");
+        let window_is_focused = self.window_runtime.main_window.is_active()
+            && !self.window_runtime.main_window.is_minimized;
+
+        if should_dispatch_message_notification(
+            is_outgoing,
+            is_current_chat,
+            window_is_focused,
+            is_muted,
+            is_channel,
+            is_group,
+            &self.preferences.notifications,
+        ) {
+            self.window_runtime.notifications.schedule_notification(
+                chat_u64,
+                &sender_name,
+                &sidebar_preview,
+                self.preferences.notifications.sound_enabled,
+            );
+            let parsed = crate::platform::mac::UNNotificationParsed::new(1, chat_u64, server_id as i64);
+            let _ = self.window_runtime.mac_notifications.show_system_notification(
+                &sender_name,
+                "",
+                &sidebar_preview,
+                self.preferences.notifications.sound_enabled,
+                parsed,
+            );
+        }
 
         if !is_outgoing && is_bot_chat && inline_kb.is_none() && server_id > 0 {
             if let (Some(token), Some(uid)) = (
@@ -1158,6 +1524,32 @@ impl AppShell {
         }
         cx.notify();
     }
+
+    /// Resolves deep link URLs (such as `tg://chat?id={id}`) and switches to the destination chat.
+    pub fn handle_deep_link(&mut self, url: &str, cx: &mut Context<Self>) -> bool {
+        let link_info = crate::views::app_shell::window_session_controller_link_info::WindowSessionControllerLinkInfo::parse_deep_link(url);
+        match link_info {
+            crate::views::app_shell::window_session_controller_link_info::LinkInfoType::Peer(peer) => {
+                if let Some(cid) = peer.channel_id {
+                    let title_hint = peer
+                        .username_or_id
+                        .filter(|s| s.parse::<u64>().is_err());
+                    self.open_or_select_chat(cid, title_hint, false, cx);
+                    true
+                } else if let Some(ref uid_str) = peer.username_or_id {
+                    if let Ok(cid) = uid_str.parse::<u64>() {
+                        self.open_or_select_chat(cid, None, false, cx);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1249,14 +1641,14 @@ mod tests {
         stage.row_height_cache.measured_heights.insert(2, 44.0);
 
         // Editing non-latest message updates text without claiming latest
-        assert!(!apply_text_edit_to_stage(&mut stage, 23, 1, "First edited"));
+        assert!(!apply_text_edit_to_stage(&mut stage, 23, 1, "First edited", None));
         assert!(matches!(
             stage.messages[0].content,
             MessageContent::Text { ref text, is_edited: true } if text == "First edited"
         ));
 
         // Editing latest message in active chat invalidates measured height & signals latest
-        assert!(apply_text_edit_to_stage(&mut stage, 23, 2, "Final AI answer"));
+        assert!(apply_text_edit_to_stage(&mut stage, 23, 2, "Final AI answer", None));
         assert!(!stage.row_height_cache.measured_heights.contains_key(&2));
         assert!(stage.row_height_cache.is_dirty());
         assert!(matches!(
@@ -1271,7 +1663,7 @@ mod tests {
         // Editing background chat with colliding per-chat message_id=2 must not touch active chat #99
         stage.set_chat(99, "Other Chat", "", "OC", 0x2AABEE);
         stage.add_message(sample_msg(2, "Chat 99 msg #2"));
-        assert!(apply_text_edit_to_stage(&mut stage, 23, 2, "Updated chat 23"));
+        assert!(apply_text_edit_to_stage(&mut stage, 23, 2, "Updated chat 23", None));
         assert!(matches!(
             stage.messages[0].content,
             MessageContent::Text { ref text, is_edited: false } if text == "Chat 99 msg #2"

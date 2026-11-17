@@ -1,3 +1,4 @@
+pub mod video_viewport;
 pub mod avatar;
 pub mod badge;
 pub mod bots;
@@ -13,6 +14,7 @@ pub mod vnc_canvas;
 pub mod voice_bubble_player;
 
 pub use avatar::Avatar;
+pub use video_viewport::*;
 pub use badge::Badge;
 pub use dialog_row::DialogRow;
 pub use grok_bot_avatar::{

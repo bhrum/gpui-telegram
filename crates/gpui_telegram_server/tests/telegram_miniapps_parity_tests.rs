@@ -997,3 +997,381 @@ async fn test_parity_flows_2_3_4_5_6_botfather_bot_api_launch_write_access_block
     assert!(ext_html.contains("https://pizza.example.com/tracker"));
     assert!(ext_html.contains("/js/telegram-web-app.js"));
 }
+
+#[tokio::test]
+async fn test_altery_kyc_abandon_send_resume_webapp_and_pin_chat_message_e2e() {
+    let (_dir, state, router) = boot_temp_server("tg_miniapps_altery_kyc_pin");
+    let (_dev_uid, dev_tok) = register_user(&router, "altery_dev").await;
+    let (alice_uid, alice_tok) = register_user(&router, "alice_kyc").await;
+
+    // 1. Developer creates standard bot `@AlteryVerifyBot` via @BotFather `/newbot` (NO `/newapp`!)
+    //    and configures `setChatMenuButton` (`web_app.url = "https://app.altery.example/start"`).
+    let (st_add_bf, add_bf) = http_json(
+        &router,
+        "POST",
+        "/api/v1/contacts/add",
+        Some(&dev_tok),
+        Some(json!({ "username": "BotFather", "is_bot": true })),
+    )
+    .await;
+    assert!(st_add_bf.is_success());
+    let bf_cid = add_bf["chat_id"].as_i64().unwrap();
+
+    let _ = send_dm_and_wait_botfather_reply(&router, &dev_tok, bf_cid, "/newbot").await;
+    let _ = send_dm_and_wait_botfather_reply(&router, &dev_tok, bf_cid, "Altery").await;
+    let created_reply =
+        send_dm_and_wait_botfather_reply(&router, &dev_tok, bf_cid, "@AlteryVerifyBot").await;
+    let bot_token = extract_token_from_botfather_reply(created_reply["text"].as_str().unwrap());
+
+    let (st_me, me_val) =
+        http_json(&router, "GET", &format!("/bot{bot_token}/getMe"), None, None).await;
+    assert_eq!(st_me, StatusCode::OK);
+    let bot_id = me_val["result"]["id"].as_u64().expect("bot id");
+
+    let (st_mb, _) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/setChatMenuButton"),
+        None,
+        Some(json!({
+            "menu_button": {
+                "type": "web_app",
+                "text": "Launch Altery",
+                "web_app": { "url": "https://app.altery.example/start" }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_mb, StatusCode::OK);
+
+    // 2. Alice launches `/api/v1/miniapps/AlteryVerifyBot/app/launch` with `custom_url` (ad-hoc, no `/newapp`!).
+    let (st_launch1, launch1_val) = http_json(
+        &router,
+        "POST",
+        "/api/v1/miniapps/AlteryVerifyBot/app/launch",
+        Some(&alice_tok),
+        Some(json!({
+            "launch_mode": "MenuButton",
+            "custom_url": "https://app.altery.example/start"
+        })),
+    )
+    .await;
+    assert_eq!(
+        st_launch1,
+        StatusCode::OK,
+        "ad-hoc bot webapp launch failed: {launch1_val}"
+    );
+    let launch1_ctx: MiniAppLaunchContext = serde_json::from_value(launch1_val).unwrap();
+    assert_eq!(launch1_ctx.app.web_url, "https://app.altery.example/start");
+    assert!(
+        verify_telegram_hmac_independent(&launch1_ctx.init_data.raw_query_string, &bot_token),
+        "initData HMAC signature must verify with bot_token"
+    );
+
+    // Ensure ad-hoc launch did NOT leak into published catalog
+    let (st_cat, cat_val) = http_json(&router, "GET", "/api/v1/miniapps", Some(&alice_tok), None).await;
+    assert_eq!(st_cat, StatusCode::OK);
+    assert!(
+        cat_val["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["bot_username"] != "AlteryVerifyBot"),
+        "unpublished ad-hoc webapp must not appear in public catalog: {cat_val}"
+    );
+
+    // Grant DM write access so Altery backend can message Alice
+    let (st_allow, allow_val) = http_json(
+        &router,
+        "POST",
+        &format!("/api/v1/bots/{bot_id}/allow-send-message"),
+        Some(&alice_tok),
+        Some(json!({ "web_app_name": "Altery", "from_attachment_menu": false })),
+    )
+    .await;
+    assert_eq!(st_allow, StatusCode::OK, "allow-send-message: {allow_val}");
+    let allow_resp: AllowSendMessageResponse = serde_json::from_value(allow_val).unwrap();
+    let dm_cid = allow_resp.chat_id;
+    assert!(dm_cid > 0);
+
+    // 3. Bot sends & pins initial `"📌 Welcome to Altery"` message
+    let (st_welcome, welcome_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/sendMessage"),
+        None,
+        Some(json!({
+            "chat_id": alice_uid,
+            "text": "📌 Welcome to Altery\nYour global financial account."
+        })),
+    )
+    .await;
+    assert_eq!(st_welcome, StatusCode::OK, "sendMessage welcome: {welcome_val}");
+    let welcome_mid = welcome_val["result"]["message_id"].as_i64().unwrap();
+
+    let (st_pin1, pin1_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/pinChatMessage"),
+        None,
+        Some(json!({
+            "chat_id": alice_uid,
+            "message_id": welcome_mid
+        })),
+    )
+    .await;
+    assert_eq!(st_pin1, StatusCode::OK, "pinChatMessage welcome: {pin1_val}");
+    assert_eq!(pin1_val["ok"], true);
+    assert_eq!(pin1_val["result"], true);
+
+    let (st_pins1, pins1_val) = http_json(
+        &router,
+        "GET",
+        &format!("/api/v1/chats/{dm_cid}/pins"),
+        Some(&alice_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_pins1, StatusCode::OK);
+    assert_eq!(pins1_val["pinned_message_ids"], json!([welcome_mid]));
+    assert_eq!(
+        pins1_val["pins"][0]["preview_text"],
+        "📌 Welcome to Altery"
+    );
+
+    let pts_before_abandon = state
+        .db
+        .get_current_pts(gpui_telegram_core::types::ChatId(dm_cid))
+        .unwrap();
+
+    // 4. User abandons KYC midway -> Bot backend calls `sendMessage` with deep-link `web_app` button
+    //    `https://app.altery.example/kyc?resume=1` and immediately calls `pinChatMessage`.
+    let (st_remind, remind_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/sendMessage"),
+        None,
+        Some(json!({
+            "chat_id": alice_uid,
+            "text": "⏳ Remember to Get Verified\nTap here to verify your Altery account and unlock full access.",
+            "reply_markup": {
+                "inline_keyboard": [[
+                    {
+                        "text": "🆔 Verify Account",
+                        "web_app": { "url": "https://app.altery.example/kyc?resume=1" }
+                    }
+                ]]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_remind, StatusCode::OK, "sendMessage reminder: {remind_val}");
+    let remind_mid = remind_val["result"]["message_id"].as_i64().unwrap();
+
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let (st_pin2, pin2_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/pinChatMessage"),
+        None,
+        Some(json!({
+            "chat_id": alice_uid,
+            "message_id": remind_mid
+        })),
+    )
+    .await;
+    assert_eq!(st_pin2, StatusCode::OK, "pinChatMessage reminder: {pin2_val}");
+    assert_eq!(pin2_val["result"], true);
+
+    // 5. Verify `GET /api/v1/chats/{cid}/pins` has `remind_mid` at index 0, and PTS `getDifference`
+    //    carries BOTH `NewMessage` (with `inline_keyboard` `web_app_url`) AND `PinnedMessagesChanged`!
+    let (st_pins2, pins2_val) = http_json(
+        &router,
+        "GET",
+        &format!("/api/v1/chats/{dm_cid}/pins"),
+        Some(&alice_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_pins2, StatusCode::OK);
+    assert_eq!(
+        pins2_val["pinned_message_ids"],
+        json!([remind_mid, welcome_mid])
+    );
+    assert_eq!(
+        pins2_val["pins"][0]["preview_text"],
+        "⏳ Remember to Get Verified"
+    );
+
+    let diff = state
+        .pts_engine
+        .get_difference(&gpui_telegram_proto::sync::SyncGetDifferenceRequest::new(
+            gpui_telegram_core::types::ChatId(dm_cid),
+            pts_before_abandon,
+            50,
+        ))
+        .expect("get_difference");
+    let has_kb_in_pts = diff.new_messages.iter().any(|m| {
+        m.id.0 == remind_mid
+            && m.inline_keyboard
+                .as_ref()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.first())
+                .and_then(|btn| btn.web_app_url.as_deref())
+                == Some("https://app.altery.example/kyc?resume=1")
+    });
+    assert!(
+        has_kb_in_pts,
+        "PTS NewMessage must carry inline_keyboard with web_app_url: {:?}",
+        diff.new_messages
+    );
+    let has_pin_event = diff.other_updates.iter().any(|u| {
+        matches!(
+            u,
+            gpui_telegram_proto::sync::UpdateEvent::PinnedMessagesChanged { pinned_ids, .. }
+                if pinned_ids.first().map(|id| id.0) == Some(remind_mid)
+        )
+    });
+    assert!(
+        has_pin_event,
+        "PTS journal must record PinnedMessagesChanged with remind_mid first: {:?}",
+        diff.other_updates
+    );
+
+    // 6. User clicks `🆔 Verify Account` -> launches by numeric bot_id with `custom_url`
+    let (st_resume, resume_val) = http_json(
+        &router,
+        "POST",
+        &format!("/api/v1/miniapps/{bot_id}/app/launch"),
+        Some(&alice_tok),
+        Some(json!({
+            "chat_id": dm_cid,
+            "launch_mode": "InlineKeyboard",
+            "custom_url": "https://app.altery.example/kyc?resume=1"
+        })),
+    )
+    .await;
+    assert_eq!(st_resume, StatusCode::OK, "resume launch failed: {resume_val}");
+    let resume_ctx: MiniAppLaunchContext = serde_json::from_value(resume_val).unwrap();
+    assert_eq!(
+        resume_ctx.app.web_url,
+        "https://app.altery.example/kyc?resume=1"
+    );
+    assert!(verify_telegram_hmac_independent(
+        &resume_ctx.init_data.raw_query_string,
+        &bot_token
+    ));
+    assert!(resume_ctx.init_data.raw_query_string.contains("allows_write_to_pm"));
+
+    // Verify `answerWebAppQuery` also works for ad-hoc session `query_id`
+    let (st_awaq, awaq_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/answerWebAppQuery"),
+        None,
+        Some(json!({
+            "web_app_query_id": resume_ctx.init_data.query_id,
+            "result": {
+                "type": "article",
+                "id": "kyc_ok",
+                "title": "Verified",
+                "input_message_content": { "message_text": "✅ KYC Verification Completed!" }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_awaq, StatusCode::OK, "answerWebAppQuery on ad-hoc session: {awaq_val}");
+
+    // 7. Verify `unpinChatMessage` (omitted `message_id` unpins most recent `remind_mid`, leaving `welcome_mid`)
+    //    and `unpinAllChatMessages`, plus non-admin bot in group chat receiving 400.
+    let (st_unpin_latest, _) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/unpinChatMessage"),
+        None,
+        Some(json!({ "chat_id": alice_uid })),
+    )
+    .await;
+    assert_eq!(st_unpin_latest, StatusCode::OK);
+    let (_, pins_after_unpin1) = http_json(
+        &router,
+        "GET",
+        &format!("/api/v1/chats/{dm_cid}/pins"),
+        Some(&alice_tok),
+        None,
+    )
+    .await;
+    assert_eq!(pins_after_unpin1["pinned_message_ids"], json!([welcome_mid]));
+
+    let (st_unpin_all, _) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/unpinAllChatMessages"),
+        None,
+        Some(json!({ "chat_id": alice_uid })),
+    )
+    .await;
+    assert_eq!(st_unpin_all, StatusCode::OK);
+    let (_, pins_after_clear) = http_json(
+        &router,
+        "GET",
+        &format!("/api/v1/chats/{dm_cid}/pins"),
+        Some(&alice_tok),
+        None,
+    )
+    .await;
+    assert_eq!(pins_after_clear["pinned_message_ids"], json!([]));
+
+    // Group chat where bot is a regular non-admin member -> `pinChatMessage` returns 400
+    let (st_grp, grp_val) = http_json(
+        &router,
+        "POST",
+        "/api/v1/chats",
+        Some(&alice_tok),
+        Some(json!({ "title": "Altery Community", "chat_type": "group" })),
+    )
+    .await;
+    assert_eq!(st_grp, StatusCode::CREATED);
+    let grp_cid = grp_val["chat_id"].as_i64().unwrap();
+    let (st_add_mem, _) = http_json(
+        &router,
+        "POST",
+        &format!("/api/v1/chats/{grp_cid}/members"),
+        Some(&alice_tok),
+        Some(json!({ "user_id": bot_id })),
+    )
+    .await;
+    assert!(st_add_mem.is_success(), "add bot to group");
+    let (st_gmsg, gmsg_val) = http_json(
+        &router,
+        "POST",
+        &format!("/api/v1/chats/{grp_cid}/messages"),
+        Some(&alice_tok),
+        Some(json!({ "text": "Group announcement" })),
+    )
+    .await;
+    assert_eq!(st_gmsg, StatusCode::CREATED);
+    let grp_mid = gmsg_val["message_id"].as_i64().unwrap();
+
+    let (st_grp_pin, grp_pin_val) = http_json(
+        &router,
+        "POST",
+        &format!("/bot{bot_token}/pinChatMessage"),
+        None,
+        Some(json!({ "chat_id": grp_cid, "message_id": grp_mid })),
+    )
+    .await;
+    assert_eq!(
+        st_grp_pin,
+        StatusCode::BAD_REQUEST,
+        "non-admin bot in group must get 400: {grp_pin_val}"
+    );
+    assert!(
+        grp_pin_val["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not enough rights"),
+        "unexpected error description: {grp_pin_val}"
+    );
+}

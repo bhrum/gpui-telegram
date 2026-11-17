@@ -20,6 +20,7 @@ gpui_telegram_client = { workspace = true }
 gpui_telegram_agent = { workspace = true }
 gpui_telegram_webrtc = { workspace = true }
 gpui = { workspace = true }
+image = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -28,10 +29,14 @@ parking_lot = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 qrcode = { version = "0.14.1", default-features = false }
 fabushi-messaging-core = { path = "../../inherited/mahayana-messaging" }
 mahayana-node-agent-coordinator = { path = "../../inherited/node-agent-coordinator" }
 mahayana-host-runtime = { path = "../../inherited/host" }
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6.2"

@@ -282,7 +282,7 @@ impl AuthWizardView {
                 div()
                     .text_size(px(12.0))
                     .text_color(rgb(pal.text_secondary))
-                    .child("AI Chat • MTProto 2.0"),
+                    .child("Fabushi • MTProto 2.0"),
             )
             .child(
                 div()

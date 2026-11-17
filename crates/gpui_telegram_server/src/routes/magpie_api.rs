@@ -14,6 +14,7 @@ use gpui_telegram_agent::hermes::providers::{
     ApiMode, CredentialEntry, CredentialPool, MagpiePresetApplyInput, ModelProfile, ProviderChatMessage,
     ProviderConfig, ProviderError, ProviderMessageRole, ProviderRequest, ProviderResponse,
     ProviderRouter, ProviderRouterState, ProviderStreamEvent, ProviderToolCall, ProviderToolSpec,
+    SubscriptionAccount, SubscriptionKind,
 };
 use gpui_telegram_core::types::ChatId;
 use magpie_gateway::{
@@ -49,6 +50,24 @@ pub struct MagpieProviderView {
     pub no_key_required: bool,
     pub routing_strategy: Option<String>,
     pub headers: HashMap<String, String>,
+}
+
+fn redact_provider_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .iter()
+        .map(|(k, v)| (k.clone(), magpie_gateway::redact_header_value(k, v)))
+        .collect()
+}
+
+fn sanitize_subscription_account(sub: &SubscriptionAccount) -> SubscriptionAccount {
+    let mut sanitized = sub.clone();
+    let hdr_map: HashMap<String, String> = sanitized
+        .headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    sanitized.headers = redact_provider_headers(&hdr_map).into_iter().collect();
+    sanitized
 }
 
 fn provider_to_magpie_view(cfg: &ProviderConfig, snap: &ProviderRouterState) -> MagpieProviderView {
@@ -87,7 +106,7 @@ fn provider_to_magpie_view(cfg: &ProviderConfig, snap: &ProviderRouterState) -> 
         is_subscription: cfg.is_subscription,
         no_key_required: cfg.no_key_required,
         routing_strategy: cfg.routing_strategy.map(|s| s.as_str().to_string()),
-        headers: cfg.headers.clone(),
+        headers: redact_provider_headers(&cfg.headers),
     }
 }
 
@@ -103,6 +122,11 @@ fn build_magpie_state_json(state: &AppState) -> Value {
 
     let mut groups: Vec<&RoutingGroup> = snap.routing_groups.values().collect();
     groups.sort_by(|a, b| a.id.cmp(&b.id));
+    let subscriptions: Vec<SubscriptionAccount> = snap
+        .subscriptions
+        .iter()
+        .map(sanitize_subscription_account)
+        .collect();
 
     json!({
         "presets": all_presets(),
@@ -113,7 +137,7 @@ fn build_magpie_state_json(state: &AppState) -> Value {
         "has_active_subscription": router.has_active_subscription(),
         "has_configured_provider": router.has_configured_provider(),
         "needs_provider_selection": router.needs_provider_selection(),
-        "subscriptions": snap.subscriptions,
+        "subscriptions": subscriptions,
         "routing_groups": groups,
         "routing_strategy": snap.routing_strategy,
         "masking": snap.masking,
@@ -611,17 +635,155 @@ pub async fn magpie_subscriptions_scan(
     let router = state.hermes.providers();
     let reg = router.refresh_local_subscriptions();
     persist_and_sync_all(&state);
+    let subscriptions: Vec<SubscriptionAccount> = reg
+        .accounts
+        .iter()
+        .map(sanitize_subscription_account)
+        .collect();
     (
         StatusCode::OK,
         Json(json!({
             "ok": true,
-            "subscriptions": reg.accounts,
+            "subscriptions": subscriptions,
             "scanned_at_ms": reg.scanned_at_ms,
             "has_active_subscription": router.has_active_subscription(),
             "needs_provider_selection": router.needs_provider_selection(),
         })),
     )
         .into_response()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionAccountDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub kind: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    pub models: Vec<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SubscriptionActivateRequest {
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// GET /api/v1/hermes/magpie/subscriptions
+pub async fn magpie_subscriptions_get(
+    _auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let router = state.hermes.providers();
+    let snap = router.snapshot();
+    let subs = if snap.subscriptions.is_empty() {
+        router.refresh_discovered_subscriptions().accounts
+    } else {
+        snap.subscriptions.clone()
+    };
+    let current_snap = router.snapshot();
+
+    let dtos: Vec<SubscriptionAccountDto> = subs
+        .iter()
+        .map(|s| {
+            let models = if let Some(cfg) = current_snap.providers.get(&s.id) {
+                let mut m = vec![cfg.default_model.clone()];
+                for fb in &cfg.fallback_models {
+                    if !m.contains(fb) {
+                        m.push(fb.clone());
+                    }
+                }
+                m
+            } else {
+                match s.kind {
+                    SubscriptionKind::GoogleVertex => vec![
+                        "gemini-2.5-flash".to_string(),
+                        "gemini-2.5-pro".to_string(),
+                        "gemini-1.5-pro".to_string(),
+                    ],
+                    SubscriptionKind::CodexChatGpt => vec![
+                        s.default_model.clone().unwrap_or_else(|| "codex-mini-latest".to_string()),
+                        "gpt-4o".to_string(),
+                    ],
+                    SubscriptionKind::ClaudeCode => vec![
+                        "claude-sonnet-4-20250514".to_string(),
+                        "claude-3-5-haiku-20241022".to_string(),
+                    ],
+                    SubscriptionKind::GeminiCodeAssist => vec![
+                        "gemini-2.5-flash".to_string(),
+                        "gemini-2.5-pro".to_string(),
+                    ],
+                    _ => s.default_model.clone().into_iter().collect(),
+                }
+            };
+
+            let is_active = s.id == current_snap.active_provider_id;
+
+            SubscriptionAccountDto {
+                id: s.id.clone(),
+                account_id: s.account_id.clone().or_else(|| s.email.clone()),
+                kind: s.kind.as_str().to_string(),
+                label: s.label.clone(),
+                plan: s.plan.clone(),
+                models,
+                active: is_active,
+            }
+        })
+        .collect();
+
+    (StatusCode::OK, Json(dtos)).into_response()
+}
+
+static ACTIVATE_SYNC_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// POST /api/v1/hermes/magpie/subscriptions/{id}/activate
+pub async fn magpie_subscription_activate(
+    _auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let req: SubscriptionActivateRequest = if body_bytes.is_empty() {
+        SubscriptionActivateRequest::default()
+    } else {
+        match serde_json::from_slice(&body_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_json",
+                    &format!("Malformed activation request JSON: {e}"),
+                );
+            }
+        }
+    };
+
+    let _sync_guard = ACTIVATE_SYNC_LOCK.lock().await;
+    let router = state.hermes.providers();
+    let res = router.activate_subscription_atomic(&id, req.model.as_deref());
+    match res {
+        Ok((cfg, active_model)) => {
+            persist_and_sync_all(&state);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "status": "ok",
+                    "active_provider_id": cfg.id,
+                    "active_model": active_model,
+                })),
+            )
+                .into_response()
+        }
+        Err(err) => err_resp(
+            StatusCode::NOT_FOUND,
+            "subscription_not_found",
+            &err.to_string(),
+        ),
+    }
 }
 
 /// GET /api/v1/hermes/magpie/groups
@@ -1159,6 +1321,36 @@ fn map_gateway_provider_error(err: ProviderError, router: &ProviderRouter) -> Re
     }
 }
 
+struct StreamSseState {
+    emitted_role: bool,
+    emitted_text: bool,
+    emitted_thinking: bool,
+    emitted_tools: bool,
+    tool_index: usize,
+}
+
+impl StreamSseState {
+    fn new() -> Self {
+        Self {
+            emitted_role: false,
+            emitted_text: false,
+            emitted_thinking: false,
+            emitted_tools: false,
+            tool_index: 0,
+        }
+    }
+}
+
+struct AbortTaskOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+
+impl<T> Drop for AbortTaskOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
 fn format_sse_delta(
     format: GatewayResponseFormat,
     id: &str,
@@ -1200,21 +1392,242 @@ fn format_sse_delta(
     }
 }
 
+fn format_sse_event(
+    format: GatewayResponseFormat,
+    id: &str,
+    model: &str,
+    ev: ProviderStreamEvent,
+    created: i64,
+    st: &mut StreamSseState,
+) -> Option<String> {
+    match ev {
+        ProviderStreamEvent::TextDelta(delta) => {
+            if delta.is_empty() {
+                return None;
+            }
+            st.emitted_text = true;
+            match format {
+                GatewayResponseFormat::ChatCompletions => {
+                    let mut delta_obj = serde_json::Map::new();
+                    if !st.emitted_role {
+                        delta_obj.insert("role".to_string(), json!("assistant"));
+                        st.emitted_role = true;
+                    }
+                    delta_obj.insert("content".to_string(), json!(delta));
+                    let chunk = json!({
+                        "id": id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": Value::Object(delta_obj),
+                            "finish_reason": Value::Null
+                        }]
+                    });
+                    Some(format!("data: {chunk}\n\n"))
+                }
+                _ => Some(format_sse_delta(format, id, model, &delta, created)),
+            }
+        }
+        ProviderStreamEvent::ThinkingDelta(thinking) => {
+            if thinking.is_empty() {
+                return None;
+            }
+            st.emitted_thinking = true;
+            match format {
+                GatewayResponseFormat::ChatCompletions => {
+                    let mut delta_obj = serde_json::Map::new();
+                    if !st.emitted_role {
+                        delta_obj.insert("role".to_string(), json!("assistant"));
+                        st.emitted_role = true;
+                    }
+                    delta_obj.insert("reasoning_content".to_string(), json!(thinking));
+                    let chunk = json!({
+                        "id": id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": Value::Object(delta_obj),
+                            "finish_reason": Value::Null
+                        }]
+                    });
+                    Some(format!("data: {chunk}\n\n"))
+                }
+                GatewayResponseFormat::Responses => {
+                    let chunk = json!({
+                        "type": "response.reasoning_summary_text.delta",
+                        "response_id": id,
+                        "delta": thinking
+                    });
+                    Some(format!("event: response.reasoning_summary_text.delta\ndata: {chunk}\n\n"))
+                }
+                GatewayResponseFormat::AnthropicMessages => {
+                    let chunk = json!({
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": { "type": "thinking_delta", "thinking": thinking }
+                    });
+                    Some(format!("event: content_block_delta\ndata: {chunk}\n\n"))
+                }
+            }
+        }
+        ProviderStreamEvent::ToolCallReady(tc) => {
+            st.emitted_tools = true;
+            let idx = st.tool_index;
+            st.tool_index += 1;
+            match format {
+                GatewayResponseFormat::ChatCompletions => {
+                    let mut delta_obj = serde_json::Map::new();
+                    if !st.emitted_role {
+                        delta_obj.insert("role".to_string(), json!("assistant"));
+                        st.emitted_role = true;
+                    }
+                    delta_obj.insert(
+                        "tool_calls".to_string(),
+                        json!([{
+                            "index": idx,
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                            }
+                        }]),
+                    );
+                    let chunk = json!({
+                        "id": id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": Value::Object(delta_obj),
+                            "finish_reason": Value::Null
+                        }]
+                    });
+                    Some(format!("data: {chunk}\n\n"))
+                }
+                GatewayResponseFormat::Responses => {
+                    let chunk = json!({
+                        "type": "response.output_item.done",
+                        "response_id": id,
+                        "item": {
+                            "type": "function_call",
+                            "call_id": tc.id,
+                            "name": tc.name,
+                            "arguments": tc.arguments
+                        }
+                    });
+                    Some(format!("event: response.output_item.done\ndata: {chunk}\n\n"))
+                }
+                GatewayResponseFormat::AnthropicMessages => {
+                    let block_idx = idx + 1;
+                    let start = json!({
+                        "type": "content_block_start",
+                        "index": block_idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": {}
+                        }
+                    });
+                    let delta = json!({
+                        "type": "content_block_delta",
+                        "index": block_idx,
+                        "delta": { "type": "input_json_delta", "partial_json": tc.arguments }
+                    });
+                    Some(format!(
+                        "event: content_block_start\ndata: {start}\n\nevent: content_block_delta\ndata: {delta}\n\n"
+                    ))
+                }
+            }
+        }
+        ProviderStreamEvent::Usage(u) => match format {
+            GatewayResponseFormat::ChatCompletions => {
+                let total = if u.total_tokens > 0 {
+                    u.total_tokens
+                } else {
+                    u.input_tokens.saturating_add(u.output_tokens)
+                };
+                let chunk = json!({
+                    "id": id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": u.input_tokens,
+                        "completion_tokens": u.output_tokens,
+                        "total_tokens": total,
+                        "prompt_tokens_details": {
+                            "cached_tokens": u.cache_read_tokens
+                        }
+                    }
+                });
+                Some(format!("data: {chunk}\n\n"))
+            }
+            _ => None,
+        },
+    }
+}
+
 fn format_sse_done(
     format: GatewayResponseFormat,
     id: &str,
     model: &str,
     resp: &UnifiedResponse,
-    emitted_text: bool,
+    st: &StreamSseState,
     created: i64,
 ) -> String {
+    let actual_finish = if resp.finish_reason.trim().is_empty() {
+        "stop"
+    } else {
+        resp.finish_reason.as_str()
+    };
+    let total_tokens = if resp.usage.total_tokens > 0 {
+        resp.usage.total_tokens
+    } else {
+        resp.usage.input_tokens.saturating_add(resp.usage.output_tokens)
+    };
     match format {
         GatewayResponseFormat::ChatCompletions => {
-            let fallback_delta = if !emitted_text && !resp.content.is_empty() {
-                json!({ "role": "assistant", "content": resp.content })
-            } else {
-                json!({})
-            };
+            let mut fallback_delta = serde_json::Map::new();
+            if !st.emitted_role {
+                fallback_delta.insert("role".to_string(), json!("assistant"));
+            }
+            if !st.emitted_thinking {
+                if let Some(ref r) = resp.reasoning {
+                    if !r.is_empty() {
+                        fallback_delta.insert("reasoning_content".to_string(), json!(r));
+                    }
+                }
+            }
+            if !st.emitted_text && !resp.content.is_empty() {
+                fallback_delta.insert("content".to_string(), json!(resp.content));
+            }
+            if !st.emitted_tools && !resp.tool_calls.is_empty() {
+                let tcs: Vec<Value> = resp
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, tc)| {
+                        json!({
+                            "index": idx,
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                            }
+                        })
+                    })
+                    .collect();
+                fallback_delta.insert("tool_calls".to_string(), Value::Array(tcs));
+            }
             let final_chunk = json!({
                 "id": id,
                 "object": "chat.completion.chunk",
@@ -1222,9 +1635,17 @@ fn format_sse_done(
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "delta": fallback_delta,
-                    "finish_reason": "stop"
-                }]
+                    "delta": Value::Object(fallback_delta),
+                    "finish_reason": actual_finish
+                }],
+                "usage": {
+                    "prompt_tokens": resp.usage.input_tokens,
+                    "completion_tokens": resp.usage.output_tokens,
+                    "total_tokens": total_tokens,
+                    "prompt_tokens_details": {
+                        "cached_tokens": resp.usage.cache_read_tokens
+                    }
+                }
             });
             format!("data: {final_chunk}\n\ndata: [DONE]\n\n")
         }
@@ -1237,7 +1658,7 @@ fn format_sse_done(
         }
         GatewayResponseFormat::AnthropicMessages => {
             let mut out = String::new();
-            if !emitted_text && !resp.content.is_empty() {
+            if !st.emitted_text && !resp.content.is_empty() {
                 out.push_str(&format_sse_delta(
                     format,
                     id,
@@ -1246,9 +1667,62 @@ fn format_sse_done(
                     created,
                 ));
             }
+            let stop_reason = match actual_finish {
+                "stop" => "end_turn",
+                "tool_calls" => "tool_use",
+                "length" => "max_tokens",
+                other => other,
+            };
+            let msg_delta = json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": stop_reason, "stop_sequence": Value::Null },
+                "usage": {
+                    "input_tokens": resp.usage.input_tokens,
+                    "output_tokens": resp.usage.output_tokens
+                }
+            });
+            out.push_str(&format!("event: message_delta\ndata: {msg_delta}\n\n"));
             let stop = json!({ "type": "message_stop" });
             out.push_str(&format!("event: message_stop\ndata: {stop}\n\n"));
             out
+        }
+    }
+}
+
+fn format_sse_error(format: GatewayResponseFormat, err_type: &str, message: &str) -> String {
+    match format {
+        GatewayResponseFormat::ChatCompletions => {
+            let err_json = json!({
+                "error": {
+                    "message": message,
+                    "type": err_type,
+                }
+            });
+            format!("data: {err_json}\n\n")
+        }
+        GatewayResponseFormat::Responses => {
+            let err_json = json!({
+                "type": "error",
+                "error": {
+                    "type": err_type,
+                    "message": message,
+                }
+            });
+            format!("event: error\ndata: {err_json}\n\n")
+        }
+        GatewayResponseFormat::AnthropicMessages => {
+            let anth_type = match err_type {
+                "authentication_error" | "rate_limit_error" | "invalid_request_error" => err_type,
+                _ => "api_error",
+            };
+            let err_json = json!({
+                "type": "error",
+                "error": {
+                    "type": anth_type,
+                    "message": message,
+                }
+            });
+            format!("event: error\ndata: {err_json}\n\n")
         }
     }
 }
@@ -1270,52 +1744,46 @@ fn stream_gateway_sse(
     let task = tokio::spawn(async move { router.complete(prov_req, Some(tx)).await });
 
     let sse_stream = stream::unfold(
-        (rx, Some(task), false, false, req_id, model_hint),
-        move |(mut rx, mut task_opt, finished, mut emitted_text, id, mdl)| async move {
+        (rx, AbortTaskOnDrop(Some(task)), false, StreamSseState::new(), req_id, model_hint),
+        move |(mut rx, mut task_guard, finished, mut sse_st, id, mdl)| async move {
             if finished {
                 return None;
             }
-            if let Some(ev) = rx.recv().await {
-                let mut cur_ev = Some(ev);
-                while let Some(next) = cur_ev {
-                    if let ProviderStreamEvent::TextDelta(delta) = next {
-                        if !delta.is_empty() {
-                            emitted_text = true;
-                            let payload = format_sse_delta(format, &id, &mdl, &delta, created);
-                            return Some((
-                                Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::from(
-                                    payload,
-                                )),
-                                (rx, task_opt, false, emitted_text, id, mdl),
-                            ));
-                        }
-                    }
-                    cur_ev = rx.recv().await;
+            while let Some(ev) = rx.recv().await {
+                if let Some(payload) = format_sse_event(format, &id, &mdl, ev, created, &mut sse_st) {
+                    return Some((
+                        Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::from(payload)),
+                        (rx, task_guard, false, sse_st, id, mdl),
+                    ));
                 }
             }
 
-            let out = if let Some(handle) = task_opt.take() {
+            let out = if let Some(handle) = task_guard.0.take() {
                 match handle.await {
                     Ok(Ok(resp)) => {
                         let u = provider_response_to_unified(resp);
-                        format_sse_done(format, &id, &u.model, &u, emitted_text, created)
+                        format_sse_done(format, &id, &u.model, &u, &sse_st, created)
                     }
                     Ok(Err(err)) => {
-                        let err_json = json!({ "error": { "message": err.to_string() } });
-                        format!("data: {err_json}\n\ndata: [DONE]\n\n")
+                        let err_type = match &err {
+                            ProviderError::Authentication(_) => "authentication_error",
+                            ProviderError::RateLimited { .. } => "rate_limit_error",
+                            ProviderError::Configuration(_) => "invalid_request_error",
+                            _ => "upstream_error",
+                        };
+                        format_sse_error(format, err_type, &err.to_string())
                     }
                     Err(join_err) => {
-                        let err_json = json!({ "error": { "message": join_err.to_string() } });
-                        format!("data: {err_json}\n\ndata: [DONE]\n\n")
+                        format_sse_error(format, "upstream_error", &join_err.to_string())
                     }
                 }
             } else {
-                "data: [DONE]\n\n".to_string()
+                return None;
             };
 
             Some((
                 Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::from(out)),
-                (rx, None, true, emitted_text, id, mdl),
+                (rx, task_guard, true, sse_st, id, mdl),
             ))
         },
     )

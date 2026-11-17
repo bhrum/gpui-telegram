@@ -33,6 +33,11 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 
 def get_path_size(path: str) -> int:
     """Returns size of a file or total recursive size of a directory."""
@@ -149,56 +154,46 @@ def clean_target_dir(
         if not os.path.isdir(deps_dir):
             continue
 
-        # A. Remove *.dSYM bundles
-        for entry in os.listdir(deps_dir):
-            full_p = os.path.join(deps_dir, entry)
-            if entry.endswith(".dSYM") and os.path.isdir(full_p):
-                sz = get_path_size(full_p)
-                freed += sz
-                count += 1
-                if verbose:
-                    print(f"  [dsym] {entry} ({format_bytes(sz)})")
-                if not dry_run:
-                    shutil.rmtree(full_p, ignore_errors=True)
-
-        # B. Clean intermediate codegen unit objects (.rcgu.o and intermediate .o files)
-        for entry in os.listdir(deps_dir):
-            full_p = os.path.join(deps_dir, entry)
-            if not os.path.isfile(full_p) or os.path.islink(full_p):
-                continue
-
-            # Intermediate compiler objects: *.rcgu.o or hashed intermediate *.o
-            is_rcgu = entry.endswith(".rcgu.o") or (entry.endswith(".o") and "-" in entry)
-            if not is_rcgu:
-                continue
-
+        lock_fd = None
+        cargo_lock_path = os.path.join(prof_dir, ".cargo-lock")
+        if fcntl is not None and os.path.isfile(cargo_lock_path) and not dry_run:
             try:
-                mtime = os.path.getmtime(full_p)
-                sz = os.path.getsize(full_p)
-            except OSError:
+                lock_fd = os.open(cargo_lock_path, os.O_RDWR)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                if lock_fd is not None:
+                    try:
+                        os.close(lock_fd)
+                    except OSError:
+                        pass
+                if verbose:
+                    print(f"  [skip-active-build] {profile} (.cargo-lock held by active cargo)")
                 continue
 
-            if not force and (now - mtime) < min_age_seconds:
-                continue
+        try:
+            # A. Remove *.dSYM bundles
+            for entry in os.listdir(deps_dir):
+                full_p = os.path.join(deps_dir, entry)
+                if entry.endswith(".dSYM") and os.path.isdir(full_p):
+                    sz = get_path_size(full_p)
+                    freed += sz
+                    count += 1
+                    if verbose:
+                        print(f"  [dsym] {entry} ({format_bytes(sz)})")
+                    if not dry_run:
+                        shutil.rmtree(full_p, ignore_errors=True)
 
-            freed += sz
-            count += 1
-            if verbose:
-                print(f"  [rcgu-obj] {entry} ({format_bytes(sz)})")
-            if not dry_run:
-                try:
-                    os.remove(full_p)
-                except OSError:
-                    pass
+            # B. Clean intermediate codegen unit objects (.rcgu.o and intermediate .o files)
+            for entry in os.listdir(deps_dir):
+                full_p = os.path.join(deps_dir, entry)
+                if not os.path.isfile(full_p) or os.path.islink(full_p):
+                    continue
 
-        # C. Remove stale test executable binaries (executable files in deps without extension)
-        for entry in os.listdir(deps_dir):
-            full_p = os.path.join(deps_dir, entry)
-            if not os.path.isfile(full_p) or os.path.islink(full_p):
-                continue
+                # Intermediate compiler objects: *.rcgu.o or hashed intermediate *.o
+                is_rcgu = entry.endswith(".rcgu.o") or (entry.endswith(".o") and "-" in entry)
+                if not is_rcgu:
+                    continue
 
-            _, ext = os.path.splitext(entry)
-            if ext == "" and os.access(full_p, os.X_OK):
                 try:
                     mtime = os.path.getmtime(full_p)
                     sz = os.path.getsize(full_p)
@@ -211,12 +206,49 @@ def clean_target_dir(
                 freed += sz
                 count += 1
                 if verbose:
-                    print(f"  [stale-test-bin] {entry} ({format_bytes(sz)})")
+                    print(f"  [rcgu-obj] {entry} ({format_bytes(sz)})")
                 if not dry_run:
                     try:
                         os.remove(full_p)
                     except OSError:
                         pass
+
+            # C. Remove stale test executable binaries (executable files in deps without extension)
+            for entry in os.listdir(deps_dir):
+                full_p = os.path.join(deps_dir, entry)
+                if not os.path.isfile(full_p) or os.path.islink(full_p):
+                    continue
+
+                _, ext = os.path.splitext(entry)
+                if ext == "" and os.access(full_p, os.X_OK):
+                    try:
+                        mtime = os.path.getmtime(full_p)
+                        sz = os.path.getsize(full_p)
+                    except OSError:
+                        continue
+
+                    if not force and (now - mtime) < min_age_seconds:
+                        continue
+
+                    freed += sz
+                    count += 1
+                    if verbose:
+                        print(f"  [stale-test-bin] {entry} ({format_bytes(sz)})")
+                    if not dry_run:
+                        try:
+                            os.remove(full_p)
+                        except OSError:
+                            pass
+        finally:
+            if lock_fd is not None:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
 
     # 3. Clean target/tmp
     target_tmp = os.path.join(target_dir, "tmp")

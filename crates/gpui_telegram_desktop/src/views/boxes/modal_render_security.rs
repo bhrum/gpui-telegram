@@ -255,12 +255,28 @@ pub fn render_connection_proxy<V: 'static>(
                                     return;
                                 }
                                 let next_id = d.proxies.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+                                let (username, password) = if let Some((u, p)) =
+                                    d.tertiary_input.split_once(':')
+                                {
+                                    (
+                                        (!u.trim().is_empty()).then(|| u.trim().to_string()),
+                                        (!p.is_empty()).then(|| p.to_string()),
+                                    )
+                                } else if !d.tertiary_input.trim().is_empty()
+                                    && !d.new_proxy_kind.eq_ignore_ascii_case("MTProto")
+                                {
+                                    (Some(d.tertiary_input.trim().to_string()), None)
+                                } else {
+                                    (None, None)
+                                };
                                 let rec = ProxyEndpointRecord {
                                     id: next_id,
                                     kind: d.new_proxy_kind.clone(),
                                     host,
                                     port,
                                     secret_or_user: d.tertiary_input.clone(),
+                                    username,
+                                    password,
                                     ping_ms: 0,
                                     enabled: true,
                                 };

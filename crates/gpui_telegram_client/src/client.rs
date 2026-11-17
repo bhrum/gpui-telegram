@@ -1,8 +1,11 @@
 use crate::cache::LocalStore;
 use crate::client_dispatch::{apply_ws_frame, ClientDomainEvent};
 use crate::config::ClientConfig;
+use crate::e2ee::{E2eeManager, E2eeStore};
+use crate::media_transfer::{ChunkedTransferManager, FileTransferStore};
 use crate::net::{
-    AuthResponse, BotComputerProfileDto, ComputerListResponse, ComputerNodeDto, ConnectionStatus,
+    AuthResponse, BotComputerProfileDto, ClientProxyConfig, ComputerListResponse, ComputerNodeDto,
+    ConnectionStatus,
     HermesApprovalDecisionRequest, HermesApprovalDto, HermesCallInviteRequest,
     HermesCallInviteResponse, HermesClient, HermesCommandDescriptor, HermesCommandRequest,
     HermesCommandResponse, HermesCreateKanbanBoardRequest, HermesCreateKanbanCardRequest,
@@ -21,15 +24,16 @@ use crate::net::{
     UpdateBotComputerRequest, UpdateComputerPolicyRequest, UpsertCloudComputerRequest, WsChannel,
     WsTransport,
 };
+use crate::outbox::{NetworkState, NetworkStatusListener, OutboxStore, OutboxWorker, TokenProvider};
 use crate::sync::ClientSyncCoordinator;
 use gpui_telegram_core::error::Result;
 use gpui_telegram_core::types::{ChatId, MessageId, UserId};
-use gpui_telegram_proto::message::MessageItem;
+use gpui_telegram_proto::message::{MessageContent, MessageItem};
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -43,6 +47,10 @@ pub struct TelegramClient {
     pub ws_channel: WsChannel,
     pub ws_transport: WsTransport,
     pub tailnet: Arc<TailnetEngine>,
+    pub outbox: Arc<OutboxWorker>,
+    pub network_listener: Arc<NetworkStatusListener>,
+    pub chunked_transfers: Arc<ChunkedTransferManager>,
+    pub e2ee: Arc<E2eeManager>,
     runtime: Arc<Runtime>,
     auth_session: Arc<RwLock<Option<AuthResponse>>>,
     auth_token: Arc<RwLock<Option<String>>>,
@@ -50,6 +58,7 @@ pub struct TelegramClient {
     gap_chats: Arc<Mutex<HashSet<ChatId>>>,
     next_nonce: Arc<AtomicU64>,
     next_client_msg_offset: Arc<AtomicU32>,
+    ws_listener_attached: Arc<AtomicBool>,
 }
 
 impl TelegramClient {
@@ -84,10 +93,11 @@ impl TelegramClient {
         };
 
         let handle = runtime.handle().clone();
-        let http_client = HttpClient::new_with_runtime(
+        let http_client = HttpClient::new_with_proxy(
             config.server_url.clone(),
             Duration::from_secs(config.http_timeout_secs),
             Some(handle.clone()),
+            config.proxy.clone(),
         );
         http_client.set_device_id(tailnet_identity.device_id.clone());
         let tailnet = TailnetEngine::new(tailnet_identity);
@@ -97,25 +107,97 @@ impl TelegramClient {
             config.server_url.clone(),
             ws_channel.clone(),
             Some(handle),
+        )
+        .with_proxy(config.proxy.clone());
+
+        let auth_session: Arc<RwLock<Option<AuthResponse>>> = Arc::new(RwLock::new(None));
+        let auth_token: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let token_provider: TokenProvider = {
+            let tok = Arc::clone(&auth_token);
+            let sess = Arc::clone(&auth_session);
+            Arc::new(move || {
+                tok.read()
+                    .clone()
+                    .or_else(|| sess.read().as_ref().map(|s| s.token.clone()))
+            })
+        };
+        let device_id_provider = {
+            let hc = http_client.clone();
+            Arc::new(move || hc.device_id())
+        };
+        let user_id_provider = {
+            let sess = Arc::clone(&auth_session);
+            Arc::new(move || sess.read().as_ref().map(|s| s.user_id))
+        };
+
+        let sync_coordinator = ClientSyncCoordinator::new();
+        let network_listener = NetworkStatusListener::new(NetworkState::Online);
+
+        let sqlite_opt = local_store.sqlite_cache();
+        let outbox_store = match sqlite_opt.clone() {
+            Some(db) => OutboxStore::from_cache(db),
+            None => OutboxStore::in_memory().expect("Failed to open in-memory outbox store"),
+        };
+        let outbox = OutboxWorker::new(
+            outbox_store,
+            Arc::clone(&network_listener),
+            http_client.clone(),
+            Arc::clone(&token_provider),
+            local_store.clone(),
+            sync_coordinator.clone(),
         );
 
-        let seed_nonce = chrono::Utc::now().timestamp_millis().max(1) as u64;
+        let transfer_store = match sqlite_opt.clone() {
+            Some(db) => FileTransferStore::from_cache(db),
+            None => FileTransferStore::in_memory().expect("Failed to open in-memory transfer store"),
+        };
+        let chunked_transfers = ChunkedTransferManager::new(
+            transfer_store,
+            http_client.clone(),
+            Arc::clone(&token_provider),
+        );
+
+        let e2ee_store = match sqlite_opt {
+            Some(db) => E2eeStore::from_cache(db),
+            None => E2eeStore::in_memory(),
+        };
+        let e2ee = E2eeManager::new(
+            e2ee_store,
+            http_client.clone(),
+            token_provider,
+            device_id_provider,
+            user_id_provider,
+        );
+
+        let now_ms = chrono::Utc::now().timestamp_millis().max(1) as u64;
+        let persisted_max = local_store.max_outbox_nonce();
+        let safe_max = (i64::MAX as u64).saturating_sub(1_000_000);
+        let seed_nonce = now_ms
+            .min(safe_max)
+            .max(persisted_max.saturating_add(1))
+            .min(i64::MAX as u64);
+
         Self {
             config,
             local_store,
-            sync_coordinator: ClientSyncCoordinator::new(),
+            sync_coordinator,
             http_client,
             hermes,
             ws_channel,
             ws_transport,
             tailnet,
+            outbox,
+            network_listener,
+            chunked_transfers,
+            e2ee,
             runtime,
-            auth_session: Arc::new(RwLock::new(None)),
-            auth_token: Arc::new(RwLock::new(None)),
+            auth_session,
+            auth_token,
             pending_events: Arc::new(Mutex::new(Vec::new())),
             gap_chats: Arc::new(Mutex::new(HashSet::new())),
             next_nonce: Arc::new(AtomicU64::new(seed_nonce)),
             next_client_msg_offset: Arc::new(AtomicU32::new(1)),
+            ws_listener_attached: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -129,6 +211,27 @@ impl TelegramClient {
 
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
+    }
+
+    pub fn outbox_worker(&self) -> &Arc<OutboxWorker> {
+        &self.outbox
+    }
+
+    pub fn chunked_transfer_manager(&self) -> &Arc<ChunkedTransferManager> {
+        &self.chunked_transfers
+    }
+
+    pub fn e2ee_manager(&self) -> &Arc<E2eeManager> {
+        &self.e2ee
+    }
+
+    pub fn apply_proxy(
+        &self,
+        proxy: Option<ClientProxyConfig>,
+    ) -> std::result::Result<(), HttpClientError> {
+        self.http_client.set_proxy(proxy.clone())?;
+        self.ws_transport.set_proxy(proxy);
+        Ok(())
     }
 
     pub fn device_id(&self) -> String {
@@ -244,6 +347,7 @@ impl TelegramClient {
             .bind_account_scope(&self.config.server_url, session.user_id);
         self.set_token(Some(session.token.clone()));
         *self.auth_session.write() = Some(session);
+        self.outbox.start(self.runtime.handle());
     }
 
     pub fn set_token(&self, token: Option<String>) {
@@ -267,6 +371,7 @@ impl TelegramClient {
     }
 
     pub fn clear_session(&self) {
+        self.outbox.stop();
         self.stop_tailnet_mesh();
         self.ws_transport.stop();
         self.ws_transport.set_token(None);
@@ -281,6 +386,11 @@ impl TelegramClient {
     }
 
     pub fn connect_ws(&self) {
+        if !self.ws_listener_attached.swap(true, Ordering::SeqCst) {
+            self.network_listener
+                .attach_ws_status(self.ws_transport.subscribe_status(), self.runtime.handle());
+        }
+        self.outbox.start(self.runtime.handle());
         self.ws_transport.start();
     }
 
@@ -305,6 +415,21 @@ impl TelegramClient {
         self.local_store.get_messages(chat_id)
     }
 
+    fn handle_e2ee_side_effects(&self, events: &[ClientDomainEvent]) {
+        for ev in events {
+            if let ClientDomainEvent::NewMessage(msg) = ev {
+                if let MessageContent::Encrypted(ref env) = msg.content {
+                    if matches!(
+                        env.kind,
+                        gpui_telegram_proto::e2ee::EncryptedPayloadKind::SenderKeyDistribution { .. }
+                    ) {
+                        let _ = self.e2ee.decrypt_envelope(env);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn process_ws_frame(&self, frame: WsServerFrame) -> Vec<ClientDomainEvent> {
         let mut events = Vec::new();
         let viewer = self.current_user_id().map(UserId);
@@ -315,6 +440,7 @@ impl TelegramClient {
             frame,
             &mut events,
         );
+        self.handle_e2ee_side_effects(&events);
         if !gaps.is_empty() {
             self.gap_chats.lock().extend(gaps);
         }
@@ -335,6 +461,7 @@ impl TelegramClient {
                 frame,
                 &mut batch,
             );
+            self.handle_e2ee_side_effects(&batch);
             if !gaps.is_empty() {
                 self.gap_chats.lock().extend(gaps);
             }

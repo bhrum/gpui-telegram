@@ -116,6 +116,7 @@ fn test_adversarial_multithreaded_4tier_cli_precedence_race() {
         http_timeout_secs: Some(15),
         ws_ping_interval_secs: Some(30),
         max_reconnect_attempts: Some(5),
+        ..Default::default()
     };
     fs::write(
         app_dir.join("config.json"),
@@ -213,6 +214,7 @@ fn test_adversarial_multithreaded_config_file_race_and_precedence() {
                 http_timeout_secs: Some(10 + (idx as u64 % 20)),
                 ws_ping_interval_secs: Some(20 + (idx as u64 % 15)),
                 max_reconnect_attempts: Some(3 + (idx as u32 % 8)),
+                ..Default::default()
             };
             if let Ok(json) = serde_json::to_string(&cfg) {
                 let _ = fs::write(&writer_config_path, json);

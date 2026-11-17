@@ -1,3 +1,4 @@
+use crate::db::social_store::CallSignalOutcome;
 use crate::routes::{check_active_membership, err_resp, map_telegram_err, parse_json_object};
 use crate::server::{AppState, AuthBearer};
 use crate::webrtc::signaling_hub::generate_turn_token;
@@ -227,6 +228,11 @@ pub async fn calls_invite(auth: AuthBearer, State(state): State<Arc<AppState>>, 
             &transcript_seed,
             now_ms,
         );
+        let tap_chat = resolved_chat_id.unwrap_or(ChatId(target_user.user_id.0 as i64));
+        let ai_tap = Arc::new(gpui_telegram_webrtc::media::DefaultAiMediaTap::new(48_000, 1, 0.05));
+        state.signaling_hub.join_sfu_room(tap_chat, auth.user_id);
+        state.signaling_hub.join_sfu_room(tap_chat, target_user.user_id);
+        state.signaling_hub.attach_ai_tap(tap_chat, ai_tap);
         let ev = WsServerFrame::Update(UpdateEvent::CallUpdated {
             call_id: call_id.clone(),
             state: "active".into(),
@@ -299,29 +305,67 @@ pub async fn calls_signal(auth: AuthBearer, State(state): State<Arc<AppState>>, 
     let frame = match st.as_str() {
         "ringing" => SignalingFrame::Ringing { call_id: req.call_id.clone() },
         "accept" => SignalingFrame::Accept { call_id: req.call_id.clone() },
-        "offer" => SignalingFrame::Offer { call_id: req.call_id.clone(), sdp: req.sdp.clone().unwrap_or_default() },
-        "answer" => SignalingFrame::Answer { call_id: req.call_id.clone(), sdp: req.sdp.clone().unwrap_or_default() },
-        "ice_candidate" | "ice" => SignalingFrame::IceCandidate {
-            call_id: req.call_id.clone(), candidate: req.candidate.clone().unwrap_or_default(),
-            sdp_mid: req.sdp_mid.clone(), sdp_mline_index: req.sdp_mline_index.map(|i| i as u16),
-        },
+        "offer" => {
+            if req.sdp.as_deref().unwrap_or("").trim().is_empty() {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_payload", "sdp is required for offer");
+            }
+            SignalingFrame::Offer { call_id: req.call_id.clone(), sdp: req.sdp.clone().unwrap_or_default() }
+        }
+        "answer" => {
+            if req.sdp.as_deref().unwrap_or("").trim().is_empty() {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_payload", "sdp is required for answer");
+            }
+            SignalingFrame::Answer { call_id: req.call_id.clone(), sdp: req.sdp.clone().unwrap_or_default() }
+        }
+        "ice_candidate" | "ice" => {
+            if req.candidate.as_deref().unwrap_or("").trim().is_empty() {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_payload", "candidate is required for ice_candidate");
+            }
+            let sdp_mline_index = match req.sdp_mline_index {
+                Some(i) => match u16::try_from(i) {
+                    Ok(idx) => Some(idx),
+                    Err(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_payload", "sdp_mline_index must fit in u16"),
+                },
+                None => None,
+            };
+            SignalingFrame::IceCandidate {
+                call_id: req.call_id.clone(), candidate: req.candidate.clone().unwrap_or_default(),
+                sdp_mid: req.sdp_mid.clone(), sdp_mline_index,
+            }
+        }
         "hangup" | "end" | "decline" => SignalingFrame::Hangup { call_id: req.call_id.clone(), reason: req.reason.clone().unwrap_or_else(|| "hangup".into()) },
         _ => return err_resp(StatusCode::BAD_REQUEST, "invalid_signal", "Unsupported WebRTC signal_type"),
     };
-    let _ = state.signaling_hub.dispatch_frame(auth.user_id, frame).await;
-    let (new_state, ended_at) = match st.as_str() {
-        "accept" | "answer" => (Some("active"), None),
-        "hangup" | "end" | "decline" => (Some("ended"), Some(Utc::now().timestamp_millis())),
-        "ringing" => (Some("ringing"), None),
-        _ => (None, None),
+
+    let updated = match state.db.apply_call_signal(&req.call_id, auth.user_id.0, &st, Utc::now().timestamp_millis()) {
+        Ok(CallSignalOutcome::Applied(c)) => c,
+        Ok(CallSignalOutcome::NotFound) => return err_resp(StatusCode::NOT_FOUND, "not_found", "Call not found"),
+        Ok(CallSignalOutcome::Forbidden(msg)) => return err_resp(StatusCode::FORBIDDEN, "forbidden", msg),
+        Ok(CallSignalOutcome::Conflict { code, message }) => return err_resp(StatusCode::CONFLICT, code, message),
+        Err(e) => return map_telegram_err(e),
     };
-    let updated = state.db.update_call_state_and_rating(&req.call_id, new_state, ended_at, None, None).ok().flatten();
-    if let Some(ref c) = updated {
-        let peer = if c.caller_id == auth.user_id.0 { UserId(c.callee_id) } else { UserId(c.caller_id) };
-        state.gateway_hub.broadcast_to_user(peer, WsServerFrame::Update(UpdateEvent::CallUpdated {
-            call_id: req.call_id.clone(), state: c.state.clone(), signal: Some(req.clone()),
-        }));
+
+    if let Err(err) = state.signaling_hub.dispatch_frame(auth.user_id, frame).await {
+        match err {
+            gpui_telegram_core::error::TelegramError::PermissionDenied(msg) => {
+                return err_resp(StatusCode::FORBIDDEN, "forbidden", &msg);
+            }
+            other => {
+                tracing::debug!(call_id = %req.call_id, signal_type = %st, error = %other, "SignalingHub dispatch_frame non-fatal fallback");
+            }
+        }
     }
+
+    let peer = if updated.caller_id == auth.user_id.0 {
+        UserId(updated.callee_id)
+    } else {
+        UserId(updated.caller_id)
+    };
+    state.gateway_hub.broadcast_to_user(peer, WsServerFrame::Update(UpdateEvent::CallUpdated {
+        call_id: req.call_id.clone(),
+        state: updated.state.clone(),
+        signal: Some(req.clone()),
+    }));
     (StatusCode::OK, Json(json!({ "call_id": req.call_id, "user_id": auth.user_id.0, "status": "relayed", "call": updated }))).into_response()
 }
 
@@ -332,9 +376,18 @@ pub async fn calls_rate(auth: AuthBearer, State(state): State<Arc<AppState>>, Pa
         None => return err_resp(StatusCode::BAD_REQUEST, "invalid_rating", "rating must be between 1 and 5"),
     };
     let feedback = payload.get("feedback").and_then(|v| v.as_str());
+
+    let call = match state.db.get_call(&call_id) {
+        Ok(Some(c)) => c,
+        Ok(None) => return err_resp(StatusCode::NOT_FOUND, "not_found", "Call not found"),
+        Err(e) => return map_telegram_err(e),
+    };
+    if call.caller_id != auth.user_id.0 && call.callee_id != auth.user_id.0 {
+        return err_resp(StatusCode::FORBIDDEN, "forbidden", "Caller did not participate in this call");
+    }
+
     match state.db.update_call_state_and_rating(&call_id, None, None, Some(rating), feedback) {
-        Ok(Some(c)) if c.caller_id == auth.user_id.0 || c.callee_id == auth.user_id.0 => (StatusCode::OK, Json(c)).into_response(),
-        Ok(Some(_)) => err_resp(StatusCode::FORBIDDEN, "forbidden", "Caller did not participate in this call"),
+        Ok(Some(c)) => (StatusCode::OK, Json(c)).into_response(),
         Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "Call not found"),
         Err(e) => map_telegram_err(e),
     }

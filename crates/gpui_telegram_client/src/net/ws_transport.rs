@@ -1,15 +1,19 @@
-use crate::net::http_client::ensure_runtime_handle;
+use crate::net::http_client::{ensure_runtime_handle, HttpClientError};
+use crate::net::proxy::{open_tunneled_tcp, ClientProxyConfig};
 use crate::net::ws_channel::WsChannel;
 use futures::{SinkExt, StreamExt};
 use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::connect_async;
+use tokio::task::AbortHandle;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{client_async_tls_with_config, connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,10 +33,15 @@ impl ConnectionStatus {
 pub struct WsTransport {
     server_url: String,
     token: Arc<RwLock<Option<String>>>,
+    proxy: Arc<RwLock<Option<ClientProxyConfig>>>,
     status_tx: watch::Sender<ConnectionStatus>,
     status_rx: watch::Receiver<ConnectionStatus>,
     ws_channel: WsChannel,
     is_running: Arc<RwLock<bool>>,
+    generation: Arc<AtomicU64>,
+    generation_tx: watch::Sender<u64>,
+    active_task: Arc<Mutex<Option<AbortHandle>>>,
+    lifecycle_lock: Mutex<()>,
     runtime_handle: Handle,
     max_reconnect_attempts: Arc<RwLock<u32>>,
 }
@@ -76,16 +85,35 @@ impl WsTransport {
         max_reconnect_attempts: u32,
     ) -> Self {
         let (status_tx, status_rx) = watch::channel(ConnectionStatus::Connecting);
+        let (generation_tx, _) = watch::channel(0u64);
         Self {
             server_url,
             token: Arc::new(RwLock::new(None)),
+            proxy: Arc::new(RwLock::new(None)),
             status_tx,
             status_rx,
             ws_channel,
             is_running: Arc::new(RwLock::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            generation_tx,
+            active_task: Arc::new(Mutex::new(None)),
+            lifecycle_lock: Mutex::new(()),
             runtime_handle: ensure_runtime_handle(runtime_handle),
             max_reconnect_attempts: Arc::new(RwLock::new(max_reconnect_attempts)),
         }
+    }
+
+    pub fn set_proxy(&self, proxy: Option<ClientProxyConfig>) {
+        *self.proxy.write() = proxy;
+    }
+
+    pub fn proxy(&self) -> Option<ClientProxyConfig> {
+        self.proxy.read().clone()
+    }
+
+    pub fn with_proxy(self, proxy: Option<ClientProxyConfig>) -> Self {
+        self.set_proxy(proxy);
+        self
     }
 
     pub fn max_reconnect_attempts(&self) -> u32 {
@@ -122,41 +150,72 @@ impl WsTransport {
     }
 
     pub fn start(&self) {
-        let mut running = self.is_running.write();
-        if *running {
-            return;
+        let _lifecycle = self.lifecycle_lock.lock();
+        {
+            let mut running = self.is_running.write();
+            if *running {
+                return;
+            }
+            *running = true;
         }
-        *running = true;
+
+        if let Some(prev_abort) = self.active_task.lock().take() {
+            prev_abort.abort();
+        }
+
+        let my_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.generation_tx.send(my_gen);
+        let mut gen_rx = self.generation_tx.subscribe();
+        let current_gen = Arc::clone(&self.generation);
 
         let server_url = self.server_url.clone();
         let token_slot = self.token.clone();
+        let proxy_slot = self.proxy.clone();
         let status_tx = self.status_tx.clone();
         let ws_channel = self.ws_channel.clone();
         let is_running = self.is_running.clone();
         let max_reconnect_attempts = self.max_reconnect_attempts.clone();
 
         let handle = Handle::try_current().unwrap_or_else(|_| self.runtime_handle.clone());
-        handle.spawn(async move {
+        let join_handle = handle.spawn(async move {
             let mut attempt = 0u32;
+            let is_active = || *is_running.read() && current_gen.load(Ordering::SeqCst) == my_gen;
 
-            while *is_running.read() {
+            while is_active() {
                 let current_token = token_slot.read().clone();
                 let token = match current_token {
                     Some(t) if !t.is_empty() => t,
                     _ => {
-                        let _ = status_tx.send(ConnectionStatus::Offline {
-                            reason: "No authentication token configured".into(),
-                        });
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if is_active() {
+                            let _ = status_tx.send(ConnectionStatus::Offline {
+                                reason: "No authentication token configured".into(),
+                            });
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                            _ = gen_rx.changed() => { break; }
+                        }
                         continue;
                     }
                 };
 
                 let ws_url = Self::format_ws_url(&server_url, &token);
+                let active_proxy = proxy_slot.read().clone();
+                if !is_active() {
+                    break;
+                }
                 let _ = status_tx.send(ConnectionStatus::Connecting);
 
-                match connect_async(&ws_url).await {
-                    Ok((ws_stream, _response)) => {
+                let connect_res = tokio::select! {
+                    res = connect_ws_with_proxy(&ws_url, active_proxy.as_ref()) => res,
+                    _ = gen_rx.changed() => break,
+                };
+
+                match connect_res {
+                    Ok(ws_stream) => {
+                        if !is_active() {
+                            break;
+                        }
                         info!("WebSocket connected to {}", ws_url);
                         attempt = 0;
                         let _ = status_tx.send(ConnectionStatus::Connected);
@@ -172,7 +231,13 @@ impl WsTransport {
                             tokio::time::interval(Duration::from_secs(25));
 
                         loop {
+                            if !is_active() {
+                                break;
+                            }
                             tokio::select! {
+                                _ = gen_rx.changed() => {
+                                    break;
+                                }
                                 _ = ping_interval.tick() => {
                                     let nonce = chrono::Utc::now().timestamp_millis() as u64;
                                     let ping_frame = WsClientFrame::Ping { nonce };
@@ -216,22 +281,27 @@ impl WsTransport {
                             }
                         }
                     }
-                    Err(tokio_tungstenite::tungstenite::Error::Http(resp))
-                        if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED =>
-                    {
+                    Err(WsConnectError::Unauthorized) => {
                         warn!("WebSocket handshake rejected with HTTP 401 Unauthorized. Token revoked or invalid.");
-                        let _ = status_tx.send(ConnectionStatus::Offline {
-                            reason: "Session unauthorized (401)".into(),
-                        });
-                        *is_running.write() = false;
+                        if is_active() {
+                            let _ = status_tx.send(ConnectionStatus::Offline {
+                                reason: "Session unauthorized (401)".into(),
+                            });
+                            *is_running.write() = false;
+                        }
                         break;
                     }
                     Err(e) => {
                         warn!("WebSocket connect failure: {e}");
+                        if matches!(e, WsConnectError::Proxy(_)) && is_active() {
+                            let _ = status_tx.send(ConnectionStatus::Offline {
+                                reason: e.to_string(),
+                            });
+                        }
                     }
                 }
 
-                if !*is_running.read() {
+                if !is_active() {
                     break;
                 }
 
@@ -242,27 +312,42 @@ impl WsTransport {
                         "WebSocket reconnection exceeded max attempts ({}). Terminating loop.",
                         max_attempts
                     );
-                    let _ = status_tx.send(ConnectionStatus::Offline {
-                        reason: "Max reconnection attempts exceeded".into(),
-                    });
-                    *is_running.write() = false;
+                    if is_active() {
+                        let _ = status_tx.send(ConnectionStatus::Offline {
+                            reason: "Max reconnection attempts exceeded".into(),
+                        });
+                        *is_running.write() = false;
+                    }
                     break;
                 }
 
                 let retry_delay = compute_jittered_delay(attempt);
                 let retry_secs = retry_delay.as_secs().max(1);
+                if !is_active() {
+                    break;
+                }
                 let _ = status_tx.send(ConnectionStatus::Reconnecting {
                     attempt,
                     next_retry_in_secs: retry_secs,
                 });
 
-                tokio::time::sleep(retry_delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(retry_delay) => {}
+                    _ = gen_rx.changed() => { break; }
+                }
             }
         });
+        *self.active_task.lock() = Some(join_handle.abort_handle());
     }
 
     pub fn stop(&self) {
+        let _lifecycle = self.lifecycle_lock.lock();
         *self.is_running.write() = false;
+        let next_gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.generation_tx.send(next_gen);
+        if let Some(abort) = self.active_task.lock().take() {
+            abort.abort();
+        }
         let _ = self.status_tx.send(ConnectionStatus::Offline {
             reason: "Client disconnected".into(),
         });
@@ -278,6 +363,74 @@ impl WsTransport {
             format!("ws://{}", clean)
         };
         format!("{}/api/v1/ws?token={}", base, token)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WsConnectError {
+    #[error("WebSocket unauthorized (401)")]
+    Unauthorized,
+    #[error("Proxy tunnel error: {0}")]
+    Proxy(String),
+    #[error("WebSocket handshake/transport error: {0}")]
+    Transport(String),
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for WsConnectError {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        match &err {
+            tokio_tungstenite::tungstenite::Error::Http(resp)
+                if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED =>
+            {
+                WsConnectError::Unauthorized
+            }
+            _ => WsConnectError::Transport(err.to_string()),
+        }
+    }
+}
+
+pub async fn connect_ws_with_proxy(
+    ws_url: &str,
+    proxy: Option<&ClientProxyConfig>,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WsConnectError> {
+    match proxy {
+        None => {
+            let (stream, _) = connect_async(ws_url).await?;
+            Ok(stream)
+        }
+        Some(cfg) if cfg.is_direct() => {
+            let (stream, _) = connect_async(ws_url).await?;
+            Ok(stream)
+        }
+        Some(cfg) => {
+            let parsed = reqwest::Url::parse(ws_url)
+                .map_err(|e| WsConnectError::Proxy(format!("Invalid WebSocket URL: {e}")))?;
+            let host = parsed
+                .host_str()
+                .ok_or_else(|| WsConnectError::Proxy("WebSocket URL missing host".into()))?
+                .trim_matches(|c| c == '[' || c == ']')
+                .to_string();
+            let port = parsed.port_or_known_default().unwrap_or_else(|| {
+                if parsed.scheme().eq_ignore_ascii_case("wss") {
+                    443
+                } else {
+                    80
+                }
+            });
+            match open_tunneled_tcp(&host, port, cfg).await {
+                Ok(tcp) => {
+                    let (ws_stream, _) =
+                        client_async_tls_with_config(ws_url, tcp, None, None).await?;
+                    Ok(ws_stream)
+                }
+                Err(HttpClientError::Proxy(msg)) if cfg.fallback_to_direct => {
+                    warn!("Proxy tunnel failed ({msg}); falling back to direct WS connection");
+                    let (stream, _) = connect_async(ws_url).await?;
+                    Ok(stream)
+                }
+                Err(e) => Err(WsConnectError::Proxy(e.to_string())),
+            }
+        }
     }
 }
 

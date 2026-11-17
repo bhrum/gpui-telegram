@@ -166,7 +166,7 @@ pub async fn execute_agentic_tool(
         | "kanban_toggle_checklist"
         | "kanban_search_cards" => tool_kanban(name, args, ctx).await,
         "clarify" => tool_clarify(args, ctx).await,
-        "desktop_ui_inspect" => tool_desktop_ui_inspect(ctx),
+        "desktop_ui_inspect" => tool_desktop_ui_inspect(ctx).await,
         "desktop_ui_act" => tool_desktop_ui_act(args, ctx).await,
         "computer_use" => tool_computer_use(args, ctx),
         "computer_list" => tool_computer_list(ctx).await,
@@ -176,7 +176,7 @@ pub async fn execute_agentic_tool(
         "computer_file" => tool_computer_file(args, ctx).await,
         "computer_screen" => tool_computer_screen(args, ctx).await,
         "voice_session" => tool_voice_session(args, ctx),
-        "manage_connections" => tool_manage_connections(args, ctx),
+        "manage_connections" => tool_manage_connections(args, ctx).await,
         "think" | "reason" => tool_reasoning(name, args),
         "mcp_list_tools" => tool_mcp_list_tools(ctx),
         "mcp_call" => tool_mcp_call(args, ctx),
@@ -462,6 +462,13 @@ async fn tool_delegate_task(args: Value, ctx: &HermesToolContext) -> HermesToolR
             );
         }
     }
+    if let Some(bridge) = &ctx.state_bridge {
+        for req in &requests {
+            let _ = bridge
+                .record_lineage(&req.task_id, Some(&ctx.session_id), &req.role, "running")
+                .await;
+        }
+    }
 
     let mut all_outcomes: Vec<SubagentDelegationOutcome> = Vec::with_capacity(requests.len());
     for batch in requests.chunks(max_concurrent) {
@@ -502,6 +509,14 @@ async fn tool_delegate_task(args: Value, ctx: &HermesToolContext) -> HermesToolR
                     SubagentLifecycleStatus::Error
                 },
             );
+        }
+    }
+    if let Some(bridge) = &ctx.state_bridge {
+        for outcome in &all_outcomes {
+            let st = if outcome.success { "done" } else { "error" };
+            let _ = bridge
+                .record_lineage(&outcome.task_id, Some(&ctx.session_id), &outcome.role, st)
+                .await;
         }
     }
 
@@ -1188,7 +1203,16 @@ async fn tool_clarify(args: Value, ctx: &HermesToolContext) -> HermesToolResult 
     .with_inline_buttons(buttons)
 }
 
-fn tool_desktop_ui_inspect(ctx: &HermesToolContext) -> HermesToolResult {
+async fn tool_desktop_ui_inspect(ctx: &HermesToolContext) -> HermesToolResult {
+    if let Some(bridge) = &ctx.state_bridge {
+        if let Ok(payload) = bridge.desktop_ui_inspect().await {
+            return HermesToolResult::ok(
+                "desktop_ui_inspect",
+                serde_json::to_string_pretty(&payload).unwrap_or_default(),
+                Some(payload),
+            );
+        }
+    }
     let Ok(store) = ctx.agentic_store.lock() else {
         return HermesToolResult::err("desktop_ui_inspect", "LocalAgenticStore lock poisoned");
     };
@@ -1872,108 +1896,130 @@ fn mask_secret(secret: &str) -> String {
     format!("{prefix}****")
 }
 
-fn tool_manage_connections(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
+async fn tool_manage_connections(args: Value, ctx: &HermesToolContext) -> HermesToolResult {
     let action = args
         .get("action")
         .and_then(|v| v.as_str())
         .unwrap_or("list")
         .to_ascii_lowercase();
-    let Ok(mut store) = ctx.agentic_store.lock() else {
-        return HermesToolResult::err("manage_connections", "LocalAgenticStore lock poisoned");
+    let local_res = {
+        let Ok(mut store) = ctx.agentic_store.lock() else {
+            return HermesToolResult::err("manage_connections", "LocalAgenticStore lock poisoned");
+        };
+
+        match action.as_str() {
+            "list" => {
+                let mut list: Vec<&IntegrationConnection> = store.connections.values().collect();
+                list.sort_by(|a, b| a.name.cmp(&b.name));
+                HermesToolResult::ok(
+                    "manage_connections",
+                    serde_json::to_string_pretty(&list).unwrap_or_default(),
+                    Some(json!({ "connections": list })),
+                )
+            }
+            "connect" => {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
+                    return HermesToolResult::err("manage_connections", "Missing required 'name'");
+                };
+                let provider = args
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(name)
+                    .to_string();
+                let endpoint = args
+                    .get("endpoint")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let masked_secret = args
+                    .get("api_key")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(mask_secret);
+                let entry = IntegrationConnection {
+                    name: name.to_string(),
+                    provider,
+                    endpoint,
+                    masked_secret,
+                    connected: true,
+                    updated_at: Utc::now(),
+                    last_tested_at: None,
+                };
+                store.connections.insert(name.to_string(), entry.clone());
+                HermesToolResult::ok(
+                    "manage_connections",
+                    format!("Connected integration '{name}' (credentials safely masked)"),
+                    Some(serde_json::to_value(&entry).unwrap_or_default()),
+                )
+            }
+            "disconnect" => {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
+                    return HermesToolResult::err("manage_connections", "Missing required 'name'");
+                };
+                if let Some(entry) = store.connections.get_mut(name) {
+                    entry.connected = false;
+                    entry.masked_secret = None;
+                    entry.updated_at = Utc::now();
+                    HermesToolResult::ok(
+                        "manage_connections",
+                        format!("Disconnected integration '{name}'"),
+                        Some(serde_json::to_value(entry).unwrap_or_default()),
+                    )
+                } else {
+                    HermesToolResult::err("manage_connections", format!("Connection '{name}' not found"))
+                }
+            }
+            "test" => {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
+                    return HermesToolResult::err("manage_connections", "Missing required 'name'");
+                };
+                if let Some(entry) = store.connections.get_mut(name) {
+                    entry.last_tested_at = Some(Utc::now());
+                    let healthy = entry.connected;
+                    HermesToolResult::ok(
+                        "manage_connections",
+                        format!("Tested connection '{name}': connected={healthy}"),
+                        Some(json!({ "name": name, "healthy": healthy, "connection": entry })),
+                    )
+                } else {
+                    HermesToolResult::err("manage_connections", format!("Connection '{name}' not found"))
+                }
+            }
+            "get" => {
+                let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
+                    return HermesToolResult::err("manage_connections", "Missing required 'name'");
+                };
+                match store.connections.get(name) {
+                    Some(entry) => HermesToolResult::ok(
+                        "manage_connections",
+                        serde_json::to_string_pretty(entry).unwrap_or_default(),
+                        Some(serde_json::to_value(entry).unwrap_or_default()),
+                    ),
+                    None => HermesToolResult::err("manage_connections", format!("Connection '{name}' not found")),
+                }
+            }
+            _ => HermesToolResult::err("manage_connections", format!("Unsupported action '{action}'")),
+        }
     };
 
-    match action.as_str() {
-        "list" => {
-            let mut list: Vec<&IntegrationConnection> = store.connections.values().collect();
-            list.sort_by(|a, b| a.name.cmp(&b.name));
-            HermesToolResult::ok(
-                "manage_connections",
-                serde_json::to_string_pretty(&list).unwrap_or_default(),
-                Some(json!({ "connections": list })),
-            )
-        }
-        "connect" => {
-            let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
-                return HermesToolResult::err("manage_connections", "Missing required 'name'");
-            };
-            let provider = args
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or(name)
-                .to_string();
-            let endpoint = args
-                .get("endpoint")
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-            let masked_secret = args
-                .get("api_key")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.trim().is_empty())
-                .map(mask_secret);
-            let entry = IntegrationConnection {
-                name: name.to_string(),
-                provider,
-                endpoint,
-                masked_secret,
-                connected: true,
-                updated_at: Utc::now(),
-                last_tested_at: None,
-            };
-            store.connections.insert(name.to_string(), entry.clone());
-            HermesToolResult::ok(
-                "manage_connections",
-                format!("Connected integration '{name}' (credentials safely masked)"),
-                Some(serde_json::to_value(&entry).unwrap_or_default()),
-            )
-        }
-        "disconnect" => {
-            let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
-                return HermesToolResult::err("manage_connections", "Missing required 'name'");
-            };
-            if let Some(entry) = store.connections.get_mut(name) {
-                entry.connected = false;
-                entry.masked_secret = None;
-                entry.updated_at = Utc::now();
-                HermesToolResult::ok(
+    if let Some(bridge) = &ctx.state_bridge {
+        match bridge.connections_op(&args).await {
+            Ok(val) => {
+                return HermesToolResult::ok(
                     "manage_connections",
-                    format!("Disconnected integration '{name}'"),
-                    Some(serde_json::to_value(entry).unwrap_or_default()),
-                )
-            } else {
-                HermesToolResult::err("manage_connections", format!("Connection '{name}' not found"))
+                    serde_json::to_string_pretty(&val).unwrap_or_default(),
+                    Some(val),
+                );
+            }
+            Err(err) if err == "connections_op not bridged" => {}
+            Err(err) => {
+                // If local store didn't find it either, propagate backend error
+                if !local_res.success {
+                    return HermesToolResult::err("manage_connections", err);
+                }
             }
         }
-        "test" => {
-            let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
-                return HermesToolResult::err("manage_connections", "Missing required 'name'");
-            };
-            if let Some(entry) = store.connections.get_mut(name) {
-                entry.last_tested_at = Some(Utc::now());
-                let healthy = entry.connected;
-                HermesToolResult::ok(
-                    "manage_connections",
-                    format!("Tested connection '{name}': connected={healthy}"),
-                    Some(json!({ "name": name, "healthy": healthy, "connection": entry })),
-                )
-            } else {
-                HermesToolResult::err("manage_connections", format!("Connection '{name}' not found"))
-            }
-        }
-        "get" => {
-            let Some(name) = args.get("name").and_then(|v| v.as_str()) else {
-                return HermesToolResult::err("manage_connections", "Missing required 'name'");
-            };
-            match store.connections.get(name) {
-                Some(entry) => HermesToolResult::ok(
-                    "manage_connections",
-                    serde_json::to_string_pretty(entry).unwrap_or_default(),
-                    Some(serde_json::to_value(entry).unwrap_or_default()),
-                ),
-                None => HermesToolResult::err("manage_connections", format!("Connection '{name}' not found")),
-            }
-        }
-        _ => HermesToolResult::err("manage_connections", format!("Unsupported action '{action}'")),
     }
+    local_res
 }
 
 fn tool_reasoning(name: &str, args: Value) -> HermesToolResult {

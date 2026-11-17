@@ -16,8 +16,29 @@ struct TantivyWriterGuard {
 
 impl Drop for TantivyWriterGuard {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.tx.lock() {
-            let _ = g.take();
+        let tx_opt = self.tx.lock().ok().and_then(|mut g| g.take());
+        if let Some(tx) = tx_opt {
+            let (reply_tx, _reply_rx) = oneshot::channel();
+            match tx.try_send(IndexCommand::Shutdown { reply: reply_tx }) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(cmd)) => {
+                    if tokio::runtime::Handle::try_current().is_err() {
+                        let _ = tx.blocking_send(cmd);
+                    } else {
+                        let mut cmd = cmd;
+                        for _ in 0..50 {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                            match tx.try_send(cmd) {
+                                Ok(()) => break,
+                                Err(mpsc::error::TrySendError::Full(ret)) => cmd = ret,
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+            drop(tx);
         }
         if let Ok(mut g) = self.join.lock() {
             if let Some(handle) = g.take() {
@@ -340,6 +361,88 @@ impl TantivyIndexer {
             });
         }
 
+        Ok(hits)
+    }
+
+    /// Searches messages scoped strictly to `allowed_chat_ids` inside the Tantivy `BooleanQuery`
+    /// so unauthorized chats never starve `TopDocs::with_limit`.
+    pub fn search_hits_for_chats(
+        &self,
+        query: &str,
+        allowed_chat_ids: &[i64],
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        if allowed_chat_ids.is_empty() || query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let searcher = self.reader.searcher();
+        let query_parser = QueryParser::for_index(&self.index, vec![self.fields.f_body]);
+        let parsed_query = query_parser
+            .parse_query(query)
+            .map_err(|e| TelegramError::Validation(format!("Invalid search query: {e}")))?;
+
+        let mut snippet_gen = SnippetGenerator::create(&searcher, &*parsed_query, self.fields.f_body)
+            .map_err(|e| TelegramError::Internal(format!("Snippet generator creation failed: {e}")))?;
+        snippet_gen.set_max_num_chars(160);
+
+        let chat_clauses: Vec<(Occur, Box<dyn Query>)> = allowed_chat_ids
+            .iter()
+            .map(|cid| {
+                let term = Term::from_field_text(self.fields.f_chat_id, &cid.to_string());
+                (
+                    Occur::Should,
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic)) as Box<dyn Query>,
+                )
+            })
+            .collect();
+        let chat_filter = BooleanQuery::new(chat_clauses);
+        let boolean_query = BooleanQuery::new(vec![
+            (Occur::Must, parsed_query),
+            (Occur::Must, Box::new(chat_filter)),
+        ]);
+
+        let top_docs = searcher
+            .search(&boolean_query, &TopDocs::with_limit(limit.clamp(1, 200)))
+            .map_err(|e| TelegramError::Internal(format!("Search execution failed: {e}")))?;
+
+        let mut hits = Vec::with_capacity(top_docs.len());
+        for (score, doc_addr) in top_docs {
+            let doc: TantivyDocument = searcher
+                .doc(doc_addr)
+                .map_err(|e| TelegramError::Internal(format!("Doc retrieval failed: {e}")))?;
+            let message_id = doc
+                .get_first(self.fields.f_message_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let chat_id = doc
+                .get_first(self.fields.f_chat_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let sender_id = doc
+                .get_first(self.fields.f_sender_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let date = doc
+                .get_first(self.fields.f_date)
+                .and_then(|v| v.as_i64())
+                .unwrap_or_default();
+            let snippet = snippet_gen.snippet_from_doc(&doc);
+            let snippet_html = snippet
+                .to_html()
+                .replace("<b>", "<mark>")
+                .replace("</b>", "</mark>");
+            hits.push(SearchHit {
+                message_id,
+                chat_id,
+                sender_id,
+                date,
+                snippet_html,
+                score,
+            });
+        }
         Ok(hits)
     }
 

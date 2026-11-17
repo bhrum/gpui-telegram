@@ -25,6 +25,7 @@ pub enum ComposerBarAction {
     EndVoice,
     LockVoice,
     CancelVoice,
+    CycleSendAs,
 }
 
 pub fn render_composer_context_banner<V: 'static>(

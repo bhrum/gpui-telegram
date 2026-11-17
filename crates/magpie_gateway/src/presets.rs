@@ -660,6 +660,56 @@ fn build_presets() -> Vec<MagpiePreset> {
             .catalog("google")
             .envs(&["GEMINI_API_KEY", "GOOGLE_API_KEY"])
             .build(),
+        PresetBuilder::new("google-vertex", "Google Vertex AI", "vertexai-color", PresetKind::Vendor, "gemini-2.5-flash")
+            .short("Vertex AI")
+            .gemini("https://aiplatform.googleapis.com/v1")
+            .chat("https://aiplatform.googleapis.com/v1beta1")
+            .default_proto(ProtocolKind::GeminiGenerateContent)
+            .models(&[
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
+                "gemini-3.1-pro-preview",
+            ])
+            .note("Vertex AI Model Garden & ADC")
+            .headers(&["x-goog-user-project"])
+            .links("https://cloud.google.com/vertex-ai", "https://console.cloud.google.com/vertex-ai")
+            .catalog("google-vertex")
+            .envs(&["GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CORE_PROJECT", "VERTEX_PROJECT_ID"])
+            .regions(vec![
+                PresetRegion {
+                    id: "us-central1".to_string(),
+                    name: "us-central1 (Iowa)".to_string(),
+                    chat_url: Some("https://us-central1-aiplatform.googleapis.com/v1beta1".to_string()),
+                    responses_url: None,
+                    anthropic_url: None,
+                    gemini_url: Some("https://us-central1-aiplatform.googleapis.com/v1".to_string()),
+                    keys_url: None,
+                    website: None,
+                    models: vec![
+                        "gemini-2.5-flash".to_string(),
+                        "gemini-2.5-pro".to_string(),
+                        "gemini-1.5-pro".to_string(),
+                    ],
+                },
+                PresetRegion {
+                    id: "global".to_string(),
+                    name: "Global (Auto)".to_string(),
+                    chat_url: Some("https://aiplatform.googleapis.com/v1beta1".to_string()),
+                    responses_url: None,
+                    anthropic_url: None,
+                    gemini_url: Some("https://aiplatform.googleapis.com/v1".to_string()),
+                    keys_url: None,
+                    website: None,
+                    models: vec![
+                        "gemini-2.5-flash".to_string(),
+                        "gemini-2.5-pro".to_string(),
+                        "gemini-1.5-pro".to_string(),
+                    ],
+                },
+            ])
+            .build(),
         PresetBuilder::new("xai", "xAI Grok", "xai", PresetKind::Vendor, "grok-3-beta")
             .short("xAI")
             .chat("https://api.x.ai/v1")
@@ -901,6 +951,8 @@ pub fn canonical_preset_alias(id: &str) -> (&str, Option<&str>) {
         "tencent-tokenhub" => ("tencent-cloud", Some("intl")),
         "magpie-local" | "magpie_local" => ("remote-magpie", None),
         "gemini" => ("google", None),
+        "vertex" | "vertex-ai" | "google-vertex" | "vertex_ai" => ("google-vertex", None),
+        "vertex-us" | "vertex-central" => ("google-vertex", Some("us-central1")),
         "kimi" => ("moonshot", None),
         "kimi-cn" => ("moonshot-cn", None),
         "glm" => ("zhipu", None),

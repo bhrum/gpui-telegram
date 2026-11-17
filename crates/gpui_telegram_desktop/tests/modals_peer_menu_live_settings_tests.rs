@@ -825,6 +825,8 @@ fn run_headless_appshell_round2_child() -> ! {
                                 host: "10.0.0.8".into(),
                                 port: 1088,
                                 secret_or_user: String::new(),
+                                username: None,
+                                password: None,
                                 ping_ms: 12,
                                 enabled: true,
                             }),
@@ -863,6 +865,8 @@ fn run_headless_appshell_round2_child() -> ! {
                                 host: "mt.telegram.example".into(),
                                 port: 443,
                                 secret_or_user: "ee1122".into(),
+                                username: None,
+                                password: None,
                                 ping_ms: 8,
                                 enabled: true,
                             }];

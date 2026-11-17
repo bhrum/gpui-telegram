@@ -81,11 +81,15 @@ impl ServerDatabase {
     }
 
     pub fn list_message_reactions(&self, chat_id: ChatId, message_id: MsgId, viewer: UserId) -> Result<Vec<ReactionDetailDto>> {
-        self.pool.with_transaction(|tx| Self::query_reactions_tx(tx, chat_id, message_id, viewer))
+        self.pool.with_reader(|conn| Self::query_reactions_conn(conn, chat_id, message_id, viewer))
     }
 
     fn query_reactions_tx(tx: &Transaction<'_>, chat_id: ChatId, message_id: MsgId, viewer: UserId) -> Result<Vec<ReactionDetailDto>> {
-        let mut stmt = tx.prepare("SELECT emoji, user_id FROM message_reactions WHERE chat_id = ?1 AND message_id = ?2 ORDER BY created_at_ms ASC")
+        Self::query_reactions_conn(tx, chat_id, message_id, viewer)
+    }
+
+    fn query_reactions_conn(conn: &rusqlite::Connection, chat_id: ChatId, message_id: MsgId, viewer: UserId) -> Result<Vec<ReactionDetailDto>> {
+        let mut stmt = conn.prepare("SELECT emoji, user_id FROM message_reactions WHERE chat_id = ?1 AND message_id = ?2 ORDER BY created_at_ms ASC")
             .map_err(|e| TelegramError::Database(e.to_string()))?;
         let mut by_emoji: Vec<ReactionDetailDto> = Vec::new();
         let rows = stmt.query_map(params![chat_id.0, message_id.0], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))
@@ -156,7 +160,12 @@ impl ServerDatabase {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_poll_card_tx(tx: &Transaction<'_>, poll_id: i64, viewer: UserId, question: String, is_anonymous: bool, multiple: bool, is_quiz: bool, correct_option_id: Option<u8>, solution: Option<String>, is_closed: bool, close_period: Option<u32>, close_date: Option<i64>) -> Result<PollCard> {
-        let mut stmt = tx.prepare(
+        Self::build_poll_card_conn(tx, poll_id, viewer, question, is_anonymous, multiple, is_quiz, correct_option_id, solution, is_closed, close_period, close_date)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_poll_card_conn(conn: &rusqlite::Connection, poll_id: i64, viewer: UserId, question: String, is_anonymous: bool, multiple: bool, is_quiz: bool, correct_option_id: Option<u8>, solution: Option<String>, is_closed: bool, close_period: Option<u32>, close_date: Option<i64>) -> Result<PollCard> {
+        let mut stmt = conn.prepare(
             "SELECT po.option_id, po.text, po.vote_count, EXISTS(SELECT 1 FROM poll_votes pv WHERE pv.poll_id = po.poll_id AND pv.option_id = po.option_id AND pv.user_id = ?2) FROM poll_options po WHERE po.poll_id = ?1 ORDER BY po.option_id ASC"
         ).map_err(|e| TelegramError::Database(e.to_string()))?;
         let rows = stmt.query_map(params![poll_id, viewer.0 as i64], |r| Ok(PollOption {

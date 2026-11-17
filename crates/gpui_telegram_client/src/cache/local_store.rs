@@ -1,7 +1,7 @@
 use crate::cache::sqlite_cache::{CachedMediaEntry, SqliteClientCache};
 use gpui_telegram_core::error::Result;
 use gpui_telegram_core::types::{ChatId, MessageId, UserId};
-use gpui_telegram_proto::contracts::{ChatDetailDto, DraftDto};
+use gpui_telegram_proto::contracts::{ChatDetailDto, ChatFolderDto, DraftDto};
 use gpui_telegram_proto::message::{MessageContent, MessageItem, ReactionCount};
 use gpui_telegram_proto::{PollCard, TodoCard};
 use parking_lot::RwLock;
@@ -16,6 +16,8 @@ struct LocalCacheState {
     message_reactions: HashMap<(ChatId, MessageId), Vec<ReactionCount>>,
     chats: HashMap<ChatId, ChatDetailDto>,
     drafts: HashMap<ChatId, DraftDto>,
+    folders: Vec<ChatFolderDto>,
+    chat_ttls: HashMap<ChatId, u32>,
     pinned_ids: HashMap<ChatId, Vec<MessageId>>,
     read_inbox_max: HashMap<ChatId, MessageId>,
     read_outbox_max: HashMap<ChatId, MessageId>,
@@ -50,6 +52,8 @@ impl LocalStore {
         }
         let chats = db.load_chats()?;
         let drafts = db.load_drafts()?;
+        let folders = db.load_folders()?;
+        let chat_ttls = db.load_chat_ttls()?;
         let (read_inbox_max, read_outbox_max) = db.load_read_states()?;
         let media_entries = db.load_media_index()?;
         let state = LocalCacheState {
@@ -58,6 +62,8 @@ impl LocalStore {
             message_reactions,
             chats,
             drafts,
+            folders,
+            chat_ttls,
             pinned_ids: HashMap::new(),
             read_inbox_max,
             read_outbox_max,
@@ -68,6 +74,17 @@ impl LocalStore {
             state: Arc::new(RwLock::new(state)),
             sqlite: Some(db),
         })
+    }
+
+    pub(crate) fn sqlite_cache(&self) -> Option<Arc<SqliteClientCache>> {
+        self.sqlite.clone()
+    }
+
+    pub fn max_outbox_nonce(&self) -> u64 {
+        self.sqlite
+            .as_ref()
+            .map(|db| db.max_outbox_nonce())
+            .unwrap_or(0)
     }
 
     pub fn cache_dir(&self) -> Option<PathBuf> {
@@ -127,6 +144,8 @@ impl LocalStore {
             guard.message_reactions.clear();
             guard.chats.clear();
             guard.drafts.clear();
+            guard.folders.clear();
+            guard.chat_ttls.clear();
             guard.pinned_ids.clear();
             guard.read_inbox_max.clear();
             guard.read_outbox_max.clear();
@@ -512,6 +531,108 @@ impl LocalStore {
 
     pub fn get_draft(&self, chat_id: ChatId) -> Option<DraftDto> {
         self.state.read().drafts.get(&chat_id).cloned()
+    }
+
+    pub fn set_folders(&self, folders: Vec<ChatFolderDto>) {
+        self.state.write().folders = folders.clone();
+        if let Some(db) = &self.sqlite {
+            db.replace_folders(&folders);
+        }
+    }
+
+    pub fn get_folders(&self) -> Vec<ChatFolderDto> {
+        self.state.read().folders.clone()
+    }
+
+    pub fn upsert_folder(&self, folder: ChatFolderDto) {
+        if folder.title.trim().is_empty() {
+            self.remove_folder(folder.id);
+            return;
+        }
+        {
+            let mut guard = self.state.write();
+            if let Some(existing) = guard.folders.iter_mut().find(|f| f.id == folder.id) {
+                *existing = folder.clone();
+            } else {
+                guard.folders.push(folder.clone());
+            }
+        }
+        if let Some(db) = &self.sqlite {
+            db.upsert_folder(&folder);
+        }
+    }
+
+    pub fn remove_folder(&self, folder_id: i64) {
+        self.state.write().folders.retain(|f| f.id != folder_id);
+        if let Some(db) = &self.sqlite {
+            db.delete_folder(folder_id);
+        }
+    }
+
+    pub fn set_chat_ttl(&self, chat_id: ChatId, ttl_seconds: u32) {
+        {
+            let mut guard = self.state.write();
+            if ttl_seconds == 0 {
+                guard.chat_ttls.remove(&chat_id);
+            } else {
+                guard.chat_ttls.insert(chat_id, ttl_seconds);
+            }
+        }
+        if let Some(db) = &self.sqlite {
+            db.upsert_chat_ttl(chat_id, ttl_seconds);
+        }
+    }
+
+    pub fn get_chat_ttl(&self, chat_id: ChatId) -> u32 {
+        self.state
+            .read()
+            .chat_ttls
+            .get(&chat_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn purge_expired_messages(&self, now_ms: i64) -> Vec<(ChatId, Vec<MessageId>)> {
+        let mut purged: Vec<(ChatId, Vec<MessageId>)> = Vec::new();
+        {
+            let mut guard = self.state.write();
+            let guard = &mut *guard;
+            for (&chat_id, list) in guard.messages.iter_mut() {
+                let chat_ttl_secs = guard.chat_ttls.get(&chat_id).copied().unwrap_or(0);
+                let mut expired_ids = Vec::new();
+                list.retain(|msg| {
+                    let msg_expires_at = msg.expires_at_ms.or_else(|| {
+                        let ttl = msg.ttl_seconds.unwrap_or(chat_ttl_secs);
+                        if ttl > 0 {
+                            Some(msg.date.timestamp_millis().saturating_add(ttl as i64 * 1000))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(exp) = msg_expires_at {
+                        if exp <= now_ms {
+                            expired_ids.push(msg.id);
+                            return false;
+                        }
+                    }
+                    true
+                });
+                if !expired_ids.is_empty() {
+                    for &mid in &expired_ids {
+                        guard.message_reactions.remove(&(chat_id, mid));
+                    }
+                    purged.push((chat_id, expired_ids));
+                }
+            }
+        }
+        if let Some(db) = &self.sqlite {
+            for (chat_id, ids) in &purged {
+                for &mid in ids {
+                    db.delete_message(*chat_id, mid);
+                }
+            }
+        }
+        purged
     }
 
     pub fn set_pinned_messages(&self, chat_id: ChatId, pinned_ids: Vec<MessageId>) {

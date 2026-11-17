@@ -13,6 +13,7 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use gpui_telegram_client::net::hermes_client::HermesCommandDescriptor;
 
+use crate::app::session::send_as_peers::SendAsPeer;
 use crate::theme::TdesktopThemePalette;
 use crate::views::composer::attachments_drawer::ComposerAttachMiniApp;
 use crate::views::composer::composer_ui::{
@@ -222,6 +223,8 @@ pub struct CanonicalComposer {
     pub bot_menu_controls: HistoryViewBotMenuButtonViewControls,
     pub bot_menu_entity: Option<Entity<HistoryViewBotMenuButtonViewControls>>,
     pub pending_launch_miniapp: Option<(u64, String, String, String)>,
+    pub send_as_options: Vec<SendAsPeer>,
+    pub selected_send_as_peer_id: Option<u64>,
 }
 
 impl CanonicalComposer {
@@ -277,7 +280,41 @@ impl CanonicalComposer {
             bot_menu_controls: HistoryViewBotMenuButtonViewControls::new(),
             bot_menu_entity: None,
             pending_launch_miniapp: None,
+            send_as_options: Vec::new(),
+            selected_send_as_peer_id: None,
         }
+    }
+
+    pub fn set_send_as_options(&mut self, options: Vec<SendAsPeer>, chosen_id: Option<u64>) {
+        self.send_as_options = options;
+        self.selected_send_as_peer_id = chosen_id.filter(|id| {
+            self.send_as_options.iter().any(|p| p.peer_id == *id)
+        }).or_else(|| self.send_as_options.first().map(|p| p.peer_id));
+    }
+
+    pub fn cycle_send_as_peer(&mut self) -> Option<u64> {
+        if self.send_as_options.is_empty() {
+            return None;
+        }
+        let cur_idx = self
+            .selected_send_as_peer_id
+            .and_then(|id| self.send_as_options.iter().position(|p| p.peer_id == id))
+            .unwrap_or(0);
+        let next_idx = (cur_idx + 1) % self.send_as_options.len();
+        let next_id = self.send_as_options[next_idx].peer_id;
+        self.selected_send_as_peer_id = Some(next_id);
+        Some(next_id)
+    }
+
+    pub fn active_send_as_label(&self) -> Option<&str> {
+        if self.send_as_options.len() <= 1 {
+            return None;
+        }
+        let target_id = self.selected_send_as_peer_id?;
+        self.send_as_options
+            .iter()
+            .find(|p| p.peer_id == target_id)
+            .map(|p| p.title.as_str())
     }
 
     pub fn ensure_bot_menu_entity(&mut self, cx: &mut Context<Self>) -> Entity<HistoryViewBotMenuButtonViewControls> {
@@ -682,6 +719,35 @@ impl Render for CanonicalComposer {
             })
             .when_some(banner, |el, b| el.child(b))
             .when_some(context_ref_strip, |el, strip| el.child(strip))
+            .when_some(self.active_send_as_label().map(str::to_string), |el, label| {
+                let bg = self.palette.input_bg;
+                let border = self.palette.border_fg;
+                let fg = self.palette.text_secondary;
+                el.child(
+                    div()
+                        .px(px(14.0))
+                        .pt(px(4.0))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .id("cmp-send-as-pill")
+                                .px(px(8.0))
+                                .py(px(2.0))
+                                .rounded(px(10.0))
+                                .bg(rgb(bg))
+                                .border_1()
+                                .border_color(rgb(border))
+                                .cursor_pointer()
+                                .text_size(px(11.0))
+                                .text_color(rgb(fg))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.handle_bar_action(ComposerBarAction::CycleSendAs, cx);
+                                }))
+                                .child(format!("Send as: {label}")),
+                        ),
+                )
+            })
             .child(if is_recording {
                 render_voice_recording_strip(&self.voice_gesture, &self.palette, &self.lang_id, cx, |this, act, cx| {
                     this.handle_bar_action(act, cx);

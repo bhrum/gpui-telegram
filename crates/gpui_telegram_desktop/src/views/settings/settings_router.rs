@@ -4,6 +4,7 @@
 //! applying active palette/locale, and wiring `cx.observe` subscriptions.
 
 use crate::app::preferences::AppPreferences;
+use crate::app::updater::DesktopUpdateSnapshot;
 use crate::components::ui::TextInputController;
 use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
 use crate::views::boxes::modal_types::ModalDialogKind;
@@ -147,6 +148,8 @@ pub enum SettingsRouterEvent {
     SelectLanguage(&'static str),
     ToggleLanguage,
     Navigated(SettingsSectionType),
+    CheckForUpdates,
+    TriggerOneClickUpdate,
 }
 
 /// Manages settings navigation stack, modal rendering, and lazy instantiation of all settings sections.
@@ -182,6 +185,7 @@ pub struct SettingsRouter {
     pub settings_computers: Option<Entity<SettingsComputersSections>>,
     pub settings_ai_providers: Option<Entity<SettingsAiProvidersSections>>,
     pub settings_search: Option<Entity<SettingsSearch>>,
+    pub update_snapshot: Option<DesktopUpdateSnapshot>,
 }
 
 impl EventEmitter<SettingsRouterEvent> for SettingsRouter {}
@@ -279,7 +283,20 @@ impl SettingsRouter {
             settings_computers: None,
             settings_ai_providers: None,
             settings_search: None,
+            update_snapshot: None,
         }
+    }
+
+    /// Stores the latest updater snapshot and projects it into `SettingsAdvancedSections` if materialized.
+    pub fn sync_update_snapshot(&mut self, snap: DesktopUpdateSnapshot, cx: &mut Context<Self>) {
+        self.update_snapshot = Some(snap.clone());
+        if let Some(ref adv) = self.settings_advanced {
+            adv.update(cx, |sa, sa_cx| {
+                sa.sync_update_snapshot(&snap);
+                sa_cx.notify();
+            });
+        }
+        cx.notify();
     }
 
     /// Updates active theme palette and locale on currently materialized sections without allocating `None` slots.
@@ -588,7 +605,15 @@ impl SettingsRouter {
 
     /// Lazily materializes `SettingsAdvancedSections`, hydrates preferences, applies theme/locale, and attaches its observer.
     pub fn ensure_advanced(&mut self, cx: &mut Context<Self>) -> Entity<SettingsAdvancedSections> {
-        lazy_section!(self, cx, settings_advanced, |pal, lang| SettingsAdvancedSections::new_live(pal, lang), Self::hydrate_advanced, Self::observe_advanced)
+        let was_none = self.settings_advanced.is_none();
+        let ent = lazy_section!(self, cx, settings_advanced, |pal, lang| SettingsAdvancedSections::new_live(pal, lang), Self::hydrate_advanced, Self::observe_advanced);
+        if was_none {
+            if let Some(ref snap) = self.update_snapshot {
+                let snap = snap.clone();
+                ent.update(cx, |sa, _| sa.sync_update_snapshot(&snap));
+            }
+        }
+        ent
     }
 
     /// Lazily materializes `SettingsLocalStorageSections`, hydrates preferences, applies theme/locale, and attaches its observer.

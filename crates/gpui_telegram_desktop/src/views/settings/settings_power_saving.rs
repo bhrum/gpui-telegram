@@ -57,7 +57,7 @@ impl SettingsPowerSaving {
     pub fn lng_settings_power_stickers_panel(&self) -> &'static str { "Animate stickers in panel" }
     pub fn add_divider(&mut self) { self.has_divider = true; }
     pub fn lng_settings_power_emoji_panel(&self) -> &'static str { "Animate emoji in panel" }
-    pub fn app(&self) -> &'static str { "AI Chat" }
+    pub fn app(&self) -> &'static str { "Fabushi" }
     pub fn lng_settings_power_auto(&self) -> String { format!("Enable when battery drops below {}%", self.battery_threshold_percent) }
     pub fn lng_settings_power_auto_localized(&self, lang: &str) -> String {
         if lang.starts_with("zh") {

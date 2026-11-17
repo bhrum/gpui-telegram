@@ -17,6 +17,7 @@ pub enum InteractiveCardAction {
     OpenStory(u64, String),
     PayInvoice(u64, String, u64),
     BotButton(u64, InlineButtonType),
+    GenerativeButton(u64, String, String),
 }
 
 pub fn render_poll_card<V: 'static>(

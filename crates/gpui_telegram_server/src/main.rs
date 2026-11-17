@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(err.into());
         }
     };
+    let state_for_shutdown = Arc::clone(&state);
     let app = build_router_with_state(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
 
@@ -42,7 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            state_for_shutdown.shutdown();
+        })
         .await?;
 
     info!("gpui_telegram_server process cleanly shut down");

@@ -38,6 +38,22 @@ fn persist_media_meta(state: &AppState, auth: &AuthBearer, sha256: &str, data: &
         is_voice, is_video_note, created_at_ms: Utc::now().timestamp_millis(),
     };
     let _ = state.db.save_media_file(&dto, auth.user_id, chat_id);
+    if let Some(cid) = chat_id {
+        let mut searchable = format!("{} {}", filename, mime_type);
+        if mime_type.starts_with("text/") || mime_type == "application/json" || mime_type == "application/markdown" {
+            if let Ok(text_preview) = std::str::from_utf8(&data[..data.len().min(4096)]) {
+                searchable.push(' ');
+                searchable.push_str(text_preview);
+            }
+        }
+        state.hybrid_memory.index_message_or_file(
+            &format!("file:{sha256}"),
+            cid.0,
+            "file",
+            &searchable,
+            vec![filename.to_string()],
+        );
+    }
     dto
 }
 
@@ -93,7 +109,7 @@ pub async fn media_upload_direct(
     (StatusCode::CREATED, Json(meta_json(&dto, None))).into_response()
 }
 
-pub async fn media_upload_init_clean(_auth: AuthBearer, State(state): State<Arc<AppState>>, body: Bytes) -> Response {
+pub async fn media_upload_init_clean(auth: AuthBearer, State(state): State<Arc<AppState>>, body: Bytes) -> Response {
     let payload = match parse_json_object(&body) { Ok(v) => v, Err(r) => return r };
     let size_bytes = payload.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
     let part_size = payload.get("chunk_size").and_then(|v| v.as_u64()).map(|s| s as u32)
@@ -101,7 +117,7 @@ pub async fn media_upload_init_clean(_auth: AuthBearer, State(state): State<Arc<
     let expected_sha256 = payload.get("expected_sha256").and_then(|v| v.as_str()).map(String::from);
     let filename = payload.get("filename").and_then(|v| v.as_str()).unwrap_or("file.bin");
     let upload_id = format!("upl_{}", Uuid::new_v4().simple());
-    match state.cas.init_chunked_upload(&upload_id, size_bytes, part_size, expected_sha256).await {
+    match state.cas.init_chunked_upload_for_user(&upload_id, auth.user_id.0, size_bytes, part_size, expected_sha256).await {
         Ok(session) => (StatusCode::CREATED, Json(json!({
             "upload_id": upload_id, "chunk_size": session.part_size, "total_parts": session.total_parts,
             "filename": filename, "size_bytes": session.total_size, "status": "initialized",
@@ -110,13 +126,48 @@ pub async fn media_upload_init_clean(_auth: AuthBearer, State(state): State<Arc<
     }
 }
 
-pub async fn media_upload_part_clean(_auth: AuthBearer, State(state): State<Arc<AppState>>, Path((upload_id, part_index)): Path<(String, u32)>, body: Bytes) -> Response {
-    match state.cas.write_chunk(&upload_id, part_index, &body).await {
+pub async fn media_upload_part_clean(auth: AuthBearer, State(state): State<Arc<AppState>>, Path((upload_id, part_index)): Path<(String, u32)>, body: Bytes) -> Response {
+    match state.cas.write_chunk_for_user(&upload_id, auth.user_id.0, part_index, &body).await {
         Ok(is_complete) => (StatusCode::OK, Json(json!({
             "upload_id": upload_id, "part_index": part_index, "bytes_received": body.len(),
             "is_complete": is_complete, "status": "accepted",
         }))).into_response(),
+        Err(gpui_telegram_core::error::TelegramError::PermissionDenied(m)) => err_resp(StatusCode::FORBIDDEN, "forbidden", &m),
+        Err(gpui_telegram_core::error::TelegramError::NotFound(m)) => err_resp(StatusCode::NOT_FOUND, "upload_not_found", &m),
         Err(e) => err_resp(StatusCode::BAD_REQUEST, "upload_part_failed", &e.to_string()),
+    }
+}
+
+pub async fn media_upload_status(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(upload_id): Path<String>,
+) -> Response {
+    match state.cas.get_upload_session_for_user(&upload_id, auth.user_id.0).await {
+        Ok(session) => {
+            let missing_parts = session.missing_parts();
+            let is_complete = session.is_complete();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "upload_id": upload_id,
+                    "total_size": session.total_size,
+                    "part_size": session.part_size,
+                    "total_parts": session.total_parts,
+                    "uploaded_parts": session.uploaded_parts,
+                    "missing_parts": missing_parts,
+                    "is_complete": is_complete,
+                })),
+            )
+                .into_response()
+        }
+        Err(gpui_telegram_core::error::TelegramError::PermissionDenied(m)) => err_resp(StatusCode::FORBIDDEN, "forbidden", &m),
+        Err(gpui_telegram_core::error::TelegramError::Validation(m)) => err_resp(StatusCode::BAD_REQUEST, "invalid_upload_id", &m),
+        Err(_) => err_resp(
+            StatusCode::NOT_FOUND,
+            "upload_not_found",
+            &format!("Upload session '{upload_id}' not found"),
+        ),
     }
 }
 
@@ -131,8 +182,10 @@ pub async fn media_upload_complete_clean(
     if let Some(cid) = chat_id { if let Err(r) = check_active_membership(&state, cid, auth.user_id) { return r; } }
     let is_voice = payload.get("is_voice").and_then(|v| v.as_bool()).unwrap_or_else(|| mime_type.starts_with("audio/"));
     let is_video_note = payload.get("is_video_note").and_then(|v| v.as_bool()).unwrap_or(false);
-    let sha256 = match state.cas.complete_chunked_upload(&upload_id).await {
+    let sha256 = match state.cas.complete_chunked_upload_for_user(&upload_id, auth.user_id.0).await {
         Ok(h) => h,
+        Err(gpui_telegram_core::error::TelegramError::PermissionDenied(m)) => return err_resp(StatusCode::FORBIDDEN, "forbidden", &m),
+        Err(gpui_telegram_core::error::TelegramError::NotFound(m)) => return err_resp(StatusCode::NOT_FOUND, "upload_not_found", &m),
         Err(e) => return err_resp(StatusCode::BAD_REQUEST, "upload_complete_failed", &e.to_string()),
     };
     let bytes = state.cas.resolve_cas_path(&sha256).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();

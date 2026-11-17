@@ -167,15 +167,15 @@ impl WindowSessionControllerLinkInfo {
             for part in rest.split('&') {
                 if let Some((k, v)) = part.split_once('=') {
                     match k {
-                        "domain" => {
+                        "domain" if !v.is_empty() => {
                             info.username_or_id = Some(v.to_string());
                             info.resolve_type = ResolveType::Profile;
                         }
-                        "start" => {
+                        "start" if !v.is_empty() => {
                             info.start_token = Some(v.to_string());
                             info.resolve_type = ResolveType::BotStart;
                         }
-                        "appname" => {
+                        "appname" if !v.is_empty() => {
                             info.bot_app_name = Some(v.to_string());
                             info.resolve_type = ResolveType::BotApp;
                         }
@@ -192,8 +192,51 @@ impl WindowSessionControllerLinkInfo {
                                 info.replies_info = RepliesByLinkInfo::Thread(tid);
                             }
                         }
-                        "voicechat" => {
+                        "voicechat" if !v.is_empty() => {
                             info.voicechat_hash = Some(v.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if info.username_or_id.is_some() {
+                return LinkInfoType::Peer(info);
+            }
+        }
+
+        // 1b. tg://chat?id=...
+        if let Some(rest) = trimmed.strip_prefix("tg://chat?") {
+            let mut info = PeerByLinkInfo::new();
+            for part in rest.split('&') {
+                if let Some((k, v)) = part.split_once('=') {
+                    if k == "id" && !v.is_empty() {
+                        info.username_or_id = Some(v.to_string());
+                        if let Ok(cid) = v.parse::<u64>() {
+                            info.channel_id = Some(cid);
+                        }
+                        info.resolve_type = ResolveType::Profile;
+                    }
+                }
+            }
+            if info.username_or_id.is_some() {
+                return LinkInfoType::Peer(info);
+            }
+        }
+
+        // 1c. tg://openmessage?chat_id=...&id=...
+        if let Some(rest) = trimmed.strip_prefix("tg://openmessage?") {
+            let mut info = PeerByLinkInfo::new();
+            for part in rest.split('&') {
+                if let Some((k, v)) = part.split_once('=') {
+                    match k {
+                        "chat_id" if !v.is_empty() => {
+                            info.username_or_id = Some(v.to_string());
+                            if let Ok(cid) = v.parse::<u64>() {
+                                info.channel_id = Some(cid);
+                            }
+                        }
+                        "id" if !v.is_empty() => {
+                            info.message_id = v.parse::<i64>().ok();
                         }
                         _ => {}
                     }
@@ -208,7 +251,7 @@ impl WindowSessionControllerLinkInfo {
         if let Some(rest) = trimmed.strip_prefix("tg://join?") {
             for part in rest.split('&') {
                 if let Some((k, v)) = part.split_once('=') {
-                    if k == "invite" {
+                    if k == "invite" && !v.is_empty() {
                         let mut info = PeerByLinkInfo::new();
                         info.chat_link_slug = Some(v.to_string());
                         info.join_channel = true;

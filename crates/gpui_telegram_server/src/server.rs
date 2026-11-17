@@ -1,6 +1,6 @@
 use crate::auth::session_manager::{AuthError, SessionManager};
 use crate::config::ServerConfig;
-use crate::ws::{handle_ws_socket, GatewayHub};
+use crate::ws::{handle_ws_socket_with_session_weak, GatewayHub};
 use axum::{
     body::Bytes,
     extract::{FromRequestParts, Path, Query, State, WebSocketUpgrade},
@@ -24,9 +24,40 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
+struct AppShutdownGuard {
+    gateway_hub: std::sync::Weak<GatewayHub>,
+}
+
+impl Drop for AppShutdownGuard {
+    fn drop(&mut self) {
+        if let Some(hub) = self.gateway_hub.upgrade() {
+            hub.shutdown();
+        }
+    }
+}
+
+/// Per-chat multi-agent coordination state (Floor Control, 5-hop Loop Budget, Shared Workspace).
+#[derive(Debug, Default)]
+pub struct GroupMultiAgentRoom {
+    pub floor: gpui_telegram_agent::FloorControlQueue,
+    pub loop_budget: gpui_telegram_agent::LoopBudget,
+    pub workspace: gpui_telegram_agent::SharedGroupWorkspace,
+}
+
+impl GroupMultiAgentRoom {
+    pub fn new(chat_id: ChatId) -> Self {
+        Self {
+            floor: gpui_telegram_agent::FloorControlQueue::new(30_000),
+            loop_budget: gpui_telegram_agent::LoopBudget::new(gpui_telegram_agent::DEFAULT_MAX_LOOP_HOPS),
+            workspace: gpui_telegram_agent::SharedGroupWorkspace::new(chat_id.0),
+        }
+    }
+}
+
 /// Global application state shared across HTTP and WebSocket handlers
 #[derive(Clone)]
 pub struct AppState {
+    _shutdown_guard: Arc<AppShutdownGuard>,
     pub config: ServerConfig,
     pub db: Arc<crate::db::ServerDatabase>,
     pub cas: Arc<crate::media::cas_store::CasStore>,
@@ -35,6 +66,7 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub gateway_hub: Arc<GatewayHub>,
     pub search_indexer: Arc<crate::search::tantivy_indexer::TantivyIndexer>,
+    pub hybrid_memory: Arc<crate::search::hybrid_memory::HybridMemoryEngine>,
     pub signaling_hub: Arc<crate::webrtc::signaling_hub::SignalingHub>,
     pub pairing_requests: Arc<RwLock<HashMap<String, (UserId, i64)>>>,
     pub passkey_challenges: Arc<RwLock<HashMap<String, i64>>>,
@@ -51,6 +83,13 @@ pub struct AppState {
     pub tailnet: Arc<crate::routes::tailnet::TailnetCoordService>,
     pub task_registry: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::TaskFsm>>>,
     pub approval_gates: Arc<tokio::sync::RwLock<HashMap<String, gpui_telegram_agent::tasks::ApprovalGate>>>,
+    pub action_registry: Arc<gpui_telegram_core::action_bus::ActionRegistry>,
+    pub event_bus: Arc<dyn crate::bus::CrossNodeEventBus>,
+    pub push_hub: Arc<crate::push::PushGatewayHub>,
+    pub session_store: Arc<crate::auth::session_store::PersistentSessionStore>,
+    pub action_approval_secret: [u8; 32],
+    pub multi_agent_groups: Arc<RwLock<HashMap<ChatId, GroupMultiAgentRoom>>>,
+    pub agent_capability_key: Arc<ed25519_dalek::SigningKey>,
 }
 
 impl Default for AppState {
@@ -93,10 +132,20 @@ impl AppState {
             session_manager.set_next_user_id(std::cmp::max(100_001, max_id + 1));
         }
 
-        // Wire disconnection signal from session manager to gateway hub
-        let hub_clone = gateway_hub.clone();
+        // Wire disconnection signal from session manager to gateway hub (weak ref to avoid Arc cycles)
+        let hub_weak = Arc::downgrade(&gateway_hub);
         session_manager.set_disconnect_notifier(Arc::new(move |user_id| {
-            hub_clone.disconnect_user(user_id);
+            if let Some(hub) = hub_weak.upgrade() {
+                hub.disconnect_user(user_id);
+            }
+        }));
+
+        // Evict in-memory session cache when cluster-wide SessionRevoked arrives (weak ref to avoid Arc cycles)
+        let sm_revoke = Arc::downgrade(&session_manager);
+        gateway_hub.set_session_revoked_handler(Arc::new(move |_user_id, session_id| {
+            if let Some(sm) = sm_revoke.upgrade() {
+                sm.revoke_session(session_id);
+            }
         }));
 
         let workspace_root = std::env::current_dir()
@@ -287,13 +336,31 @@ impl AppState {
             dedup,
             (*pts_engine).clone(),
         ));
+        let hybrid_memory = Arc::new(
+            crate::search::hybrid_memory::HybridMemoryEngine::with_db_and_tantivy(
+                db.clone(),
+                Arc::downgrade(&search_indexer),
+            ),
+        );
+        let im_bridge = Arc::new(crate::hermes_im_bridge::ServerPlatformImBridge::new(
+            db.clone(),
+            message_pipeline.clone(),
+            pts_engine.clone(),
+            Arc::downgrade(&gateway_hub),
+            Arc::downgrade(&search_indexer),
+            Arc::downgrade(&hybrid_memory),
+        ));
+        hermes.set_platform_im_bridge(im_bridge.clone());
+        hermes.set_agentic_backend(db.clone());
+        fabushi_bots.set_platform_im_bridge(im_bridge);
+        fabushi_bots.set_agentic_backend(db.clone());
         gateway_hub.set_pipeline(message_pipeline.clone(), db.clone());
         gateway_hub.set_search_indexer(search_indexer.clone());
         gateway_hub.set_signaling_hub(signaling_hub.clone());
 
         let teammate_bridge = Arc::new(ServerFabushiTeammateBridge {
             db: db.clone(),
-            fabushi_bots: fabushi_bots.clone(),
+            fabushi_bots: Arc::downgrade(&fabushi_bots),
             state_weak: self_weak.clone(),
         });
         fabushi_bots.set_teammate_handler(teammate_bridge);
@@ -387,7 +454,59 @@ impl AppState {
             });
         }
 
+        let action_registry = Arc::new(gpui_telegram_core::action_bus::ActionRegistry::new());
+        let _ = action_registry.register_typed(crate::actions::ServerSendMessageAction::new(
+            db.clone(),
+            message_pipeline.clone(),
+            gateway_hub.clone(),
+            search_indexer.clone(),
+        ));
+        let _ = action_registry.register_typed(crate::actions::ServerGetChatHistoryAction::new(
+            db.clone(),
+        ));
+        let _ = action_registry.register_typed(crate::actions::ServerListDialogsAction::new(
+            db.clone(),
+        ));
+        let _ = action_registry.register_typed(crate::actions::ServerDeleteMessageAction::new(
+            db.clone(),
+            message_pipeline.clone(),
+            gateway_hub.clone(),
+            search_indexer.clone(),
+        ));
+
+        let node_id = format!("node_{}", uuid::Uuid::new_v4().simple());
+        let event_bus: Arc<dyn crate::bus::CrossNodeEventBus> =
+            Arc::new(crate::bus::InProcessEventBus::new(node_id));
+        gateway_hub.set_event_bus(event_bus.clone());
+
+        let push_hub = Arc::new(crate::push::PushGatewayHub::new(db.clone()));
+        push_hub.register_dispatcher(Arc::new(crate::push::dispatchers::MockPushDispatcher::new()));
+        push_hub.register_dispatcher(Arc::new(crate::push::dispatchers::ApnsDispatcher::new(
+            "org.telegram.GPUI",
+        )));
+        push_hub.register_dispatcher(Arc::new(crate::push::dispatchers::WebPushDispatcher::new()));
+        push_hub.register_dispatcher(Arc::new(crate::push::dispatchers::FcmDispatcher::new(
+            "gpui-telegram",
+        )));
+
+        let session_store = Arc::new(crate::auth::session_store::PersistentSessionStore::new(
+            db.pool().clone(),
+        ));
+        session_store.set_event_bus(event_bus.clone());
+
+        let mut action_approval_secret = [0u8; 32];
+        let u1 = Uuid::new_v4();
+        let u2 = Uuid::new_v4();
+        action_approval_secret[..16].copy_from_slice(u1.as_bytes());
+        action_approval_secret[16..].copy_from_slice(u2.as_bytes());
+
+        let agent_capability_key = Arc::new(ed25519_dalek::SigningKey::from_bytes(&action_approval_secret));
+
+        let _shutdown_guard = Arc::new(AppShutdownGuard {
+            gateway_hub: Arc::downgrade(&gateway_hub),
+        });
         Self {
+            _shutdown_guard,
             config,
             db,
             cas,
@@ -396,6 +515,7 @@ impl AppState {
             session_manager,
             gateway_hub,
             search_indexer,
+            hybrid_memory,
             signaling_hub,
             pairing_requests: Arc::new(RwLock::new(HashMap::new())),
             passkey_challenges: Arc::new(RwLock::new(HashMap::new())),
@@ -412,7 +532,29 @@ impl AppState {
             tailnet,
             task_registry,
             approval_gates,
+            action_registry,
+            event_bus,
+            push_hub,
+            session_store,
+            action_approval_secret,
+            multi_agent_groups: Arc::new(RwLock::new(HashMap::new())),
+            agent_capability_key,
         }
+    }
+
+    pub fn set_event_bus(&mut self, bus: Arc<dyn crate::bus::CrossNodeEventBus>) {
+        self.event_bus = bus.clone();
+        self.gateway_hub.set_event_bus(bus.clone());
+        self.session_store.set_event_bus(bus);
+    }
+
+    pub fn with_event_bus(mut self, bus: Arc<dyn crate::bus::CrossNodeEventBus>) -> Self {
+        self.set_event_bus(bus);
+        self
+    }
+
+    pub fn shutdown(&self) {
+        self.gateway_hub.shutdown();
     }
 
     fn open_database(config: &ServerConfig) -> crate::db::ServerDatabase {
@@ -468,44 +610,54 @@ impl FromRequestParts<Arc<AppState>> for AuthBearer {
             )
         })?;
 
-        let session = if let Some(s) = state.session_manager.verify_token(&token) {
-            s
-        } else {
-            let session_id = token.split('.').next().unwrap_or(&token);
-            let restored = if let Ok(Some(db_sess)) = state.db.get_session(session_id) {
-                if db_sess.revoked_at_ms.is_none()
-                    && db_sess.expires_at_ms > chrono::Utc::now().timestamp_millis()
-                {
-                    let created_at = chrono::DateTime::from_timestamp_millis(db_sess.created_at_ms)
-                        .unwrap_or_else(chrono::Utc::now);
-                    let expires_at = chrono::DateTime::from_timestamp_millis(db_sess.expires_at_ms)
-                        .unwrap_or_else(chrono::Utc::now);
-                    let sess_tok = SessionToken::new_with_hash(
-                        db_sess.session_id.clone(),
-                        db_sess.user_id,
-                        created_at,
-                        expires_at,
-                        &db_sess.device_id,
-                        db_sess.token_hash,
-                    );
-                    state.session_manager.insert(sess_tok);
-                    state.session_manager.verify_token(&token)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            restored.ok_or_else(|| {
-                (
+        let session = match state.session_store.verify_token_with_status(&token) {
+            Ok(crate::auth::session_store::TokenVerifyOutcome::Valid(rec)) => {
+                let created_at = chrono::DateTime::from_timestamp_millis(rec.created_at_ms)
+                    .unwrap_or_else(chrono::Utc::now);
+                let expires_at = chrono::DateTime::from_timestamp_millis(rec.expires_at_ms)
+                    .unwrap_or_else(chrono::Utc::now);
+                let secret = token.split_once('.').map(|(_, s)| s).unwrap_or("");
+                SessionToken::new_with_hash(
+                    rec.session_id,
+                    UserId(rec.user_id),
+                    created_at,
+                    expires_at,
+                    &rec.device_id,
+                    SessionToken::hash_token(secret),
+                )
+            }
+            Ok(crate::auth::session_store::TokenVerifyOutcome::Rejected) => {
+                return Err((
                     StatusCode::UNAUTHORIZED,
                     Json(json!({
                         "error": "invalid_token",
                         "message": "Session token is invalid, expired, or revoked"
                     })),
-                )
-            })?
+                ));
+            }
+            Ok(crate::auth::session_store::TokenVerifyOutcome::NotFound) => {
+                state
+                    .session_manager
+                    .verify_token(&token)
+                    .ok_or_else(|| {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            Json(json!({
+                                "error": "invalid_token",
+                                "message": "Session token is invalid, expired, or revoked"
+                            })),
+                        )
+                    })?
+            }
+            Err(_) => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": "invalid_token",
+                        "message": "Session token is invalid, expired, or revoked"
+                    })),
+                ));
+            }
         };
 
         let user_id = session.user_id;
@@ -513,6 +665,20 @@ impl FromRequestParts<Arc<AppState>> for AuthBearer {
             let _ = sync_mem_user_to_db(state, user_id);
         }
         Ok(AuthBearer { session, user_id })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OptionalAuthBearer(pub Option<AuthBearer>);
+
+impl FromRequestParts<Arc<AppState>> for OptionalAuthBearer {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(AuthBearer::from_request_parts(parts, state).await.ok()))
     }
 }
 
@@ -680,6 +846,7 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/chats/{chat_id}/pin", post(routes::chat_extras::chat_pin_dialog))
         .route("/api/v1/chats/{chat_id}/mute", post(routes::chat_extras::chat_mute))
         .route("/api/v1/chats/{chat_id}/pins", get(routes::chat_extras::pins_list).post(routes::chat_extras::pins_pin).delete(routes::chat_extras::pins_unpin))
+        .route("/api/v1/chats/{chat_id}/pins/{message_id}", delete(routes::chat_extras::pins_unpin_path))
         .route("/api/v1/chats/{chat_id}/draft", get(routes::chat_extras::draft_get).put(routes::chat_extras::draft_put).delete(routes::chat_extras::draft_delete))
         .route("/api/v1/chats/{chat_id}/statistics", get(routes::analytics_wallet::chat_statistics))
         .route("/api/v1/chats/{chat_id}/export", get(routes::analytics_wallet::chat_export))
@@ -699,10 +866,27 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/media/upload", post(routes::media::media_upload_direct))
         .route("/api/v1/media/upload/init", post(routes::media::media_upload_init_clean))
         .route("/api/v1/media/upload/{upload_id}/part/{part_index}", put(routes::media::media_upload_part_clean).post(routes::media::media_upload_part_clean))
+        .route("/api/v1/media/upload/{upload_id}/status", get(routes::media::media_upload_status))
         .route("/api/v1/media/upload/{upload_id}/complete", post(routes::media::media_upload_complete_clean))
         .route("/api/v1/media/stream/{file_id}", get(routes::media::media_stream_clean))
         .route("/api/v1/media/{file_id}", get(routes::media::media_stream_clean))
         .route("/api/v1/media/{file_id}/meta", get(routes::media::media_metadata_get))
+        // --- Schema-First Platform Action Bus Routes ---
+        .route("/api/v1/actions", get(routes::actions::handle_actions_list))
+        .route("/api/v1/actions/approvals/{gate_id}/approve", post(routes::actions::handle_action_gate_approve))
+        .route("/api/v1/actions/{action_name}", post(routes::actions::handle_action_post))
+        .route("/api/v1/actions/{action_name}/schema", get(routes::actions::handle_action_schema))
+        // --- Push Device Registration Routes ---
+        .route("/api/v1/devices/register_push", post(routes::devices::handle_register_push))
+        .route("/api/v1/devices/push", delete(routes::devices::handle_unregister_push))
+        // --- E2EE Prekey & Multi-Device Routes ---
+        .route("/api/v1/e2ee/prekeys", post(routes::e2ee::publish_prekeys))
+        .route("/api/v1/e2ee/prekeys/count", get(routes::e2ee::prekey_count))
+        .route("/api/v1/e2ee/devices/{user_id}/prekeys", get(routes::e2ee::fetch_user_prekey_bundles))
+        .route("/api/v1/e2ee/prekeys/{user_id}", get(routes::e2ee::fetch_user_prekey_bundles))
+        .route("/api/v1/e2ee/devices/{device_id}", delete(routes::e2ee::revoke_device))
+        // --- Send-As Peers Route ---
+        .route("/api/v1/chats/{chat_id}/send_as", get(routes::chat_extras::chat_send_as_list))
         // --- Stickers, GIFs, Stories, Calls, Search & Wallet ---
         .route("/api/v1/stickers/sets", get(routes::social::stickers_sets))
         .route("/api/v1/stickers/sets/{set_id}/install", post(routes::social::stickers_install))
@@ -764,6 +948,8 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/api/v1/hermes/magpie/providers", get(routes::magpie_api::magpie_providers_list).post(routes::magpie_api::magpie_providers_upsert).put(routes::magpie_api::magpie_providers_upsert))
         .route("/api/v1/hermes/magpie/providers/{id}", get(routes::magpie_api::magpie_provider_get).put(routes::magpie_api::magpie_provider_update).patch(routes::magpie_api::magpie_provider_update).delete(routes::magpie_api::magpie_provider_delete))
         .route("/api/v1/hermes/magpie/providers/{id}/probe", post(routes::magpie_api::magpie_provider_probe))
+        .route("/api/v1/hermes/magpie/subscriptions", get(routes::magpie_api::magpie_subscriptions_get))
+        .route("/api/v1/hermes/magpie/subscriptions/{id}/activate", post(routes::magpie_api::magpie_subscription_activate))
         .route("/api/v1/hermes/magpie/subscriptions/scan", post(routes::magpie_api::magpie_subscriptions_scan))
         .route("/api/v1/hermes/magpie/groups", get(routes::magpie_api::magpie_groups_get).post(routes::magpie_api::magpie_groups_upsert).put(routes::magpie_api::magpie_groups_upsert).delete(routes::magpie_api::magpie_groups_delete_query))
         .route("/api/v1/hermes/magpie/groups/{id}", delete(routes::magpie_api::magpie_group_delete_path))
@@ -1015,7 +1201,14 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         // --- WebSocket Upgrade Route ---
         .route("/api/v1/ws", get(ws_upgrade_handler))
         // --- Tower Middleware Stack ---
-        .layer(CompressionLayer::new().gzip(true))
+        .layer(
+            CompressionLayer::new().gzip(true).compress_when(
+                tower_http::compression::predicate::Predicate::and(
+                    tower_http::compression::DefaultPredicate::new(),
+                    tower_http::compression::predicate::NotForContentType::new("text/event-stream"),
+                ),
+            ),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -1161,23 +1354,35 @@ async fn auth_register(
                     .into_response();
             }
 
-            // Persist session to SQLite database
-            let db_session = crate::db::schema::SessionRecord {
-                session_id: session.session_id.clone(),
-                user_id: user.user_id,
-                device_id: req.device_name.clone(),
-                client_type: "gpui_desktop".into(),
-                app_version: "0.1.0".into(),
-                ip_address: None,
-                location_desc: None,
-                account_generation: 1,
-                token_hash: session.token_hash.clone(),
-                created_at_ms: session.created_at.timestamp_millis(),
-                last_active_ms: session.created_at.timestamp_millis(),
-                expires_at_ms: session.expires_at.timestamp_millis(),
-                revoked_at_ms: None,
+            // Issue session via PersistentSessionStore (not cached in SessionManager)
+            state.session_manager.revoke_session(&session.session_id);
+            let (sess_rec, persistent_token) = match state.session_store.issue_session(
+                user.user_id.raw(),
+                &req.device_name,
+                "gpui_desktop",
+                "0.1.0",
+                1,
+                30 * 24 * 3600,
+            ) {
+                Ok(pair) => pair,
+                Err(_) => (
+                    crate::auth::session_store::SessionRecord {
+                        session_id: session.session_id,
+                        user_id: user.user_id.raw(),
+                        device_id: req.device_name.clone(),
+                        client_type: "gpui_desktop".into(),
+                        app_version: "0.1.0".into(),
+                        ip_address: None,
+                        location_desc: None,
+                        account_generation: 1,
+                        created_at_ms: session.created_at.timestamp_millis(),
+                        last_active_ms: session.created_at.timestamp_millis(),
+                        expires_at_ms: session.expires_at.timestamp_millis(),
+                        revoked_at_ms: None,
+                    },
+                    token,
+                ),
             };
-            let _ = state.db.create_session(&db_session);
             if req.auto_welcome {
                 let _ = ensure_user_welcome_bot(&state, user.user_id, Some(&user.first_name));
             }
@@ -1188,8 +1393,8 @@ async fn auth_register(
                     "user_id": user.user_id.raw(),
                     "username": user.username,
                     "first_name": user.first_name,
-                    "session_id": session.session_id,
-                    "token": token,
+                    "session_id": sess_rec.session_id,
+                    "token": persistent_token,
                     "created_at": user.created_at,
                 })),
             )
@@ -1227,7 +1432,73 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
             .into_response();
     }
 
-    // 1. Try memory session manager
+    // 1. Check authoritative SQLite user store first (supports multi-node login)
+    if let Ok(Some(db_user)) = state.db.get_user_by_username(&req.username) {
+        if let Some(ref hash) = db_user.password_hash {
+            if crate::auth::verify_password(&req.password, hash) {
+                if let Ok(tfa) = state.db.get_two_factor_status(db_user.user_id) {
+                    if tfa.has_password {
+                        let challenge_token = format!("tfa_{}", Uuid::new_v4().simple());
+                        let exp = Utc::now().timestamp_millis() + 600_000;
+                        let _ = state.db.create_two_factor_challenge(&challenge_token, db_user.user_id, exp);
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "requires_2fa": true,
+                                "challenge_token": challenge_token,
+                                "hint": tfa.hint,
+                                "user_id": db_user.user_id.raw(),
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+                let username = db_user.username.clone().unwrap_or_else(|| req.username.clone());
+                match state.session_store.issue_session(
+                    db_user.user_id.raw(),
+                    &req.device_name,
+                    "gpui_desktop",
+                    env!("CARGO_PKG_VERSION"),
+                    db_user.account_generation.max(1),
+                    30 * 24 * 3600,
+                ) {
+                    Ok((sess_rec, raw_token)) => {
+                        let expires_at = chrono::DateTime::from_timestamp_millis(sess_rec.expires_at_ms)
+                            .unwrap_or_else(Utc::now);
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "user_id": db_user.user_id.raw(),
+                                "username": username,
+                                "session_id": sess_rec.session_id,
+                                "token": raw_token,
+                                "expires_at": expires_at,
+                            })),
+                        )
+                            .into_response();
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": "database_error", "message": e.to_string() })),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": "invalid_credentials",
+                        "message": "Invalid username or password"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // 2. Fallback to in-memory session manager (legacy in-memory-only unit test users)
     match state
         .session_manager
         .login(&req.username, &req.password, &req.device_name)
@@ -1251,23 +1522,6 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
                         .into_response();
                 }
             }
-            let db_session = crate::db::schema::SessionRecord {
-                session_id: session.session_id.clone(),
-                user_id: user.user_id,
-                device_id: req.device_name.clone(),
-                client_type: "gpui_desktop".into(),
-                app_version: env!("CARGO_PKG_VERSION").into(),
-                ip_address: None,
-                location_desc: None,
-                account_generation: 1,
-                token_hash: session.token_hash.clone(),
-                created_at_ms: session.created_at.timestamp_millis(),
-                last_active_ms: session.created_at.timestamp_millis(),
-                expires_at_ms: session.expires_at.timestamp_millis(),
-                revoked_at_ms: None,
-            };
-            let _ = state.db.create_session(&db_session);
-
             (
                 StatusCode::OK,
                 Json(json!({
@@ -1280,90 +1534,14 @@ async fn auth_login(State(state): State<Arc<AppState>>, Json(req): Json<LoginReq
             )
                 .into_response()
         }
-        Err(_) => {
-            // 2. Query SQLite database on memory miss (critical for persistence across restarts)
-            if let Ok(Some(db_user)) = state.db.get_user_by_username(&req.username) {
-                if let Some(ref hash) = db_user.password_hash {
-                    if crate::auth::verify_password(&req.password, hash) {
-                        if let Ok(tfa) = state.db.get_two_factor_status(db_user.user_id) {
-                            if tfa.has_password {
-                                let challenge_token = format!("tfa_{}", Uuid::new_v4().simple());
-                                let exp = Utc::now().timestamp_millis() + 600_000;
-                                let _ = state.db.create_two_factor_challenge(&challenge_token, db_user.user_id, exp);
-                                return (
-                                    StatusCode::OK,
-                                    Json(json!({
-                                        "requires_2fa": true,
-                                        "challenge_token": challenge_token,
-                                        "hint": tfa.hint,
-                                        "user_id": db_user.user_id.raw(),
-                                    })),
-                                )
-                                    .into_response();
-                            }
-                        }
-                        // Password matches! Restore user record into SessionManager
-                        let created_at = chrono::DateTime::from_timestamp_millis(db_user.created_at_ms)
-                            .unwrap_or_else(Utc::now);
-                        let mem_user = crate::auth::session_manager::UserRecord {
-                            user_id: db_user.user_id,
-                            username: db_user.username.clone().unwrap_or_else(|| req.username.clone()),
-                            first_name: db_user.first_name.clone(),
-                            last_name: db_user.last_name.clone(),
-                            password_hash: hash.clone(),
-                            created_at,
-                        };
-                        state.session_manager.insert_user(mem_user.clone());
-
-                        // Generate session
-                        let (session, raw_token) = state.session_manager.create_session(
-                            db_user.user_id,
-                            &req.device_name,
-                            chrono::Duration::days(30),
-                        );
-
-                        // Persist session into SQLite
-                        let db_session = crate::db::schema::SessionRecord {
-                            session_id: session.session_id.clone(),
-                            user_id: db_user.user_id,
-                            device_id: req.device_name.clone(),
-                            client_type: "gpui_desktop".into(),
-                            app_version: env!("CARGO_PKG_VERSION").into(),
-                            ip_address: None,
-                            location_desc: None,
-                            account_generation: 1,
-                            token_hash: session.token_hash.clone(),
-                            created_at_ms: session.created_at.timestamp_millis(),
-                            last_active_ms: session.created_at.timestamp_millis(),
-                            expires_at_ms: session.expires_at.timestamp_millis(),
-                            revoked_at_ms: None,
-                        };
-                        let _ = state.db.create_session(&db_session);
-
-                        return (
-                            StatusCode::OK,
-                            Json(json!({
-                                "user_id": db_user.user_id.raw(),
-                                "username": mem_user.username,
-                                "session_id": session.session_id,
-                                "token": raw_token,
-                                "expires_at": session.expires_at,
-                            })),
-                        )
-                            .into_response();
-                    }
-                }
-            }
-
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "error": "invalid_credentials",
-                    "message": "Invalid username or password"
-                })),
-            )
-                .into_response()
-        }
+        Err(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "invalid_credentials",
+                "message": "Invalid username or password"
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -1721,22 +1899,23 @@ async fn auth_email_register(
             }
             let _ = state.db.set_user_email_verified(user.user_id, &email_clean);
 
-            let db_session = crate::db::schema::SessionRecord {
-                session_id: session.session_id.clone(),
-                user_id: user.user_id,
-                device_id: req.device_name.clone(),
-                client_type: "gpui_desktop".into(),
-                app_version: "0.1.0".into(),
-                ip_address: None,
-                location_desc: None,
-                account_generation: 1,
-                token_hash: session.token_hash.clone(),
-                created_at_ms: session.created_at.timestamp_millis(),
-                last_active_ms: session.created_at.timestamp_millis(),
-                expires_at_ms: session.expires_at.timestamp_millis(),
-                revoked_at_ms: None,
+            state.session_manager.revoke_session(&session.session_id);
+            let (sess_id, persistent_token, expires_at) = match state.session_store.issue_session(
+                user.user_id.raw(),
+                &req.device_name,
+                "gpui_desktop",
+                "0.1.0",
+                1,
+                30 * 24 * 3600,
+            ) {
+                Ok((rec, tok)) => (
+                    rec.session_id,
+                    tok,
+                    chrono::DateTime::from_timestamp_millis(rec.expires_at_ms)
+                        .unwrap_or(session.expires_at),
+                ),
+                Err(_) => (session.session_id, token, session.expires_at),
             };
-            let _ = state.db.create_session(&db_session);
 
             (
                 StatusCode::CREATED,
@@ -1744,9 +1923,9 @@ async fn auth_email_register(
                     "user_id": user.user_id.raw(),
                     "username": user.username,
                     "first_name": user.first_name,
-                    "session_id": session.session_id,
-                    "token": token,
-                    "expires_at": session.expires_at,
+                    "session_id": sess_id,
+                    "token": persistent_token,
+                    "expires_at": expires_at,
                 })),
             )
                 .into_response()
@@ -1819,22 +1998,28 @@ fn persist_alipay_user_and_session(
         .db
         .set_user_alipay_identity(user.user_id, alipay_user_id, nickname);
 
-    let db_session = crate::db::schema::SessionRecord {
-        session_id: session.session_id.clone(),
-        user_id: user.user_id,
-        device_id: device_name.to_string(),
-        client_type: "gpui_desktop".into(),
-        app_version: "0.1.0".into(),
-        ip_address: None,
-        location_desc: None,
-        account_generation: 1,
-        token_hash: session.token_hash.clone(),
-        created_at_ms: session.created_at.timestamp_millis(),
-        last_active_ms: session.created_at.timestamp_millis(),
-        expires_at_ms: session.expires_at.timestamp_millis(),
-        revoked_at_ms: None,
-    };
-    let _ = state.db.create_session(&db_session);
+    state.session_manager.revoke_session(&session.session_id);
+    if let Ok((rec, persistent_token)) = state.session_store.issue_session(
+        user.user_id.raw(),
+        device_name,
+        "gpui_desktop",
+        "0.1.0",
+        1,
+        30 * 24 * 3600,
+    ) {
+        let created_at = chrono::DateTime::from_timestamp_millis(rec.created_at_ms).unwrap_or_else(Utc::now);
+        let expires_at = chrono::DateTime::from_timestamp_millis(rec.expires_at_ms).unwrap_or_else(Utc::now);
+        let secret = persistent_token.split_once('.').map(|(_, s)| s).unwrap_or("");
+        let tok = SessionToken::new_with_hash(
+            rec.session_id,
+            user.user_id,
+            created_at,
+            expires_at,
+            device_name,
+            SessionToken::hash_token(secret),
+        );
+        return (user, tok, persistent_token);
+    }
 
     (user, session, token)
 }
@@ -2725,7 +2910,7 @@ pub(crate) fn hydrate_all_fabushi_bots(
 
 struct ServerFabushiTeammateBridge {
     db: Arc<crate::db::ServerDatabase>,
-    fabushi_bots: Arc<gpui_telegram_agent::fabushi_bot::FabushiBotHost>,
+    fabushi_bots: std::sync::Weak<gpui_telegram_agent::fabushi_bot::FabushiBotHost>,
     state_weak: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>>,
 }
 
@@ -2739,14 +2924,20 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
         priority: bool,
         caller_depth: usize,
     ) -> Result<Value, String> {
-        if caller_depth >= 3 {
-            return Err("Maximum Fabushi teammate handoff depth reached".to_string());
+        if caller_depth >= gpui_telegram_agent::DEFAULT_MAX_LOOP_HOPS as usize {
+            return Err(format!(
+                "Loop budget exceeded: reached {caller_depth} hops (max {})",
+                gpui_telegram_agent::DEFAULT_MAX_LOOP_HOPS
+            ));
         }
-        let target = self
+        let fabushi_bots = self
             .fabushi_bots
+            .upgrade()
+            .ok_or_else(|| "FabushiBotHost is shut down".to_string())?;
+        let target = fabushi_bots
             .get_by_agent_id_or_username(target_id)
             .ok_or_else(|| format!("Fabushi teammate '{}' not found", target_id))?;
-        let caller = self.fabushi_bots.get_by_agent_id_or_username(from_agent_id);
+        let caller = fabushi_bots.get_by_agent_id_or_username(from_agent_id);
         let caller_name = caller
             .as_ref()
             .map(|c| c.profile().name)
@@ -2801,6 +2992,53 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
                 } else {
                     target.settings().owner_user_id.max(1) as u64
                 });
+                let now_ts = chrono::Utc::now().timestamp();
+                let cap_tok = gpui_telegram_agent::ScopedCapabilityToken::issue(
+                    &app_state.agent_capability_key,
+                    &target.agent_id,
+                    cid,
+                    vec!["chat:write".into(), "agent:handoff".into()],
+                    300,
+                );
+                let vk = app_state.agent_capability_key.verifying_key();
+                if !cap_tok.verify_for_scope(&vk, now_ts, &target.agent_id, cid, "agent:handoff") {
+                    return Err("ScopedCapabilityToken verification failed for handoff".into());
+                }
+                let hop_num = {
+                    let mut groups = app_state.multi_agent_groups.write();
+                    let room = groups
+                        .entry(ChatId(cid))
+                        .or_insert_with(|| GroupMultiAgentRoom::new(ChatId(cid)));
+                    let hop = room
+                        .loop_budget
+                        .record_hop(&target.agent_id)
+                        .map_err(|e| e.to_string())?;
+                    let prio = if priority {
+                        gpui_telegram_agent::FloorPriority::DirectMention
+                    } else {
+                        gpui_telegram_agent::FloorPriority::TaskAssignee
+                    };
+                    let _ = room.floor.request_floor(&target.agent_id, prio);
+                    hop
+                };
+                if let Ok((_, pts_update)) = app_state.pts_engine.advance_pts(
+                    ChatId(cid),
+                    0,
+                    gpui_telegram_proto::sync::UpdateEvent::AgentHandoffEvent {
+                        chat_id: ChatId(cid),
+                        from_agent: from_agent_id.to_string(),
+                        to_agent: target.agent_id.clone(),
+                        hop: hop_num,
+                        max_hops: gpui_telegram_agent::DEFAULT_MAX_LOOP_HOPS,
+                    },
+                ) {
+                    app_state.gateway_hub.broadcast_to_chat_and_members(
+                        ChatId(cid),
+                        None,
+                        gpui_telegram_proto::ws::WsServerFrame::PtsPush(pts_update),
+                    );
+                }
+                let target_agent_id = target.agent_id.clone();
                 handle.spawn(async move {
                     crate::routes::bots_miniapps::handle_ai_bot_reply(
                         &app_state,
@@ -2810,6 +3048,10 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
                         &handoff_prompt,
                     )
                     .await;
+                    let mut groups = app_state.multi_agent_groups.write();
+                    if let Some(room) = groups.get_mut(&ChatId(cid)) {
+                        room.floor.release_floor(&target_agent_id);
+                    }
                 });
             }
         } else if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -2847,9 +3089,11 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
         if clean_name.is_empty() {
             return Err("Teammate name cannot be empty".to_string());
         }
-        let creator = self
+        let fabushi_bots = self
             .fabushi_bots
-            .get_by_agent_id_or_username(creator_agent_id);
+            .upgrade()
+            .ok_or_else(|| "FabushiBotHost is shut down".to_string())?;
+        let creator = fabushi_bots.get_by_agent_id_or_username(creator_agent_id);
         let owner_user_id = creator
             .as_ref()
             .map(|c| c.settings().owner_user_id)
@@ -2905,7 +3149,7 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
         }
         let inst = crate::routes::bots_miniapps::provision_fabushi_bot_with_host(
             &self.db,
-            &self.fabushi_bots,
+            &fabushi_bots,
             &bot,
         );
         if let Some(cid) = active_chat_id.filter(|cid| *cid > 0) {
@@ -2950,8 +3194,11 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
         avatar_shape: Option<&str>,
         avatar_color: Option<&str>,
     ) -> Result<Value, String> {
-        let target = self
+        let fabushi_bots = self
             .fabushi_bots
+            .upgrade()
+            .ok_or_else(|| "FabushiBotHost is shut down".to_string())?;
+        let target = fabushi_bots
             .get_by_agent_id_or_username(target_agent_id)
             .ok_or_else(|| format!("Fabushi teammate '{}' not found", target_agent_id))?;
         let _ = self
@@ -2971,8 +3218,7 @@ impl gpui_telegram_agent::hermes::toolsets::FabushiTeammateHandler for ServerFab
                 None,
             )
             .map_err(|e| e.to_string())?;
-        let updated = self
-            .fabushi_bots
+        let updated = fabushi_bots
             .update_bot(
                 target.bot_user_id,
                 gpui_telegram_agent::fabushi_bot::FabushiBotPatch {
@@ -3042,14 +3288,21 @@ pub(crate) fn detect_target_bots_in_chat(
     text: &str,
     reply_to_msg_id: Option<MsgId>,
 ) -> Vec<UserId> {
-    if state
+    let sender_is_bot = state
         .db
         .get_user(sender_id)
         .ok()
         .flatten()
-        .is_some_and(|u| u.is_bot)
-    {
-        return Vec::new();
+        .is_some_and(|u| u.is_bot);
+    if sender_is_bot {
+        let exhausted = state
+            .multi_agent_groups
+            .read()
+            .get(&chat_id)
+            .is_some_and(|r| r.loop_budget.is_exhausted());
+        if exhausted {
+            return Vec::new();
+        }
     }
 
     let mut bot_members: Vec<UserId> = Vec::new();
@@ -3131,6 +3384,10 @@ pub(crate) fn detect_target_bots_in_chat(
 
     if !explicit_targets.is_empty() {
         return explicit_targets;
+    }
+
+    if sender_is_bot {
+        return Vec::new();
     }
 
     if !bot_members.is_empty() {
@@ -3264,6 +3521,7 @@ fn deliver_proactive_message_raw(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn maybe_trigger_bot_reply(
     state: &Arc<AppState>,
     chat_id: ChatId,
@@ -3280,7 +3538,26 @@ pub(crate) async fn maybe_trigger_bot_reply_with_reply_to(
     text: &str,
     reply_to_msg_id: Option<MsgId>,
 ) {
+    let sender_is_bot = state
+        .db
+        .get_user(sender_id)
+        .ok()
+        .flatten()
+        .is_some_and(|u| u.is_bot);
+    if !sender_is_bot {
+        let mut groups = state.multi_agent_groups.write();
+        let room = groups
+            .entry(chat_id)
+            .or_insert_with(|| GroupMultiAgentRoom::new(chat_id));
+        room.loop_budget.reset();
+        let human_id = format!("user_{}", sender_id.0);
+        room.floor.request_floor(&human_id, gpui_telegram_agent::FloorPriority::UserInterruption);
+        room.floor.release_floor(&human_id);
+    }
+
     let targets = detect_target_bots_in_chat(state, chat_id, sender_id, text, reply_to_msg_id);
+    let vk = state.agent_capability_key.verifying_key();
+    let now_ts = Utc::now().timestamp();
     for bot_user_id in targets {
         if state
             .db
@@ -3291,6 +3568,49 @@ pub(crate) async fn maybe_trigger_bot_reply_with_reply_to(
         {
             continue;
         }
+        let agent_key = format!("bot_{}", bot_user_id.0);
+        let tok = gpui_telegram_agent::ScopedCapabilityToken::issue(
+            &state.agent_capability_key,
+            &agent_key,
+            chat_id.0,
+            vec!["chat:write".into()],
+            120,
+        );
+        if !tok.verify_for_scope(&vk, now_ts, &agent_key, chat_id.0, "chat:write") {
+            continue;
+        }
+        let (granted, queued_cnt, hops) = {
+            let mut groups = state.multi_agent_groups.write();
+            let room = groups
+                .entry(chat_id)
+                .or_insert_with(|| GroupMultiAgentRoom::new(chat_id));
+            let Ok(hop) = room.loop_budget.record_hop(&agent_key) else {
+                continue;
+            };
+            let prio = if sender_is_bot {
+                gpui_telegram_agent::FloorPriority::TaskAssignee
+            } else {
+                gpui_telegram_agent::FloorPriority::DirectMention
+            };
+            let ok = room.floor.request_floor(&agent_key, prio);
+            (ok, room.floor.queued_count(), hop)
+        };
+        if let Ok((_, pts_update)) = state.pts_engine.advance_pts(
+            chat_id,
+            0,
+            gpui_telegram_proto::sync::UpdateEvent::AgentFloorChanged {
+                chat_id,
+                current_speaker: if granted { Some(agent_key.clone()) } else { None },
+                queued_count: queued_cnt,
+                loop_hops: hops,
+            },
+        ) {
+            state.gateway_hub.broadcast_to_chat_and_members(
+                chat_id,
+                None,
+                gpui_telegram_proto::ws::WsServerFrame::PtsPush(pts_update),
+            );
+        }
         crate::routes::bots_miniapps::handle_ai_bot_reply(
             state,
             chat_id,
@@ -3299,6 +3619,10 @@ pub(crate) async fn maybe_trigger_bot_reply_with_reply_to(
             text,
         )
         .await;
+        let mut groups = state.multi_agent_groups.write();
+        if let Some(room) = groups.get_mut(&chat_id) {
+            room.floor.release_floor(&agent_key);
+        }
     }
 }
 
@@ -3480,6 +3804,8 @@ pub(crate) fn extract_message_content_text(content: &MessageContent) -> String {
         MessageContent::Poll(p) => format!("[Poll: {}]", p.question),
         MessageContent::Todo(t) => format!("[Todo: {}]", t.title),
         MessageContent::Invoice(i) => format!("[Invoice: {}]", i.title),
+        MessageContent::GenerativeCard(g) => format!("[Card: {}]", g.title),
+        MessageContent::Encrypted(_) => "[Encrypted message]".to_string(),
     }
 }
 
@@ -4087,15 +4413,23 @@ async fn alipay_create_order(
         .map(|s| s.to_string());
 
     let (user_id, username) = if let Some(tok) = token {
-        if let Some(session) = state.session_manager.verify_token(&tok) {
-            let un = state.db.get_user(session.user_id).ok().flatten().and_then(|u| u.username).unwrap_or_else(|| format!("user_{}", session.user_id.raw()));
-            (session.user_id, un)
-        } else {
-            let session_id = tok.split('.').next().unwrap_or(&tok);
-            if let Ok(Some(db_sess)) = state.db.get_session(session_id) {
-                let un = state.db.get_user(db_sess.user_id).ok().flatten().and_then(|u| u.username).unwrap_or_else(|| format!("user_{}", db_sess.user_id.raw()));
-                (db_sess.user_id, un)
-            } else {
+        match state.session_store.verify_token_with_status(&tok) {
+            Ok(crate::auth::session_store::TokenVerifyOutcome::Valid(rec)) => {
+                let uid = UserId(rec.user_id);
+                let un = state.db.get_user(uid).ok().flatten().and_then(|u| u.username).unwrap_or_else(|| format!("user_{}", uid.raw()));
+                (uid, un)
+            }
+            Ok(crate::auth::session_store::TokenVerifyOutcome::NotFound) => {
+                if let Some(session) = state.session_manager.verify_token(&tok) {
+                    let un = state.db.get_user(session.user_id).ok().flatten().and_then(|u| u.username).unwrap_or_else(|| format!("user_{}", session.user_id.raw()));
+                    (session.user_id, un)
+                } else {
+                    let uid = payload.get("user_id").and_then(|v| v.as_u64()).map(UserId).unwrap_or(UserId(10001));
+                    let un = format!("user_{}", uid.raw());
+                    (uid, un)
+                }
+            }
+            _ => {
                 let uid = payload.get("user_id").and_then(|v| v.as_u64()).map(UserId).unwrap_or(UserId(10001));
                 let un = format!("user_{}", uid.raw());
                 (uid, un)
@@ -4524,12 +4858,15 @@ async fn ws_upgrade_handler(
     State(state): State<Arc<AppState>>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let hub = state.gateway_hub.clone();
+    let hub_weak = Arc::downgrade(&state.gateway_hub);
     let heartbeat = state.config.ws_heartbeat_interval_secs;
     let timeout = state.config.ws_inactivity_timeout_secs;
     let user_id = auth.user_id;
+    let session_id = Some(auth.session.session_id);
 
-    ws.on_upgrade(move |socket| handle_ws_socket(socket, user_id, hub, heartbeat, timeout))
+    ws.on_upgrade(move |socket| {
+        handle_ws_socket_with_session_weak(socket, user_id, session_id, hub_weak, heartbeat, timeout)
+    })
 }
 
 // ============================================================================
@@ -5151,5 +5488,106 @@ async fn talk_audio_enqueue(
             })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod ws_shutdown_tests {
+    use super::*;
+    use futures::{SinkExt, StreamExt};
+    use gpui_telegram_proto::ws::{WsClientFrame, WsServerFrame};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ws_shutdown_while_client_connected_releases_tantivy_lock_and_allows_immediate_reboot() {
+        let dir = tempfile::Builder::new()
+            .prefix("gpui_ws_shutdown_")
+            .tempdir()
+            .expect("create tempdir");
+        let db_path = dir.path().join("ws_shutdown_test.db");
+        let media_dir = dir.path().join("media_cas");
+        std::fs::create_dir_all(&media_dir).unwrap();
+        let tantivy_dir = dir.path().join("ws_shutdown_test.tantivy");
+
+        let mut cfg = ServerConfig::default();
+        cfg.database_url = format!("sqlite://{}", db_path.display());
+        cfg.media_storage_path = media_dir.to_string_lossy().into_owned();
+        cfg.host = "127.0.0.1".to_string();
+        cfg.port = 0;
+
+        let state = Arc::new(AppState::try_new(cfg.clone()).expect("initial AppState::try_new"));
+        let (_user, _session, token) = state
+            .session_manager
+            .register("ws_reboot_user", "StrongPass#2026", "WS", None, "test-dev")
+            .expect("register session");
+
+        let w_app = Arc::downgrade(&state);
+        let w_hub = Arc::downgrade(&state.gateway_hub);
+        let w_search = Arc::downgrade(&state.search_indexer);
+
+        let app = build_router_with_state(state.clone());
+        drop(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let srv_task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let ws_url = format!("ws://{addr}/api/v1/ws?token={token}");
+        let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("connect ws");
+
+        let ping = serde_json::to_string(&WsClientFrame::Ping { nonce: 42 }).unwrap();
+        ws_stream.send(WsMessage::Text(ping.into())).await.unwrap();
+        let pong_msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
+            .await
+            .expect("pong timeout")
+            .expect("pong stream item")
+            .expect("pong ws ok");
+        match pong_msg {
+            WsMessage::Text(txt) => {
+                let frame: WsServerFrame = serde_json::from_str(&txt).unwrap();
+                assert!(matches!(frame, WsServerFrame::Pong { nonce: 42 }));
+            }
+            other => panic!("unexpected ws message: {other:?}"),
+        }
+
+        // Shutdown server WHILE ws_stream is still open and held by client
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(2), srv_task)
+            .await
+            .expect("srv_task shutdown timeout")
+            .expect("srv_task join");
+
+        assert_eq!(w_app.strong_count(), 0, "AppState leaked across WS shutdown");
+        assert_eq!(w_hub.strong_count(), 0, "GatewayHub leaked across WS shutdown");
+        assert_eq!(w_search.strong_count(), 0, "TantivyIndexer leaked across WS shutdown");
+
+        // Zero-retry single-shot Tantivy writer lock acquisition must succeed immediately
+        let idx = tantivy::Index::open_in_dir(&tantivy_dir).expect("open tantivy dir");
+        let writer = idx
+            .writer::<tantivy::TantivyDocument>(15_000_000)
+            .expect("single-shot Tantivy writer lock must be free immediately after WS shutdown");
+        drop(writer);
+
+        // Immediate AppState reboot on same DB + Tantivy dir must succeed without LockBusy
+        let rebooted = Arc::new(AppState::try_new(cfg).expect("reboot AppState::try_new"));
+        drop(rebooted);
+
+        // Open client socket should observe server-side close/EOF promptly
+        let closed = tokio::time::timeout(std::time::Duration::from_millis(500), ws_stream.next()).await;
+        match closed {
+            Ok(None) | Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) => {}
+            other => panic!("expected WS client to observe server close/EOF, got {other:?}"),
+        }
     }
 }

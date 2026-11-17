@@ -38,12 +38,6 @@ impl SettingsExperimental {
                     category: "Rendering".into(),
                     enabled: true,
                 },
-                ExperimentalFlag {
-                    id: "mtproto_v2_transport".into(),
-                    name: "Experimental MTProto Multiplexing".into(),
-                    category: "Network".into(),
-                    enabled: false,
-                },
             ],
             restart_required: false,
             clipboard_buffer: String::new(),

@@ -17,7 +17,7 @@ impl ServerDatabase {
     }
 
     pub fn get_acp_task(&self, task_id: &str) -> Result<Option<Value>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let raw: Option<String> = conn
                 .query_row(
                     "SELECT payload_json FROM acp_tasks WHERE task_id = ?1",
@@ -31,7 +31,7 @@ impl ServerDatabase {
     }
 
     pub fn load_acp_tasks(&self) -> Result<Vec<(String, Value)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT task_id, payload_json FROM acp_tasks ORDER BY updated_at_ms ASC").map_db()?;
             let rows = stmt.query_map([], |r| {
                 let id: String = r.get(0)?;
@@ -55,7 +55,7 @@ impl ServerDatabase {
     }
 
     pub fn load_approval_gates(&self) -> Result<Vec<(String, Value)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT gate_id, payload_json FROM acp_approval_gates ORDER BY updated_at_ms ASC").map_db()?;
             let rows = stmt.query_map([], |r| {
                 let id: String = r.get(0)?;
@@ -63,6 +63,60 @@ impl ServerDatabase {
                 Ok((id, serde_json::from_str(&raw).unwrap_or(Value::Null)))
             }).map_db()?;
             rows.collect::<std::result::Result<Vec<_>, _>>().map_db()
+        })
+    }
+
+    pub fn get_approval_gate(
+        &self,
+        gate_id: &str,
+    ) -> Result<Option<gpui_telegram_agent::tasks::ApprovalGate>> {
+        self.pool.with_reader(|conn| {
+            let raw: Option<String> = conn
+                .query_row(
+                    "SELECT payload_json FROM acp_approval_gates WHERE gate_id = ?1",
+                    params![gate_id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_db()?;
+            match raw {
+                Some(s) => {
+                    let gate = serde_json::from_str::<gpui_telegram_agent::tasks::ApprovalGate>(&s)?;
+                    Ok(Some(gate))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub fn try_decide_approval_gate(
+        &self,
+        gate_id: &str,
+        decision_label: &str,
+        new_payload: &serde_json::Value,
+    ) -> gpui_telegram_core::error::Result<bool> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let json_str = serde_json::to_string(new_payload).unwrap_or_else(|_| "{}".into());
+        self.pool.with_writer(|conn| {
+            conn.execute(
+                "UPDATE acp_approval_gates SET decision = ?2, payload_json = ?3, updated_at_ms = ?4 WHERE gate_id = ?1 AND decision IS NULL",
+                params![gate_id, decision_label, json_str, now_ms],
+            )
+            .map_db()?;
+            Ok(conn.changes() == 1)
+        })
+    }
+
+    pub fn try_consume_approval_gate(&self, gate_id: &str, new_payload: &Value) -> Result<bool> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let json_str = serde_json::to_string(new_payload).unwrap_or_else(|_| "{}".into());
+        self.pool.with_writer(|conn| {
+            conn.execute(
+                "UPDATE acp_approval_gates SET decision = 'consumed', payload_json = ?2, updated_at_ms = ?3 WHERE gate_id = ?1 AND decision IN ('approve_once', 'approve')",
+                params![gate_id, json_str, now_ms],
+            )
+            .map_db()?;
+            Ok(conn.changes() == 1)
         })
     }
 
@@ -79,7 +133,7 @@ impl ServerDatabase {
     }
 
     pub fn load_mcp_servers(&self) -> Result<Vec<(String, String, String, String, Value)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT server_id, name, endpoint, status, tools_json FROM mcp_servers_db ORDER BY updated_at_ms ASC").map_db()?;
             let rows = stmt.query_map([], |r| {
                 let tools_raw: String = r.get(4)?;
@@ -109,7 +163,7 @@ impl ServerDatabase {
     }
 
     pub fn load_computer_leases(&self) -> Result<Vec<(String, u64, Option<String>, String, Value, i64, i64)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT lease_id, owner_user_id, session_id, status, actions_json, created_at_ms, updated_at_ms FROM computer_leases_db ORDER BY created_at_ms ASC").map_db()?;
             let rows = stmt.query_map([], |r| {
                 let raw: String = r.get(4)?;
@@ -132,7 +186,7 @@ impl ServerDatabase {
     }
 
     pub fn load_talk_sessions(&self) -> Result<Vec<(String, u64, String, Value, i64)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT session_id, user_id, status, transcript_json, created_at_ms FROM talk_sessions_db ORDER BY created_at_ms ASC").map_db()?;
             let rows = stmt.query_map([], |r| {
                 let raw: String = r.get(3)?;

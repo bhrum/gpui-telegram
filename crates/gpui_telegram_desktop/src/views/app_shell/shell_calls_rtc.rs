@@ -5,6 +5,8 @@ use gpui_telegram_client::net::RichSendMessageRequest;
 use gpui_telegram_core::types::UserId;
 use gpui_telegram_proto::contracts::features::{CallInviteRequest, CallSignalRequest};
 use gpui_telegram_proto::message::{MessageContent as ProtoMessageContent, VoiceItem};
+use gpui_telegram_webrtc::calls::{PeerTransportConfig, WebRtcPeerTransport};
+use gpui_telegram_webrtc::media::{AiMediaTap, DefaultAiMediaTap};
 use gpui_telegram_webrtc::{SignalingFrame, TurnToken, WebRtcCallEngine};
 
 use crate::i18n::tr_str;
@@ -350,6 +352,36 @@ impl AppShell {
         self.rtc_talk.active_talk_bot_chat_id = chat_opt;
         self.rtc_talk.active_talk_session_id = None;
 
+        let ai_tap = std::sync::Arc::new(DefaultAiMediaTap::new(48_000, 1, 0.05));
+        self.rtc_talk.ai_media_tap = ai_tap.clone();
+        let (local_peer, remote_peer) = WebRtcPeerTransport::create_loopback_pair(PeerTransportConfig::default());
+        local_peer.set_ai_media_tap(ai_tap.clone());
+        remote_peer.set_ai_media_tap(ai_tap.clone());
+        self.rtc_talk.ai_peer_transport = Some(std::sync::Arc::new(local_peer));
+        cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+            loop {
+                ai_tap.wait_for_barge_in().await;
+                let keep_running = weak
+                    .update(app, |shell, cx| {
+                        if !shell.rtc_talk.active_talk_session_is_ai
+                            || shell.rtc_talk.talk_coordinator.state == TalkSessionState::Closed
+                        {
+                            return false;
+                        }
+                        shell.rtc_talk.talk_coordinator.handle_barge_in();
+                        shell.rtc_talk.audio_player.stop();
+                        shell.rtc_talk.ai_media_tap.reset_barge_in();
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let overlay = cx.new(|_| {
             let mut o = CallOverlay::new_live(
                 peer_name.clone(),
@@ -359,6 +391,7 @@ impl AppShell {
                 lang,
             );
             o.is_camera_on = is_video;
+            o.video_viewport.set_local_camera_active(is_video);
             o.latency_ms = 42;
             o.set_state(TalkModeState::Thinking);
             o.add_transcript(
@@ -463,6 +496,7 @@ impl AppShell {
             self.rtc_talk.talk_coordinator.handle_barge_in();
             self.rtc_talk.audio_player.stop();
         }
+        self.rtc_talk.ai_media_tap.reset_barge_in();
         let _ = self.rtc_talk.talk_coordinator.transition(TalkSessionState::Thinking);
         if let Some(ov) = self.rtc_talk.talk_mode_overlay.clone() {
             ov.update(cx, |o, _| {
@@ -619,6 +653,7 @@ impl AppShell {
         let overlay = cx.new(|_| {
             let mut o = CallOverlay::new_live(peer_name.clone(), None, None, pal, lang);
             o.is_camera_on = is_video;
+            o.video_viewport.set_local_camera_active(is_video);
             o
         });
         self.bind_talk_overlay_observer(&overlay, cx);
@@ -713,11 +748,34 @@ impl AppShell {
         .detach();
     }
 
+    pub fn process_incoming_ai_audio_pcm(
+        &mut self,
+        pcm: &[i16],
+        sample_rate: u32,
+        channels: u16,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.rtc_talk
+            .ai_media_tap
+            .on_incoming_pcm_frame(pcm, sample_rate, channels);
+        if self.rtc_talk.ai_media_tap.trigger_vad_barge_in() {
+            self.rtc_talk.talk_coordinator.handle_barge_in();
+            self.rtc_talk.audio_player.stop();
+            self.rtc_talk.ai_media_tap.reset_barge_in();
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn hangup_active_call(&mut self, cx: &mut Context<Self>) {
         self.rtc_talk.webrtc_engine.hangup_local("user_hangup");
         let _ = self.rtc_talk.webrtc_engine.drain_outbound_frames();
         self.rtc_talk.talk_coordinator.close();
         self.rtc_talk.audio_player.stop();
+        self.rtc_talk.ai_media_tap.reset_barge_in();
+        self.rtc_talk.ai_peer_transport = None;
         self.reset_talk_session_flags();
         if let Some(call_id) = self.rtc_talk.active_call_id.take() {
             let client = self.client.clone();
@@ -934,6 +992,7 @@ impl AppShell {
                     silent: false,
                     scheduled_at_ms: None,
                     inline_keyboard: None,
+                    send_as_peer_id: None,
                 };
                 let _ = client.send_message_durable(req).await;
                 let _ = weak.update(app, |shell, cx| {

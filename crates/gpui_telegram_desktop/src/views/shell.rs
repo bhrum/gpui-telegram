@@ -312,6 +312,15 @@ impl AppShell {
         self.session_sync.clear_message_tracking();
         self.reset_conversation_views(&srv_url, Some(&auth.username), cx);
 
+        let cached_folders = self.client.local_store.get_folders();
+        if !cached_folders.is_empty() {
+            crate::views::app_shell::shell_settings_sync::apply_folders_to_shell(
+                self,
+                &cached_folders,
+                cx,
+            );
+        }
+
         self.refresh_chats(cx);
         self.refresh_folders(cx);
         self.refresh_contacts(cx);
@@ -651,12 +660,26 @@ impl Render for AppShell {
 
         let pal = self.theme_state.palette;
         let current_toast = self.window_runtime.controller.current_toast.clone();
+        let update_banner = self.render_in_app_update_banner(cx);
 
         if !self.is_authenticated {
             return div()
                 .id("app-shell-login-root")
-                .size_full().bg(rgb(pal.window_bg)).flex().items_center().justify_center().relative()
-                .child(self.auth_wizard.clone())
+                .size_full()
+                .bg(rgb(pal.window_bg))
+                .flex()
+                .flex_col()
+                .relative()
+                .when_some(update_banner, |el, banner| el.child(banner))
+                .child(
+                    div()
+                        .flex_1()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(self.auth_wizard.clone()),
+                )
                 .when_some(current_toast, |el, toast| el.child(self.render_toast_banner(toast.text, pal, cx)))
                 .into_any_element();
         }
@@ -692,6 +715,7 @@ impl Render for AppShell {
                         .flex().items_center().justify_center().child(conn_banner_text),
                 )
             })
+            .when_some(update_banner, |el, banner| el.child(banner))
             .child(
                 div().flex_1().w_full().min_h(px(0.0)).flex()
                     .child(self.sidebar.clone())

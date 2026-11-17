@@ -1142,6 +1142,12 @@ fn render_bubble_inner_content<V: 'static>(
                 a_i(this, BubbleUiAction::Interactive(ia), cx);
             })
         }
+        MessageContent::GenerativeCard(card) => {
+            let a_i = on_action.clone();
+            super::cards::render_generative_card(msg_id, card, palette, cx, move |this, ia, cx| {
+                a_i(this, BubbleUiAction::Interactive(ia), cx);
+            })
+        }
         MessageContent::Service { text, .. } => div().text_size(px(12.0)).child(text.clone()).into_any_element(),
     }
 }

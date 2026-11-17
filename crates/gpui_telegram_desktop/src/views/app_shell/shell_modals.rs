@@ -1,5 +1,6 @@
 use gpui::{AsyncApp, ClipboardItem, Context, WeakEntity};
 use gpui_telegram_client::net::http_client::AddContactHttpRequest;
+use gpui_telegram_client::net::proxy::ClientProxyConfig;
 use gpui_telegram_client::net::RichSendMessageRequest;
 use gpui_telegram_proto::contracts::auth::UpdateProfileRequest as ProtoUpdateProfileRequest;
 use gpui_telegram_proto::contracts::chats::CreateChatRequest;
@@ -18,6 +19,7 @@ use crate::views::nav_rail::NavDestination;
 use crate::views::settings::settings_type::SettingsSectionType;
 use crate::views::shell::{ActiveWorkspacePanel, AppShell};
 use crate::views::global_tasks_workspace::TasksWorkspaceTab;
+use crate::views::app_shell::window_connecting_widget::ConnectionStatus as BannerConnectionStatus;
 
 impl AppShell {
     pub fn open_modal_dialog(&mut self, title: impl Into<String>, kind: ModalDialogKind, w: f32, h: f32, cx: &mut Context<Self>) {
@@ -134,7 +136,7 @@ impl AppShell {
             }
             MainMenuCommand::ShortcutsLegend => self.open_modal_dialog(tr_str(lang, "键盘快捷键", "Keyboard Shortcuts"), ModalDialogKind::ShortcutsLegend, 460.0, 440.0, cx),
             MainMenuCommand::AboutTelegram => self.open_modal_dialog(
-                tr_str(lang, "关于应用", "About App"),
+                tr_str(lang, "关于 Fabushi", "About Fabushi"),
                 ModalDialogKind::AboutTelegram,
                 420.0,
                 320.0,
@@ -180,6 +182,7 @@ impl AppShell {
                             reply_to: None, quote_text: None, topic_id: None, client_nonce: Some(client.next_client_nonce()),
                             forward_from_chat_id: Some(from_chat), forward_from_msg_id: Some(mid as i64),
                             silent: false, scheduled_at_ms: None, inline_keyboard: None,
+                            send_as_peer_id: None,
                         };
                         let _ = client.send_message_durable(req).await;
                     }
@@ -394,10 +397,31 @@ impl AppShell {
                         sa_cx.notify();
                     });
                 });
+                let proxy_cfg = ClientProxyConfig::from_record(&proxy_rec);
+                if let Some(ref cfg) = proxy_cfg {
+                    if let Err(err) = client.apply_proxy(Some(cfg.clone())) {
+                        self.window_runtime.enqueue_toast(format!("Proxy error: {err}"), 2600);
+                    } else {
+                        self.window_runtime.set_connection_status(
+                            BannerConnectionStatus::Connecting,
+                            Some(cfg.display_endpoint()),
+                        );
+                        if self.is_authenticated {
+                            client.disconnect_ws();
+                            client.connect_ws();
+                        }
+                    }
+                }
                 let c = client.clone();
                 let lang_str = self.active_lang_id().to_string();
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
-                    let _ = c.upsert_proxy(proxy_rec).await;
+                    let mut saved_rec = proxy_rec;
+                    if let Some(ref cfg) = proxy_cfg {
+                        if let Ok(latency_ms) = c.http_client.probe_proxy(cfg).await {
+                            saved_rec.ping_ms = latency_ms;
+                        }
+                    }
+                    let _ = c.upsert_proxy(saved_rec).await;
                     let _ = weak.update(app, |s, cx| {
                         s.window_runtime.enqueue_toast(
                             tr_str(&lang_str, "代理节点已保存", "Proxy saved"),
@@ -431,6 +455,29 @@ impl AppShell {
                         sa_cx.notify();
                     });
                 });
+                if proxy_id == 0 {
+                    let _ = client.apply_proxy(None);
+                    self.window_runtime.set_connection_status(
+                        BannerConnectionStatus::Connecting,
+                        None,
+                    );
+                    if self.is_authenticated {
+                        client.disconnect_ws();
+                        client.connect_ws();
+                    }
+                } else if let Some(ref p) = selected_rec {
+                    if let Some(cfg) = ClientProxyConfig::from_record(p) {
+                        let _ = client.apply_proxy(Some(cfg.clone()));
+                        self.window_runtime.set_connection_status(
+                            BannerConnectionStatus::Connecting,
+                            Some(cfg.display_endpoint()),
+                        );
+                        if self.is_authenticated {
+                            client.disconnect_ws();
+                            client.connect_ws();
+                        }
+                    }
+                }
                 let c = client.clone();
                 let lang_str = self.active_lang_id().to_string();
                 cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
@@ -445,12 +492,34 @@ impl AppShell {
                         }
                     } else if let Some(mut rec) = selected_rec {
                         rec.enabled = true;
+                        if let Some(cfg) = ClientProxyConfig::from_record(&rec) {
+                            if let Ok(latency_ms) = c.http_client.probe_proxy(&cfg).await {
+                                rec.ping_ms = latency_ms;
+                            }
+                        }
                         let _ = c.upsert_proxy(rec).await;
                     } else if let Ok(existing) = c.list_proxies().await {
                         if let Some(mut rec) = existing.into_iter().find(|p| p.id == proxy_id) {
                             rec.enabled = true;
+                            let applied_cfg = ClientProxyConfig::from_record(&rec);
+                            if let Some(ref cfg) = applied_cfg {
+                                let _ = c.apply_proxy(Some(cfg.clone()));
+                                if let Ok(latency_ms) = c.http_client.probe_proxy(cfg).await {
+                                    rec.ping_ms = latency_ms;
+                                }
+                            }
                             let _ = c.upsert_proxy(rec.clone()).await;
                             let _ = weak.update(app, |s, cx| {
+                                if let Some(ref cfg) = applied_cfg {
+                                    s.window_runtime.set_connection_status(
+                                        BannerConnectionStatus::Connecting,
+                                        Some(cfg.display_endpoint()),
+                                    );
+                                    if s.is_authenticated {
+                                        s.client.disconnect_ws();
+                                        s.client.connect_ws();
+                                    }
+                                }
                                 s.settings_router.update(cx, |sr, scx| {
                                     let sa = sr.ensure_advanced(scx);
                                     sa.update(scx, |sa, sa_cx| {
@@ -475,6 +544,13 @@ impl AppShell {
             }
             ModalActionOutcome::SavePrivacyRule { category, rule } => {
                 self.apply_privacy_rule_update(&category, rule, cx);
+            }
+            ModalActionOutcome::CheckForUpdates => {
+                self.modal_container.update(cx, |m, mcx| {
+                    m.hide_all();
+                    mcx.notify();
+                });
+                self.trigger_update_check(true, cx);
             }
             _ => {}
         }

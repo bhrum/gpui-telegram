@@ -61,7 +61,7 @@ impl IntroStep {
     pub fn new(step_type: IntroStepType) -> Self {
         let (title, description, has_cover) = match step_type {
             IntroStepType::Start => (
-                "AI Chat".to_string(),
+                "Fabushi".to_string(),
                 "The world's fastest messaging app. Free and secure.".to_string(),
                 true,
             ),

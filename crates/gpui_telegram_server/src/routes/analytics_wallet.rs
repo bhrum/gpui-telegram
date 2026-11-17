@@ -29,44 +29,92 @@ pub async fn search_unified(
         None => state.db.list_user_member_chat_ids(auth.user_id).unwrap_or_default(),
     };
     let allowed_set: HashSet<i64> = member_chats.iter().map(|c| c.0).collect();
+    let allowed_vec: Vec<i64> = member_chats.iter().map(|c| c.0).collect();
+    let mode = params.get("mode").map(|s| s.trim().to_ascii_lowercase()).unwrap_or_default();
+    let entity_hint = params.get("entity").map(|s| s.trim()).filter(|s| !s.is_empty());
     let mut hits: Vec<SearchHitDto> = Vec::new();
     let mut results: Vec<Value> = Vec::new();
     let mut bot_chat_map: HashMap<i64, i64> = HashMap::new();
     let q_lower = q.to_lowercase();
     let q_clean = q_lower.trim_start_matches('@');
 
-    // 1. Scoped Tantivy full-text search over message bodies
-    if !q.is_empty() && matches!(category.as_str(), "all" | "chats" | "messages" | "") {
+    // 1. Scoped Hybrid Memory + Tantivy full-text search over message & file bodies
+    if !q.is_empty() && matches!(category.as_str(), "all" | "chats" | "messages" | "hybrid" | "") {
+        if mode == "hybrid" || category == "hybrid" {
+            let hybrid_hits = state.hybrid_memory.search_with_limit(&q, None, &allowed_vec, entity_hint, limit);
+            for h in hybrid_hits {
+                if !allowed_set.contains(&h.chat_id) { continue; }
+                let mid = if h.message_id.starts_with("file:") {
+                    0
+                } else {
+                    h.message_id
+                        .rsplit(':')
+                        .next()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(0)
+                };
+                let (sender_id, date_ms, media_type) = if mid > 0 {
+                    state.db.get_message(ChatId(h.chat_id), MsgId(mid)).ok().flatten()
+                        .map(|r| (r.sender_id.0, r.date_ms, r.media_type))
+                        .unwrap_or((0, 0, None))
+                } else {
+                    (0, 0, Some("file".to_string()))
+                };
+                hits.push(SearchHitDto {
+                    chat_id: h.chat_id,
+                    message_id: mid,
+                    sender_id,
+                    date_ms,
+                    text: h.content.clone(),
+                    snippet_html: h.content,
+                    media_type,
+                });
+            }
+        }
         let mut sq = SearchQueryParams::new(&q).with_limit(limit * 3);
         if let Some(cid) = scoped_chat { sq = sq.with_chat_id(cid.0.to_string()); }
-        if let Ok(t_hits) = state.search_indexer.search_hits(&sq) {
-            for h in t_hits {
-                if let Ok(cid_num) = h.chat_id.parse::<i64>() {
-                    if !allowed_set.contains(&cid_num) { continue; }
-                    let mid = h.message_id.parse::<i64>().unwrap_or(0);
-                    let sid = h.sender_id.parse::<u64>().unwrap_or(0);
-                    let Some(rec) = state
-                        .db
-                        .get_message(ChatId(cid_num), MsgId(mid))
-                        .ok()
-                        .flatten()
-                        .filter(|r| r.deleted_at_ms.is_none())
-                    else {
-                        continue;
-                    };
-                    let text = crate::messaging::pipeline::MessagePipeline::record_to_item(&rec)
-                        .ok()
-                        .map(|i| extract_message_content_text(&i.content))
-                        .unwrap_or_else(|| h.snippet_html.clone());
-                    let media_type = rec.media_type;
-                    hits.push(SearchHitDto {
-                        chat_id: cid_num, message_id: mid, sender_id: sid, date_ms: h.date,
-                        text, snippet_html: h.snippet_html, media_type,
-                    });
-                    if hits.len() >= limit { break; }
+        if hits.len() < limit {
+            if let Ok(t_hits) = state.search_indexer.search_hits_for_chats(&q, &allowed_vec, limit * 2) {
+                for h in t_hits {
+                    if let Ok(cid_num) = h.chat_id.parse::<i64>() {
+                        if !allowed_set.contains(&cid_num) { continue; }
+                        let mid = if h.message_id.starts_with("file:") {
+                    0
+                } else {
+                    h.message_id
+                        .rsplit(':')
+                        .next()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(0)
+                };
+                        if hits.iter().any(|existing| existing.chat_id == cid_num && existing.message_id == mid) {
+                            continue;
+                        }
+                        let sid = h.sender_id.parse::<u64>().unwrap_or(0);
+                        let Some(rec) = state
+                            .db
+                            .get_message(ChatId(cid_num), MsgId(mid))
+                            .ok()
+                            .flatten()
+                            .filter(|r| r.deleted_at_ms.is_none())
+                        else {
+                            continue;
+                        };
+                        let text = crate::messaging::pipeline::MessagePipeline::record_to_item(&rec)
+                            .ok()
+                            .map(|i| extract_message_content_text(&i.content))
+                            .unwrap_or_else(|| h.snippet_html.clone());
+                        let media_type = rec.media_type;
+                        hits.push(SearchHitDto {
+                            chat_id: cid_num, message_id: mid, sender_id: sid, date_ms: h.date,
+                            text, snippet_html: h.snippet_html, media_type,
+                        });
+                        if hits.len() >= limit { break; }
+                    }
                 }
             }
         }
+        let _ = sq;
     }
 
     // 2. Categorized chat & media/link/file filter scan over authorized chats

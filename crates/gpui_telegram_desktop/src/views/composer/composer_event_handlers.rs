@@ -612,6 +612,9 @@ impl CanonicalComposer {
             }
             ComposerBarAction::LockVoice => self.lock_voice_recording(),
             ComposerBarAction::CancelVoice => self.cancel_voice_recording(),
+            ComposerBarAction::CycleSendAs => {
+                self.cycle_send_as_peer();
+            }
         }
         cx.notify();
     }

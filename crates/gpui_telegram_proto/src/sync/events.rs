@@ -141,4 +141,24 @@ pub enum UpdateEvent {
     StoryUpdated {
         story: StoryDto,
     },
+    AgentFloorChanged {
+        chat_id: ChatId,
+        current_speaker: Option<String>,
+        queued_count: usize,
+        loop_hops: u32,
+    },
+    AgentWorkspaceUpdated {
+        chat_id: ChatId,
+        revision: u64,
+        key: String,
+        value: serde_json::Value,
+        updated_by: String,
+    },
+    AgentHandoffEvent {
+        chat_id: ChatId,
+        from_agent: String,
+        to_agent: String,
+        hop: u32,
+        max_hops: u32,
+    },
 }

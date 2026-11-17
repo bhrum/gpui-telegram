@@ -7,12 +7,12 @@ use std::sync::Arc;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V" || a == "-v") {
-        println!("AI Chat Desktop v{}", env!("CARGO_PKG_VERSION"));
+        println!("Fabushi Desktop v{}", env!("CARGO_PKG_VERSION"));
         println!("gpui_telegram_desktop {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("AI Chat Desktop Client");
+        println!("Fabushi Desktop Client");
         println!("Version: {}", env!("CARGO_PKG_VERSION"));
         println!();
         println!("USAGE:");
@@ -27,7 +27,7 @@ fn main() {
 
     let config = ClientConfig::resolve();
     println!(
-        "[AI Chat] Resolved Server URL: {} (Source: {:?})",
+        "[Fabushi] Resolved Server URL: {} (Source: {:?})",
         config.server_url, config.config_source
     );
 

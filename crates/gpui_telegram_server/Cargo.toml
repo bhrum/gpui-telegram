@@ -49,8 +49,10 @@ chacha20poly1305 = { workspace = true }
 hkdf = { workspace = true }
 zeroize = { workspace = true }
 reqwest = { workspace = true }
+async-trait = { workspace = true }
+crossbeam-queue = "0.3"
+tempfile = "3"
 
 [dev-dependencies]
 tokio-tungstenite = { workspace = true }
 gpui_telegram_client = { workspace = true }
-tempfile = "3"

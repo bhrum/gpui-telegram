@@ -553,8 +553,8 @@ fn test_context_refs_workspace_discovery_compressor_and_3tier_prompt() {
 
 #[tokio::test]
 async fn test_tools_toolsets_patch_rollback_backends_processes_security_tts_kanban_mcp() {
-    // 28 toolsets & 40+ tools
-    assert_eq!(ToolsetId::all().len(), 28);
+    // 29 toolsets & 40+ tools
+    assert_eq!(ToolsetId::all().len(), 29);
     let specs = all_builtin_tool_specs();
     assert!(specs.len() >= 40, "Expected 40+ tools, got {}", specs.len());
     for ts in ToolsetId::all() {
@@ -1438,7 +1438,7 @@ impl ComputerCloudProvider for MockComputerCloudProvider {
 
 #[tokio::test]
 async fn test_computer_cloud_tools_toolset_invariant_and_direct_execution() {
-    assert_eq!(ToolsetId::all().len(), 28);
+    assert_eq!(ToolsetId::all().len(), 29);
     for preset in [
         ToolsetPreset::HermesTelegram,
         ToolsetPreset::HermesCli,

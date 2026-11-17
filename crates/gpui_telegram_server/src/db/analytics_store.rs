@@ -7,8 +7,20 @@ use serde_json::{json, Value};
 
 impl ServerDatabase {
     pub fn get_wallet_balance(&self, user_id: UserId) -> Result<WalletBalanceDto> {
+        if let Some(dto) = self.pool.with_reader(|conn| {
+            conn.query_row(
+                "SELECT user_id, stars_balance, ton_nano, updated_at_ms FROM wallet_balances WHERE user_id = ?1",
+                params![user_id.0 as i64],
+                |r| Ok(WalletBalanceDto {
+                    user_id: r.get::<_, i64>(0)? as u64, stars_balance: r.get(1)?,
+                    ton_nano: r.get(2)?, updated_at_ms: r.get(3)?,
+                }),
+            ).optional().map_db()
+        })? {
+            return Ok(dto);
+        }
         let now_ms = chrono::Utc::now().timestamp_millis();
-        self.pool.with_conn(|conn| {
+        self.pool.with_writer(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO wallet_balances (user_id, stars_balance, ton_nano, updated_at_ms) VALUES (?1, 0, 0, ?2)",
                 params![user_id.0 as i64, now_ms],
@@ -77,7 +89,7 @@ impl ServerDatabase {
     }
 
     pub fn list_wallet_transactions(&self, user_id: UserId) -> Result<Vec<WalletTransactionDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT tx_id, peer_user_id, kind, amount_stars, description, created_at_ms FROM wallet_transactions WHERE user_id = ?1 ORDER BY created_at_ms DESC LIMIT 100").map_db()?;
             let rows = stmt.query_map(params![user_id.0 as i64], |r| Ok(WalletTransactionDto {
                 tx_id: r.get(0)?,
@@ -92,7 +104,7 @@ impl ServerDatabase {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let seven_days_ms = now_ms - 7 * 86_400_000;
         let fourteen_days_ms = now_ms - 14 * 86_400_000;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let title: String = conn.query_row("SELECT title FROM chats WHERE chat_id = ?1", params![chat_id.0], |r| r.get(0))
                 .optional().map_db()?.ok_or_else(|| TelegramError::NotFound("Chat not found".into()))?;
             let member_count: u64 = conn.query_row("SELECT COUNT(*) FROM chat_members WHERE chat_id = ?1", params![chat_id.0], |r| r.get::<_, i64>(0)).map_db()? as u64;
@@ -136,7 +148,7 @@ impl ServerDatabase {
     }
 
     pub fn list_user_member_chat_ids(&self, user_id: UserId) -> Result<Vec<ChatId>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare("SELECT chat_id FROM chat_members WHERE user_id = ?1")
                 .map_db()?;
@@ -151,7 +163,7 @@ impl ServerDatabase {
         &self,
         limit: usize,
     ) -> Result<Vec<(i64, i64, u64, i64, String, Option<String>)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare("SELECT message_id, chat_id, sender_id, date_ms, content_json FROM messages WHERE deleted_at_ms IS NULL ORDER BY date_ms DESC LIMIT ?1")
                 .map_db()?;

@@ -99,6 +99,9 @@ impl PtsEngine {
             UpdateEvent::FolderChanged { .. } => "folder_changed",
             UpdateEvent::CallUpdated { .. } => "call_updated",
             UpdateEvent::StoryUpdated { .. } => "story_updated",
+            UpdateEvent::AgentFloorChanged { .. } => "agent_floor_changed",
+            UpdateEvent::AgentWorkspaceUpdated { .. } => "agent_workspace_updated",
+            UpdateEvent::AgentHandoffEvent { .. } => "agent_handoff_event",
         };
 
         let (new_pts, pts_update) = self.db.pool().with_transaction(|tx| {

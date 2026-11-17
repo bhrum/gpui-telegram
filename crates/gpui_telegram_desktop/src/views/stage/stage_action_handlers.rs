@@ -239,6 +239,12 @@ impl ConversationStage {
             TopBarUiAction::JumpPinned => {
                 self.sync_pinned_tracker();
                 if let Some(target_id) = self.pinned_tracker.next_pinned_id().or_else(|| self.pinned_tracker.current_msg_id()) {
+                    if let Some((snippet, _, _, _, _)) = self.pinned_banner_info() {
+                        self.pinned_message = Some(snippet.clone());
+                        if let Some(cid) = self.active_chat_id {
+                            self.chat_pinned_messages.insert(cid, Some(snippet));
+                        }
+                    }
                     self.jump_to_message(target_id as u64);
                 } else if let Some(last_pin) = self.messages.iter().rev().find(|m| m.is_pinned) {
                     self.jump_to_message(last_pin.id);
@@ -666,6 +672,9 @@ impl ConversationStage {
                 }
                 InteractiveCardAction::BotButton(msg_id, btn) => {
                     self.pending_bot_button_action = Some((msg_id, btn));
+                }
+                InteractiveCardAction::GenerativeButton(_msg_id, _btn_id, payload) => {
+                    self.pending_bot_action = Some(payload);
                 }
             },
             BubbleUiAction::Context(ca) => {

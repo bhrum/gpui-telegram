@@ -196,6 +196,20 @@ pub async fn pins_unpin(auth: AuthBearer, State(state): State<Arc<AppState>>, Pa
     }
 }
 
+pub async fn pins_unpin_path(auth: AuthBearer, State(state): State<Arc<AppState>>, Path((chat_id, message_id)): Path<(i64, i64)>) -> Response {
+    let (_chat, _m, is_admin) = match check_active_membership(&state, ChatId(chat_id), auth.user_id) { Ok(c) => c, Err(r) => return r };
+    if !is_admin { return err_resp(StatusCode::FORBIDDEN, "forbidden", "Admin rights required to unpin messages"); }
+    match state.db.unpin_message(ChatId(chat_id), Some(MsgId(message_id))) {
+        Ok(ids) => {
+            broadcast_chat_event(&state, ChatId(chat_id), UpdateEvent::PinnedMessagesChanged {
+                chat_id: ChatId(chat_id), pinned_ids: ids.iter().copied().map(MsgId).collect(),
+            });
+            (StatusCode::OK, Json(json!({ "chat_id": chat_id, "pinned_message_ids": ids }))).into_response()
+        }
+        Err(e) => map_telegram_err(e),
+    }
+}
+
 pub async fn draft_get(auth: AuthBearer, State(state): State<Arc<AppState>>, Path(chat_id): Path<i64>, Query(q): Query<HashMap<String, String>>) -> Response {
     if let Err(r) = check_active_membership(&state, ChatId(chat_id), auth.user_id) { return r; }
     let topic_id = q.get("topic_id").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
@@ -349,4 +363,42 @@ pub async fn chat_set_ttl(
         }
         Err(e) => map_telegram_err(e),
     }
+}
+
+pub async fn chat_send_as_list(
+    auth: AuthBearer,
+    State(state): State<Arc<AppState>>,
+    Path(chat_id): Path<i64>,
+) -> Response {
+    if let Err(r) = check_active_membership(&state, ChatId(chat_id), auth.user_id) {
+        return r;
+    }
+    let mut peers = Vec::new();
+    if let Ok(Some(u)) = state.db.get_user(auth.user_id) {
+        let full = match &u.last_name {
+            Some(ln) if !ln.trim().is_empty() => format!("{} {}", u.first_name.trim(), ln.trim()),
+            _ => u.first_name.trim().to_string(),
+        };
+        peers.push(json!({
+            "peer_id": auth.user_id.0,
+            "title": if full.is_empty() { format!("User {}", auth.user_id.0) } else { full },
+            "username": u.username,
+            "kind": "user",
+            "is_default": true,
+        }));
+    }
+    if let Ok(chats) = state.db.list_user_chats(auth.user_id) {
+        for c in chats {
+            if matches!(c.chat_type, 2 | 3) && c.creator_id == auth.user_id {
+                peers.push(json!({
+                    "peer_id": c.chat_id.0 as u64,
+                    "title": c.title,
+                    "username": c.username,
+                    "kind": if c.chat_type == 3 { "channel" } else { "supergroup" },
+                    "is_default": false,
+                }));
+            }
+        }
+    }
+    (StatusCode::OK, Json(json!({ "chat_id": chat_id, "peers": peers }))).into_response()
 }

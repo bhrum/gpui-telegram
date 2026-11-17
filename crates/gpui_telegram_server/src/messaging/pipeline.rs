@@ -222,6 +222,9 @@ impl MessagePipeline {
             forward_info,
             reactions,
             client_nonce: rec.client_nonce,
+            inline_keyboard: None,
+            ttl_seconds: None,
+            expires_at_ms: None,
         })
     }
 }

@@ -145,8 +145,67 @@ impl ConversationStage {
     }
 
     pub fn sync_pinned_tracker(&mut self) {
-        let pinned_ids: Vec<i64> = self.messages.iter().filter(|m| m.is_pinned).map(|m| m.id as i64).collect();
+        let mut pinned_ids: Vec<i64> = self.messages.iter().filter(|m| m.is_pinned).map(|m| m.id as i64).collect();
+        if let Some(cid) = self.active_chat_id {
+            if let Some(entries) = self.chat_pinned_entries.get(&cid) {
+                for entry in entries {
+                    let id = entry.msg_id as i64;
+                    if !pinned_ids.contains(&id) {
+                        pinned_ids.push(id);
+                    }
+                }
+            }
+        }
         self.pinned_tracker.set_pinned_ids(pinned_ids);
+    }
+
+    pub fn set_pinned_entries(&mut self, chat_id: u64, entries: Vec<super::super::conversation_stage::PinnedBannerEntry>) {
+        let latest_preview = entries.last().map(|e| e.preview_text.clone());
+        let entry_ids: Vec<i64> = entries.iter().map(|e| e.msg_id as i64).collect();
+        if entries.is_empty() {
+            self.chat_pinned_entries.remove(&chat_id);
+            self.chat_pinned_messages.remove(&chat_id);
+        } else {
+            self.chat_pinned_entries.insert(chat_id, entries);
+            self.chat_pinned_messages.insert(chat_id, latest_preview.clone());
+        }
+        if self.active_chat_id == Some(chat_id) {
+            self.pinned_message = latest_preview;
+            self.sync_pinned_tracker();
+            if !entry_ids.is_empty() {
+                self.pinned_tracker.reset_to_latest();
+            }
+        }
+    }
+
+    pub fn purge_expired_messages_before(&mut self, now_ms: i64) -> usize {
+        let expired_ids: std::collections::HashSet<u64> = self
+            .message_expirations
+            .iter()
+            .filter_map(|(&id, &exp)| (exp <= now_ms).then_some(id))
+            .collect();
+        if expired_ids.is_empty() {
+            return 0;
+        }
+        for id in &expired_ids {
+            self.message_expirations.remove(id);
+        }
+        let before_active = self.messages.len();
+        self.messages.retain(|m| !expired_ids.contains(&m.id));
+        let mut removed = before_active.saturating_sub(self.messages.len());
+        for hist in self.chat_histories.values_mut() {
+            let b = hist.len();
+            hist.retain(|m| !expired_ids.contains(&m.id));
+            removed = removed.max(b.saturating_sub(hist.len()));
+        }
+        for entries in self.chat_pinned_entries.values_mut() {
+            entries.retain(|e| !expired_ids.contains(&e.msg_id));
+        }
+        if !expired_ids.is_empty() {
+            self.sync_pinned_tracker();
+            self.row_height_cache.mark_dirty();
+        }
+        removed.max(expired_ids.len())
     }
 
     pub fn add_message(&mut self, message: MessageItemModel) {
@@ -939,22 +998,45 @@ impl ConversationStage {
         })
     }
 
-    pub(crate) fn pinned_banner_info(&self) -> Option<(String, String, Option<String>, usize, usize)> {
-        self.active_chat_id?;
-        self.pinned_message.as_ref().map(|snippet| {
-            let target_id = self.pinned_tracker.current_msg_id().map(|id| id as u64);
-            let target_msg = target_id
-                .and_then(|id| self.messages.iter().find(|m| m.id == id))
-                .or_else(|| self.messages.iter().rev().find(|m| m.is_pinned));
-            let sender = target_msg.map(|m| m.sender_name.clone()).unwrap_or_default();
-            let thumb = target_msg.and_then(|m| match &m.content {
-                MessageContent::Media { url, .. } => Some(url.clone()),
-                MessageContent::Album { items, .. } => items.first().map(|i| i.url.clone()),
-                _ => None,
+    pub fn pinned_banner_info(&self) -> Option<(String, String, Option<String>, usize, usize)> {
+        let active_cid = self.active_chat_id?;
+        let entries = self.chat_pinned_entries.get(&active_cid);
+        let fallback_snippet = self.pinned_message.as_ref().or_else(|| {
+            entries.and_then(|v| v.last()).map(|e| &e.preview_text)
+        })?;
+        let target_id = self.pinned_tracker.current_msg_id().map(|id| id as u64);
+        let target_entry = target_id
+            .and_then(|id| entries.and_then(|v| v.iter().find(|e| e.msg_id == id)))
+            .or_else(|| entries.and_then(|v| v.last()));
+        let target_msg = target_id
+            .and_then(|id| self.messages.iter().find(|m| m.id == id))
+            .or_else(|| self.messages.iter().rev().find(|m| m.is_pinned));
+        let snippet = target_entry
+            .map(|e| e.preview_text.clone())
+            .or_else(|| {
+                target_msg.and_then(|m| match &m.content {
+                    MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                    MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => caption.clone(),
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| fallback_snippet.clone());
+        let sender = target_entry
+            .map(|e| e.sender_name.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| target_msg.map(|m| m.sender_name.clone()))
+            .unwrap_or_default();
+        let thumb = target_entry
+            .and_then(|e| e.thumb_url.clone())
+            .or_else(|| {
+                target_msg.and_then(|m| match &m.content {
+                    MessageContent::Media { url, .. } => Some(url.clone()),
+                    MessageContent::Album { items, .. } => items.first().map(|i| i.url.clone()),
+                    _ => None,
+                })
             });
-            let count = self.pinned_tracker.count().max(1);
-            let active_idx = self.pinned_tracker.current_index;
-            (snippet.clone(), sender, thumb, count, active_idx)
-        })
+        let count = self.pinned_tracker.count().max(entries.map(|v| v.len()).unwrap_or(0)).max(1);
+        let active_idx = self.pinned_tracker.current_index.min(count.saturating_sub(1));
+        Some((snippet, sender, thumb, count, active_idx))
     }
 }

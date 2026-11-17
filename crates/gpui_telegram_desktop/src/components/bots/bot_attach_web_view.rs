@@ -110,6 +110,7 @@ pub enum BotWebViewPendingAction {
         bot_username: String,
         short_name: String,
         chat_id: Option<i64>,
+        custom_url: Option<String>,
     },
     AcceptDisclaimer {
         bot_username: String,
@@ -705,6 +706,7 @@ impl BotAttachWebView {
             bot_username: self.bot_username.clone(),
             short_name: self.current_short_name(),
             chat_id: self.target_chat_i64(),
+            custom_url: gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(&self.url),
         });
     }
 

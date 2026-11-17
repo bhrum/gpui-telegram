@@ -432,7 +432,7 @@ pub async fn bootstrap(
         Err(e) => return internal_err(&e),
     };
     let uid = auth.user_id.0 as i64;
-    let bundle = state.db.pool().with_conn(|conn| {
+    let bundle = state.db.pool().with_reader(|conn| {
         storage::get_bootstrap_bundle(
             conn,
             uid,
@@ -632,7 +632,7 @@ pub async fn list_practice_records_handler(
         return internal_err(&e);
     }
     let uid = auth.user_id.0 as i64;
-    let res = state.db.pool().with_conn(|conn| {
+    let res = state.db.pool().with_reader(|conn| {
         let records = storage::list_practice_records(conn, uid, 100, 0)
             .map_err(|e| gpui_telegram_core::error::TelegramError::Database(e.to_string()))?;
         let stats = storage::compute_practice_stats(conn, uid)
@@ -836,7 +836,7 @@ pub async fn get_profile_handler(
     let locked_practice = state
         .db
         .pool()
-        .with_conn(|conn| {
+        .with_reader(|conn| {
             storage::get_locked_practice(conn, uid)
                 .map_err(|e| gpui_telegram_core::error::TelegramError::Database(e.to_string()))
         })
@@ -1035,7 +1035,7 @@ pub async fn leaderboard_handler(
         "global".to_string()
     };
 
-    let res = state.db.pool().with_conn(|conn| {
+    let res = state.db.pool().with_reader(|conn| {
         let entries = if kind_norm == "practice" {
             storage::get_practice_leaderboard(conn, uid, limit)
         } else {

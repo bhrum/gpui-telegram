@@ -1,4 +1,5 @@
 use gpui::*;
+use crate::app::updater::{DesktopUpdateSnapshot, CURRENT_APP_VERSION};
 use crate::i18n::tr_str;
 use crate::theme::assets::IconName;
 use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
@@ -35,6 +36,13 @@ pub struct SettingsAdvancedSections {
     pub pending_open_power_saving: bool,
     pub pending_open_export_box: bool,
     pub pending_prefs_sync: bool,
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub update_status_text: String,
+    pub update_progress_pct: Option<u8>,
+    pub is_checking_or_downloading: bool,
+    pub pending_check_updates: bool,
+    pub pending_apply_update: bool,
 }
 
 impl SettingsAdvancedSections {
@@ -47,7 +55,7 @@ impl SettingsAdvancedSections {
             native_window_frame: false,
             tray_icon_enabled: true,
             ask_download_path: false,
-            download_path: "~/Downloads/AI Chat".into(),
+            download_path: "~/Downloads/Fabushi".into(),
             auto_update_enabled: true,
             is_visible: false,
             local_storage_managed: false,
@@ -59,6 +67,13 @@ impl SettingsAdvancedSections {
             pending_open_power_saving: false,
             pending_open_export_box: false,
             pending_prefs_sync: false,
+            current_version: CURRENT_APP_VERSION.to_string(),
+            latest_version: None,
+            update_status_text: format!("Fabushi v{}", CURRENT_APP_VERSION),
+            update_progress_pct: None,
+            is_checking_or_downloading: false,
+            pending_check_updates: false,
+            pending_apply_update: false,
         }
     }
 
@@ -81,6 +96,16 @@ impl SettingsAdvancedSections {
     }
     pub fn setup_connection_type(&mut self) { self.proxy_type = ProxyType::Direct; }
     pub fn lng_connection_auto(&mut self) { self.proxy_type = ProxyType::Direct; }
+
+    /// Applies the latest updater state snapshot to this section view.
+    pub fn sync_update_snapshot(&mut self, snapshot: &DesktopUpdateSnapshot) {
+        self.current_version = snapshot.current_version.clone();
+        self.latest_version = snapshot.latest_version.clone();
+        self.update_status_text = snapshot.status_text.clone();
+        self.update_progress_pct = snapshot.progress_pct;
+        self.is_checking_or_downloading = snapshot.is_busy;
+        self.update_available = snapshot.latest_version.is_some();
+    }
 
     pub fn sync_proxy(&mut self, proxy_type_str: &str, host: &str, port: u16, enabled: bool) {
         let lower_kind = proxy_type_str.trim().to_ascii_lowercase();
@@ -120,8 +145,65 @@ impl Render for SettingsAdvancedSections {
             format!("{} ({}:{})", conn_label, self.proxy_host, self.proxy_port)
         };
 
+        let version_badge = format!("Fabushi v{}", self.current_version);
+        let update_action_title = if self.is_checking_or_downloading {
+            if let Some(pct) = self.update_progress_pct {
+                if lang.starts_with("zh") {
+                    format!("正在下载更新 ({pct}%)…")
+                } else {
+                    format!("Downloading Update ({pct}%)…")
+                }
+            } else {
+                tr_str(&lang, "正在检查更新…", "Checking for Updates…").to_string()
+            }
+        } else if let Some(ref latest) = self.latest_version {
+            if lang.starts_with("zh") {
+                format!("一键更新至 Fabushi v{latest}")
+            } else {
+                format!("One-Click Update to v{latest}")
+            }
+        } else {
+            tr_str(&lang, "检查更新", "Check for Updates").to_string()
+        };
+        let update_value_label = if self.is_checking_or_downloading {
+            self.update_status_text.clone()
+        } else if let Some(ref latest) = self.latest_version {
+            if lang.starts_with("zh") {
+                format!("立即安装 v{latest} 并重启")
+            } else {
+                format!("Install v{latest} & Restart")
+            }
+        } else {
+            self.update_status_text.clone()
+        };
+        let can_apply_now = self.latest_version.is_some() && !self.is_checking_or_downloading;
+
         settings_container(pal.clone())
-            .child(settings_section_header(IconName::SettingsGear, tr_str(&lang, "高级设置", "Advanced"), Some(tr_str(&lang, "连接方式、缓存存储、下载路径与硬件加速", "Connection, storage, downloads, and hardware acceleration")), pal.clone()))
+            .child(settings_section_header(IconName::SettingsGear, tr_str(&lang, "高级设置", "Advanced"), Some(tr_str(&lang, "版本更新、连接方式、缓存存储与硬件加速", "App updates, connection, storage, and hardware acceleration")), pal.clone()))
+            .child(settings_subsection_title(tr_str(&lang, "版本与软件更新", "Version & App Updates"), pal.clone()))
+            .child(
+                settings_card(pal.clone())
+                    .child(settings_info_row(tr_str(&lang, "当前版本", "Current Version"), &version_badge, pal.clone()))
+                    .child(settings_action_row(
+                        IconName::ClockSending,
+                        &update_action_title,
+                        &update_value_label,
+                        pal.clone(),
+                        false,
+                        move |this| {
+                            if this.is_checking_or_downloading {
+                                return;
+                            }
+                            if can_apply_now {
+                                this.pending_apply_update = true;
+                            } else {
+                                this.pending_check_updates = true;
+                            }
+                        },
+                        cx,
+                    ))
+                    .child(settings_toggle_row(IconName::ClockSending, tr_str(&lang, "自动识别并提示更新", "Automatically Check for Updates"), None, self.auto_update_enabled, pal.clone(), |this| { this.auto_update_enabled = !this.auto_update_enabled; this.pending_prefs_sync = true; }, cx)),
+            )
             .child(settings_subsection_title(tr_str(&lang, "数据与存储", "Data and Storage"), pal.clone()))
             .child(
                 settings_card(pal.clone())
@@ -139,8 +221,7 @@ impl Render for SettingsAdvancedSections {
                     }, cx))
                     .child(settings_toggle_row(IconName::ComputerDesktop, tr_str(&lang, "硬件加速", "Hardware Acceleration (Metal / OpenGL)"), None, self.opengl_enabled, pal.clone(), |this| { this.opengl_enabled = !this.opengl_enabled; this.pending_prefs_sync = true; }, cx))
                     .child(settings_toggle_row(IconName::SidebarPanel, tr_str(&lang, "使用系统窗口边框", "Use System Window Frame"), None, self.native_window_frame, pal.clone(), |this| { this.native_window_frame = !this.native_window_frame; this.pending_prefs_sync = true; }, cx))
-                    .child(settings_toggle_row(IconName::ComputerDesktop, tr_str(&lang, "显示托盘图标", "Show Tray Icon"), None, self.tray_icon_enabled, pal.clone(), |this| { this.tray_icon_enabled = !this.tray_icon_enabled; this.pending_prefs_sync = true; }, cx))
-                    .child(settings_toggle_row(IconName::ClockSending, tr_str(&lang, "自动更新", "Update Automatically"), None, self.auto_update_enabled, pal, |this| { this.auto_update_enabled = !this.auto_update_enabled; this.pending_prefs_sync = true; }, cx)),
+                    .child(settings_toggle_row(IconName::ComputerDesktop, tr_str(&lang, "显示托盘图标", "Show Tray Icon"), None, self.tray_icon_enabled, pal, |this| { this.tray_icon_enabled = !this.tray_icon_enabled; this.pending_prefs_sync = true; }, cx)),
             )
     }
 }

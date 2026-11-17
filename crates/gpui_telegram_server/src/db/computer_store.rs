@@ -540,7 +540,7 @@ const SELECT_NODE_COLS: &str = r#"
 
 impl ServerDatabase {
     fn load_bound_bot_ids_map(&self, owner_user_id: u64) -> Result<HashMap<String, Vec<u64>>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -572,7 +572,7 @@ impl ServerDatabase {
         now_ms: i64,
     ) -> Result<Vec<ComputerNodeDto>> {
         let bound_map = self.load_bound_bot_ids_map(owner_user_id)?;
-        let rows = self.pool.with_conn(|conn| {
+        let rows = self.pool.with_reader(|conn| {
             let sql = format!(
                 "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 ORDER BY created_at_ms ASC, node_id ASC"
             );
@@ -634,7 +634,7 @@ impl ServerDatabase {
         let bound_map = self.load_bound_bot_ids_map(owner_user_id)?;
         let storage_id = to_storage_node_id(owner_user_id, external_node_id);
 
-        let raw = self.pool.with_conn(|conn| {
+        let raw = self.pool.with_reader(|conn| {
             let sql = format!(
                 "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 AND node_id = ?2 LIMIT 1"
             );
@@ -687,7 +687,7 @@ impl ServerDatabase {
     }
 
     fn load_existing_tailnet_ips(&self, owner_user_id: u64) -> Result<HashMap<String, String>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -732,7 +732,7 @@ impl ServerDatabase {
         let os_name = req.os_name.trim().to_string();
         let resolution = req.resolution.trim().to_string();
 
-        let existing_row: Option<(String, Option<String>)> = self.pool.with_conn(|conn| {
+        let existing_row: Option<(String, Option<String>)> = self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT node_id, tailnet_ip FROM computer_nodes WHERE owner_user_id = ?1 AND device_id = ?2 LIMIT 1",
                 params![owner_user_id as i64, device_id],
@@ -820,7 +820,7 @@ impl ServerDatabase {
         let disco_key = req.disco_public_key.trim().to_string();
         let endpoints_json = serde_json::to_string(&req.endpoints)?;
 
-        let existing_row: Option<(String, Option<String>)> = self.pool.with_conn(|conn| {
+        let existing_row: Option<(String, Option<String>)> = self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT node_id, tailnet_ip FROM computer_nodes WHERE owner_user_id = ?1 AND device_id = ?2 LIMIT 1",
                 params![owner_user_id as i64, device_id],
@@ -951,7 +951,7 @@ impl ServerDatabase {
             Ok(())
         })?;
 
-        let raw = self.pool.with_conn(|conn| {
+        let raw = self.pool.with_reader(|conn| {
             let sql = format!(
                 "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 AND node_id = ?2 LIMIT 1"
             );
@@ -1045,7 +1045,7 @@ impl ServerDatabase {
         now_ms: i64,
         connected_device_ids: &HashSet<String>,
     ) -> Result<Vec<TailnetPeerDescriptor>> {
-        let rows = self.pool.with_conn(|conn| {
+        let rows = self.pool.with_reader(|conn| {
             let sql = format!(
                 "SELECT {SELECT_NODE_COLS} FROM computer_nodes WHERE owner_user_id = ?1 AND kind = 'local_device' ORDER BY created_at_ms ASC, node_id ASC"
             );
@@ -1101,7 +1101,7 @@ impl ServerDatabase {
                             .to_string(),
                     ));
                 }
-                if let Some(existing_kind) = self.pool.with_conn(|conn| {
+                if let Some(existing_kind) = self.pool.with_reader(|conn| {
                     conn.query_row(
                         "SELECT kind, owner_user_id FROM computer_nodes WHERE node_id = ?1",
                         params![id],
@@ -1127,7 +1127,7 @@ impl ServerDatabase {
         };
 
         let existing_creds: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> =
-            self.pool.with_conn(|conn| {
+            self.pool.with_reader(|conn| {
                 conn.query_row(
                     "SELECT encrypted_secret, secret_nonce FROM computer_nodes WHERE owner_user_id = ?1 AND node_id = ?2",
                     params![owner_user_id as i64, &node_id],
@@ -1278,7 +1278,7 @@ impl ServerDatabase {
             })?;
         }
 
-        let current: Option<(String, String, String, String)> = self.pool.with_conn(|conn| {
+        let current: Option<(String, String, String, String)> = self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"
                 SELECT kind, display_name, run_policy, authorized_controllers_json
@@ -1429,7 +1429,7 @@ impl ServerDatabase {
         owner_user_id: u64,
         bot_id: u64,
     ) -> Result<Option<BotComputerProfileDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"
                 SELECT bot_id, bound_node_id, persona_prompt, preferred_model,
@@ -1627,7 +1627,7 @@ impl ServerDatabase {
         limit: usize,
     ) -> Result<Vec<ComputerAuditRecord>> {
         let lim = limit.clamp(1, 500) as i64;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"

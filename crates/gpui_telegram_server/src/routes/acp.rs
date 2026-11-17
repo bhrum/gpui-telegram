@@ -136,7 +136,28 @@ pub async fn tasks_create(_auth: AuthBearer, State(state): State<Arc<AppState>>,
     (StatusCode::CREATED, Json(resp)).into_response()
 }
 
+fn is_action_approval_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    trimmed.starts_with("actgate_") || trimmed.starts_with("action:")
+}
+
+fn reject_action_gate_response() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "invalid_task_id",
+            "message": "Action approval gates must be decided via /api/v1/actions/approvals/{gate_id}/approve",
+            "success": false
+        })),
+    )
+        .into_response()
+}
+
 pub async fn tasks_approve(_auth: AuthBearer, State(state): State<Arc<AppState>>, Path(task_id): Path<String>, body_bytes: Bytes) -> Response {
+    if is_action_approval_id(&task_id) {
+        return reject_action_gate_response();
+    }
+
     let payload: Value = if body_bytes.is_empty() { json!({}) } else { serde_json::from_slice(&body_bytes).unwrap_or_else(|_| json!({})) };
     let is_approved = payload.get("approved").and_then(|v| v.as_bool()).unwrap_or(true);
     let decision_str = payload.get("decision").and_then(|v| v.as_str()).unwrap_or(if is_approved { "approve" } else { "deny" });
@@ -152,6 +173,13 @@ pub async fn tasks_approve(_auth: AuthBearer, State(state): State<Arc<AppState>>
     let gate_key = if gates.contains_key(&task_id) { Some(task_id.clone()) } else {
         gates.iter().find_map(|(k, g)| if g.task_id == task_id { Some(k.clone()) } else { None })
     };
+    if let Some(ref key) = gate_key {
+        if let Some(gate) = gates.get(key) {
+            if is_action_approval_id(&gate.gate_id) || is_action_approval_id(&gate.task_id) {
+                return reject_action_gate_response();
+            }
+        }
+    }
     let resolved_gate_id = if let Some(key) = gate_key {
         if let Some(gate) = gates.get_mut(&key) {
             let _ = gate.decide(decision.clone());

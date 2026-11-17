@@ -10,9 +10,74 @@ use gpui_telegram_client::net::hermes_client::{
 
 use crate::i18n::tr_str;
 use crate::views::app_shell::shell_truth::SessionRequestFence;
+use crate::views::settings::sections::settings_ai_providers::{
+    SubscriptionAccountDto, SubscriptionActivateRequest, SubscriptionActivateResponse,
+};
 use crate::views::settings::sections::SettingsAiProvidersEvent;
 use crate::views::settings::settings_type::SettingsSectionType;
 use crate::views::shell::AppShell;
+
+fn url_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() * 3);
+    for b in input.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+async fn http_fetch_subscriptions(
+    base_url: &str,
+    token: &str,
+) -> Result<Vec<SubscriptionAccountDto>, String> {
+    let url = format!("{}/api/v1/hermes/magpie/subscriptions", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP GET subscriptions failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned status {}", resp.status()));
+    }
+    resp.json::<Vec<SubscriptionAccountDto>>()
+        .await
+        .map_err(|e| format!("Failed to parse subscriptions JSON: {e}"))
+}
+
+async fn http_activate_subscription(
+    base_url: &str,
+    token: &str,
+    sub_id: &str,
+    model: Option<&str>,
+) -> Result<SubscriptionActivateResponse, String> {
+    let url = format!(
+        "{}/api/v1/hermes/magpie/subscriptions/{}/activate",
+        base_url.trim_end_matches('/'),
+        url_encode(sub_id)
+    );
+    let client = reqwest::Client::new();
+    let payload = SubscriptionActivateRequest {
+        model: model.map(str::to_string),
+    };
+    let resp = client
+        .post(&url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP POST activate failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Server returned status {}", resp.status()));
+    }
+    resp.json::<SubscriptionActivateResponse>()
+        .await
+        .map_err(|e| format!("Failed to parse activate response JSON: {e}"))
+}
 
 fn session_fence(shell: &AppShell) -> Option<SessionRequestFence> {
     let (Some(token), Some(uid)) =
@@ -64,10 +129,11 @@ impl AppShell {
         self.refresh_magpie_state(cx);
     }
 
-    /// Applies fetched `MagpieStateDto` to `SettingsAiProvidersSections`, `SettingsMainSections`, and `GlobalTasksWorkspace`.
-    pub(crate) fn apply_magpie_state_to_views(
+    /// Applies fetched `MagpieStateDto` and optional explicit `SubscriptionAccountDto` records to desktop views.
+    pub(crate) fn apply_magpie_state_and_subscriptions_to_views(
         &mut self,
         state: MagpieStateDto,
+        subs: Option<Vec<SubscriptionAccountDto>>,
         cx: &mut Context<Self>,
     ) {
         let lang = self.active_lang_id().to_string();
@@ -76,6 +142,9 @@ impl AppShell {
         self.settings_router.update(cx, |sr, scx| {
             if let Some(ref ap) = sr.settings_ai_providers {
                 ap.update(scx, |view, vcx| {
+                    if let Some(s) = subs {
+                        view.sync_subscriptions(s);
+                    }
                     view.sync_state(state.clone());
                     vcx.notify();
                 });
@@ -94,21 +163,35 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Fetches `/api/v1/hermes/magpie/state` and updates materialized desktop views.
+    /// Applies fetched `MagpieStateDto` to `SettingsAiProvidersSections`, `SettingsMainSections`, and `GlobalTasksWorkspace`.
+    pub(crate) fn apply_magpie_state_to_views(
+        &mut self,
+        state: MagpieStateDto,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_magpie_state_and_subscriptions_to_views(state, None, cx);
+    }
+
+    /// Fetches `/api/v1/hermes/magpie/state` and `/api/v1/hermes/magpie/subscriptions`, updating materialized desktop views.
     pub fn refresh_magpie_state(&mut self, cx: &mut Context<Self>) {
         let Some(fence) = session_fence(self) else {
             return;
         };
         let token = fence.token.clone();
+        let base_url = self.client.http_client.base_url.clone();
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let res = client.hermes.magpie_state(&token).await;
+            let subs_res = http_fetch_subscriptions(&base_url, &token).await;
             let _ = weak.update(app, |shell, cx| {
                 if !fence_matches(&fence, shell) {
                     return;
                 }
                 match res {
-                    Ok(state) => shell.apply_magpie_state_to_views(state, cx),
+                    Ok(state) => {
+                        let subs = subs_res.ok();
+                        shell.apply_magpie_state_and_subscriptions_to_views(state, subs, cx);
+                    }
                     Err(e) => {
                         let msg = format!("Magpie sync error: {e}");
                         shell.settings_router.update(cx, |sr, scx| {
@@ -191,29 +274,31 @@ impl AppShell {
             return;
         };
         let token = fence.token.clone();
+        let base_url = self.client.http_client.base_url.clone();
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let scan_res = client.hermes.magpie_scan_subscriptions(&token).await;
+            let subs_res = http_fetch_subscriptions(&base_url, &token).await;
             let state_res = client.hermes.magpie_state(&token).await;
             let _ = weak.update(app, |shell, cx| {
                 if !fence_matches(&fence, shell) {
                     return;
                 }
                 let lang = shell.active_lang_id().to_string();
-                let toast = match scan_res {
+                let toast = match &scan_res {
                     Ok(resp) => {
                         let active = resp.subscriptions.iter().filter(|s| s.active).count();
                         if active > 0 {
                             if lang.starts_with("zh") {
-                                format!("检测到 {active} 个本地 AI 订阅")
+                                format!("扫描完成：检测到 {active} 个可用本地 AI 订阅凭据")
                             } else {
-                                format!("Detected {active} active AI subscription(s)")
+                                format!("Scan complete: detected {active} active AI credential(s)")
                             }
                         } else {
                             tr_str(
                                 &lang,
-                                "未检测到激活的本地订阅，请在下方选择模型供应商",
-                                "No active local subscriptions found — select a provider preset below",
+                                "扫描完成：未发现已登录的本地凭据，请在下方选择供应商预设",
+                                "Scan complete: no active local credentials found — select a provider preset below",
                             )
                             .to_string()
                         }
@@ -221,7 +306,8 @@ impl AppShell {
                     Err(e) => format!("Subscription scan failed: {e}"),
                 };
                 if let Ok(state) = state_res {
-                    shell.apply_magpie_state_to_views(state, cx);
+                    let subs = subs_res.ok();
+                    shell.apply_magpie_state_and_subscriptions_to_views(state, subs, cx);
                 }
                 shell.settings_router.update(cx, |sr, scx| {
                     if let Some(ref ap) = sr.settings_ai_providers {
@@ -232,6 +318,83 @@ impl AppShell {
                     }
                 });
                 shell.window_runtime.enqueue_toast(toast, 2600);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Activates a discovered local AI subscription as the primary provider.
+    pub(crate) fn activate_subscription(
+        &mut self,
+        subscription_id: String,
+        model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(fence) = session_fence(self) else {
+            return;
+        };
+        let token = fence.token.clone();
+        let base_url = self.client.http_client.base_url.clone();
+        let client = self.client.clone();
+        let sub_id = subscription_id.clone();
+        let req_model = model.clone();
+
+        cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+            let act_res =
+                http_activate_subscription(&base_url, &token, &sub_id, req_model.as_deref()).await;
+            let subs_res = http_fetch_subscriptions(&base_url, &token).await;
+            let state_res = client.hermes.magpie_state(&token).await;
+
+            let _ = weak.update(app, |shell, cx| {
+                if !fence_matches(&fence, shell) {
+                    return;
+                }
+                let lang = shell.active_lang_id().to_string();
+                match act_res {
+                    Ok(resp) => {
+                        let toast = if lang.starts_with("zh") {
+                            format!(
+                                "已成功激活「{}」为主要模型供应商 (模型: {})",
+                                resp.active_provider_id, resp.active_model
+                            )
+                        } else {
+                            format!(
+                                "Activated \"{}\" as primary provider ({})",
+                                resp.active_provider_id, resp.active_model
+                            )
+                        };
+                        if let Ok(state) = state_res {
+                            let subs = subs_res.ok();
+                            shell.apply_magpie_state_and_subscriptions_to_views(state, subs, cx);
+                        }
+                        shell.settings_router.update(cx, |sr, scx| {
+                            if let Some(ref ap) = sr.settings_ai_providers {
+                                ap.update(scx, |view, vcx| {
+                                    view.set_status(Some(toast.clone()), None);
+                                    vcx.notify();
+                                });
+                            }
+                        });
+                        shell.window_runtime.enqueue_toast(toast, 2800);
+                        shell.refresh_tasks_and_mcp(cx);
+                    }
+                    Err(err) => {
+                        let msg = format!(
+                            "{}: {err}",
+                            tr_str(&lang, "激活智能体失败", "Failed to activate AI agent")
+                        );
+                        shell.settings_router.update(cx, |sr, scx| {
+                            if let Some(ref ap) = sr.settings_ai_providers {
+                                ap.update(scx, |view, vcx| {
+                                    view.set_status(None, Some(msg.clone()));
+                                    vcx.notify();
+                                });
+                            }
+                        });
+                        shell.window_runtime.enqueue_toast(msg, 3000);
+                    }
+                }
                 cx.notify();
             });
         })
@@ -316,6 +479,12 @@ impl AppShell {
         match ev {
             SettingsAiProvidersEvent::RefreshState => self.refresh_magpie_state(cx),
             SettingsAiProvidersEvent::ScanSubscriptions => self.run_magpie_subscription_scan(cx),
+            SettingsAiProvidersEvent::ActivateSubscription {
+                subscription_id,
+                model,
+            } => {
+                self.activate_subscription(subscription_id.clone(), model.clone(), cx);
+            }
             SettingsAiProvidersEvent::CopyText(txt) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(txt.clone()));
                 self.window_runtime.enqueue_toast(

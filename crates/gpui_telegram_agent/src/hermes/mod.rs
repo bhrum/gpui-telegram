@@ -54,7 +54,7 @@ use state_db::{
     HermesStateStore, KanbanCardPatch, MessageRecord, RecordCronRunRequest, SessionListFilter,
     SessionPatch, SessionRecord,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -64,9 +64,10 @@ use tools_agentic::LocalAgenticStore;
 use tools_file::{FileCheckpointManager, RollbackReport, TodoStore};
 use tools_terminal::{ProcessRegistry, TerminalBackendConfig};
 use toolsets::{
-    BoxFuture, HermesInlineButton, HermesStateBridge, HermesToolCall, HermesToolContext,
-    HermesToolExecutor, HermesToolResult, HermesToolSpec, HermesUiAction, SubagentDelegationOutcome,
-    SubagentDelegationRequest, ToolsetId, ToolsetPreset, ToolsetRegistry,
+    AgenticStateBackend, BoxFuture, HermesInlineButton, HermesStateBridge, HermesToolCall,
+    HermesToolContext, HermesToolExecutor, HermesToolResult, HermesToolSpec, HermesUiAction,
+    PlatformImBridge, SubagentDelegationOutcome, SubagentDelegationRequest, ToolsetId,
+    ToolsetPreset, ToolsetRegistry,
 };
 use trajectory::{
     ExportedTrajectory, TrajectoryCompressionConfig, TrajectoryExporter, TrajectoryFormat,
@@ -525,6 +526,8 @@ struct ToolContextBridge {
     default_user_id: String,
     chat_id: Option<i64>,
     ui_actions: Arc<Mutex<Vec<HermesUiAction>>>,
+    agentic_backend: Option<Arc<dyn AgenticStateBackend>>,
+    scope_key: String,
 }
 
 impl ToolContextBridge {
@@ -746,6 +749,9 @@ impl HermesStateBridge for ToolContextBridge {
 
     fn cron_op<'a>(&'a self, args: &'a Value) -> BoxFuture<'a, std::result::Result<Value, String>> {
         Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                return backend.cron_op(&self.scope_key, args).await;
+            }
             let action = args
                 .get("action")
                 .and_then(|v| v.as_str())
@@ -887,6 +893,9 @@ impl HermesStateBridge for ToolContextBridge {
         args: &'a Value,
     ) -> BoxFuture<'a, std::result::Result<Value, String>> {
         Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                return backend.kanban_op(&self.scope_key, action, args).await;
+            }
             match action {
                 "kanban_list_boards" => {
                     let boards = self.store.list_kanban_boards().map_err(|e| e.to_string())?;
@@ -1234,6 +1243,11 @@ impl HermesStateBridge for ToolContextBridge {
             if let Ok(mut guard) = self.ui_actions.lock() {
                 guard.push(action.clone());
             }
+            if let Some(backend) = &self.agentic_backend {
+                if let Ok(val) = backend.desktop_ui_act(&self.scope_key, action.clone()).await {
+                    return Ok(val);
+                }
+            }
             Ok(json!({ "ok": true, "action_type": action.action_type }))
         })
     }
@@ -1246,6 +1260,11 @@ impl HermesStateBridge for ToolContextBridge {
         original_content: Option<&'a [u8]>,
     ) -> BoxFuture<'a, std::result::Result<(), String>> {
         Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                let _ = backend
+                    .record_checkpoint(session_id, turn_index, file_path, original_content)
+                    .await;
+            }
             let content_str = original_content.map(|b| String::from_utf8_lossy(b).into_owned());
             self.store
                 .save_checkpoint(
@@ -1264,6 +1283,9 @@ impl HermesStateBridge for ToolContextBridge {
         approval: PendingApproval,
     ) -> BoxFuture<'a, std::result::Result<(), String>> {
         Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                let _ = backend.record_approval(approval.clone()).await;
+            }
             self.store
                 .enqueue_approval(CreateApprovalRequest {
                     id: Some(approval.id),
@@ -1274,6 +1296,44 @@ impl HermesStateBridge for ToolContextBridge {
                 })
                 .map(|_| ())
                 .map_err(|e| e.to_string())
+        })
+    }
+
+    fn connections_op<'a>(&'a self, args: &'a Value) -> BoxFuture<'a, std::result::Result<Value, String>> {
+        Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                backend.connections_op(&self.scope_key, args).await
+            } else {
+                Err("connections_op not bridged".to_string())
+            }
+        })
+    }
+
+    fn desktop_ui_inspect<'a>(&'a self) -> BoxFuture<'a, std::result::Result<Value, String>> {
+        Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                backend.desktop_ui_inspect(&self.scope_key).await
+            } else {
+                Err("desktop_ui_inspect not bridged".to_string())
+            }
+        })
+    }
+
+    fn record_lineage<'a>(
+        &'a self,
+        task_id: &'a str,
+        parent_session_id: Option<&'a str>,
+        role: &'a str,
+        status: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<(), String>> {
+        Box::pin(async move {
+            if let Some(backend) = &self.agentic_backend {
+                backend
+                    .record_lineage(&self.scope_key, task_id, parent_session_id, role, status)
+                    .await
+            } else {
+                Ok(())
+            }
         })
     }
 }
@@ -2731,6 +2791,8 @@ struct HermesEngineInner {
     turn_event_order: Mutex<VecDeque<String>>,
     ui_actions: Arc<Mutex<Vec<HermesUiAction>>>,
     teammate_handler: RwLock<Option<Arc<dyn toolsets::FabushiTeammateHandler>>>,
+    platform_im_bridge: RwLock<Option<Arc<dyn PlatformImBridge>>>,
+    agentic_backend: RwLock<Option<Arc<dyn AgenticStateBackend>>>,
     bound_agent_id: RwLock<Option<String>>,
 }
 
@@ -2778,24 +2840,66 @@ impl HermesEngine {
         } else {
             ProviderRouter::new()
         };
+        let has_hermes_provider_override = std::env::var("HERMES_PROVIDER")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty());
         if let Ok(Some(raw)) = store.kv_get("runtime", "providers_state") {
             if let Ok(saved) =
                 serde_json::from_str::<crate::hermes::providers::ProviderRouterState>(&raw)
             {
-                if providers.active_info().0 == "local_hermes" {
+                if !has_hermes_provider_override {
+                    let existing_providers: HashSet<String> = providers
+                        .list_providers()
+                        .into_iter()
+                        .map(|p| p.id)
+                        .collect();
+                    let saved_active_is_subscription = saved
+                        .providers
+                        .get(&saved.active_provider_id)
+                        .is_some_and(|c| c.is_subscription)
+                        || saved
+                            .subscriptions
+                            .iter()
+                            .any(|s| s.id == saved.active_provider_id);
                     for (_id, cfg) in saved.providers {
-                        if cfg.id != "local_hermes" && cfg.enabled {
+                        if cfg.id != "local_hermes"
+                            && cfg.enabled
+                            && !cfg.is_subscription
+                        {
                             providers.register_provider(cfg);
                         }
                     }
-                    if saved.active_provider_id != "local_hermes" {
+                    if !saved.active_provider_id.is_empty()
+                        && saved.active_provider_id != "local_hermes"
+                        && (!saved_active_is_subscription
+                            || existing_providers.contains(&saved.active_provider_id))
+                    {
                         let model_opt = (!saved.active_model.trim().is_empty())
                             .then_some(saved.active_model.as_str());
-                        let _ = providers.set_active(&saved.active_provider_id, model_opt);
+                        if providers
+                            .set_active(&saved.active_provider_id, model_opt)
+                            .is_err()
+                        {
+                            let _ = providers
+                                .activate_subscription(&saved.active_provider_id, model_opt);
+                        }
                     }
                     if !saved.fallback_chain.is_empty() {
-                        providers.set_fallback_chain(saved.fallback_chain);
+                        let current_providers: HashSet<String> = providers
+                            .list_providers()
+                            .into_iter()
+                            .map(|p| p.id)
+                            .collect();
+                        let filtered_chain: Vec<_> = saved
+                            .fallback_chain
+                            .into_iter()
+                            .filter(|t| current_providers.contains(&t.provider_id))
+                            .collect();
+                        if !filtered_chain.is_empty() {
+                            providers.set_fallback_chain(filtered_chain);
+                        }
                     }
+                    providers.set_allow_local_fallback(saved.allow_local_fallback);
                 }
                 providers.set_routing_strategy(saved.routing_strategy);
                 providers.set_masking_config(saved.masking);
@@ -2846,6 +2950,8 @@ impl HermesEngine {
             turn_event_order: Mutex::new(VecDeque::new()),
             ui_actions: Arc::new(Mutex::new(Vec::new())),
             teammate_handler: RwLock::new(None),
+            platform_im_bridge: RwLock::new(None),
+            agentic_backend: RwLock::new(None),
             bound_agent_id: RwLock::new(None),
             config,
         });
@@ -2885,8 +2991,7 @@ impl HermesEngine {
     }
 
     pub fn sync_providers_from(&self, upstream: &ProviderRouter) {
-        let state = upstream.snapshot();
-        self.inner.providers.sync_from_state(&state);
+        self.inner.providers.sync_from_router(upstream);
     }
 
     pub fn set_teammate_handler(&self, handler: Arc<dyn toolsets::FabushiTeammateHandler>) {
@@ -2901,6 +3006,38 @@ impl HermesEngine {
             .read()
             .ok()
             .and_then(|g| g.clone())
+    }
+
+    pub fn set_platform_im_bridge(&self, bridge: Arc<dyn PlatformImBridge>) {
+        if let Ok(mut guard) = self.inner.platform_im_bridge.write() {
+            *guard = Some(bridge);
+        }
+    }
+
+    pub fn platform_im_bridge(&self) -> Option<Arc<dyn PlatformImBridge>> {
+        self.inner
+            .platform_im_bridge
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    pub fn set_agentic_backend(&self, backend: Arc<dyn AgenticStateBackend>) {
+        if let Ok(mut guard) = self.inner.agentic_backend.write() {
+            *guard = Some(backend);
+        }
+    }
+
+    pub fn agentic_backend(&self) -> Option<Arc<dyn AgenticStateBackend>> {
+        self.inner
+            .agentic_backend
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+    }
+
+    pub fn agentic_store(&self) -> Arc<Mutex<LocalAgenticStore>> {
+        Arc::clone(&self.inner.agentic_store)
     }
 
     pub fn set_bound_agent_id(&self, agent_id: impl Into<String>) {
@@ -3207,6 +3344,9 @@ impl HermesEngine {
                     .unwrap_or_else(|| "default_user".to_string())
             });
         let parsed_user_id = parse_numeric_user_id(raw_user_id);
+        let scope_key = self
+            .bound_agent_id()
+            .unwrap_or_else(|| "host".to_string());
         let bridge = Arc::new(ToolContextBridge {
             engine: Arc::downgrade(&self.inner),
             store: self.inner.store.clone(),
@@ -3216,6 +3356,8 @@ impl HermesEngine {
             default_user_id: user_id,
             chat_id,
             ui_actions: Arc::clone(&self.inner.ui_actions),
+            agentic_backend: self.agentic_backend(),
+            scope_key,
         });
 
         let bot_id_i64 = bot_id.and_then(|s| {
@@ -3252,6 +3394,7 @@ impl HermesEngine {
         ctx.cancellation = cancellation;
         ctx.terminal_backend = self.inner.config.terminal_backend.clone();
         ctx.teammate_handler = self.teammate_handler();
+        ctx.platform_im_bridge = self.platform_im_bridge();
         ctx.bound_agent_id = self.bound_agent_id();
         ctx
     }
@@ -3796,17 +3939,21 @@ impl HermesEngine {
                 }
             }
 
-            // 2. Normal AIAgent Loop
-            engine
-                .run_agent_loop(
+            // 2. Normal AIAgent Loop (abort promptly if streaming receiver disconnects)
+            tokio::select! {
+                biased;
+                _ = tx.closed() => {
+                    cancel_flag.store(true, Ordering::SeqCst);
+                }
+                _ = engine.run_agent_loop(
                     &initial_session_id,
                     &turn_id,
                     &req,
-                    cancel_flag,
+                    cancel_flag.clone(),
                     &tx,
                     &mut recorded_events,
-                )
-                .await;
+                ) => {}
+            }
 
             engine.inner.queues.clear_active_turn(&initial_session_id);
             engine.record_turn_events(&turn_id, recorded_events);
@@ -4304,12 +4451,22 @@ impl HermesEngine {
             let forwarder = tokio::spawn(async move {
                 let mut stream_events = Vec::new();
                 let mut acc = String::new();
-                while let Some(sev) = prx.recv().await {
+                loop {
+                    let sev_opt = tokio::select! {
+                        biased;
+                        _ = tx_stream.closed() => None,
+                        sev = prx.recv() => sev,
+                    };
+                    let Some(sev) = sev_opt else {
+                        break;
+                    };
                     match sev {
                         ProviderStreamEvent::ThinkingDelta(t) => {
                             let ev = HermesEvent::ThinkingDelta { text: t };
                             stream_events.push(ev.clone());
-                            let _ = tx_stream.send(ev).await;
+                            if tx_stream.send(ev).await.is_err() {
+                                break;
+                            }
                         }
                         ProviderStreamEvent::TextDelta(t) => {
                             acc.push_str(&t);
@@ -4318,7 +4475,9 @@ impl HermesEngine {
                                 accumulated: acc.clone(),
                             };
                             stream_events.push(ev.clone());
-                            let _ = tx_stream.send(ev).await;
+                            if tx_stream.send(ev).await.is_err() {
+                                break;
+                            }
                         }
                         ProviderStreamEvent::ToolCallReady(_) | ProviderStreamEvent::Usage(_) => {}
                     }
@@ -4326,7 +4485,14 @@ impl HermesEngine {
                 stream_events
             });
 
-            let comp_res = self.inner.providers.complete(prov_req, Some(ptx)).await;
+            let comp_res = tokio::select! {
+                biased;
+                _ = tx.closed() => {
+                    cancel_flag.store(true, Ordering::SeqCst);
+                    Err(providers::ProviderError::Transport("Stream client disconnected".to_string()))
+                }
+                res = self.inner.providers.complete(prov_req, Some(ptx)) => res,
+            };
             let streamed_evs = forwarder.await.unwrap_or_default();
             recorded.extend(streamed_evs);
 
@@ -6331,5 +6497,75 @@ mod tests {
         let (re_pid, re_model, _) = reopened.providers().active_info();
         assert_eq!(re_pid, "magpie_local");
         assert_eq!(re_model, "auto/gemini-3.8-flash");
+    }
+
+    #[test]
+    fn test_sqlite_restore_does_not_resurrect_deleted_subscription_and_restores_allow_local_fallback()
+    {
+        let dir = TempDir::new().expect("temp dir");
+        let data_dir = dir.path().join(".hermes_data");
+        {
+            let engine = HermesEngine::open(&data_dir, dir.path()).expect("init disk engine");
+            let mut deleted_sub = providers::ProviderConfig::openai_compatible(
+                "codex_chatgpt:acct_deleted",
+                "Codex Deleted",
+                "https://chatgpt.com/backend-api/codex/responses",
+                "gpt-4o",
+                "stale-token",
+            );
+            deleted_sub.is_subscription = true;
+            engine.providers().register_provider(deleted_sub);
+            engine
+                .providers()
+                .register_provider(providers::ProviderConfig::openai_compatible(
+                    "deepseek",
+                    "DeepSeek",
+                    "https://api.deepseek.com/v1",
+                    "deepseek-chat",
+                    "sk-deepseek-valid",
+                ));
+            let _ = engine
+                .providers()
+                .set_active("codex_chatgpt:acct_deleted", Some("gpt-4o"));
+            engine.providers().set_fallback_chain(vec![
+                providers::FallbackTarget {
+                    provider_id: "codex_chatgpt:acct_deleted".to_string(),
+                    model: "gpt-4o".to_string(),
+                },
+                providers::FallbackTarget {
+                    provider_id: "deepseek".to_string(),
+                    model: "deepseek-chat".to_string(),
+                },
+            ]);
+            engine.providers().set_allow_local_fallback(false);
+            engine.persist_providers_state();
+        }
+
+        // Reboot on same SQLite DB when `codex_chatgpt:acct_deleted` is NOT discovered on disk
+        let reopened = HermesEngine::open(&data_dir, dir.path()).expect("reopen disk engine");
+        let snap = reopened.providers().snapshot();
+        assert!(
+            !snap.providers.contains_key("codex_chatgpt:acct_deleted"),
+            "deleted subscription must not be resurrected from SQLite"
+        );
+        assert!(
+            snap.providers.contains_key("deepseek"),
+            "non-subscription provider must still be restored from SQLite"
+        );
+        assert_ne!(
+            snap.active_provider_id, "codex_chatgpt:acct_deleted",
+            "deleted subscription must not be forced active"
+        );
+        assert_eq!(snap.active_provider_id, "local_hermes");
+        assert!(
+            !snap.allow_local_fallback,
+            "saved allow_local_fallback=false must be restored"
+        );
+        assert!(
+            snap.fallback_chain
+                .iter()
+                .all(|t| t.provider_id != "codex_chatgpt:acct_deleted"),
+            "deleted subscription must be pruned from restored fallback_chain"
+        );
     }
 }

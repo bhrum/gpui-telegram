@@ -18,11 +18,17 @@ impl AppShell {
         let Some(chat_id) = resolve_active_target_chat_id(self.stage.read(cx).active_chat_id, self.sidebar.read(cx).active_chat_id) else {
             return;
         };
+        let send_as_peer_id = self
+            .session_sync
+            .send_as_peers
+            .chosen(chat_id)
+            .or_else(|| self.composer.read(cx).selected_send_as_peer_id);
         let req = RichSendMessageRequest {
             chat_id: chat_id as i64, text: Some(trimmed.clone()), content: Some(ProtoMessageContent::plain_text(trimmed)),
             entities: Vec::new(), reply_to: None, quote_text: None, topic_id: None,
             client_nonce: Some(self.client.next_client_nonce()), forward_from_chat_id: None,
             forward_from_msg_id: None, silent, scheduled_at_ms, inline_keyboard: None,
+            send_as_peer_id,
         };
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
@@ -35,6 +41,11 @@ impl AppShell {
         let Some(chat_id) = resolve_active_target_chat_id(self.stage.read(cx).active_chat_id, self.sidebar.read(cx).active_chat_id) else {
             return;
         };
+        let send_as_peer_id = self
+            .session_sync
+            .send_as_peers
+            .chosen(chat_id)
+            .or_else(|| self.composer.read(cx).selected_send_as_peer_id);
         let client = self.client.clone();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             for path in paths {
@@ -67,6 +78,7 @@ impl AppShell {
                         entities: Vec::new(), reply_to: None, quote_text: None, topic_id: None,
                         client_nonce: Some(client.next_client_nonce()), forward_from_chat_id: None,
                         forward_from_msg_id: None, silent: false, scheduled_at_ms: None, inline_keyboard: None,
+                        send_as_peer_id,
                     };
                     let _ = client.send_message_durable(req).await;
                 }

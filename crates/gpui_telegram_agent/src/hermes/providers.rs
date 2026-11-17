@@ -2,16 +2,17 @@ use crate::computer::{parse_cloud_credentials_from_prompt, redact_cloud_secrets}
 use chrono::Utc;
 pub use magpie_gateway::{
     all_presets, find_preset, parse_dotenv_providers, parse_magpie_import_link,
-    resolve_preset_endpoints, MaskResult, MaskingAction, MaskingConfig, MaskingEngine,
-    MaskingHit, ProtocolKind, RouteDecisionTrace, RouteRuntimeMetrics, RoutingGroup,
-    RoutingGroupMember, RoutingStrategy, StreamingUnmasker, SubscriptionAccount,
-    SubscriptionKind, SubscriptionRegistry,
+    parse_vertex_adc_credentials, resolve_preset_endpoints, CodexTokenManager, MaskResult,
+    MaskingAction, MaskingConfig, MaskingEngine, MaskingHit, ProtocolKind, RouteDecisionTrace,
+    RouteRuntimeMetrics, RoutingGroup, RoutingGroupMember, RoutingStrategy, StreamingUnmasker,
+    SubscriptionAccount, SubscriptionKind, SubscriptionRegistry, VertexAdcCredentials,
+    VertexTokenManager,
 };
 use magpie_gateway::{
-    build_gemini_generate_content_payload, discover_subscriptions_in_home,
-    parse_gemini_response_json, parse_gemini_sse_data, resolve_anthropic_messages_url,
-    resolve_gemini_endpoint_url, resolve_group_targets, UnifiedMessage, UnifiedRequest,
-    UnifiedRole, UnifiedToolCall, UnifiedToolSpec,
+    build_gemini_generate_content_payload, discover_subscriptions_in_home, extract_jwt_exp_ms,
+    parse_gemini_response_json, parse_gemini_sse_data, parse_retry_after_header,
+    resolve_anthropic_messages_url, resolve_gemini_endpoint_url, resolve_group_targets,
+    UnifiedMessage, UnifiedRequest, UnifiedRole, UnifiedToolCall, UnifiedToolSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,6 +34,7 @@ pub enum ApiMode {
     CodexResponses,
     AnthropicMessages,
     GeminiGenerateContent,
+    GoogleVertex,
     LocalHermes,
 }
 
@@ -49,6 +51,7 @@ impl ApiMode {
             Self::CodexResponses => "codex_responses",
             Self::AnthropicMessages => "anthropic_messages",
             Self::GeminiGenerateContent => "gemini_generate_content",
+            Self::GoogleVertex => "google_vertex",
             Self::LocalHermes => "local_hermes",
         }
     }
@@ -63,6 +66,9 @@ impl ApiMode {
             "gemini_generate_content" | "gemini" | "google_gemini" | "generate_content" => {
                 Some(Self::GeminiGenerateContent)
             }
+            "google_vertex" | "vertex" | "vertex_ai" | "google_vertex_ai" => {
+                Some(Self::GoogleVertex)
+            }
             "local_hermes" | "local" | "hermes" | "offline" => Some(Self::LocalHermes),
             _ => None,
         }
@@ -74,6 +80,7 @@ impl ApiMode {
             Self::CodexResponses,
             Self::AnthropicMessages,
             Self::GeminiGenerateContent,
+            Self::GoogleVertex,
             Self::LocalHermes,
         ]
     }
@@ -92,7 +99,9 @@ impl ApiMode {
             Self::ChatCompletions => Some(ProtocolKind::ChatCompletions),
             Self::CodexResponses => Some(ProtocolKind::CodexResponses),
             Self::AnthropicMessages => Some(ProtocolKind::AnthropicMessages),
-            Self::GeminiGenerateContent => Some(ProtocolKind::GeminiGenerateContent),
+            Self::GeminiGenerateContent | Self::GoogleVertex => {
+                Some(ProtocolKind::GeminiGenerateContent)
+            }
             Self::LocalHermes => None,
         }
     }
@@ -373,7 +382,13 @@ impl ProviderError {
     pub fn http_status(&self) -> Option<u16> {
         match self {
             Self::RateLimited { status, .. } | Self::UpstreamHttp { status, .. } => Some(*status),
-            Self::Authentication(_) => Some(401),
+            Self::Authentication(msg) => {
+                if msg.starts_with("HTTP 403") {
+                    Some(403)
+                } else {
+                    Some(401)
+                }
+            }
             _ => None,
         }
     }
@@ -723,6 +738,200 @@ impl ProviderConfig {
         cfg.api_mode = ApiMode::GeminiGenerateContent;
         cfg
     }
+
+    pub fn google_vertex(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        base_url: impl Into<String>,
+        default_model: impl Into<String>,
+        quota_project_id: Option<String>,
+    ) -> Self {
+        let mut cfg = Self::openai_compatible(id, name, base_url, default_model, "");
+        cfg.api_mode = ApiMode::GoogleVertex;
+        cfg.is_subscription = true;
+        cfg.no_key_required = true;
+        cfg.fallback_models = vec![
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-1.5-pro".to_string(),
+        ];
+        cfg.preset_id = Some("google-vertex".to_string());
+        if let Some(proj) = quota_project_id {
+            cfg.headers.insert("x-goog-user-project".to_string(), proj);
+        }
+        cfg
+    }
+}
+
+fn resolve_vertex_disk_credentials(cfg: &ProviderConfig) -> Option<VertexAdcCredentials> {
+    if let Some(path_str) = cfg.headers.get("x-adc-source-path") {
+        let p = PathBuf::from(path_str);
+        if p.is_file() {
+            return std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|raw| parse_vertex_adc_credentials(&raw));
+        }
+        return None;
+    }
+    let gcloud_env = std::env::var("GOOGLE_APPLICATION_CREDENTIALS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from);
+    let p = if let Some(env_p) = gcloud_env.filter(|p| p.is_file()) {
+        env_p
+    } else {
+        let home = resolve_home_dir()?;
+        home.join(".config")
+            .join("gcloud")
+            .join("application_default_credentials.json")
+    };
+    let raw = std::fs::read_to_string(&p).ok()?;
+    parse_vertex_adc_credentials(&raw)
+}
+
+fn vertex_creds_differ(a: &VertexAdcCredentials, b: &VertexAdcCredentials) -> bool {
+    a.client_id != b.client_id
+        || a.client_secret != b.client_secret
+        || a.refresh_token != b.refresh_token
+        || a.quota_project_id != b.quota_project_id
+}
+
+/// Convert a discovered `SubscriptionAccount` into an executable `ProviderConfig`.
+pub fn subscription_to_provider_config(sub: &SubscriptionAccount) -> ProviderConfig {
+    let mut headers = HashMap::new();
+    for (k, v) in &sub.headers {
+        headers.insert(k.clone(), v.clone());
+    }
+
+    let (api_mode, default_model, fallback_models, preset_id, no_key_required) = match sub.kind {
+        SubscriptionKind::GoogleVertex => {
+            if let Some(ref proj) = sub.account_id {
+                headers.insert("x-goog-user-project".to_string(), proj.clone());
+            }
+            if !sub.source_path.is_empty() {
+                headers.insert("x-adc-source-path".to_string(), sub.source_path.clone());
+            }
+            (
+                ApiMode::GoogleVertex,
+                sub.default_model.clone().unwrap_or_else(|| "gemini-2.5-flash".to_string()),
+                vec![
+                    "gemini-2.5-flash".to_string(),
+                    "gemini-2.5-pro".to_string(),
+                    "gemini-1.5-pro".to_string(),
+                ],
+                Some("google-vertex".to_string()),
+                true,
+            )
+        }
+        SubscriptionKind::CodexChatGpt => {
+            if let Some(ref acct) = sub.account_id {
+                headers.insert("chatgpt-account-id".to_string(), acct.clone());
+            }
+            if !sub.source_path.is_empty() {
+                headers.insert("x-codex-source-path".to_string(), sub.source_path.clone());
+            }
+            (
+                ApiMode::CodexResponses,
+                sub.default_model.clone().unwrap_or_else(|| "codex-mini-latest".to_string()),
+                vec!["gpt-4o".to_string(), "codex-mini-latest".to_string()],
+                Some("codex".to_string()),
+                sub.access_token.is_none(),
+            )
+        }
+        SubscriptionKind::ClaudeCode => (
+            ApiMode::AnthropicMessages,
+            sub.default_model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
+            vec![
+                "claude-sonnet-4-20250514".to_string(),
+                "claude-3-5-haiku-20241022".to_string(),
+            ],
+            Some("anthropic".to_string()),
+            sub.access_token.is_none(),
+        ),
+        SubscriptionKind::GeminiCodeAssist => (
+            ApiMode::GeminiGenerateContent,
+            sub.default_model.clone().unwrap_or_else(|| "gemini-2.5-flash".to_string()),
+            vec![
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.5-pro".to_string(),
+            ],
+            Some("gemini".to_string()),
+            sub.access_token.is_none(),
+        ),
+        _ => (
+            ApiMode::from_protocol_kind(sub.protocol),
+            sub.default_model.clone().unwrap_or_default(),
+            Vec::new(),
+            None,
+            sub.access_token.is_none(),
+        ),
+    };
+
+    let mut credentials = CredentialPool::new();
+    if let Some(ref tok) = sub.access_token {
+        if !tok.trim().is_empty() {
+            credentials.add_entry(CredentialEntry::new(
+                format!("{}_token", sub.id),
+                tok.trim(),
+                sub.label.clone(),
+            ));
+        }
+    }
+
+    ProviderConfig {
+        id: sub.id.clone(),
+        name: sub.label.clone(),
+        api_mode,
+        base_url: sub.base_url.clone().unwrap_or_else(|| match api_mode {
+            ApiMode::GoogleVertex => "https://aiplatform.googleapis.com/v1".to_string(),
+            ApiMode::CodexResponses => "https://chatgpt.com/backend-api/codex".to_string(),
+            _ => String::new(),
+        }),
+        default_model,
+        headers,
+        credentials,
+        fallback_models,
+        timeout_secs: 90,
+        enabled: sub.active,
+        preset_id,
+        region_id: None,
+        is_subscription: true,
+        no_key_required,
+        routing_strategy: None,
+    }
+}
+
+/// Helper to register model profiles for a provider and its fallback models.
+fn register_subscription_model_profiles(guard: &mut ProviderRouterState, cfg: &ProviderConfig) {
+    let mut all_models = Vec::new();
+    if !cfg.default_model.trim().is_empty() {
+        all_models.push(cfg.default_model.clone());
+    }
+    for m in &cfg.fallback_models {
+        if !all_models.contains(m) {
+            all_models.push(m.clone());
+        }
+    }
+    for model_id in all_models {
+        guard.model_profiles.insert(
+            model_id.clone(),
+            ModelProfile {
+                id: model_id.clone(),
+                provider_id: cfg.id.clone(),
+                model: model_id,
+                api_mode: cfg.api_mode,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                context_window: match cfg.api_mode {
+                    ApiMode::GoogleVertex | ApiMode::GeminiGenerateContent => 1_000_000,
+                    _ => 200_000,
+                },
+                supports_tools: true,
+                supports_reasoning: true,
+                supports_caching: true,
+            },
+        );
+    }
 }
 
 /// Request parameters for applying a built-in Magpie preset to `ProviderRouter`.
@@ -771,6 +980,8 @@ pub struct ProviderRouter {
     inner: Arc<Mutex<ProviderRouterState>>,
     route_metrics: Arc<Mutex<RouteRuntimeMetrics>>,
     http_client: reqwest::Client,
+    vertex_managers: Arc<Mutex<HashMap<String, (Arc<VertexTokenManager>, bool)>>>,
+    codex_managers: Arc<Mutex<HashMap<String, Arc<CodexTokenManager>>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -892,6 +1103,8 @@ impl ProviderRouter {
             })),
             route_metrics: Arc::new(Mutex::new(RouteRuntimeMetrics::default())),
             http_client,
+            vertex_managers: Arc::new(Mutex::new(HashMap::new())),
+            codex_managers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1141,7 +1354,19 @@ impl ProviderRouter {
         }
 
         if let Some(home) = home_dir {
-            let _ = self.refresh_local_subscriptions_in_home(home, codex_home_override);
+            let _ = self.refresh_discovered_subscriptions_in_home(home, codex_home_override);
+        }
+
+        if !active_set && env.get("HERMES_PROVIDER").is_none() {
+            if let Some(best) = self.find_best_available_subscription() {
+                if let Ok(cfg) = self.activate_subscription(&best, None) {
+                    tracing::info!(
+                        provider = %cfg.id,
+                        model = %cfg.default_model,
+                        "Activated discovered local subscription out-of-the-box"
+                    );
+                }
+            }
         }
 
         if let Some(explicit_provider) = env.get("HERMES_PROVIDER") {
@@ -1164,6 +1389,8 @@ impl ProviderRouter {
         let priority_order = [
             "magpie_local",
             "codex_oauth",
+            "google_vertex:adc",
+            "google-vertex",
             "openai",
             "anthropic",
             "google",
@@ -1211,8 +1438,55 @@ impl ProviderRouter {
     }
 
     pub fn register_provider(&self, config: ProviderConfig) {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        guard.providers.insert(config.id.clone(), config);
+        let old_adc_path = {
+            let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .providers
+                .get(&config.id)
+                .and_then(|p| p.headers.get("x-adc-source-path").cloned())
+        };
+        let new_adc_path = config.headers.get("x-adc-source-path").cloned();
+        let old_codex_path = {
+            let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .providers
+                .get(&config.id)
+                .and_then(|p| p.headers.get("x-codex-source-path").cloned())
+        };
+        let new_codex_path = config.headers.get("x-codex-source-path").cloned();
+        let is_vertex_cfg = config.api_mode == ApiMode::GoogleVertex
+            || config.preset_id.as_deref() == Some("google-vertex")
+            || config.id.contains("vertex");
+
+        let id = config.id.clone();
+        let disk_creds_for_evict = if new_adc_path.is_none() && is_vertex_cfg {
+            resolve_vertex_disk_credentials(&config)
+        } else {
+            None
+        };
+        {
+            let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            guard.providers.insert(id.clone(), config);
+        }
+        if new_adc_path != old_adc_path {
+            if let Ok(mut vm) = self.vertex_managers.lock() {
+                vm.remove(&id);
+            }
+        } else if let Some(dc) = disk_creds_for_evict {
+            if let Ok(mut vm) = self.vertex_managers.lock() {
+                let stale = vm
+                    .get(&id)
+                    .is_some_and(|(mgr, auto)| *auto && vertex_creds_differ(&dc, mgr.credentials()));
+                if stale {
+                    vm.remove(&id);
+                }
+            }
+        }
+        if new_codex_path != old_codex_path {
+            if let Ok(mut cm) = self.codex_managers.lock() {
+                cm.remove(&id);
+            }
+        }
     }
 
     pub fn remove_provider(&self, provider_id: &str) -> bool {
@@ -1260,6 +1534,9 @@ impl ProviderRouter {
             .unwrap_or_else(|| cfg.default_model.clone());
         guard.active_provider_id = provider_id.to_string();
         guard.active_model = resolved_model.clone();
+        for s in &mut guard.subscriptions {
+            s.active = s.id == provider_id;
+        }
         Ok((provider_id.to_string(), resolved_model))
     }
 
@@ -1338,7 +1615,7 @@ impl ProviderRouter {
     }
 
     /// Synchronizes providers, model profiles, fallback chain, subscriptions, routing groups,
-    /// masking config, and active defaults from an upstream `ProviderRouter`.
+    /// masking config, and active defaults from an upstream `ProviderRouterState`.
     pub fn sync_from_state(&self, state: &ProviderRouterState) {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let local_backup = guard
@@ -1364,6 +1641,22 @@ impl ProviderRouter {
         guard.routing_strategy = state.routing_strategy;
         guard.masking = state.masking.clone();
         guard.recent_route_traces = state.recent_route_traces.clone();
+    }
+
+    /// Synchronizes both `ProviderRouterState` and shared token managers (`VertexTokenManager`,
+    /// `CodexTokenManager`) from an upstream `ProviderRouter`.
+    pub fn sync_from_router(&self, upstream: &ProviderRouter) {
+        let state = upstream.snapshot();
+        self.sync_from_state(&state);
+        if let (Ok(up_vm), Ok(mut my_vm)) = (upstream.vertex_managers.lock(), self.vertex_managers.lock()) {
+            *my_vm = up_vm
+                .iter()
+                .map(|(k, (v, auto))| (k.clone(), (Arc::clone(v), *auto)))
+                .collect();
+        }
+        if let (Ok(up_cm), Ok(mut my_cm)) = (upstream.codex_managers.lock(), self.codex_managers.lock()) {
+            *my_cm = up_cm.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect();
+        }
     }
 
     pub fn active_info(&self) -> (String, String, ApiMode) {
@@ -1515,7 +1808,7 @@ impl ProviderRouter {
             region_id: resolved.region_id,
             is_subscription: false,
             no_key_required: preset.no_key,
-            routing_strategy: existing.and_then(|e| e.routing_strategy),
+            routing_strategy: existing.as_ref().and_then(|e| e.routing_strategy),
         };
 
         {
@@ -1548,6 +1841,32 @@ impl ProviderRouter {
             if input.activate {
                 guard.active_provider_id = provider_id.clone();
                 guard.active_model = default_model.clone();
+            }
+        }
+
+        if cfg.api_mode == ApiMode::GoogleVertex
+            || cfg.preset_id.as_deref() == Some("google-vertex")
+            || cfg.id.contains("vertex")
+        {
+            let old_adc = existing
+                .as_ref()
+                .and_then(|e| e.headers.get("x-adc-source-path"));
+            let new_adc = cfg.headers.get("x-adc-source-path");
+            if new_adc != old_adc {
+                if let Ok(mut vm) = self.vertex_managers.lock() {
+                    vm.remove(&provider_id);
+                }
+            } else if new_adc.is_none() {
+                if let Some(dc) = resolve_vertex_disk_credentials(&cfg) {
+                    if let Ok(mut vm) = self.vertex_managers.lock() {
+                        let stale = vm
+                            .get(&provider_id)
+                            .is_some_and(|(mgr, auto)| *auto && vertex_creds_differ(&dc, mgr.credentials()));
+                        if stale {
+                            vm.remove(&provider_id);
+                        }
+                    }
+                }
             }
         }
 
@@ -1609,7 +1928,220 @@ impl ProviderRouter {
         guard.routing_strategy = strategy;
     }
 
-    pub fn refresh_local_subscriptions(&self) -> SubscriptionRegistry {
+    pub fn register_vertex_token_manager(&self, provider_id: &str, mgr: VertexTokenManager) {
+        let mut guard = self.vertex_managers.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(provider_id.to_string(), (Arc::new(mgr), false));
+    }
+
+    pub fn register_codex_token_manager(&self, provider_id: &str, mgr: CodexTokenManager) {
+        let mut guard = self.codex_managers.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(provider_id.to_string(), Arc::new(mgr));
+    }
+
+    pub fn get_or_create_codex_manager(
+        &self,
+        provider_id: &str,
+        cfg: &ProviderConfig,
+    ) -> Option<Arc<CodexTokenManager>> {
+        let login_id_opt = provider_id.strip_prefix("magpie_codex:");
+        let is_magpie_codex = login_id_opt.is_some();
+
+        let disk_mgr = cfg.headers.get("x-codex-source-path").and_then(|path_str| {
+            let p = PathBuf::from(path_str);
+            if p.is_file() {
+                let raw = std::fs::read_to_string(&p).ok()?;
+                if let Some(login_id) = login_id_opt {
+                    let is_logins_json = p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n == "logins.json");
+                    if is_logins_json {
+                        CodexTokenManager::from_logins_json_str(&raw, login_id)
+                    } else {
+                        CodexTokenManager::from_logins_json_str(&raw, login_id)
+                            .or_else(|| CodexTokenManager::from_auth_json_str(&raw))
+                    }
+                } else {
+                    CodexTokenManager::from_auth_json_str(&raw)
+                }
+            } else {
+                None
+            }
+        });
+
+        {
+            let guard = self.codex_managers.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = guard.get(provider_id).cloned() {
+                let is_stale = disk_mgr
+                    .as_ref()
+                    .is_some_and(|dm| dm.refresh_token() != existing.refresh_token());
+                if !is_stale {
+                    return Some(existing);
+                }
+            }
+        }
+
+        let created = disk_mgr.or_else(|| {
+            if is_magpie_codex {
+                return None;
+            }
+            let codex_dir = std::env::var_os("CODEX_HOME")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| resolve_home_dir().map(|h| h.join(".codex")))?;
+            let auth_path = codex_dir.join("auth.json");
+            let raw = std::fs::read_to_string(&auth_path).ok()?;
+            CodexTokenManager::from_auth_json_str(&raw)
+        });
+
+        if let Some(mut mgr) = created {
+            if let Some(url) = cfg.headers.get("x-codex-token-url") {
+                if !url.trim().is_empty() {
+                    mgr = mgr.with_token_url(url.trim());
+                }
+            }
+            let arc_mgr = Arc::new(mgr);
+            let mut guard = self.codex_managers.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(provider_id.to_string(), Arc::clone(&arc_mgr));
+            return Some(arc_mgr);
+        }
+
+        None
+    }
+
+    pub fn get_or_create_vertex_manager(
+        &self,
+        provider_id: &str,
+        cfg: &ProviderConfig,
+    ) -> Option<Arc<VertexTokenManager>> {
+        let disk_creds = resolve_vertex_disk_credentials(cfg);
+
+        {
+            let mut guard = self.vertex_managers.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((mgr, auto_from_disk)) = guard.get(provider_id).cloned() {
+                let should_check_disk = cfg.headers.contains_key("x-adc-source-path") || auto_from_disk;
+                if !should_check_disk {
+                    return Some(mgr);
+                }
+                match disk_creds.as_ref() {
+                    Some(dc) if !vertex_creds_differ(dc, mgr.credentials()) => {
+                        return Some(mgr);
+                    }
+                    Some(_) => {
+                        guard.remove(provider_id);
+                    }
+                    None => {
+                        guard.remove(provider_id);
+                        return None;
+                    }
+                }
+            }
+        }
+
+        if let Some(creds) = disk_creds {
+            let mgr = Arc::new(VertexTokenManager::new(creds));
+            let mut guard = self.vertex_managers.lock().unwrap_or_else(|e| e.into_inner());
+            guard.insert(provider_id.to_string(), (Arc::clone(&mgr), true));
+            return Some(mgr);
+        }
+
+        None
+    }
+
+    pub fn refresh_discovered_subscriptions_in_home(
+        &self,
+        home: &Path,
+        codex_home_override: Option<&Path>,
+    ) -> SubscriptionRegistry {
+        let reg = discover_subscriptions_in_home(home, codex_home_override);
+        let mut invalidated_ids = Vec::new();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.subscriptions = reg.accounts.clone();
+
+        for acc in &reg.accounts {
+            let cfg = subscription_to_provider_config(acc);
+            register_subscription_model_profiles(&mut guard, &cfg);
+            if let Some(existing) = guard.providers.get_mut(&cfg.id) {
+                let adc_changed = existing.headers.get("x-adc-source-path")
+                    != cfg.headers.get("x-adc-source-path");
+                let codex_changed = existing.headers.get("x-codex-source-path")
+                    != cfg.headers.get("x-codex-source-path");
+                if adc_changed || codex_changed {
+                    invalidated_ids.push(cfg.id.clone());
+                }
+                existing.enabled = cfg.enabled;
+                existing.base_url = cfg.base_url;
+                existing.is_subscription = cfg.is_subscription;
+                existing.no_key_required = cfg.no_key_required;
+                existing.headers = cfg.headers;
+                if !cfg.credentials.is_empty() {
+                    existing.credentials = cfg.credentials;
+                }
+                if existing.default_model.is_empty() {
+                    existing.default_model = cfg.default_model;
+                }
+            } else {
+                invalidated_ids.push(cfg.id.clone());
+                guard.providers.insert(cfg.id.clone(), cfg);
+            }
+        }
+
+        let needs_selection = !guard.subscriptions.iter().any(|s| s.active)
+            && !guard.providers.values().any(|p| {
+                p.enabled
+                    && p.id != "local_hermes"
+                    && p.api_mode != ApiMode::LocalHermes
+                    && (!p.credentials.is_empty() || p.no_key_required)
+            });
+
+        let should_autobind = needs_selection || guard.active_provider_id == "local_hermes";
+        if should_autobind {
+            let best_sub = guard
+                .subscriptions
+                .iter()
+                .find(|s| s.active && s.kind == SubscriptionKind::GoogleVertex)
+                .or_else(|| guard.subscriptions.iter().find(|s| s.active && s.kind == SubscriptionKind::CodexChatGpt))
+                .or_else(|| guard.subscriptions.iter().find(|s| s.active))
+                .or_else(|| guard.subscriptions.first());
+
+            let best_sub_id = best_sub.map(|s| s.id.clone());
+            if let Some(sub_id) = best_sub_id {
+                let opt_pair = guard
+                    .providers
+                    .get(&sub_id)
+                    .map(|cfg| (cfg.id.clone(), cfg.default_model.clone()));
+                if let Some((pid, model)) = opt_pair {
+                    guard.active_provider_id = pid;
+                    guard.active_model = model;
+                }
+            }
+        }
+
+        if !guard.active_provider_id.is_empty() && guard.active_provider_id != "local_hermes" {
+            let active_id = guard.active_provider_id.clone();
+            for s in &mut guard.subscriptions {
+                s.active = s.id == active_id;
+            }
+        }
+        drop(guard);
+
+        if !invalidated_ids.is_empty() {
+            if let Ok(mut vm) = self.vertex_managers.lock() {
+                for id in &invalidated_ids {
+                    vm.remove(id);
+                }
+            }
+            if let Ok(mut cm) = self.codex_managers.lock() {
+                for id in &invalidated_ids {
+                    cm.remove(id);
+                }
+            }
+        }
+
+        reg
+    }
+
+    pub fn refresh_discovered_subscriptions(&self) -> SubscriptionRegistry {
         if is_offline_test_mode() {
             let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             return SubscriptionRegistry {
@@ -1626,7 +2158,13 @@ impl ProviderRouter {
         let codex_override = std::env::var_os("CODEX_HOME")
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
-        self.refresh_local_subscriptions_in_home(&home, codex_override.as_deref())
+        let reg = self.refresh_discovered_subscriptions_in_home(&home, codex_override.as_deref());
+        self.rebuild_default_fallback_chain();
+        reg
+    }
+
+    pub fn refresh_local_subscriptions(&self) -> SubscriptionRegistry {
+        self.refresh_discovered_subscriptions()
     }
 
     pub fn refresh_local_subscriptions_in_home(
@@ -1634,10 +2172,131 @@ impl ProviderRouter {
         home: &Path,
         codex_home_override: Option<&Path>,
     ) -> SubscriptionRegistry {
-        let reg = discover_subscriptions_in_home(home, codex_home_override);
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        guard.subscriptions = reg.accounts.clone();
+        let reg = self.refresh_discovered_subscriptions_in_home(home, codex_home_override);
+        self.rebuild_default_fallback_chain();
         reg
+    }
+
+    pub fn find_best_available_subscription(&self) -> Option<String> {
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Some(sub) = guard
+            .subscriptions
+            .iter()
+            .find(|s| s.active && s.kind == SubscriptionKind::GoogleVertex)
+        {
+            return Some(sub.id.clone());
+        }
+        if let Some(sub) = guard
+            .subscriptions
+            .iter()
+            .find(|s| s.active && s.kind == SubscriptionKind::CodexChatGpt)
+        {
+            return Some(sub.id.clone());
+        }
+        if let Some(sub) = guard.subscriptions.iter().find(|s| s.active) {
+            return Some(sub.id.clone());
+        }
+        if let Some(p) = guard.providers.values().find(|p| {
+            p.enabled
+                && p.is_subscription
+                && (p.api_mode == ApiMode::GoogleVertex || p.id.contains("vertex"))
+        }) {
+            return Some(p.id.clone());
+        }
+        if let Some(p) = guard.providers.values().find(|p| {
+            p.enabled
+                && p.is_subscription
+                && (p.api_mode == ApiMode::CodexResponses || p.id.contains("codex"))
+        }) {
+            return Some(p.id.clone());
+        }
+        if let Some(p) = guard.providers.values().find(|p| {
+            p.enabled && p.is_subscription && p.api_mode != ApiMode::LocalHermes
+        }) {
+            return Some(p.id.clone());
+        }
+        if let Some(sub) = guard.subscriptions.first() {
+            return Some(sub.id.clone());
+        }
+
+        None
+    }
+
+    pub fn activate_subscription(
+        &self,
+        id: &str,
+        model: Option<&str>,
+    ) -> Result<ProviderConfig, ProviderError> {
+        self.activate_subscription_atomic(id, model)
+            .map(|(cfg, _)| cfg)
+    }
+
+    pub fn activate_subscription_atomic(
+        &self,
+        id: &str,
+        model: Option<&str>,
+    ) -> Result<(ProviderConfig, String), ProviderError> {
+        let trimmed_id = id.trim();
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+
+        let sub_match = guard
+            .subscriptions
+            .iter()
+            .find(|s| s.id == trimmed_id || s.account_id.as_deref() == Some(trimmed_id))
+            .or_else(|| {
+                guard.subscriptions.iter().find(|s| {
+                    (trimmed_id == "google_vertex" && s.kind == SubscriptionKind::GoogleVertex)
+                        || (trimmed_id == "google-vertex" && s.kind == SubscriptionKind::GoogleVertex)
+                        || (trimmed_id == "codex" && s.kind == SubscriptionKind::CodexChatGpt)
+                })
+            })
+            .cloned();
+
+        let target_provider_id = if let Some(ref sub) = sub_match {
+            if !guard.providers.contains_key(&sub.id) {
+                let cfg = subscription_to_provider_config(sub);
+                register_subscription_model_profiles(&mut guard, &cfg);
+                guard.providers.insert(cfg.id.clone(), cfg);
+            }
+            sub.id.clone()
+        } else if guard.providers.contains_key(trimmed_id) {
+            trimmed_id.to_string()
+        } else {
+            return Err(ProviderError::Configuration(format!(
+                "Subscription or provider '{trimmed_id}' not found"
+            )));
+        };
+
+        let (default_model, result_cfg) = {
+            let target_cfg = guard
+                .providers
+                .get_mut(&target_provider_id)
+                .ok_or_else(|| {
+                    ProviderError::Configuration(format!(
+                        "Provider '{target_provider_id}' not found"
+                    ))
+                })?;
+            target_cfg.enabled = true;
+            (target_cfg.default_model.clone(), target_cfg.clone())
+        };
+
+        let active_model = match model.map(str::trim).filter(|m| !m.is_empty()) {
+            Some(m) => m.to_string(),
+            None => default_model,
+        };
+
+        guard.active_provider_id = target_provider_id.clone();
+        guard.active_model = active_model.clone();
+
+        for s in &mut guard.subscriptions {
+            s.active = s.id == target_provider_id;
+        }
+
+        drop(guard);
+
+        self.rebuild_default_fallback_chain();
+        Ok((result_cfg, active_model))
     }
 
     pub fn route_metrics_snapshot(&self) -> RouteRuntimeMetrics {
@@ -1752,7 +2411,29 @@ impl ProviderRouter {
         let now_ms = Utc::now().timestamp_millis();
         let seat_key = format!("{provider_id}/{model}");
         let mut m = self.route_metrics.lock().unwrap_or_else(|e| e.into_inner());
-        m.record_failure(&seat_key, err.http_status(), err.retry_after_secs(), now_ms);
+        let status_opt = err.http_status().or_else(|| match err {
+            ProviderError::Transport(msg) => {
+                if msg.to_ascii_lowercase().contains("timed out") {
+                    Some(504)
+                } else {
+                    Some(502)
+                }
+            }
+            _ => None,
+        });
+        if let Some(status) = status_opt {
+            m.record_failure_disambiguated(
+                &seat_key,
+                provider_id,
+                status,
+                &err.to_string(),
+                err.retry_after_secs(),
+                None,
+                now_ms,
+            );
+        } else {
+            m.record_failure(&seat_key, None, err.retry_after_secs(), now_ms);
+        }
     }
 
     /// Execute a completion using the active provider/model (or Magpie `group/<id>` routing + privacy masking) and walking the fallback chain on failure.
@@ -1761,6 +2442,19 @@ impl ProviderRouter {
         request: ProviderRequest,
         stream_tx: Option<mpsc::Sender<ProviderStreamEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
+        let state = self.snapshot();
+        if self.needs_provider_selection() || state.active_provider_id == "local_hermes" {
+            if let Some(sub_id) = self.find_best_available_subscription() {
+                if let Ok(cfg) = self.activate_subscription(&sub_id, None) {
+                    tracing::info!(
+                        subscription_id = %sub_id,
+                        active_model = %cfg.default_model,
+                        "Autonomous fallback: routed to available local subscription"
+                    );
+                }
+            }
+        }
+
         let state = self.snapshot();
         if self.needs_provider_selection() && !state.allow_local_fallback {
             return Err(ProviderError::Configuration(
@@ -1925,9 +2619,40 @@ impl ProviderRouter {
             .enabled
             .then(|| Arc::new(MaskingEngine::new(state.masking.clone())));
 
-        let targets_len = routed_targets.len();
+        // Honor seat cooldowns and circuit-breaker rests in both group and non-group routing
+        // (including keyless `no_key_required` providers such as GoogleVertex).
+        let active_targets: Vec<_> = {
+            let m = self.route_metrics.lock().unwrap_or_else(|e| e.into_inner());
+            routed_targets
+                .into_iter()
+                .filter(|(pid, mdl, _, _)| {
+                    if pid == "local_hermes" {
+                        return true;
+                    }
+                    let seat_key = format!("{pid}/{mdl}");
+                    let cooled = m.seats.get(&seat_key).is_some_and(|s| s.is_in_cooldown(now_ms))
+                        || m.circuit_breaker.is_in_rest(&seat_key, now_ms);
+                    !cooled
+                })
+                .collect()
+        };
+
+        if active_targets.is_empty() {
+            return Err(ProviderError::RateLimited {
+                status: 429,
+                retry_after_secs: Some(5),
+                message: "All candidate providers are currently in cooldown or rest".to_string(),
+            });
+        }
+
+        let targets_len = active_targets.len();
         let mut errors = Vec::new();
-        for (provider_id, model, strategy, reason) in routed_targets {
+        for (provider_id, model, strategy, reason) in active_targets {
+            if stream_tx.as_ref().is_some_and(|tx| tx.is_closed()) {
+                return Err(ProviderError::Transport(
+                    "Stream client disconnected".to_string(),
+                ));
+            }
             let Some(cfg) = self
                 .inner
                 .lock()
@@ -1954,69 +2679,119 @@ impl ProviderRouter {
                 }
             }
 
-            // If sensitive text was masked and caller asked for streaming deltas, pipe stream through StreamingUnmasker.
-            let (exec_tx, forward_handle) = if masking_hits > 0 {
-                if let (Some(outer_tx), Some(engine)) = (stream_tx.as_ref(), masking_engine.as_ref()) {
-                    let (utx, mut urx) = mpsc::channel::<ProviderStreamEvent>(64);
-                    let outer_clone = outer_tx.clone();
-                    let eng_clone = Arc::clone(engine);
-                    let handle = tokio::spawn(async move {
-                        let mut text_unmasker = StreamingUnmasker::new();
-                        let mut think_unmasker = StreamingUnmasker::new();
-                        while let Some(ev) = urx.recv().await {
-                            match ev {
-                                ProviderStreamEvent::TextDelta(chunk) => {
-                                    let clean = text_unmasker.push(&chunk, &eng_clone);
-                                    if !clean.is_empty() {
-                                        let _ = outer_clone
-                                            .send(ProviderStreamEvent::TextDelta(clean))
-                                            .await;
+            // Track whether this attempt has already emitted any delta to the caller's stream_tx.
+            // Streaming proceeds in real time (zero full-response buffering), and if an attempt fails
+            // after emitting partial output to stream_tx, we abort rather than concatenating a fallback
+            // provider's reply onto a broken prefix.
+            let emitted_to_caller = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (exec_tx, forward_handle) = if let Some(outer_tx) = stream_tx.as_ref() {
+                let (utx, mut urx) = mpsc::channel::<ProviderStreamEvent>(64);
+                let outer_clone = (*outer_tx).clone();
+                let emitted_flag = Arc::clone(&emitted_to_caller);
+                let eng_opt = if masking_hits > 0 {
+                    masking_engine.clone()
+                } else {
+                    None
+                };
+                let handle = tokio::spawn(async move {
+                    let mut text_unmasker = StreamingUnmasker::new();
+                    let mut think_unmasker = StreamingUnmasker::new();
+                    loop {
+                        let ev_opt = tokio::select! {
+                            biased;
+                            _ = outer_clone.closed() => None,
+                            ev = urx.recv() => ev,
+                        };
+                        let Some(ev) = ev_opt else {
+                            break;
+                        };
+                        match ev {
+                            ProviderStreamEvent::TextDelta(chunk) => {
+                                let clean = if let Some(ref eng) = eng_opt {
+                                    text_unmasker.push(&chunk, eng)
+                                } else {
+                                    chunk
+                                };
+                                if !clean.is_empty() {
+                                    emitted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    if outer_clone
+                                        .send(ProviderStreamEvent::TextDelta(clean))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
-                                ProviderStreamEvent::ThinkingDelta(chunk) => {
-                                    let clean = think_unmasker.push(&chunk, &eng_clone);
-                                    if !clean.is_empty() {
-                                        let _ = outer_clone
-                                            .send(ProviderStreamEvent::ThinkingDelta(clean))
-                                            .await;
+                            }
+                            ProviderStreamEvent::ThinkingDelta(chunk) => {
+                                let clean = if let Some(ref eng) = eng_opt {
+                                    think_unmasker.push(&chunk, eng)
+                                } else {
+                                    chunk
+                                };
+                                if !clean.is_empty() {
+                                    emitted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    if outer_clone
+                                        .send(ProviderStreamEvent::ThinkingDelta(clean))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
                                     }
                                 }
-                                ProviderStreamEvent::ToolCallReady(mut tc) => {
-                                    tc.arguments = eng_clone.unmask_text(&tc.arguments);
-                                    let _ = outer_clone
-                                        .send(ProviderStreamEvent::ToolCallReady(tc))
-                                        .await;
+                            }
+                            ProviderStreamEvent::ToolCallReady(mut tc) => {
+                                if let Some(ref eng) = eng_opt {
+                                    tc.arguments = eng.unmask_text(&tc.arguments);
                                 }
-                                ProviderStreamEvent::Usage(u) => {
-                                    let _ = outer_clone.send(ProviderStreamEvent::Usage(u)).await;
+                                emitted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                                if outer_clone
+                                    .send(ProviderStreamEvent::ToolCallReady(tc))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            ProviderStreamEvent::Usage(u) => {
+                                if outer_clone.send(ProviderStreamEvent::Usage(u)).await.is_err() {
+                                    break;
                                 }
                             }
                         }
-                        let rem_think = think_unmasker.finish(&eng_clone);
+                    }
+                    if let Some(ref eng) = eng_opt {
+                        let rem_think = think_unmasker.finish(eng);
                         if !rem_think.is_empty() {
+                            emitted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                             let _ = outer_clone
                                 .send(ProviderStreamEvent::ThinkingDelta(rem_think))
                                 .await;
                         }
-                        let rem_text = text_unmasker.finish(&eng_clone);
+                        let rem_text = text_unmasker.finish(eng);
                         if !rem_text.is_empty() {
+                            emitted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                             let _ = outer_clone
                                 .send(ProviderStreamEvent::TextDelta(rem_text))
                                 .await;
                         }
-                    });
-                    (Some(utx), Some(handle))
-                } else {
-                    (stream_tx.clone(), None)
-                }
+                    }
+                });
+                (Some(utx), Some(handle))
             } else {
-                (stream_tx.clone(), None)
+                (None, None)
             };
 
             let started = Instant::now();
-            let exec_res = self
-                .execute_single_provider(&cfg, target_req, exec_tx.as_ref())
-                .await;
+            let exec_res = if let Some(ref outer_tx) = stream_tx {
+                tokio::select! {
+                    biased;
+                    _ = outer_tx.closed() => Err(ProviderError::Transport("Stream client disconnected".to_string())),
+                    res = self.execute_single_provider(&cfg, target_req, exec_tx.as_ref()) => res,
+                }
+            } else {
+                self.execute_single_provider(&cfg, target_req, exec_tx.as_ref()).await
+            };
             drop(exec_tx);
             if let Some(handle) = forward_handle {
                 let _ = handle.await;
@@ -2049,7 +2824,14 @@ impl ProviderRouter {
                     return Ok(resp);
                 }
                 Err(err) => {
+                    if stream_tx.as_ref().is_some_and(|tx| tx.is_closed()) {
+                        return Err(err);
+                    }
                     self.record_route_failure(&provider_id, &model, &err);
+                    // Do not concatenate a fallback provider's stream onto already-emitted partial output.
+                    if emitted_to_caller.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(err);
+                    }
                     errors.push(format!("{provider_id}/{model}: {err}"));
                     if targets_len == 1
                         && (!state.allow_local_fallback || provider_id == "local_hermes")
@@ -2113,11 +2895,13 @@ impl ProviderRouter {
             .offline_rule_bot_allowed
             || env_truthy("HERMES_ALLOW_LOCAL_RULE_BOT");
         if cfg.api_mode == ApiMode::LocalHermes {
+            let has_sub = self.has_active_subscription()
+                || !self.inner.lock().unwrap_or_else(|e| e.into_inner()).subscriptions.is_empty();
             return execute_local_hermes_with_policy(
                 &cfg.id,
                 &request,
                 stream_tx,
-                offline_rule_bot_allowed,
+                offline_rule_bot_allowed || has_sub,
             )
             .await;
         }
@@ -2150,11 +2934,11 @@ impl ProviderRouter {
                     .await
                 }
                 ApiMode::CodexResponses => {
-                    execute_codex_responses(
-                        &self.http_client,
+                    self.execute_codex_with_refresh(
                         cfg,
                         base_url,
                         &api_key,
+                        cred_id_opt.as_deref(),
                         &request,
                         stream_tx,
                     )
@@ -2174,6 +2958,16 @@ impl ProviderRouter {
                 ApiMode::GeminiGenerateContent => {
                     execute_gemini_generate_content(
                         &self.http_client,
+                        cfg,
+                        base_url,
+                        &api_key,
+                        &request,
+                        stream_tx,
+                    )
+                    .await
+                }
+                ApiMode::GoogleVertex => {
+                    self.execute_google_vertex(
                         cfg,
                         base_url,
                         &api_key,
@@ -2216,6 +3010,325 @@ impl ProviderRouter {
             ProviderError::Exhausted(format!("No usable credentials for '{}'", cfg.id))
         }))
     }
+
+    async fn execute_codex_with_refresh(
+        &self,
+        cfg: &ProviderConfig,
+        base_url: &str,
+        api_key: &str,
+        cred_id_opt: Option<&str>,
+        request: &ProviderRequest,
+        stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let codex_mgr = self.get_or_create_codex_manager(&cfg.id, cfg);
+        let now_ms = Utc::now().timestamp_millis();
+        let mut active_token = api_key.to_string();
+
+        let needs_preemptive_refresh = active_token.trim().is_empty()
+            || extract_jwt_exp_ms(&active_token).is_some_and(|exp| exp <= now_ms + 60_000);
+
+        if needs_preemptive_refresh {
+            if let Some(ref mgr) = codex_mgr {
+                let refreshed = mgr
+                    .get_or_refresh_token(&self.http_client, now_ms)
+                    .await
+                    .map_err(|e| {
+                        ProviderError::Authentication(format!(
+                            "Codex OAuth token refresh failed: {e}"
+                        ))
+                    })?;
+                active_token = refreshed.clone();
+                if let Some(cred_id) = cred_id_opt {
+                    let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(p) = guard.providers.get_mut(&cfg.id) {
+                        for entry in &mut p.credentials.entries {
+                            if entry.id == cred_id {
+                                entry.api_key = refreshed.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let first_res = execute_codex_responses(
+            &self.http_client,
+            cfg,
+            base_url,
+            &active_token,
+            request,
+            stream_tx,
+        )
+        .await;
+
+        match first_res {
+            Err(ProviderError::Authentication(ref msg)) if msg.starts_with("HTTP 401") => {
+                if let Some(ref mgr) = codex_mgr {
+                    mgr.invalidate_cached_token();
+                    let now_retry = Utc::now().timestamp_millis();
+                    let refreshed = mgr
+                        .get_or_refresh_token(&self.http_client, now_retry)
+                        .await
+                        .map_err(|e| {
+                            ProviderError::Authentication(format!(
+                                "Codex OAuth token refresh failed after 401: {e}"
+                            ))
+                        })?;
+                    if let Some(cred_id) = cred_id_opt {
+                        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(p) = guard.providers.get_mut(&cfg.id) {
+                            for entry in &mut p.credentials.entries {
+                                if entry.id == cred_id {
+                                    entry.api_key = refreshed.clone();
+                                }
+                            }
+                        }
+                    }
+                    return execute_codex_responses(
+                        &self.http_client,
+                        cfg,
+                        base_url,
+                        &refreshed,
+                        request,
+                        stream_tx,
+                    )
+                    .await;
+                }
+                first_res
+            }
+            other => other,
+        }
+    }
+
+    async fn execute_google_vertex(
+        &self,
+        cfg: &ProviderConfig,
+        base_url: &str,
+        api_key: &str,
+        request: &ProviderRequest,
+        stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let now_ms = Utc::now().timestamp_millis();
+        let token_mgr = self.get_or_create_vertex_manager(&cfg.id, cfg);
+        let mut token = if !api_key.trim().is_empty() {
+            api_key.trim().to_string()
+        } else if let Some(ref mgr) = token_mgr {
+            mgr.get_or_refresh_token(&self.http_client, now_ms)
+                .await
+                .map_err(|e| {
+                    ProviderError::Authentication(format!(
+                        "Google Vertex AI OAuth token refresh failed: {e}"
+                    ))
+                })?
+        } else {
+            return Err(ProviderError::Authentication(
+                "未检测到有效的 Google Vertex AI 凭据或访问令牌。请检查 ~/.config/gcloud/application_default_credentials.json。".to_string()
+            ));
+        };
+
+        let wire_req = prepare_wire_request(cfg, base_url, &token, request);
+        let clean_model = wire_req
+            .model
+            .trim()
+            .strip_prefix("models/")
+            .unwrap_or(wire_req.model.trim());
+
+        let project = cfg
+            .headers
+            .get("x-goog-user-project")
+            .cloned()
+            .or_else(|| std::env::var("VERTEX_PROJECT_ID").ok())
+            .or_else(|| std::env::var("CLOUDSDK_CORE_PROJECT").ok())
+            .unwrap_or_else(|| "default".to_string());
+
+        let location = cfg.region_id.clone().unwrap_or_else(|| "global".to_string());
+
+        let url = if base_url.starts_with("http://127.0.0.1") || base_url.starts_with("http://localhost") {
+            if request.stream {
+                format!("{base_url}/projects/{project}/locations/{location}/publishers/google/models/{clean_model}:streamGenerateContent?alt=sse")
+            } else {
+                format!("{base_url}/projects/{project}/locations/{location}/publishers/google/models/{clean_model}:generateContent")
+            }
+        } else if base_url.contains("/publishers/google/models") || base_url.contains("/projects/") {
+            let action = if request.stream {
+                "streamGenerateContent?alt=sse"
+            } else {
+                "generateContent"
+            };
+            format!("{base_url}:{action}")
+        } else {
+            let host = if location == "global" {
+                "https://aiplatform.googleapis.com".to_string()
+            } else {
+                format!("https://{location}-aiplatform.googleapis.com")
+            };
+            let action = if request.stream {
+                "streamGenerateContent?alt=sse"
+            } else {
+                "generateContent"
+            };
+            format!("{host}/v1/projects/{project}/locations/{location}/publishers/google/models/{clean_model}:{action}")
+        };
+
+        let unified = provider_request_to_unified(&wire_req);
+        let payload = build_gemini_generate_content_payload(&unified);
+
+        let send_vertex_request = |bearer: &str| {
+            let mut builder = self
+                .http_client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .bearer_auth(bearer)
+                .header("x-goog-user-project", &project);
+
+            if request.stream {
+                builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
+            }
+            for (k, v) in &cfg.headers {
+                if !k.starts_with("x-adc-") && !k.starts_with("x-codex-") {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+            }
+            builder.json(&payload).send()
+        };
+
+        let resp = tokio::time::timeout(
+            Duration::from_secs(cfg.timeout_secs.max(5)),
+            send_vertex_request(&token),
+        )
+        .await
+        .map_err(|_| ProviderError::Transport(format!("Request to {url} timed out")))?
+        .map_err(|e| ProviderError::Transport(format!("HTTP request to {url} failed: {e}")))?;
+
+        let mut resp = match check_http_error(resp).await {
+            Ok(r) => r,
+            Err(ProviderError::Authentication(ref msg))
+                if msg.starts_with("HTTP 401") && api_key.trim().is_empty() =>
+            {
+                if let Some(ref mgr) = token_mgr {
+                    mgr.invalidate_cached_token();
+                    token = mgr
+                        .get_or_refresh_token(&self.http_client, Utc::now().timestamp_millis())
+                        .await
+                        .map_err(|e| {
+                            ProviderError::Authentication(format!(
+                                "Google Vertex AI OAuth token refresh failed after 401: {e}"
+                            ))
+                        })?;
+                    let retry_resp = tokio::time::timeout(
+                        Duration::from_secs(cfg.timeout_secs.max(5)),
+                        send_vertex_request(&token),
+                    )
+                    .await
+                    .map_err(|_| ProviderError::Transport(format!("Request to {url} timed out")))?
+                    .map_err(|e| ProviderError::Transport(format!("HTTP request to {url} failed: {e}")))?;
+                    check_http_error(retry_resp).await?
+                } else {
+                    return Err(ProviderError::Authentication(msg.clone()));
+                }
+            }
+            Err(other) => return Err(other),
+        };
+
+        let is_sse = request.stream
+            && resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| !ct.to_ascii_lowercase().contains("application/json"))
+                .unwrap_or(true);
+
+        if !is_sse {
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ProviderError::Transport(format!("Read Vertex body failed: {e}")))?;
+            let parsed = parse_gemini_response_json(&cfg.id, &wire_req.model, &body)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?;
+            let mut out = unified_to_provider_response(parsed, ApiMode::GoogleVertex);
+            out.api_mode = ApiMode::GoogleVertex;
+            emit_provider_response_stream_events(&out, stream_tx).await;
+            return Ok(out);
+        }
+
+        let mut acc_content = String::new();
+        let mut acc_reasoning = String::new();
+        let mut tool_calls = Vec::<ProviderToolCall>::new();
+        let mut finish_reason = "stop".to_string();
+        let mut usage = TokenUsage::default();
+        let mut raw_bytes = Vec::<u8>::new();
+        let mut non_sse_lines = Vec::<String>::new();
+        let mut saw_sse_data = false;
+
+        while read_next_sse_chunk(&mut resp, &mut raw_bytes, stream_tx, "Vertex AI SSE error").await? {
+            while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
+                let line = String::from_utf8_lossy(&raw_bytes[..pos])
+                    .trim_end_matches('\r')
+                    .to_string();
+                raw_bytes.drain(..=pos);
+                process_gemini_sse_line(
+                    &line,
+                    &mut saw_sse_data,
+                    &mut non_sse_lines,
+                    &mut acc_content,
+                    &mut acc_reasoning,
+                    &mut tool_calls,
+                    &mut finish_reason,
+                    &mut usage,
+                    stream_tx,
+                )
+                .await?;
+            }
+        }
+        if !raw_bytes.is_empty() {
+            let line = String::from_utf8_lossy(&raw_bytes)
+                .trim_end_matches('\r')
+                .to_string();
+            process_gemini_sse_line(
+                &line,
+                &mut saw_sse_data,
+                &mut non_sse_lines,
+                &mut acc_content,
+                &mut acc_reasoning,
+                &mut tool_calls,
+                &mut finish_reason,
+                &mut usage,
+                stream_tx,
+            )
+            .await?;
+        }
+
+        if !saw_sse_data
+            && acc_content.is_empty()
+            && acc_reasoning.is_empty()
+            && tool_calls.is_empty()
+            && !non_sse_lines.is_empty()
+        {
+            let body = non_sse_lines.join("\n");
+            let parsed = parse_gemini_response_json(&cfg.id, &wire_req.model, &body)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?;
+            let mut out = unified_to_provider_response(parsed, ApiMode::GoogleVertex);
+            out.api_mode = ApiMode::GoogleVertex;
+            emit_provider_response_stream_events(&out, stream_tx).await;
+            return Ok(out);
+        }
+
+        if !tool_calls.is_empty() {
+            finish_reason = "tool_calls".to_string();
+        }
+        usage.finalize_total();
+
+        Ok(ProviderResponse {
+            content: acc_content,
+            reasoning: (!acc_reasoning.is_empty()).then_some(acc_reasoning),
+            tool_calls,
+            finish_reason,
+            usage,
+            provider_id: cfg.id.clone(),
+            model: wire_req.model,
+            api_mode: ApiMode::GoogleVertex,
+        })
+    }
 }
 
 fn mask_outbound_request(
@@ -2244,6 +3357,18 @@ fn mask_outbound_request(
         }
         hits += res.hits.len();
         msg.content = res.masked_text;
+        if let Some(ref mut reason) = msg.reasoning {
+            let rres = engine.mask_text(reason);
+            if rres.blocked {
+                return Err(ProviderError::Configuration(
+                    rres.block_reason.unwrap_or_else(|| {
+                        "Outbound reasoning blocked by privacy masking rule".to_string()
+                    }),
+                ));
+            }
+            hits += rres.hits.len();
+            *reason = rres.masked_text;
+        }
         for tc in &mut msg.tool_calls {
             let ares = engine.mask_text(&tc.arguments);
             if ares.blocked {
@@ -3953,6 +5078,49 @@ pub fn build_anthropic_messages_payload(req: &ProviderRequest) -> Value {
 // HTTP Wire Protocol Executors
 // ============================================================================
 
+async fn read_next_sse_chunk(
+    resp: &mut reqwest::Response,
+    raw_bytes: &mut Vec<u8>,
+    stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+    context: &str,
+) -> Result<bool, ProviderError> {
+    let chunk_opt = if let Some(tx) = stream_tx {
+        tokio::select! {
+            biased;
+            _ = tx.closed() => {
+                return Err(ProviderError::Transport("Stream client disconnected".to_string()));
+            }
+            res = resp.chunk() => {
+                res.map_err(|e| ProviderError::Transport(format!("{context}: {e}")))?
+            }
+        }
+    } else {
+        resp.chunk()
+            .await
+            .map_err(|e| ProviderError::Transport(format!("{context}: {e}")))?
+    };
+    if let Some(chunk) = chunk_opt {
+        raw_bytes.extend_from_slice(&chunk);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+async fn send_stream_event(
+    stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
+    ev: ProviderStreamEvent,
+) -> Result<(), ProviderError> {
+    if let Some(tx) = stream_tx {
+        if tx.send(ev).await.is_err() {
+            return Err(ProviderError::Transport(
+                "Stream client disconnected".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn check_http_error(resp: reqwest::Response) -> Result<reqwest::Response, ProviderError> {
     let status = resp.status();
     if status.is_success() {
@@ -3962,7 +5130,7 @@ async fn check_http_error(resp: reqwest::Response) -> Result<reqwest::Response, 
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
+        .and_then(parse_retry_after_header);
     let body = tokio::time::timeout(Duration::from_secs(3), resp.text())
         .await
         .ok()
@@ -4082,7 +5250,9 @@ async fn execute_chat_completions(
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     for (k, v) in &cfg.headers {
-        builder = builder.header(k.as_str(), v.as_str());
+        if !k.starts_with("x-codex-") && !k.starts_with("x-adc-") {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
     }
 
     let resp = tokio::time::timeout(
@@ -4121,12 +5291,7 @@ async fn execute_chat_completions(
     let mut non_sse_lines = Vec::<String>::new();
     let mut saw_sse_data = false;
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| ProviderError::Transport(format!("SSE chunk error: {e}")))?
-    {
-        raw_bytes.extend_from_slice(&chunk);
+    while read_next_sse_chunk(&mut resp, &mut raw_bytes, stream_tx, "SSE chunk error").await? {
         while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
             let line = String::from_utf8_lossy(&raw_bytes[..pos])
                 .trim_end_matches('\r')
@@ -4718,8 +5883,25 @@ async fn execute_codex_responses(
     {
         builder = builder.header("User-Agent", "codex_cli_rs/0.1.0");
     }
+    let has_account_id = cfg
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("chatgpt-account-id"));
+    if !has_account_id {
+        if let Some(acct) = cfg
+            .headers
+            .get("x-account-id")
+            .map(|s| s.as_str())
+            .or_else(|| cfg.headers.get("account_id").map(|s| s.as_str()))
+            .or_else(|| request.metadata.get("chatgpt_account_id").and_then(Value::as_str))
+        {
+            builder = builder.header("chatgpt-account-id", acct);
+        }
+    }
     for (k, v) in &cfg.headers {
-        builder = builder.header(k.as_str(), v.as_str());
+        if !k.starts_with("x-codex-") && !k.starts_with("x-adc-") {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
     }
 
     let resp = tokio::time::timeout(
@@ -4754,12 +5936,7 @@ async fn execute_codex_responses(
     let mut raw_bytes = Vec::<u8>::new();
     let mut non_sse_lines = Vec::<String>::new();
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| ProviderError::Transport(format!("Codex Responses stream error: {e}")))?
-    {
-        raw_bytes.extend_from_slice(&chunk);
+    while read_next_sse_chunk(&mut resp, &mut raw_bytes, stream_tx, "Codex Responses stream error").await? {
         while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
             let line = String::from_utf8_lossy(&raw_bytes[..pos])
                 .trim_end_matches('\r')
@@ -4774,10 +5951,8 @@ async fn execute_codex_responses(
                 non_sse_lines.push(line.clone());
             }
             let events = process_codex_responses_sse_line(&line, &mut state)?;
-            if let Some(tx) = stream_tx {
-                for ev in events {
-                    let _ = tx.send(ev).await;
-                }
+            for ev in events {
+                send_stream_event(stream_tx, ev).await?;
             }
         }
     }
@@ -5365,7 +6540,9 @@ async fn execute_anthropic_messages(
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     for (k, v) in &cfg.headers {
-        builder = builder.header(k.as_str(), v.as_str());
+        if !k.starts_with("x-codex-") && !k.starts_with("x-adc-") {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
     }
 
     let resp = tokio::time::timeout(
@@ -5403,12 +6580,7 @@ async fn execute_anthropic_messages(
     let mut current_event = String::new();
     let mut raw_bytes = Vec::<u8>::new();
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| ProviderError::Transport(format!("Anthropic SSE error: {e}")))?
-    {
-        raw_bytes.extend_from_slice(&chunk);
+    while read_next_sse_chunk(&mut resp, &mut raw_bytes, stream_tx, "Anthropic SSE error").await? {
         while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
             let line = String::from_utf8_lossy(&raw_bytes[..pos])
                 .trim_end_matches('\r')
@@ -5835,12 +7007,21 @@ async fn process_gemini_sse_line(
     usage: &mut TokenUsage,
     stream_tx: Option<&mpsc::Sender<ProviderStreamEvent>>,
 ) -> Result<(), ProviderError> {
-    if line.starts_with("data:") {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with(':')
+        || trimmed.starts_with("event:")
+        || trimmed.starts_with("id:")
+        || trimmed.starts_with("retry:")
+    {
+        return Ok(());
+    }
+    if trimmed.starts_with("data:") {
         *saw_sse_data = true;
-    } else if !*saw_sse_data && !line.trim().is_empty() && !line.starts_with(':') {
+    } else if !*saw_sse_data {
         non_sse_lines.push(line.to_string());
     }
-    let Some(delta) = parse_gemini_sse_data(line, tool_calls.len())
+    let Some(delta) = parse_gemini_sse_data(trimmed, tool_calls.len())
         .map_err(|e| ProviderError::Protocol(e.to_string()))?
     else {
         return Ok(());
@@ -5907,7 +7088,9 @@ async fn execute_gemini_generate_content(
         builder = builder.header(reqwest::header::ACCEPT, "text/event-stream");
     }
     for (k, v) in &cfg.headers {
-        builder = builder.header(k.as_str(), v.as_str());
+        if !k.starts_with("x-codex-") && !k.starts_with("x-adc-") {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
     }
 
     let resp = tokio::time::timeout(
@@ -5949,12 +7132,7 @@ async fn execute_gemini_generate_content(
     let mut non_sse_lines = Vec::<String>::new();
     let mut saw_sse_data = false;
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| ProviderError::Transport(format!("Gemini SSE error: {e}")))?
-    {
-        raw_bytes.extend_from_slice(&chunk);
+    while read_next_sse_chunk(&mut resp, &mut raw_bytes, stream_tx, "Gemini SSE error").await? {
         while let Some(pos) = raw_bytes.iter().position(|&b| b == b'\n') {
             let line = String::from_utf8_lossy(&raw_bytes[..pos])
                 .trim_end_matches('\r')
@@ -8043,5 +9221,466 @@ http_headers = { "x-openai-actor-authorization" = "magpie", "X-Custom" = "yes" }
         let _ = m_srv.join();
         assert_eq!(routed_resp.content, format!("Echo: {secret_val}"));
         assert_eq!(streamed, format!("Echo: {secret_val}"));
+    }
+
+    #[test]
+    fn test_subscription_discovery_bridge_into_provider_router() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let home = temp_dir.path();
+
+        // 1. Write mock Google Vertex ADC
+        let gcloud_dir = home.join(".config").join("gcloud");
+        std::fs::create_dir_all(&gcloud_dir).unwrap();
+        let adc_content = json!({
+            "client_id": "test-vertex-client-id",
+            "client_secret": "test-vertex-client-secret",
+            "refresh_token": "test-vertex-refresh-token",
+            "quota_project_id": "test-quota-project-123",
+            "account": "developer@vertex.google.internal"
+        });
+        std::fs::write(
+            gcloud_dir.join("application_default_credentials.json"),
+            adc_content.to_string(),
+        )
+        .unwrap();
+
+        // 2. Write mock Codex session
+        let codex_dir = home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_auth = json!({
+            "tokens": {
+                "account_id": "chatgpt-acct-789",
+                "access_token": "header.eyJlbWFpbCI6ImNvZGV4QGV4YW1wbGUuY29tIiwicGxhbiI6InRlYW0ifQ.signature",
+                "id_token": "header.eyJlbWFpbCI6ImNvZGV4QGV4YW1wbGUuY29tIn0.sig",
+                "refresh_token": "test-codex-refresh"
+            }
+        });
+        std::fs::write(codex_dir.join("auth.json"), codex_auth.to_string()).unwrap();
+
+        let router = ProviderRouter::new();
+        router.set_allow_local_fallback(false);
+
+        let reg = router.refresh_discovered_subscriptions_in_home(home, Some(&codex_dir));
+        assert!(reg.accounts.len() >= 2, "Expected at least Vertex and Codex subscriptions");
+
+        let snap = router.snapshot();
+        assert!(router.has_active_subscription(), "Should have active subscription bridged");
+        assert!(!router.needs_provider_selection(), "needs_provider_selection should be false");
+
+        // Verify Vertex AI provider
+        let vertex_acc = reg.accounts.iter().find(|a| a.kind == SubscriptionKind::GoogleVertex).unwrap();
+        let vertex_cfg = snap.providers.get(&vertex_acc.id).expect("Vertex provider registered");
+        assert_eq!(vertex_cfg.api_mode, ApiMode::GoogleVertex);
+        assert!(vertex_cfg.is_subscription);
+        assert!(vertex_cfg.no_key_required);
+        assert_eq!(vertex_cfg.headers.get("x-goog-user-project"), Some(&"test-quota-project-123".to_string()));
+        assert!(vertex_cfg.fallback_models.contains(&"gemini-2.5-flash".to_string()));
+        assert!(vertex_cfg.fallback_models.contains(&"gemini-2.5-pro".to_string()));
+        assert!(vertex_cfg.fallback_models.contains(&"gemini-1.5-pro".to_string()));
+
+        // Verify Codex provider
+        let codex_acc = reg.accounts.iter().find(|a| a.kind == SubscriptionKind::CodexChatGpt).unwrap();
+        let codex_cfg = snap.providers.get(&codex_acc.id).expect("Codex provider registered");
+        assert_eq!(codex_cfg.api_mode, ApiMode::CodexResponses);
+        assert!(codex_cfg.is_subscription);
+        assert_eq!(codex_cfg.headers.get("chatgpt-account-id"), Some(&"chatgpt-acct-789".to_string()));
+
+        // Verify model profiles
+        assert!(snap.model_profiles.contains_key("gemini-2.5-flash"));
+        assert!(snap.model_profiles.contains_key("gemini-2.5-pro"));
+        assert!(snap.model_profiles.contains_key("gemini-1.5-pro"));
+    }
+
+    #[tokio::test]
+    async fn test_autonomous_fallback_avoids_provider_error() {
+        let router = ProviderRouter::new();
+        router.set_allow_local_fallback(false);
+        router.set_offline_rule_bot_allowed(false);
+
+        // Before any subscription is present, needs_provider_selection is true
+        assert!(router.needs_provider_selection());
+
+        // Register a mock discovered local subscription (Google Vertex ADC)
+        let mut vertex_cfg = ProviderConfig::google_vertex(
+            "google_vertex:adc",
+            "Google Vertex AI (ADC)",
+            "https://aiplatform.googleapis.com/v1",
+            "gemini-2.5-flash",
+            Some("test-project-adc".to_string()),
+        );
+        vertex_cfg.is_subscription = true;
+        vertex_cfg.enabled = true;
+        router.register_provider(vertex_cfg);
+
+        let sub_account = SubscriptionAccount {
+            id: "google_vertex:adc".to_string(),
+            kind: SubscriptionKind::GoogleVertex,
+            label: "Google Vertex AI (ADC)".to_string(),
+            email: Some("user@gmail.com".to_string()),
+            account_id: Some("test-project-adc".to_string()),
+            plan: Some("vertex_adc".to_string()),
+            active: true,
+            base_url: Some("https://aiplatform.googleapis.com/v1".to_string()),
+            protocol: ProtocolKind::GeminiGenerateContent,
+            default_model: Some("gemini-2.5-flash".to_string()),
+            source_path: "/mock/adc.json".to_string(),
+            expires_at_ms: None,
+            access_token: None,
+            headers: [("x-goog-user-project".to_string(), "test-project-adc".to_string())].into_iter().collect(),
+        };
+        {
+            let mut guard = router.inner.lock().unwrap();
+            guard.subscriptions.push(sub_account);
+        }
+
+        assert!(router.has_active_subscription());
+        assert!(!router.needs_provider_selection());
+
+        // Call activate_subscription and verify state
+        let act_res = router.activate_subscription("google_vertex:adc", Some("gemini-2.5-pro"));
+        assert!(act_res.is_ok());
+        let (active_pid, active_model, mode) = router.active_info();
+        assert_eq!(active_pid, "google_vertex:adc");
+        assert_eq!(active_model, "gemini-2.5-pro");
+        assert_eq!(mode, ApiMode::GoogleVertex);
+    }
+
+    #[test]
+    fn test_activate_subscription_switch_and_fallback_chain() {
+        let router = ProviderRouter::new();
+
+        let sub1 = SubscriptionAccount {
+            id: "google_vertex:primary".to_string(),
+            kind: SubscriptionKind::GoogleVertex,
+            label: "Google Vertex AI".to_string(),
+            email: Some("v1@example.com".to_string()),
+            account_id: Some("proj-v1".to_string()),
+            plan: Some("adc".to_string()),
+            active: true,
+            base_url: Some("https://aiplatform.googleapis.com/v1".to_string()),
+            protocol: ProtocolKind::GeminiGenerateContent,
+            default_model: Some("gemini-2.5-flash".to_string()),
+            source_path: String::new(),
+            expires_at_ms: None,
+            access_token: None,
+            headers: [("x-goog-user-project".to_string(), "proj-v1".to_string())].into_iter().collect(),
+        };
+
+        let sub2 = SubscriptionAccount {
+            id: "codex:team_user".to_string(),
+            kind: SubscriptionKind::CodexChatGpt,
+            label: "Codex Team".to_string(),
+            email: Some("team@example.com".to_string()),
+            account_id: Some("acct-team-456".to_string()),
+            plan: Some("team".to_string()),
+            active: true,
+            base_url: Some("https://chatgpt.com/backend-api/codex".to_string()),
+            protocol: ProtocolKind::CodexResponses,
+            default_model: Some("codex-mini-latest".to_string()),
+            source_path: String::new(),
+            expires_at_ms: None,
+            access_token: Some("fake-bearer-token".to_string()),
+            headers: [("chatgpt-account-id".to_string(), "acct-team-456".to_string())].into_iter().collect(),
+        };
+
+        {
+            let mut guard = router.inner.lock().unwrap();
+            guard.subscriptions.push(sub1.clone());
+            guard.subscriptions.push(sub2.clone());
+        }
+
+        // Activate vertex with default model
+        let res1 = router.activate_subscription("google_vertex", None).expect("activate vertex");
+        assert_eq!(res1.id, "google_vertex:primary");
+        assert_eq!(res1.default_model, "gemini-2.5-flash");
+        let (pid1, mdl1, _) = router.active_info();
+        assert_eq!(pid1, "google_vertex:primary");
+        assert_eq!(mdl1, "gemini-2.5-flash");
+        {
+            let guard = router.inner.lock().unwrap();
+            let v_sub = guard.subscriptions.iter().find(|s| s.id == "google_vertex:primary").unwrap();
+            let c_sub = guard.subscriptions.iter().find(|s| s.id == "codex:team_user").unwrap();
+            assert!(v_sub.active, "Vertex subscription should be active");
+            assert!(!c_sub.active, "Codex subscription should NOT be active");
+        }
+
+        // Activate codex with explicit model
+        let res2 = router.activate_subscription("codex", Some("gpt-4o")).expect("activate codex");
+        assert_eq!(res2.id, "codex:team_user");
+        let (pid2, mdl2, mode2) = router.active_info();
+        assert_eq!(pid2, "codex:team_user");
+        assert_eq!(mdl2, "gpt-4o");
+        assert_eq!(mode2, ApiMode::CodexResponses);
+        {
+            let guard = router.inner.lock().unwrap();
+            let v_sub = guard.subscriptions.iter().find(|s| s.id == "google_vertex:primary").unwrap();
+            let c_sub = guard.subscriptions.iter().find(|s| s.id == "codex:team_user").unwrap();
+            assert!(!v_sub.active, "Vertex subscription should be reset to inactive");
+            assert!(c_sub.active, "Codex subscription should now be active");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_google_vertex_ai_streaming_execution_mock() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let req_count = Arc::new(AtomicUsize::new(0));
+        let rc = Arc::clone(&req_count);
+
+        let srv = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            rc.fetch_add(1, Ordering::SeqCst);
+
+            let mut req_buf = [0u8; 4096];
+            let n = stream.read(&mut req_buf).unwrap();
+            let req_str = String::from_utf8_lossy(&req_buf[..n]);
+
+            let lower = req_str.to_ascii_lowercase();
+            assert!(
+                lower.contains("authorization: bearer mock-bearer-token-999"),
+                "expected authorization header in: {req_str}"
+            );
+            assert!(
+                lower.contains("x-goog-user-project: vertex-test-project"),
+                "expected user-project header in: {req_str}"
+            );
+            assert!(req_str.contains("/publishers/google/models/gemini-2.5-flash:streamGenerateContent"));
+
+            let sse_chunk1 = json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "text": "Hello from " }]
+                    }
+                }]
+            });
+            let sse_chunk2 = json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{ "text": "Google Vertex AI!" }]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 6,
+                    "totalTokenCount": 16
+                }
+            });
+
+            let body = format!("data: {sse_chunk1}\n\ndata: {sse_chunk2}\n\n");
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let router = ProviderRouter::new();
+        let mut cfg = ProviderConfig::google_vertex(
+            "google_vertex_mock",
+            "Vertex Mock",
+            format!("http://127.0.0.1:{port}"),
+            "gemini-2.5-flash",
+            Some("vertex-test-project".to_string()),
+        );
+        cfg.timeout_secs = 5;
+        // Provide mock bearer token in credentials
+        cfg.credentials.add_entry(CredentialEntry::new("cred1", "mock-bearer-token-999", "mock"));
+        router.register_provider(cfg);
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let resp = router
+            .complete_on_provider(
+                "google_vertex_mock",
+                ProviderRequest::new("gemini-2.5-flash", vec![ProviderChatMessage::user("Hi Vertex")]),
+                Some(tx),
+            )
+            .await
+            .expect("vertex streaming execution failed");
+
+        let _ = srv.join();
+        assert_eq!(resp.content, "Hello from Google Vertex AI!");
+        assert_eq!(resp.api_mode, ApiMode::GoogleVertex);
+        assert_eq!(resp.usage.total_tokens, 16);
+
+        let mut collected_deltas = String::new();
+        while let Some(ev) = rx.recv().await {
+            if let ProviderStreamEvent::TextDelta(d) = ev {
+                collected_deltas.push_str(&d);
+            }
+        }
+        assert_eq!(collected_deltas, "Hello from Google Vertex AI!");
+        assert_eq!(req_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_google_vertex_ai_oauth_token_refresh_integration() {
+        let oauth_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let oauth_port = oauth_listener.local_addr().unwrap().port();
+
+        let srv = std::thread::spawn(move || {
+            let (mut stream, _) = oauth_listener.accept().unwrap();
+            let mut req_buf = [0u8; 4096];
+            let n = stream.read(&mut req_buf).unwrap();
+            let req_str = String::from_utf8_lossy(&req_buf[..n]);
+
+            assert!(req_str.contains("grant_type=refresh_token"));
+            assert!(req_str.contains("client_id=test-adc-client-id"));
+            assert!(req_str.contains("refresh_token=test-refresh-token-xyz"));
+
+            let oauth_resp = json!({
+                "access_token": "ya29.mock-refreshed-oauth-token-555",
+                "expires_in": 3600,
+                "token_type": "Bearer"
+            });
+            let body = oauth_resp.to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let creds = VertexAdcCredentials {
+            client_id: "test-adc-client-id".to_string(),
+            client_secret: "test-adc-secret".to_string(),
+            refresh_token: "test-refresh-token-xyz".to_string(),
+            quota_project_id: Some("vertex-quota-project".to_string()),
+            account: Some("user@test.org".to_string()),
+        };
+
+        let token_mgr = VertexTokenManager::new(creds)
+            .with_token_url(format!("http://127.0.0.1:{oauth_port}/token"));
+
+        let router = ProviderRouter::new();
+        router.register_vertex_token_manager("google_vertex_refresh_test", token_mgr);
+
+        let mut cfg = ProviderConfig::google_vertex(
+            "google_vertex_refresh_test",
+            "Vertex Refresh Test",
+            "https://aiplatform.googleapis.com/v1",
+            "gemini-2.5-flash",
+            Some("vertex-quota-project".to_string()),
+        );
+        cfg.no_key_required = true;
+        router.register_provider(cfg.clone());
+
+        let mgr = router.get_or_create_vertex_manager("google_vertex_refresh_test", &cfg).unwrap();
+        let token = mgr.get_or_refresh_token(&router.http_client, Utc::now().timestamp_millis()).await.unwrap();
+
+        let _ = srv.join();
+        assert_eq!(token, "ya29.mock-refreshed-oauth-token-555");
+    }
+
+    #[test]
+    fn test_mask_outbound_request_masks_and_blocks_reasoning() {
+        let secret = "sk-ant-api03-reasoningsecretkey999";
+
+        // 1. MaskingAction::Block must reject secret in msg.reasoning
+        let block_engine = MaskingEngine::new(MaskingConfig {
+            enabled: true,
+            default_action: MaskingAction::Block,
+            ..Default::default()
+        });
+        let mut msg = ProviderChatMessage::assistant("ok");
+        msg.reasoning = Some(format!("checking key {secret}"));
+        let mut req_block = ProviderRequest::new("claude-sonnet-4-20250514", vec![msg.clone()]);
+        let err = mask_outbound_request(&mut req_block, &block_engine).unwrap_err();
+        assert!(matches!(err, ProviderError::Configuration(_)));
+
+        // 2. MaskingAction::Mask must redact msg.reasoning and allow unmasking
+        let mask_engine = MaskingEngine::new(MaskingConfig {
+            enabled: true,
+            default_action: MaskingAction::Mask,
+            ..Default::default()
+        });
+        let mut req_mask = ProviderRequest::new("claude-sonnet-4-20250514", vec![msg]);
+        let hits = mask_outbound_request(&mut req_mask, &mask_engine).unwrap();
+        assert!(hits >= 1);
+        let masked_reason = req_mask.messages[0].reasoning.as_deref().unwrap();
+        assert!(!masked_reason.contains(secret), "secret leaked in masked reasoning: {masked_reason}");
+        assert!(masked_reason.contains("{{API_KEY_"));
+        assert_eq!(mask_engine.unmask_text(masked_reason), format!("checking key {secret}"));
+    }
+
+    #[tokio::test]
+    async fn test_gemini_and_vertex_sse_skip_id_and_retry_control_lines() {
+        // 1. GeminiGenerateContent with id: and retry: SSE control lines
+        let g_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let g_port = g_listener.local_addr().unwrap().port();
+        let g_srv = std::thread::spawn(move || {
+            let (mut sock, _) = g_listener.accept().unwrap();
+            let _ = read_http_request_text(&mut sock);
+            let sse = ": ping\n\nid: gem_1\nretry: 1000\nevent: delta\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"GEM_CTRL_OK\"}]},\"finishReason\":\"STOP\"}]}\n\ndata: [DONE]\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let gem_router = ProviderRouter::new();
+        gem_router.set_allow_local_fallback(false);
+        gem_router
+            .apply_magpie_preset(MagpiePresetApplyInput {
+                preset_id: "google".to_string(),
+                api_key: Some("gem-test-key".to_string()),
+                base_url_override: Some(format!("http://127.0.0.1:{g_port}/v1beta")),
+                activate: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let gem_resp = gem_router
+            .complete(
+                ProviderRequest::new("gemini-2.5-flash", vec![ProviderChatMessage::user("hi")]),
+                None,
+            )
+            .await
+            .expect("gemini sse with id/retry lines must succeed");
+        let _ = g_srv.join();
+        assert_eq!(gem_resp.content, "GEM_CTRL_OK");
+
+        // 2. GoogleVertex with id: and retry: SSE control lines
+        let v_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let v_port = v_listener.local_addr().unwrap().port();
+        let v_srv = std::thread::spawn(move || {
+            let (mut sock, _) = v_listener.accept().unwrap();
+            let _ = read_http_request_text(&mut sock);
+            let sse = ": keepalive\nid: v_1\nretry: 500\nevent: message\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"VERTEX_CTRL_OK\"}]},\"finishReason\":\"STOP\"}]}\n\ndata: [DONE]\n\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse.len(),
+                sse
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+
+        let v_router = ProviderRouter::new();
+        let mut v_cfg = ProviderConfig::google_vertex(
+            "vertex_sse_ctrl",
+            "Vertex SSE Ctrl",
+            format!("http://127.0.0.1:{v_port}"),
+            "gemini-2.5-flash",
+            Some("proj-test".to_string()),
+        );
+        v_cfg.credentials.add_entry(CredentialEntry::new("c1", "tok-123", "mock"));
+        v_router.register_provider(v_cfg);
+        let v_resp = v_router
+            .complete_on_provider(
+                "vertex_sse_ctrl",
+                ProviderRequest::new("gemini-2.5-flash", vec![ProviderChatMessage::user("hi")]),
+                None,
+            )
+            .await
+            .expect("vertex sse with id/retry lines must succeed");
+        let _ = v_srv.join();
+        assert_eq!(v_resp.content, "VERTEX_CTRL_OK");
     }
 }

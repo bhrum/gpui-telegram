@@ -68,6 +68,8 @@ impl AppShell {
 
         self.spawn_ws_status_observer(cx);
         self.spawn_idle_auto_lock_observer(cx);
+        self.spawn_ttl_purge_observer(cx);
+        self.spawn_auto_update_loop(cx);
         self.observe_drawer_and_modal_entities(cx);
         self.observe_nav_rail_entity(cx);
         self.observe_sidebar_entity(cx);
@@ -84,6 +86,57 @@ impl AppShell {
                     .update(app, |shell, cx| {
                         let elapsed = shell.overlays.last_user_activity.elapsed().as_secs();
                         let _ = shell.check_idle_auto_lock(elapsed, cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn spawn_ttl_purge_observer(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
+            loop {
+                app.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let keep = weak_shell
+                    .update(app, |shell, cx| {
+                        if !shell.is_authenticated {
+                            return true;
+                        }
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let purged_store = shell.client.local_store.purge_expired_messages(now_ms);
+                        let mut purged_stage_count = 0usize;
+                        shell.stage.update(cx, |st, st_cx| {
+                            for (cid, mids) in &purged_store {
+                                let cid_u64 = u64::try_from(cid.0).unwrap_or(0);
+                                let id_set: std::collections::HashSet<u64> = mids
+                                    .iter()
+                                    .filter_map(|m| u64::try_from(m.0).ok())
+                                    .collect();
+                                if st.active_chat_id == Some(cid_u64) {
+                                    let b = st.messages.len();
+                                    st.messages.retain(|m| !id_set.contains(&m.id));
+                                    purged_stage_count += b.saturating_sub(st.messages.len());
+                                }
+                                if let Some(h) = st.chat_histories.get_mut(&cid_u64) {
+                                    let b = h.len();
+                                    h.retain(|m| !id_set.contains(&m.id));
+                                    purged_stage_count += b.saturating_sub(h.len());
+                                }
+                            }
+                            purged_stage_count += st.purge_expired_messages_before(now_ms);
+                            if purged_stage_count > 0 {
+                                st_cx.notify();
+                            }
+                        });
+                        if !purged_store.is_empty() || purged_stage_count > 0 {
+                            cx.notify();
+                        }
                         true
                     })
                     .unwrap_or(false);
@@ -167,8 +220,14 @@ impl AppShell {
 
     fn observe_drawer_and_modal_entities(&self, cx: &mut Context<Self>) {
         cx.observe(&self.main_menu_drawer, |shell, drawer, cx| {
-            let (cmd, bf, ma) = drawer
-                .update(cx, |d, _| (d.take_command(), d.take_botfather_open(), d.take_miniapps_center()));
+            let (cmd, bf, ma, upd) = drawer.update(cx, |d, _| {
+                (
+                    d.take_command(),
+                    d.take_botfather_open(),
+                    d.take_miniapps_center(),
+                    d.take_trigger_update(),
+                )
+            });
             if let Some(cmd) = cmd {
                 shell.handle_main_menu_command(cmd, cx);
             }
@@ -177,6 +236,9 @@ impl AppShell {
             }
             if ma {
                 shell.open_miniapps_center(cx);
+            }
+            if upd {
+                shell.trigger_one_click_update(cx);
             }
         })
         .detach();
@@ -416,10 +478,22 @@ impl AppShell {
         })
         .detach();
         cx.observe(&self.composer, |shell, comp, cx| {
-            let (att_opt, focused, launch_miniapp) =
-                comp.update(cx, |c, _| (c.submitted_attachment.take(), c.is_input_focused, c.take_launch_miniapp()));
+            let (att_opt, focused, launch_miniapp, selected_send_as) =
+                comp.update(cx, |c, _| {
+                    (
+                        c.submitted_attachment.take(),
+                        c.is_input_focused,
+                        c.take_launch_miniapp(),
+                        c.selected_send_as_peer_id,
+                    )
+                });
             if focused {
                 shell.sidebar.update(cx, |sb, _| sb.search_focused = false);
+            }
+            if let (Some(chat_id), Some(pid)) = (shell.stage.read(cx).active_chat_id, selected_send_as) {
+                if shell.session_sync.send_as_peers.chosen(chat_id) != Some(pid) {
+                    shell.session_sync.send_as_peers.set_chosen(chat_id, pid);
+                }
             }
             if let Some(kind) = att_opt {
                 shell.append_outgoing_attachment(&kind, cx);
@@ -428,6 +502,7 @@ impl AppShell {
                 shell.launch_miniapp_from_composer(bot_id, &bot_un, &short_name, &url, cx);
             }
             shell.handle_composer_pending_actions(cx);
+            shell.handle_composer_draft_change(cx);
             cx.notify();
         })
         .detach();
@@ -914,6 +989,8 @@ impl AppShell {
                 }
                 cx.notify();
             }
+            SettingsRouterEvent::CheckForUpdates => self.trigger_update_check(true, cx),
+            SettingsRouterEvent::TriggerOneClickUpdate => self.trigger_one_click_update(cx),
         }
     }
 }

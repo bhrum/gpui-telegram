@@ -49,6 +49,8 @@ pub struct MainMenuDrawer {
     pub pending_command: Option<MainMenuCommand>,
     pub pending_botfather_open: bool,
     pub pending_miniapps_center: bool,
+    pub available_update_version: Option<String>,
+    pub pending_trigger_update: bool,
     pub palette: TdesktopThemePalette,
 }
 
@@ -66,6 +68,8 @@ impl MainMenuDrawer {
             pending_command: None,
             pending_botfather_open: false,
             pending_miniapps_center: false,
+            available_update_version: None,
+            pending_trigger_update: false,
             palette,
         }
     }
@@ -109,6 +113,16 @@ impl MainMenuDrawer {
         let v = self.pending_miniapps_center;
         self.pending_miniapps_center = false;
         v
+    }
+
+    pub fn take_trigger_update(&mut self) -> bool {
+        let v = self.pending_trigger_update;
+        self.pending_trigger_update = false;
+        v
+    }
+
+    pub fn set_available_update(&mut self, version: Option<String>) {
+        self.available_update_version = version;
     }
 
     pub fn active_account(&self) -> AccountSessionRecord {
@@ -916,7 +930,42 @@ impl Render for MainMenuDrawer {
                                     })),
                             ),
                     )
-                    // 4. Footer Version Stamp (window_main_menu.cpp)
+                    // 4. Optional One-Click Update Pill + Footer Version Stamp
+                    .when_some(self.available_update_version.clone(), |el, upd_ver| {
+                        let upd_label = if lang.starts_with("zh") {
+                            format!("发现新版本 v{upd_ver} • 点击一键更新")
+                        } else {
+                            format!("Update v{upd_ver} ready • One-Click Update")
+                        };
+                        el.child(
+                            div()
+                                .id("main-menu-oneclick-update-pill")
+                                .cursor_pointer()
+                                .mx(px(14.0))
+                                .mt(px(6.0))
+                                .mb(px(2.0))
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .bg(rgb(palette.accent))
+                                .hover(move |s| s.bg(rgb(palette.accent_hover)))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(palette.active_button_fg))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| {
+                                        this.pending_trigger_update = true;
+                                        this.is_open = false;
+                                        cx.notify();
+                                    }),
+                                )
+                                .child(upd_label),
+                        )
+                    })
                     .child(
                         div()
                             .cursor_pointer()
@@ -940,13 +989,13 @@ impl Render for MainMenuDrawer {
                                     .text_size(px(12.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(rgb(palette.text_link))
-                                    .child("AI Chat Desktop"),
+                                    .child("Fabushi Desktop"),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(fg_muted)
-                                    .child(concat!("AI Chat v", env!("CARGO_PKG_VERSION"))),
+                                    .child(concat!("Fabushi v", env!("CARGO_PKG_VERSION"))),
                             ),
                     ),
             )

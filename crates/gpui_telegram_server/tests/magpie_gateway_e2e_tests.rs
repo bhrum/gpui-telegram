@@ -20,6 +20,41 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+static ENV_RWLOCK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+struct ScopedEnvVars {
+    previous: Vec<(String, Option<String>)>,
+}
+
+impl ScopedEnvVars {
+    fn set(vars: &[(&str, Option<&str>)]) -> Self {
+        let mut previous = Vec::with_capacity(vars.len());
+        for (key, value) in vars {
+            previous.push(((*key).to_string(), std::env::var(key).ok()));
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedEnvVars {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..).rev() {
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(&key, v),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
+}
+
 fn build_temp_server_config(dir: &std::path::Path) -> ServerConfig {
     let db_path = dir.join("magpie_gateway_e2e.db");
     let media_dir = dir.join("media_cas");
@@ -279,6 +314,7 @@ async fn spawn_mock_upstreams() -> (String, String, Arc<MockUpstreamState>) {
 
 #[tokio::test]
 async fn test_e2e_magpie_state_presets_no_subscription_provider_error_and_bot_button() {
+    let _env_read = ENV_RWLOCK.read().await;
     let (dir, state, router) = boot_test_server();
     isolate_empty_providers(&state, dir.path());
 
@@ -424,6 +460,7 @@ async fn test_e2e_magpie_state_presets_no_subscription_provider_error_and_bot_bu
 
 #[tokio::test]
 async fn test_e2e_magpie_preset_persistence_probe_delete_and_miniapp_ai_chat() {
+    let _env_read = ENV_RWLOCK.read().await;
     let dir = tempfile::Builder::new()
         .prefix("magpie_persist_e2e_")
         .tempdir_in(std::env::temp_dir())
@@ -588,6 +625,7 @@ async fn test_e2e_magpie_preset_persistence_probe_delete_and_miniapp_ai_chat() {
 
 #[tokio::test]
 async fn test_e2e_magpie_groups_masking_import_and_builtin_v1_gateway_protocols() {
+    let _env_read = ENV_RWLOCK.read().await;
     let (dir, state, router) = boot_test_server();
     isolate_empty_providers(&state, dir.path());
     let (openai_url, _gemini_url, mock_state) = spawn_mock_upstreams().await;
@@ -796,6 +834,7 @@ async fn test_e2e_magpie_groups_masking_import_and_builtin_v1_gateway_protocols(
 
 #[tokio::test]
 async fn test_e2e_hermes_client_magpie_roundtrip_over_http() {
+    let _env_read = ENV_RWLOCK.read().await;
     let (dir, state, router) = boot_test_server();
     isolate_empty_providers(&state, dir.path());
     let (openai_url, _gemini_url, _mock_state) = spawn_mock_upstreams().await;
@@ -931,4 +970,319 @@ async fn test_e2e_hermes_client_magpie_roundtrip_over_http() {
     assert!(del_prov.ok);
 
     handle.abort();
+}
+
+#[tokio::test]
+async fn test_e2e_magpie_subscriptions_list_and_activate_endpoints() {
+    let _env_read = ENV_RWLOCK.read().await;
+    let (_dir, state, router) = boot_test_server();
+    let (_uid, tok) = register_user(&router, "magpie_sub_user").await;
+
+    // 1. Setup mock home with Google Vertex ADC and Codex credentials
+    let temp_home = tempfile::tempdir().unwrap();
+    let home = temp_home.path();
+    let gcloud_dir = home.join(".config").join("gcloud");
+    std::fs::create_dir_all(&gcloud_dir).unwrap();
+    let adc_content = json!({
+        "client_id": "test-vertex-client-id",
+        "client_secret": "test-vertex-client-secret",
+        "refresh_token": "test-vertex-refresh-token",
+        "quota_project_id": "test-project-adc-999",
+        "account": "test-dev@vertex.internal"
+    });
+    std::fs::write(
+        gcloud_dir.join("application_default_credentials.json"),
+        adc_content.to_string(),
+    )
+    .unwrap();
+
+    let codex_dir = home.join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let mock_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ICJzdWJfY29kZXhAZXhhbXBsZS5jb20iLCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwbHVzIiwgImNoYXRncHRfYWNjb3VudF9pZCI6ICJjaGF0Z3B0LXN1Yi1hY2NvdW50LTEyMyJ9fQ.signature";
+    let codex_auth = json!({
+        "tokens": {
+            "account_id": "chatgpt-sub-account-123",
+            "access_token": mock_jwt,
+            "id_token": mock_jwt,
+            "refresh_token": "test-refresh-tok"
+        }
+    });
+    std::fs::write(codex_dir.join("auth.json"), codex_auth.to_string()).unwrap();
+
+    // Discover in router
+    state.hermes.providers().refresh_discovered_subscriptions_in_home(home, Some(&codex_dir));
+    state.hermes.persist_providers_state();
+
+    // 2. GET /api/v1/hermes/magpie/subscriptions
+    let (st_get, get_val) = http_json(
+        &router,
+        "GET",
+        "/api/v1/hermes/magpie/subscriptions",
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_get, StatusCode::OK, "GET subscriptions: {get_val}");
+    let subs = get_val.as_array().expect("subscriptions array");
+    assert!(subs.len() >= 2, "Expected at least 2 discovered subscriptions");
+
+    let vertex_sub = subs
+        .iter()
+        .find(|s| s["kind"].as_str() == Some("google_vertex"))
+        .expect("Google Vertex subscription found");
+    assert_eq!(
+        vertex_sub["label"].as_str(),
+        Some("Google Vertex AI (test-dev@vertex.internal · test-project-adc-999)")
+    );
+    assert_eq!(vertex_sub["plan"].as_str(), Some("vertex_adc"));
+    let vertex_models = vertex_sub["models"].as_array().expect("models array");
+    assert!(vertex_models.iter().any(|m| m.as_str() == Some("gemini-2.5-flash")));
+    assert!(vertex_models.iter().any(|m| m.as_str() == Some("gemini-2.5-pro")));
+    let vertex_id = vertex_sub["id"].as_str().expect("vertex id").to_string();
+
+    let codex_sub = subs
+        .iter()
+        .find(|s| s["kind"].as_str() == Some("codex_chatgpt"))
+        .expect("Codex subscription found");
+    assert!(codex_sub["label"].as_str().unwrap().contains("Codex"));
+    assert_eq!(codex_sub["plan"].as_str(), Some("plus"));
+    let codex_id = codex_sub["id"].as_str().expect("codex id").to_string();
+
+    // 3. POST /api/v1/hermes/magpie/subscriptions/{id}/activate with explicit model
+    let activate_path = format!("/api/v1/hermes/magpie/subscriptions/{vertex_id}/activate");
+    let (st_act, act_val) = http_json(
+        &router,
+        "POST",
+        &activate_path,
+        Some(&tok),
+        Some(json!({ "model": "gemini-2.5-pro" })),
+    )
+    .await;
+    assert_eq!(st_act, StatusCode::OK, "activate vertex: {act_val}");
+    assert_eq!(act_val["status"].as_str(), Some("ok"));
+    assert_eq!(act_val["active_provider_id"].as_str(), Some(vertex_id.as_str()));
+    assert_eq!(act_val["active_model"].as_str(), Some("gemini-2.5-pro"));
+
+    // Verify state reflects activated provider
+    let (st_state, state_val) = http_json(
+        &router,
+        "GET",
+        "/api/v1/hermes/magpie/state",
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_state, StatusCode::OK);
+    assert_eq!(state_val["active_provider"].as_str(), Some(vertex_id.as_str()));
+    assert_eq!(state_val["active_model"].as_str(), Some("gemini-2.5-pro"));
+    assert_eq!(state_val["has_active_subscription"].as_bool(), Some(true));
+    assert_eq!(state_val["needs_provider_selection"].as_bool(), Some(false));
+
+    // Verify GET /subscriptions reflects Vertex as active and Codex as inactive
+    let (st_subs_1, subs_val_1) = http_json(
+        &router,
+        "GET",
+        "/api/v1/hermes/magpie/subscriptions",
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_subs_1, StatusCode::OK);
+    let subs_arr_1 = subs_val_1.as_array().expect("subscriptions list");
+    let v_sub_1 = subs_arr_1.iter().find(|s| s["id"] == vertex_id).unwrap();
+    let c_sub_1 = subs_arr_1.iter().find(|s| s["id"] == codex_id).unwrap();
+    assert_eq!(v_sub_1["active"].as_bool(), Some(true), "Vertex should be active");
+    assert_eq!(c_sub_1["active"].as_bool(), Some(false), "Codex should NOT be active");
+
+    // 4. Activate Codex subscription with empty body (default model)
+    let activate_codex_path = format!("/api/v1/hermes/magpie/subscriptions/{codex_id}/activate");
+    let (st_act_c, act_c_val) = http_json(
+        &router,
+        "POST",
+        &activate_codex_path,
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_act_c, StatusCode::OK, "activate codex: {act_c_val}");
+    assert_eq!(act_c_val["status"].as_str(), Some("ok"));
+    assert_eq!(act_c_val["active_provider_id"].as_str(), Some(codex_id.as_str()));
+
+    // Verify GET /subscriptions reflects Codex as active and Vertex as inactive (no active leak)
+    let (st_subs_2, subs_val_2) = http_json(
+        &router,
+        "GET",
+        "/api/v1/hermes/magpie/subscriptions",
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_subs_2, StatusCode::OK);
+    let subs_arr_2 = subs_val_2.as_array().expect("subscriptions list");
+    let v_sub_2 = subs_arr_2.iter().find(|s| s["id"] == vertex_id).unwrap();
+    let c_sub_2 = subs_arr_2.iter().find(|s| s["id"] == codex_id).unwrap();
+    assert_eq!(v_sub_2["active"].as_bool(), Some(false), "Vertex should now be inactive");
+    assert_eq!(c_sub_2["active"].as_bool(), Some(true), "Codex should now be active");
+
+    // 5. Test activate non-existent subscription returns 404
+    let (st_act_err, act_err_val) = http_json(
+        &router,
+        "POST",
+        "/api/v1/hermes/magpie/subscriptions/non-existent-sub/activate",
+        Some(&tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_act_err, StatusCode::NOT_FOUND, "expected 404: {act_err_val}");
+}
+
+#[tokio::test]
+async fn test_e2e_magpie_subscription_selection_persists_across_restart_with_multiple_host_credentials() {
+    let _env_write = ENV_RWLOCK.write().await;
+
+    let db_dir = tempfile::Builder::new()
+        .prefix("magpie_live_restart_db_")
+        .tempdir_in(std::env::temp_dir())
+        .expect("create db tempdir");
+    let home_dir = tempfile::Builder::new()
+        .prefix("magpie_live_restart_home_")
+        .tempdir_in(std::env::temp_dir())
+        .expect("create home tempdir");
+
+    // Populate mock HOME with both Vertex AI ADC (higher default auto-bind priority) and Codex/ChatGPT
+    let gcloud_dir = home_dir.path().join(".config").join("gcloud");
+    std::fs::create_dir_all(&gcloud_dir).expect("create gcloud dir");
+    let adc_content = json!({
+        "client_id": "restart-vertex-client-id",
+        "client_secret": "restart-vertex-client-secret",
+        "refresh_token": "restart-vertex-refresh-token",
+        "quota_project_id": "restart-project-adc",
+        "account": "restart-dev@vertex.internal"
+    });
+    std::fs::write(
+        gcloud_dir.join("application_default_credentials.json"),
+        adc_content.to_string(),
+    )
+    .expect("write vertex adc");
+
+    let codex_dir = home_dir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).expect("create codex dir");
+    let mock_jwt = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ICJzdWJfY29kZXhAZXhhbXBsZS5jb20iLCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJwbHVzIiwgImNoYXRncHRfYWNjb3VudF9pZCI6ICJjaGF0Z3B0LXN1Yi1hY2NvdW50LTEyMyJ9fQ.signature";
+    let codex_auth = json!({
+        "tokens": {
+            "account_id": "chatgpt-restart-acct-1",
+            "access_token": mock_jwt,
+            "id_token": mock_jwt,
+            "refresh_token": "restart-codex-refresh-tok"
+        }
+    });
+    std::fs::write(codex_dir.join("auth.json"), codex_auth.to_string()).expect("write codex auth");
+
+    let home_str = home_dir.path().to_string_lossy().to_string();
+    let codex_str = codex_dir.to_string_lossy().to_string();
+    let _env_guard = ScopedEnvVars::set(&[
+        ("HERMES_FORCE_LIVE_PROVIDERS", Some("1")),
+        ("HOME", Some(&home_str)),
+        ("CODEX_HOME", Some(&codex_str)),
+        ("MAGPIE_BASE_URL", Some("http://127.0.0.1:9/v1")),
+        ("HERMES_PROVIDER", None),
+        ("HERMES_MODEL", None),
+        ("OPENAI_API_KEY", None),
+        ("ANTHROPIC_API_KEY", None),
+        ("DEEPSEEK_API_KEY", None),
+        ("OPENROUTER_API_KEY", None),
+    ]);
+
+    let tok: String;
+    let vertex_id: String;
+    let codex_id: String;
+    {
+        let (state1, router1) = boot_test_server_in(db_dir.path());
+        let (_uid, t) = register_user(&router1, "magpie_live_restart_user").await;
+        tok = t;
+
+        // First boot auto-discovers both credentials and defaults to Google Vertex AI
+        let (st_subs1, subs1) = http_json(
+            &router1,
+            "GET",
+            "/api/v1/hermes/magpie/subscriptions",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(st_subs1, StatusCode::OK, "boot1 subscriptions: {subs1}");
+        let subs_arr1 = subs1.as_array().expect("subscriptions array");
+        let v_sub = subs_arr1
+            .iter()
+            .find(|s| s["kind"].as_str() == Some("google_vertex"))
+            .expect("vertex subscription discovered");
+        let c_sub = subs_arr1
+            .iter()
+            .find(|s| s["kind"].as_str() == Some("codex_chatgpt"))
+            .expect("codex subscription discovered");
+        vertex_id = v_sub["id"].as_str().unwrap().to_string();
+        codex_id = c_sub["id"].as_str().unwrap().to_string();
+        assert_eq!(v_sub["active"].as_bool(), Some(true), "boot1 vertex initially active");
+        assert_eq!(c_sub["active"].as_bool(), Some(false), "boot1 codex initially inactive");
+
+        // User activates Codex with gpt-4o
+        let (st_act, act_val) = http_json(
+            &router1,
+            "POST",
+            &format!("/api/v1/hermes/magpie/subscriptions/{codex_id}/activate"),
+            Some(&tok),
+            Some(json!({ "model": "gpt-4o" })),
+        )
+        .await;
+        assert_eq!(st_act, StatusCode::OK, "activate codex: {act_val}");
+        assert_eq!(act_val["active_provider_id"].as_str(), Some(codex_id.as_str()));
+        assert_eq!(act_val["active_model"].as_str(), Some("gpt-4o"));
+        drop(state1);
+        drop(router1);
+    }
+
+    // Boot 2 on the same SQLite DB with live provider discovery still enabled:
+    // from_env() will auto-bind google_vertex first, then HermesEngine::new must restore codex as active.
+    {
+        let (_state2, router2) = boot_test_server_in(db_dir.path());
+        let (st_state2, state2) = http_json(
+            &router2,
+            "GET",
+            "/api/v1/hermes/magpie/state",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(st_state2, StatusCode::OK, "boot2 state: {state2}");
+        assert_eq!(
+            state2["active_provider"].as_str(),
+            Some(codex_id.as_str()),
+            "persisted codex subscription must survive restart even with live Vertex ADC present: {state2}"
+        );
+        assert_eq!(state2["active_model"].as_str(), Some("gpt-4o"));
+        assert_eq!(state2["needs_provider_selection"].as_bool(), Some(false));
+
+        let (st_subs2, subs2) = http_json(
+            &router2,
+            "GET",
+            "/api/v1/hermes/magpie/subscriptions",
+            Some(&tok),
+            None,
+        )
+        .await;
+        assert_eq!(st_subs2, StatusCode::OK, "boot2 subscriptions: {subs2}");
+        let subs_arr2 = subs2.as_array().expect("boot2 subscriptions array");
+        let v_sub2 = subs_arr2.iter().find(|s| s["id"] == vertex_id).unwrap();
+        let c_sub2 = subs_arr2.iter().find(|s| s["id"] == codex_id).unwrap();
+        assert_eq!(
+            v_sub2["active"].as_bool(),
+            Some(false),
+            "Vertex must remain inactive after restart: {subs2}"
+        );
+        assert_eq!(
+            c_sub2["active"].as_bool(),
+            Some(true),
+            "Codex must remain active after restart: {subs2}"
+        );
+    }
 }

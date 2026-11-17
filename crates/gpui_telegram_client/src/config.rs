@@ -1,3 +1,4 @@
+use crate::net::proxy::ClientProxyConfig;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -27,6 +28,10 @@ pub struct ClientConfig {
     pub http_timeout_secs: u64,
     pub ws_ping_interval_secs: u64,
     pub max_reconnect_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ClientProxyConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_feed_url: Option<String>,
     #[serde(skip)]
     pub config_source: ConfigSource,
 }
@@ -38,6 +43,8 @@ impl Default for ClientConfig {
             http_timeout_secs: DEFAULT_HTTP_TIMEOUT_SECS,
             ws_ping_interval_secs: DEFAULT_WS_PING_INTERVAL_SECS,
             max_reconnect_attempts: DEFAULT_MAX_RECONNECT_ATTEMPTS,
+            proxy: None,
+            update_feed_url: None,
             config_source: ConfigSource::DefaultFallback,
         }
     }
@@ -49,6 +56,10 @@ pub struct UserConfigFile {
     pub http_timeout_secs: Option<u64>,
     pub ws_ping_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
+    #[serde(default)]
+    pub proxy: Option<ClientProxyConfig>,
+    #[serde(default)]
+    pub update_feed_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +88,7 @@ impl ClientConfig {
     /// 4. Fallback default (`http://127.0.0.1:8080`)
     pub fn resolve_with_args(args: &[String]) -> Self {
         let mut cli_url: Option<String> = None;
+        let mut cli_proxy: Option<String> = None;
         let mut i = 1;
         while i < args.len() {
             if args[i] == "--server-url" || args[i] == "-s" {
@@ -88,6 +100,13 @@ impl ClientConfig {
                 cli_url = Some(stripped.to_string());
             } else if let Some(stripped) = args[i].strip_prefix("-s=") {
                 cli_url = Some(stripped.to_string());
+            } else if args[i] == "--proxy-url" {
+                if i + 1 < args.len() {
+                    cli_proxy = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            } else if let Some(stripped) = args[i].strip_prefix("--proxy-url=") {
+                cli_proxy = Some(stripped.to_string());
             }
             i += 1;
         }
@@ -97,6 +116,8 @@ impl ClientConfig {
         let mut http_timeout_secs = DEFAULT_HTTP_TIMEOUT_SECS;
         let mut ws_ping_interval_secs = DEFAULT_WS_PING_INTERVAL_SECS;
         let mut max_reconnect_attempts = DEFAULT_MAX_RECONNECT_ATTEMPTS;
+        let mut proxy_cfg: Option<ClientProxyConfig> = None;
+        let mut update_feed_url: Option<String> = None;
         let mut source = ConfigSource::DefaultFallback;
 
         // Layer 3: User Config File (~/.config/gpui_telegram/config.json)
@@ -120,11 +141,20 @@ impl ClientConfig {
                     if let Some(ra) = cfg_file.max_reconnect_attempts {
                         max_reconnect_attempts = ra;
                     }
+                    if let Some(p) = cfg_file.proxy {
+                        proxy_cfg = Some(p);
+                    }
+                    if let Some(feed) = cfg_file.update_feed_url {
+                        let trimmed = feed.trim();
+                        if !trimmed.is_empty() {
+                            update_feed_url = Some(trimmed.to_string());
+                        }
+                    }
                 }
             }
         }
 
-        // Layer 2: Environment Variable (GPUI_TELEGRAM_SERVER_URL)
+        // Layer 2: Environment Variable (GPUI_TELEGRAM_SERVER_URL, GPUI_TELEGRAM_PROXY_URL)
         if let Ok(env_url) = env::var("GPUI_TELEGRAM_SERVER_URL") {
             let trimmed = env_url.trim();
             if !trimmed.is_empty() {
@@ -132,13 +162,36 @@ impl ClientConfig {
                 source = ConfigSource::EnvironmentVariable;
             }
         }
+        if let Ok(env_proxy) = env::var("GPUI_TELEGRAM_PROXY_URL") {
+            if !env_proxy.trim().is_empty() {
+                if let Ok(p) = ClientProxyConfig::from_url(&env_proxy) {
+                    proxy_cfg = Some(p);
+                }
+            }
+        }
+        for env_key in ["FABUSHI_UPDATE_FEED_URL", "GPUI_TELEGRAM_UPDATE_FEED_URL"] {
+            if let Ok(env_feed) = env::var(env_key) {
+                let trimmed = env_feed.trim();
+                if !trimmed.is_empty() {
+                    update_feed_url = Some(trimmed.to_string());
+                    break;
+                }
+            }
+        }
 
-        // Layer 1: CLI Argument (--server-url)
+        // Layer 1: CLI Argument (--server-url, --proxy-url)
         if let Some(raw_cli) = cli_url {
             let trimmed = raw_cli.trim();
             if !trimmed.is_empty() {
                 final_url = Self::normalize_url(trimmed);
                 source = ConfigSource::CliArgument;
+            }
+        }
+        if let Some(raw_cli_proxy) = cli_proxy {
+            if !raw_cli_proxy.trim().is_empty() {
+                if let Ok(p) = ClientProxyConfig::from_url(&raw_cli_proxy) {
+                    proxy_cfg = Some(p);
+                }
             }
         }
 
@@ -147,6 +200,8 @@ impl ClientConfig {
             http_timeout_secs,
             ws_ping_interval_secs,
             max_reconnect_attempts,
+            proxy: proxy_cfg,
+            update_feed_url,
             config_source: source,
         }
     }

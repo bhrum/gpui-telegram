@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use gpui::{AppContext, AsyncApp, Context, WeakEntity};
 use gpui_telegram_client::net::http_client::AddContactHttpRequest;
 use gpui_telegram_proto::miniapp_contracts::{
-    parse_miniapp_uri, AcceptMiniAppTosRequest, BotPublicProfileDto, BotRegistryEntry,
-    FabushiBotSummaryDto, MiniAppEntry, MiniAppLaunchMode, BOTFATHER_USER_ID,
+    parse_miniapp_uri, sanitize_webapp_custom_url, AcceptMiniAppTosRequest, BotPublicProfileDto,
+    BotRegistryEntry, FabushiBotSummaryDto, MiniAppEntry, MiniAppLaunchMode, BOTFATHER_USER_ID,
 };
 
 use crate::components::bots::bot_attach_web_view::{peer_types, peer_types_mask_from_strings};
@@ -1095,11 +1095,37 @@ impl AppShell {
         start_param: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.request_launch_miniapp_with_confirm_and_url(
+            bot_username,
+            short_name,
+            source_chat_id,
+            launch_mode,
+            start_param,
+            None,
+            cx,
+        );
+    }
+
+    /// Gates chat-originated launches (optionally carrying a deep-link `custom_url`) behind ToS confirmation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_launch_miniapp_with_confirm_and_url(
+        &mut self,
+        bot_username: &str,
+        short_name: &str,
+        source_chat_id: Option<u64>,
+        launch_mode: MiniAppLaunchMode,
+        start_param: Option<String>,
+        custom_url: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let bot_un = bot_username.trim().trim_start_matches('@').to_string();
         let short = short_name.trim().to_string();
         if bot_un.is_empty() || short.is_empty() {
             return;
         }
+        let clean_custom_url = custom_url
+            .as_deref()
+            .and_then(sanitize_webapp_custom_url);
         let clean_lower = bot_un.to_ascii_lowercase();
         let prof_opt = self.miniapps.bot_profiles_cache.get(&clean_lower).cloned();
         let app_opt = prof_opt
@@ -1143,10 +1169,19 @@ impl AppShell {
             .or_else(|| {
                 source_chat_id.and_then(|cid| self.session_sync.chat_peer_user_ids.get(&cid).copied())
             })
+            .or_else(|| bot_un.parse::<u64>().ok().filter(|&id| id > 0))
             .unwrap_or(0);
 
         if self.is_miniapp_tos_accepted(bot_id, &bot_un, &short) {
-            self.launch_miniapp(&bot_un, &short, source_chat_id, launch_mode, start_param, cx);
+            self.launch_miniapp_with_url(
+                &bot_un,
+                &short,
+                source_chat_id,
+                launch_mode,
+                start_param,
+                clean_custom_url,
+                cx,
+            );
             return;
         }
 
@@ -1174,6 +1209,7 @@ impl AppShell {
             source_chat_id,
             launch_mode,
             start_param,
+            custom_url: clean_custom_url,
         });
         cx.notify();
     }
@@ -1242,12 +1278,13 @@ impl AppShell {
             .detach();
         }
 
-        self.launch_miniapp(
+        self.launch_miniapp_with_url(
             &confirm.bot_username,
             &confirm.short_name,
             confirm.source_chat_id,
             confirm.launch_mode,
             confirm.start_param,
+            confirm.custom_url,
             cx,
         );
     }
@@ -1262,6 +1299,29 @@ impl AppShell {
         start_param: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.launch_miniapp_with_url(
+            bot_username,
+            short_name,
+            source_chat_id,
+            launch_mode,
+            start_param,
+            None,
+            cx,
+        );
+    }
+
+    /// Launches a Mini-App overlay, optionally preserving a custom `web_app.url` deep link.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_miniapp_with_url(
+        &mut self,
+        bot_username: &str,
+        short_name: &str,
+        source_chat_id: Option<u64>,
+        launch_mode: MiniAppLaunchMode,
+        start_param: Option<String>,
+        custom_url: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let bot_un = bot_username.trim().trim_start_matches('@').to_string();
         let short = short_name.trim().to_string();
         if bot_un.is_empty() || short.is_empty() {
@@ -1270,6 +1330,9 @@ impl AppShell {
         let Some(fence) = session_fence(self) else {
             return;
         };
+        let clean_custom_url = custom_url
+            .as_deref()
+            .and_then(sanitize_webapp_custom_url);
         let server_base = self.client.http_client.base_url.clone();
         let ov = self.ensure_miniapp_overlay(cx);
         self.miniapps.is_miniapp_minimized = false;
@@ -1291,18 +1354,22 @@ impl AppShell {
             w.bot_username = bot_un.clone();
             w.source_chat_id = source_chat_id.map(|id| id as i64);
             w.ui_schema.title = title_hint;
+            if let Some(ref cu) = clean_custom_url {
+                w.url = cu.clone();
+            }
             w_cx.notify();
         });
         let client = self.client.clone();
         let ov_weak = ov.downgrade();
         cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
             let res = client
-                .launch_mini_app(
+                .launch_mini_app_with_url(
                     &bot_un,
                     &short,
                     source_chat_id.map(|id| id as i64),
                     launch_mode,
                     start_param.as_deref(),
+                    clean_custom_url.as_deref(),
                 )
                 .await;
             let _ = weak.update(app, |shell, cx| {
@@ -1341,6 +1408,193 @@ impl AppShell {
         cx.notify();
     }
 
+    fn dispatch_miniapp_launch_target(
+        &mut self,
+        bot_username: &str,
+        short_name: &str,
+        source_chat_id: Option<u64>,
+        launch_mode: MiniAppLaunchMode,
+        start_param: Option<String>,
+        custom_url: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let needs_confirm = matches!(
+            launch_mode,
+            MiniAppLaunchMode::MenuButton
+                | MiniAppLaunchMode::InlineKeyboard
+                | MiniAppLaunchMode::AttachMenu
+                | MiniAppLaunchMode::MainMiniApp
+        );
+        if needs_confirm {
+            self.request_launch_miniapp_with_confirm_and_url(
+                bot_username,
+                short_name,
+                source_chat_id,
+                launch_mode,
+                start_param,
+                custom_url,
+                cx,
+            );
+        } else {
+            self.launch_miniapp_with_url(
+                bot_username,
+                short_name,
+                source_chat_id,
+                launch_mode,
+                start_param,
+                custom_url,
+                cx,
+            );
+        }
+    }
+
+    fn resolve_bot_target_for_webapp(
+        &self,
+        source_chat_id: Option<u64>,
+        sender_user_id: Option<u64>,
+    ) -> Option<String> {
+        let lookup_bot_username = |uid: u64| -> Option<String> {
+            self.miniapps
+                .my_bots
+                .iter()
+                .chain(self.miniapps.attach_menu_bots.iter())
+                .find(|b| {
+                    b.bot_user_id > 0
+                        && b.bot_user_id as u64 == uid
+                        && !b.username.trim().is_empty()
+                })
+                .map(|b| b.username.trim().trim_start_matches('@').to_string())
+                .or_else(|| {
+                    self.miniapps
+                        .bot_profiles_cache
+                        .values()
+                        .find(|p| {
+                            p.bot.bot_user_id > 0
+                                && p.bot.bot_user_id as u64 == uid
+                                && !p.bot.username.trim().is_empty()
+                        })
+                        .map(|p| p.bot.username.trim().trim_start_matches('@').to_string())
+                })
+                .or_else(|| {
+                    self.session_sync
+                        .rich_chats_by_id
+                        .values()
+                        .find(|rc| rc.is_bot && rc.peer_user_id == Some(uid))
+                        .and_then(|rc| rc.peer_username.as_deref().or(rc.username.as_deref()))
+                        .map(|s| s.trim().trim_start_matches('@').to_string())
+                        .filter(|s| !s.is_empty())
+                })
+        };
+
+        if let Some(cid) = source_chat_id {
+            if let Some(rc) = self.session_sync.rich_chats_by_id.get(&cid) {
+                if rc.is_bot {
+                    if let Some(un) = rc
+                        .peer_username
+                        .as_deref()
+                        .or(rc.username.as_deref())
+                        .map(|s| s.trim().trim_start_matches('@'))
+                        .filter(|s| !s.is_empty())
+                    {
+                        return Some(un.to_string());
+                    }
+                    if let Some(pid) = rc.peer_user_id.filter(|&id| id > 0) {
+                        return Some(lookup_bot_username(pid).unwrap_or_else(|| pid.to_string()));
+                    }
+                }
+            }
+        }
+        if let Some(suid) = sender_user_id.filter(|&id| id > 0) {
+            return Some(lookup_bot_username(suid).unwrap_or_else(|| suid.to_string()));
+        }
+        if let Some(cid) = source_chat_id {
+            if let Some(pid) = self
+                .session_sync
+                .chat_peer_user_ids
+                .get(&cid)
+                .copied()
+                .filter(|&id| id > 0)
+            {
+                return Some(lookup_bot_username(pid).unwrap_or_else(|| pid.to_string()));
+            }
+        }
+        None
+    }
+
+    /// Launches a Mini App from an explicit `InlineKeyboard` / menu `web_app.url`,
+    /// preserving custom `http(s)://...` or `/...` deep-link paths even without `/newapp`.
+    pub fn launch_miniapp_from_webapp_button(
+        &mut self,
+        raw_uri: &str,
+        source_chat_id: Option<u64>,
+        sender_user_id: Option<u64>,
+        launch_mode: MiniAppLaunchMode,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let custom_url = sanitize_webapp_custom_url(raw_uri);
+        if let Some((bot_un, short_name, start_param)) = parse_miniapp_uri(raw_uri) {
+            self.dispatch_miniapp_launch_target(
+                &bot_un,
+                &short_name,
+                source_chat_id,
+                launch_mode,
+                start_param,
+                custom_url,
+                cx,
+            );
+            return true;
+        }
+        let Some(valid_url) = custom_url else {
+            return self.launch_miniapp_from_uri(raw_uri, source_chat_id, launch_mode, cx);
+        };
+
+        let peer_uid = source_chat_id.and_then(|cid| {
+            self.session_sync
+                .rich_chats_by_id
+                .get(&cid)
+                .and_then(|rc| rc.peer_user_id)
+                .or_else(|| self.session_sync.chat_peer_user_ids.get(&cid).copied())
+        });
+        if let Some(app) = self
+            .miniapps
+            .installed_miniapps
+            .iter()
+            .chain(self.miniapps.catalog_miniapps.iter())
+            .find(|a| {
+                source_chat_id.is_some_and(|cid| a.direct_chat_id == Some(cid as i64))
+                    || peer_uid.is_some_and(|pid| a.bot_user_id == pid as i64)
+                    || sender_user_id.is_some_and(|suid| a.bot_user_id == suid as i64)
+            })
+            .cloned()
+        {
+            self.dispatch_miniapp_launch_target(
+                &app.bot_username,
+                &app.short_name,
+                source_chat_id,
+                launch_mode,
+                None,
+                Some(valid_url),
+                cx,
+            );
+            return true;
+        }
+
+        if let Some(bot_target) = self.resolve_bot_target_for_webapp(source_chat_id, sender_user_id)
+        {
+            self.dispatch_miniapp_launch_target(
+                &bot_target,
+                "app",
+                source_chat_id,
+                launch_mode,
+                None,
+                Some(valid_url),
+                cx,
+            );
+            return true;
+        }
+        false
+    }
+
     /// Parses a Mini-App URI or resolves the active chat's associated Mini-App to launch it.
     pub fn launch_miniapp_from_uri(
         &mut self,
@@ -1349,33 +1603,17 @@ impl AppShell {
         launch_mode: MiniAppLaunchMode,
         cx: &mut Context<Self>,
     ) -> bool {
-        let needs_confirm = matches!(
-            launch_mode,
-            MiniAppLaunchMode::MenuButton
-                | MiniAppLaunchMode::InlineKeyboard
-                | MiniAppLaunchMode::AttachMenu
-                | MiniAppLaunchMode::MainMiniApp
-        );
         if let Some((bot_un, short_name, start_param)) = parse_miniapp_uri(raw_uri) {
-            if needs_confirm {
-                self.request_launch_miniapp_with_confirm(
-                    &bot_un,
-                    &short_name,
-                    source_chat_id,
-                    launch_mode,
-                    start_param,
-                    cx,
-                );
-            } else {
-                self.launch_miniapp(
-                    &bot_un,
-                    &short_name,
-                    source_chat_id,
-                    launch_mode,
-                    start_param,
-                    cx,
-                );
-            }
+            let custom_url = sanitize_webapp_custom_url(raw_uri);
+            self.dispatch_miniapp_launch_target(
+                &bot_un,
+                &short_name,
+                source_chat_id,
+                launch_mode,
+                start_param,
+                custom_url,
+                cx,
+            );
             return true;
         }
         if let Some(cid) = source_chat_id {
@@ -1396,25 +1634,15 @@ impl AppShell {
                 })
                 .cloned()
             {
-                if needs_confirm {
-                    self.request_launch_miniapp_with_confirm(
-                        &app.bot_username,
-                        &app.short_name,
-                        Some(cid),
-                        launch_mode,
-                        None,
-                        cx,
-                    );
-                } else {
-                    self.launch_miniapp(
-                        &app.bot_username,
-                        &app.short_name,
-                        Some(cid),
-                        launch_mode,
-                        None,
-                        cx,
-                    );
-                }
+                self.dispatch_miniapp_launch_target(
+                    &app.bot_username,
+                    &app.short_name,
+                    Some(cid),
+                    launch_mode,
+                    None,
+                    None,
+                    cx,
+                );
                 return true;
             }
         }
@@ -1434,23 +1662,27 @@ impl AppShell {
             self.stage.read(cx).active_chat_id,
             self.sidebar.read(cx).active_chat_id,
         );
-        let mode = if !short_name.trim().is_empty() && url.contains("gpui-miniapp://") {
+        let custom_url = sanitize_webapp_custom_url(url);
+        let mode = if (!short_name.trim().is_empty() && url.contains("gpui-miniapp://"))
+            || (short_name.trim().is_empty() && custom_url.is_some())
+        {
             MiniAppLaunchMode::MenuButton
         } else {
             MiniAppLaunchMode::AttachMenu
         };
         if !bot_username.trim().is_empty() && !short_name.trim().is_empty() {
-            self.request_launch_miniapp_with_confirm(
+            self.request_launch_miniapp_with_confirm_and_url(
                 bot_username,
                 short_name,
                 active_chat,
                 mode,
                 None,
+                custom_url,
                 cx,
             );
             return;
         }
-        if self.launch_miniapp_from_uri(url, active_chat, mode, cx) {
+        if parse_miniapp_uri(url).is_some() && self.launch_miniapp_from_uri(url, active_chat, mode, cx) {
             return;
         }
         let target_un = bot_username.trim().trim_start_matches('@');
@@ -1465,14 +1697,36 @@ impl AppShell {
             })
             .cloned()
         {
-            self.request_launch_miniapp_with_confirm(
+            self.request_launch_miniapp_with_confirm_and_url(
                 &app.bot_username,
                 &app.short_name,
                 active_chat,
                 mode,
                 None,
+                custom_url,
                 cx,
             );
+            return;
+        }
+        if let Some(valid_url) = custom_url {
+            let bot_target = if !target_un.is_empty() {
+                Some(target_un.to_string())
+            } else if bot_id > 0 {
+                Some(bot_id.to_string())
+            } else {
+                self.resolve_bot_target_for_webapp(active_chat, None)
+            };
+            if let Some(target) = bot_target {
+                self.request_launch_miniapp_with_confirm_and_url(
+                    &target,
+                    "app",
+                    active_chat,
+                    mode,
+                    None,
+                    Some(valid_url),
+                    cx,
+                );
+            }
         }
     }
 

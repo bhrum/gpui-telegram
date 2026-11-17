@@ -89,6 +89,7 @@ fn test_conversation_stage_demo_messages_cover_11_canonical_cards() {
             MessageContent::Story { .. } => has_story = true,
             MessageContent::Invoice { .. } => has_invoice = true,
             MessageContent::BotKeyboard { .. } => has_bot_keyboard = true,
+            MessageContent::GenerativeCard(_) => {}
         }
         if msg.bot_keyboard.is_some() {
             has_bot_keyboard = true;

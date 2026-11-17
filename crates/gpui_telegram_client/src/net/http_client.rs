@@ -37,6 +37,8 @@ pub enum HttpClientError {
     Unauthorized(String),
     #[error("Conflict (409): {0}")]
     Conflict(String),
+    #[error("Proxy error: {0}")]
+    Proxy(String),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -47,6 +49,7 @@ impl From<HttpClientError> for gpui_telegram_core::error::TelegramError {
         match err {
             HttpClientError::Unauthorized(msg) => TelegramError::Auth(msg),
             HttpClientError::Conflict(msg) => TelegramError::Validation(msg),
+            HttpClientError::Proxy(msg) => TelegramError::Network(format!("Proxy error: {msg}")),
             HttpClientError::Serialization(e) => TelegramError::Serialization(e.to_string()),
             HttpClientError::Network(e) => TelegramError::Network(e.to_string()),
             HttpClientError::Api { status, message } => match status {
@@ -494,6 +497,12 @@ struct HistoricalMessageWire {
     reply_to_info: Option<HistoricalReplyToInfo>,
     #[serde(default)]
     reactions: Option<Vec<HistoricalReaction>>,
+    #[serde(default)]
+    ttl_seconds: Option<u32>,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+    #[serde(default)]
+    send_as_peer_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -514,6 +523,12 @@ pub struct HistoricalMessage {
     pub reply_to_info: Option<HistoricalReplyToInfo>,
     #[serde(default)]
     pub reactions: Vec<HistoricalReaction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_as_peer_id: Option<u64>,
     #[serde(skip)]
     pub reactions_authoritative: bool,
 }
@@ -540,6 +555,9 @@ impl From<HistoricalMessageWire> for HistoricalMessage {
             is_outgoing: wire.is_outgoing,
             reply_to_info: wire.reply_to_info,
             reactions,
+            ttl_seconds: wire.ttl_seconds,
+            expires_at_ms: wire.expires_at_ms,
+            send_as_peer_id: wire.send_as_peer_id,
             reactions_authoritative,
         }
     }
@@ -799,7 +817,7 @@ fn generate_default_device_id() -> String {
 
 #[derive(Clone)]
 pub(crate) struct DeviceHttpClient {
-    inner: Client,
+    inner: std::sync::Arc<parking_lot::RwLock<Client>>,
     device_id: std::sync::Arc<parking_lot::RwLock<String>>,
 }
 
@@ -808,7 +826,14 @@ impl DeviceHttpClient {
         inner: Client,
         device_id: std::sync::Arc<parking_lot::RwLock<String>>,
     ) -> Self {
-        Self { inner, device_id }
+        Self {
+            inner: std::sync::Arc::new(parking_lot::RwLock::new(inner)),
+            device_id,
+        }
+    }
+
+    pub(crate) fn replace_client(&self, next: Client) {
+        *self.inner.write() = next;
     }
 
     pub(crate) fn request<U: reqwest::IntoUrl>(
@@ -817,7 +842,8 @@ impl DeviceHttpClient {
         url: U,
     ) -> reqwest::RequestBuilder {
         let did = self.device_id.read().clone();
-        self.inner.request(method, url).header("X-Device-Id", did)
+        let client = self.inner.read().clone();
+        client.request(method, url).header("X-Device-Id", did)
     }
 
     pub(crate) fn get<U: reqwest::IntoUrl>(&self, url: U) -> reqwest::RequestBuilder {
@@ -837,11 +863,35 @@ impl DeviceHttpClient {
     }
 }
 
+fn build_reqwest_client(
+    timeout: Duration,
+    proxy: Option<&crate::net::proxy::ClientProxyConfig>,
+) -> Result<Client, HttpClientError> {
+    let mut builder = Client::builder().timeout(timeout);
+    match proxy {
+        Some(cfg) if !cfg.is_direct() => {
+            if let Some(p) = cfg.to_reqwest_proxy()? {
+                builder = builder.proxy(p);
+            } else {
+                builder = builder.no_proxy();
+            }
+        }
+        _ => {
+            builder = builder.no_proxy();
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| HttpClientError::Proxy(format!("Failed to build HTTP client: {e}")))
+}
+
 #[derive(Clone)]
 pub struct HttpClient {
     pub base_url: String,
     pub(crate) client: DeviceHttpClient,
     device_id: std::sync::Arc<parking_lot::RwLock<String>>,
+    timeout: Duration,
+    proxy: std::sync::Arc<parking_lot::RwLock<Option<crate::net::proxy::ClientProxyConfig>>>,
     runtime_handle: Handle,
     fabushi_alipay_states:
         std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, String>>>,
@@ -864,11 +914,18 @@ impl HttpClient {
         timeout: Duration,
         runtime_handle: Option<Handle>,
     ) -> Self {
+        Self::new_with_proxy(base_url, timeout, runtime_handle, None)
+    }
+
+    pub fn new_with_proxy(
+        base_url: String,
+        timeout: Duration,
+        runtime_handle: Option<Handle>,
+        proxy: Option<crate::net::proxy::ClientProxyConfig>,
+    ) -> Self {
         let handle = ensure_runtime_handle(runtime_handle);
         let _guard = handle.enter();
-        let raw_client = Client::builder()
-            .timeout(timeout)
-            .build()
+        let raw_client = build_reqwest_client(timeout, proxy.as_ref())
             .unwrap_or_else(|_| Client::new());
         let device_id =
             std::sync::Arc::new(parking_lot::RwLock::new(generate_default_device_id()));
@@ -878,6 +935,8 @@ impl HttpClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
             device_id,
+            timeout,
+            proxy: std::sync::Arc::new(parking_lot::RwLock::new(proxy)),
             runtime_handle: handle,
             fabushi_alipay_states: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -886,6 +945,42 @@ impl HttpClient {
                 std::collections::HashMap::new(),
             )),
         }
+    }
+
+    pub fn set_proxy(
+        &self,
+        proxy: Option<crate::net::proxy::ClientProxyConfig>,
+    ) -> Result<(), HttpClientError> {
+        let _guard = self.runtime_handle.enter();
+        let next = build_reqwest_client(self.timeout, proxy.as_ref())?;
+        self.client.replace_client(next);
+        *self.proxy.write() = proxy;
+        Ok(())
+    }
+
+    pub fn proxy(&self) -> Option<crate::net::proxy::ClientProxyConfig> {
+        self.proxy.read().clone()
+    }
+
+    pub async fn probe_proxy(
+        &self,
+        proxy: &crate::net::proxy::ClientProxyConfig,
+    ) -> Result<u32, HttpClientError> {
+        let parsed = reqwest::Url::parse(&self.base_url).map_err(|e| {
+            HttpClientError::Proxy(format!("Invalid base URL '{}': {e}", self.base_url))
+        })?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| HttpClientError::Proxy("Base URL missing host".into()))?
+            .trim_matches(|c| c == '[' || c == ']')
+            .to_string();
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        let proxy_owned = proxy.clone();
+        let timeout = self.timeout.min(Duration::from_secs(5));
+        let report = self
+            .run_on_tokio(async move { proxy_owned.probe_health(&host, port, timeout).await })
+            .await?;
+        Ok(report.latency_ms)
     }
 
     /// Returns the active client device identifier sent via `X-Device-Id` on outgoing HTTP calls.
@@ -2217,6 +2312,84 @@ impl HttpClient {
     /// Returns streaming media URL
     pub fn media_stream_url(&self, file_id: &str) -> String {
         format!("{}/api/v1/media/stream/{}", self.base_url, file_id)
+    }
+
+    pub async fn init_chunked_upload(
+        &self,
+        token: &str,
+        req: &gpui_telegram_proto::contracts::ChunkedUploadInitRequest,
+    ) -> Result<gpui_telegram_proto::contracts::MediaUploadInitResponse, HttpClientError> {
+        self.request_json(
+            reqwest::Method::POST,
+            "/api/v1/media/upload/init",
+            Some(token),
+            Some(req),
+        )
+        .await
+    }
+
+    pub async fn upload_chunk_part(
+        &self,
+        token: &str,
+        upload_id: &str,
+        part_index: u32,
+        bytes: Vec<u8>,
+    ) -> Result<(), HttpClientError> {
+        let client = self.client.clone();
+        let url = format!(
+            "{}/api/v1/media/upload/{}/part/{}",
+            self.base_url, upload_id, part_index
+        );
+        let token_owned = token.to_string();
+        self.run_on_tokio(async move {
+            let resp = client
+                .put(&url)
+                .bearer_auth(&token_owned)
+                .body(bytes)
+                .send()
+                .await?;
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(crate::net::http_helpers::extract_api_error(status, &text));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn get_chunked_upload_status(
+        &self,
+        token: &str,
+        upload_id: &str,
+    ) -> Result<gpui_telegram_proto::contracts::ChunkedUploadStatusResponse, HttpClientError> {
+        let path = format!("/api/v1/media/upload/{}/status", upload_id);
+        self.request_json(reqwest::Method::GET, &path, Some(token), None::<&()>)
+            .await
+    }
+
+    pub async fn complete_chunked_upload(
+        &self,
+        token: &str,
+        upload_id: &str,
+        filename: Option<&str>,
+        mime_type: Option<&str>,
+        chat_id: Option<i64>,
+    ) -> Result<gpui_telegram_proto::contracts::MediaUploadCompleteResponse, HttpClientError> {
+        let path = format!("/api/v1/media/upload/{}/complete", upload_id);
+        let mut body = serde_json::Map::new();
+        if let Some(f) = filename {
+            body.insert("filename".into(), serde_json::Value::String(f.to_string()));
+        }
+        if let Some(m) = mime_type {
+            body.insert("mime_type".into(), serde_json::Value::String(m.to_string()));
+        }
+        if let Some(cid) = chat_id {
+            body.insert("chat_id".into(), serde_json::Value::Number(cid.into()));
+        }
+        let val = serde_json::Value::Object(body);
+        self.request_json(reqwest::Method::POST, &path, Some(token), Some(&val))
+            .await
     }
 
     /// Uploads media binary chunks to CAS storage

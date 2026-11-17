@@ -24,7 +24,7 @@ use super::tools_web_media::execute_web_media_tool;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// All 28 Hermes toolsets.
+/// All 29 Hermes toolsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolsetId {
@@ -56,10 +56,11 @@ pub enum ToolsetId {
     SessionSearch,
     Workspace,
     Voice,
+    PlatformIm,
 }
 
 impl ToolsetId {
-    pub const ALL: [ToolsetId; 28] = [
+    pub const ALL: [ToolsetId; 29] = [
         Self::Core,
         Self::Web,
         Self::Terminal,
@@ -88,6 +89,7 @@ impl ToolsetId {
         Self::SessionSearch,
         Self::Workspace,
         Self::Voice,
+        Self::PlatformIm,
     ];
 
     pub fn all() -> &'static [ToolsetId] {
@@ -124,6 +126,7 @@ impl ToolsetId {
             Self::SessionSearch => "session_search",
             Self::Workspace => "workspace",
             Self::Voice => "voice",
+            Self::PlatformIm => "platform_im",
         }
     }
 
@@ -158,6 +161,7 @@ impl ToolsetId {
             "session_search" | "sessionsearch" => Some(Self::SessionSearch),
             "workspace" => Some(Self::Workspace),
             "voice" | "talk" => Some(Self::Voice),
+            "platform_im" | "platformim" | "im" => Some(Self::PlatformIm),
             _ => None,
         }
     }
@@ -192,6 +196,7 @@ impl ToolsetId {
             Self::SessionSearch => "Full-text and CJK fallback search across past conversation sessions",
             Self::Workspace => "Workspace file checkpoint inspection and atomic turn rollback",
             Self::Voice => "Full-duplex Voice / Talk Mode coordinator state control",
+            Self::PlatformIm => "Native platform IM messaging, channels, topics, reactions, pins, polls, and MiniApps",
         }
     }
 }
@@ -255,6 +260,7 @@ impl ToolsetPreset {
                 ToolsetId::Vision,
                 ToolsetId::Kanban,
                 ToolsetId::ComputerUse,
+                ToolsetId::PlatformIm,
             ],
             Self::HermesTelegram => vec![
                 ToolsetId::Core,
@@ -285,6 +291,7 @@ impl ToolsetPreset {
                 ToolsetId::Mcp,
                 ToolsetId::Terminal,
                 ToolsetId::CodeExecution,
+                ToolsetId::PlatformIm,
             ],
             Self::HermesAcp => vec![
                 ToolsetId::Core,
@@ -302,6 +309,7 @@ impl ToolsetPreset {
                 ToolsetId::SessionSearch,
                 ToolsetId::ComputerUse,
                 ToolsetId::DesktopUi,
+                ToolsetId::PlatformIm,
             ],
             Self::Minimal => vec![ToolsetId::Core, ToolsetId::File, ToolsetId::Reasoning],
             Self::Safe => vec![
@@ -316,6 +324,7 @@ impl ToolsetPreset {
                 ToolsetId::SessionSearch,
                 ToolsetId::Kanban,
                 ToolsetId::Honcho,
+                ToolsetId::PlatformIm,
             ],
             Self::Full => ToolsetId::ALL.to_vec(),
         }
@@ -726,6 +735,97 @@ pub trait HermesStateBridge: Send + Sync {
     fn record_approval<'a>(&'a self, _approval: PendingApproval) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
+    fn connections_op<'a>(&'a self, _args: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async { Err("connections_op not bridged".to_string()) })
+    }
+    fn desktop_ui_inspect<'a>(&'a self) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async { Err("desktop_ui_inspect not bridged".to_string()) })
+    }
+    fn record_lineage<'a>(
+        &'a self,
+        _task_id: &'a str,
+        _parent_session_id: Option<&'a str>,
+        _role: &'a str,
+        _status: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Persistent SQLite convergence backend (implemented by `ServerDatabase` in `gpui_telegram_server`).
+pub trait AgenticStateBackend: Send + Sync {
+    fn connections_op<'a>(
+        &'a self,
+        scope_key: &'a str,
+        args: &'a Value,
+    ) -> BoxFuture<'a, Result<Value, String>>;
+    fn desktop_ui_inspect<'a>(&'a self, scope_key: &'a str) -> BoxFuture<'a, Result<Value, String>>;
+    fn desktop_ui_act<'a>(
+        &'a self,
+        scope_key: &'a str,
+        action: HermesUiAction,
+    ) -> BoxFuture<'a, Result<Value, String>>;
+    fn record_lineage<'a>(
+        &'a self,
+        scope_key: &'a str,
+        task_id: &'a str,
+        parent_session_id: Option<&'a str>,
+        role: &'a str,
+        status: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn cron_op<'a>(
+        &'a self,
+        scope_key: &'a str,
+        args: &'a Value,
+    ) -> BoxFuture<'a, Result<Value, String>>;
+    fn kanban_op<'a>(
+        &'a self,
+        scope_key: &'a str,
+        action: &'a str,
+        args: &'a Value,
+    ) -> BoxFuture<'a, Result<Value, String>>;
+    fn kv_set<'a>(
+        &'a self,
+        namespace: &'a str,
+        key: &'a str,
+        value: &'a str,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn kv_get<'a>(
+        &'a self,
+        namespace: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, String>>;
+    fn record_checkpoint<'a>(
+        &'a self,
+        session_id: &'a str,
+        turn_index: u64,
+        file_path: &'a str,
+        original_content: Option<&'a [u8]>,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    fn record_approval<'a>(
+        &'a self,
+        approval: PendingApproval,
+    ) -> BoxFuture<'a, Result<(), String>>;
+}
+
+/// Caller metadata forwarded to `PlatformImBridge`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformImCaller {
+    pub user_id: Option<u64>,
+    pub chat_id: Option<i64>,
+    pub bot_id: Option<i64>,
+    pub bound_agent_id: Option<String>,
+    pub session_id: String,
+}
+
+/// Native platform IM toolbox bridge implemented by `gpui_telegram_server`.
+pub trait PlatformImBridge: Send + Sync {
+    fn execute_im_tool<'a>(
+        &'a self,
+        tool_name: &'a str,
+        args: &'a Value,
+        caller: PlatformImCaller,
+    ) -> BoxFuture<'a, std::result::Result<Value, String>>;
 }
 
 pub type ApprovalCallback = Arc<
@@ -794,6 +894,7 @@ pub struct HermesToolContext {
     pub ui_action_emitter: Option<UiActionCallback>,
     pub state_bridge: Option<Arc<dyn HermesStateBridge>>,
     pub teammate_handler: Option<Arc<dyn FabushiTeammateHandler>>,
+    pub platform_im_bridge: Option<Arc<dyn PlatformImBridge>>,
     pub http_client: reqwest::Client,
     pub browser_cdp_url: Option<String>,
     pub terminal_backend: TerminalBackendConfig,
@@ -833,6 +934,7 @@ impl HermesToolContext {
             ui_action_emitter: None,
             state_bridge: None,
             teammate_handler: None,
+            platform_im_bridge: None,
             http_client,
             browser_cdp_url: std::env::var("HERMES_BROWSER_CDP_URL").ok(),
             terminal_backend: TerminalBackendConfig::default(),
@@ -881,6 +983,11 @@ impl HermesToolContext {
 
     pub fn with_teammate_handler(mut self, handler: Arc<dyn FabushiTeammateHandler>) -> Self {
         self.teammate_handler = Some(handler);
+        self
+    }
+
+    pub fn with_platform_im_bridge(mut self, bridge: Arc<dyn PlatformImBridge>) -> Self {
+        self.platform_im_bridge = Some(bridge);
         self
     }
 
@@ -2129,6 +2236,250 @@ pub fn all_builtin_tool_specs() -> Vec<HermesToolSpec> {
             ToolRiskLevel::Low,
             false,
         ),
+        // 29. PlatformIm (14 native IM tools)
+        HermesToolSpec::new(
+            "send_message",
+            ToolsetId::PlatformIm,
+            "Send a native platform IM message (plain text or rich GenerativeCard) to a chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "text": { "type": "string" },
+                    "reply_to_id": { "type": "integer" },
+                    "topic_id": { "type": "integer" },
+                    "silent": { "type": "boolean" },
+                    "client_nonce": { "type": "string" }
+                },
+                "required": ["text"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "edit_message",
+            ToolsetId::PlatformIm,
+            "Edit an existing message in a platform chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "message_id": { "type": "integer" },
+                    "text": { "type": "string" }
+                },
+                "required": ["message_id", "text"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "delete_message",
+            ToolsetId::PlatformIm,
+            "Delete one or more messages in a platform chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "message_id": { "type": "integer" },
+                    "message_ids": { "type": "array", "items": { "type": "integer" } },
+                    "revoke": { "type": "boolean" }
+                }
+            }),
+            ToolRiskLevel::High,
+            false,
+        ),
+        HermesToolSpec::new(
+            "pin_message",
+            ToolsetId::PlatformIm,
+            "Pin or unpin a message in a platform chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "message_id": { "type": "integer" },
+                    "unpin": { "type": "boolean" }
+                },
+                "required": ["message_id"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            "add_reaction",
+            ToolsetId::PlatformIm,
+            "Add or toggle an emoji reaction on a message.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "message_id": { "type": "integer" },
+                    "emoji": { "type": "string" },
+                    "reaction": { "type": "string" },
+                    "action": { "type": "string", "enum": ["add", "remove", "toggle"] }
+                },
+                "required": ["message_id"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "search_messages",
+            ToolsetId::PlatformIm,
+            "Search platform messages across accessible chats using Tantivy / Hybrid Memory.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "chat_id": { "type": "integer" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "required": ["query"]
+            }),
+            ToolRiskLevel::ReadOnly,
+            true,
+        ),
+        HermesToolSpec::new(
+            "create_channel",
+            ToolsetId::PlatformIm,
+            "Create a new channel or group chat with optional forum topics and initial members.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "chat_type": { "type": "string", "enum": ["channel", "group", "supergroup"] },
+                    "about": { "type": "string" },
+                    "username": { "type": "string" },
+                    "is_forum": { "type": "boolean" },
+                    "member_ids": { "type": "array", "items": { "type": "integer" } }
+                },
+                "required": ["title"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            "manage_topic",
+            ToolsetId::PlatformIm,
+            "Create, update, list, or delete forum topics in a supergroup chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "action": { "type": "string", "enum": ["create", "update", "delete", "list"] },
+                    "topic_id": { "type": "integer" },
+                    "title": { "type": "string" },
+                    "is_pinned": { "type": "boolean" },
+                    "is_closed": { "type": "boolean" },
+                    "is_hidden": { "type": "boolean" }
+                },
+                "required": ["action"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
+        HermesToolSpec::new(
+            "list_members",
+            ToolsetId::PlatformIm,
+            "List members and roles in a platform chat or channel.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" }
+                }
+            }),
+            ToolRiskLevel::ReadOnly,
+            true,
+        ),
+        HermesToolSpec::new(
+            "kick_member",
+            ToolsetId::PlatformIm,
+            "Remove a member from a platform group or channel.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "user_id": { "type": "integer" }
+                },
+                "required": ["user_id"]
+            }),
+            ToolRiskLevel::High,
+            false,
+        ),
+        HermesToolSpec::new(
+            "create_poll",
+            ToolsetId::PlatformIm,
+            "Create a native interactive poll message in a chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "chat_id": { "type": "integer" },
+                    "question": { "type": "string" },
+                    "options": { "type": "array", "items": { "type": "string" } },
+                    "is_anonymous": { "type": "boolean" },
+                    "multiple_choice": { "type": "boolean" },
+                    "is_quiz": { "type": "boolean" },
+                    "correct_option_id": { "type": "integer" },
+                    "topic_id": { "type": "integer" }
+                },
+                "required": ["question", "options"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "vote_poll",
+            ToolsetId::PlatformIm,
+            "Cast vote(s) on an active native poll.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "poll_id": { "type": "string" },
+                    "option_ids": { "type": "array", "items": { "type": "integer" } },
+                    "option_index": { "type": "integer" }
+                },
+                "required": ["poll_id"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "launch_miniapp",
+            ToolsetId::PlatformIm,
+            "Launch a registered MiniApp session and retrieve its state & AgentManifest.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "bot_username": { "type": "string" },
+                    "short_name": { "type": "string" },
+                    "chat_id": { "type": "integer" },
+                    "start_param": { "type": "string" }
+                },
+                "required": ["bot_username", "short_name"]
+            }),
+            ToolRiskLevel::Low,
+            false,
+        ),
+        HermesToolSpec::new(
+            "invoke_miniapp_action",
+            ToolsetId::PlatformIm,
+            "Invoke a declared action on a MiniApp via its dual-surface contract.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "bot_username": { "type": "string" },
+                    "short_name": { "type": "string" },
+                    "action_type": { "type": "string" },
+                    "widget_id": { "type": "string" },
+                    "value": {},
+                    "data": { "type": "string" },
+                    "chat_id": { "type": "integer" },
+                    "query_id": { "type": "string" }
+                },
+                "required": ["bot_username", "short_name", "action_type"]
+            }),
+            ToolRiskLevel::Medium,
+            false,
+        ),
     ]
 }
 
@@ -2268,6 +2619,7 @@ impl HermesToolExecutor {
             | ToolsetId::Memory
             | ToolsetId::Honcho
             | ToolsetId::Voice => execute_agentic_tool(spec_name, args, ctx).await,
+            ToolsetId::PlatformIm => execute_platform_im_tool(spec_name, args, ctx).await,
         };
 
         res.with_duration(start.elapsed().as_millis() as u64)
@@ -2617,13 +2969,51 @@ async fn execute_computer_use_tool(
     res
 }
 
+async fn execute_platform_im_tool(
+    spec_name: &str,
+    mut args: Value,
+    ctx: &HermesToolContext,
+) -> HermesToolResult {
+    let Some(bridge) = ctx.platform_im_bridge.as_ref() else {
+        return HermesToolResult::err(
+            spec_name,
+            "PlatformImBridge is not attached to HermesToolContext",
+        );
+    };
+
+    if let Some(ctx_chat_id) = ctx.chat_id {
+        if let Some(obj) = args.as_object_mut() {
+            if !obj.contains_key("chat_id") || obj.get("chat_id").is_some_and(Value::is_null) {
+                obj.insert("chat_id".to_string(), json!(ctx_chat_id));
+            }
+        }
+    }
+
+    let caller = PlatformImCaller {
+        user_id: ctx.user_id,
+        chat_id: ctx.chat_id,
+        bot_id: ctx.bot_id,
+        bound_agent_id: ctx.bound_agent_id.clone(),
+        session_id: ctx.session_id.clone(),
+    };
+
+    match bridge.execute_im_tool(spec_name, &args, caller).await {
+        Ok(val) => HermesToolResult::ok(
+            spec_name,
+            serde_json::to_string_pretty(&val).unwrap_or_default(),
+            Some(val),
+        ),
+        Err(err) => HermesToolResult::err(spec_name, err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_all_28_toolsets_and_58_tools() {
-        assert_eq!(ToolsetId::all().len(), 28);
+    fn test_all_29_toolsets_and_tools() {
+        assert_eq!(ToolsetId::all().len(), 29);
         let specs = all_builtin_tool_specs();
         assert!(specs.len() >= 40, "Expected 40+ tools, got {}", specs.len());
         for ts in ToolsetId::all() {
@@ -2891,5 +3281,58 @@ mod tests {
         assert!(viewed.success, "skill_view failed: {}", viewed.output);
         assert_eq!(viewed.tool_name, "skill_view");
         assert!(viewed.output.contains("GCP Ops"));
+    }
+
+    #[tokio::test]
+    async fn test_platform_im_14_tools_dispatch_via_bridge() {
+        struct MockImBridge(Arc<Mutex<Vec<(String, Value, Option<i64>)>>>);
+        impl PlatformImBridge for MockImBridge {
+            fn execute_im_tool<'a>(
+                &'a self,
+                tool_name: &'a str,
+                args: &'a Value,
+                caller: PlatformImCaller,
+            ) -> BoxFuture<'a, std::result::Result<Value, String>> {
+                Box::pin(async move {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((tool_name.to_string(), args.clone(), caller.chat_id));
+                    Ok(json!({ "ok": true, "tool": tool_name }))
+                })
+            }
+        }
+
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let bridge = Arc::new(MockImBridge(recorded.clone()));
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let ctx = HermesToolContext::new(dir.path())
+            .with_chat_and_bot(Some(555), None)
+            .with_user_id(Some(1))
+            .with_platform_im_bridge(bridge);
+
+        let tools_and_args = [
+            ("send_message", json!({ "text": "hello" })),
+            ("edit_message", json!({ "message_id": 1, "text": "edited" })),
+            ("delete_message", json!({ "message_id": 1 })),
+            ("pin_message", json!({ "message_id": 1 })),
+            ("add_reaction", json!({ "message_id": 1, "emoji": "👍" })),
+            ("search_messages", json!({ "query": "hello" })),
+            ("create_channel", json!({ "title": "General" })),
+            ("manage_topic", json!({ "action": "create", "title": "Bugs" })),
+            ("list_members", json!({})),
+            ("kick_member", json!({ "user_id": 2 })),
+            ("create_poll", json!({ "question": "Go?", "options": ["Yes", "No"] })),
+            ("vote_poll", json!({ "poll_id": "p1", "option_ids": [0] })),
+            ("launch_miniapp", json!({ "bot_username": "b", "short_name": "app" })),
+            ("invoke_miniapp_action", json!({ "bot_username": "b", "short_name": "app", "action_type": "main_button_click" })),
+        ];
+
+        for (name, args) in &tools_and_args {
+            let res = HermesToolExecutor::execute(name, args.clone(), &ctx).await;
+            assert!(res.success, "{name} failed: {}", res.output);
+        }
+        assert_eq!(recorded.lock().unwrap().len(), 14);
+        assert_eq!(recorded.lock().unwrap()[0].1["chat_id"], 555);
     }
 }

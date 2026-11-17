@@ -444,10 +444,13 @@ pub async fn contacts_add_or_upsert(
                     kb,
                 );
             } else {
-                let bot_apps = state
+                let bot_apps: Vec<_> = state
                     .db
                     .list_mini_apps_for_bot(target_uid.0 as i64)
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|a| a.is_published && a.category != "__bot_inline_webapp__")
+                    .collect();
                 if welcome_message.is_none() && !bot_apps.is_empty() {
                     let (text, kb) =
                         crate::routes::bots_miniapps::build_companion_bot_welcome_text_and_keyboard(

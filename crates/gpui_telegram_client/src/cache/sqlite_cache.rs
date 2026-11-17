@@ -1,6 +1,6 @@
 use gpui_telegram_core::error::{Result, TelegramError};
 use gpui_telegram_core::types::{ChatId, MessageId};
-use gpui_telegram_proto::contracts::{ChatDetailDto, DraftDto};
+use gpui_telegram_proto::contracts::{ChatDetailDto, ChatFolderDto, DraftDto};
 use gpui_telegram_proto::message::{MessageItem, ReactionCount};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
@@ -19,7 +19,7 @@ pub struct CachedMediaEntry {
 }
 
 pub(crate) struct SqliteClientCache {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
     base_dir: PathBuf,
     media_dir: PathBuf,
 }
@@ -41,9 +41,143 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn db_err(err: rusqlite::Error) -> TelegramError {
+pub(crate) fn db_err(err: rusqlite::Error) -> TelegramError {
     TelegramError::Database(err.to_string())
 }
+
+const CLIENT_SCHEMA_SQL: &str = "
+    PRAGMA journal_mode=WAL;
+    PRAGMA synchronous=NORMAL;
+    CREATE TABLE IF NOT EXISTS messages (
+        chat_id INTEGER NOT NULL,
+        msg_id INTEGER NOT NULL,
+        date_ms INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (chat_id, msg_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages(chat_id, date_ms, msg_id);
+    CREATE TABLE IF NOT EXISTS chats (
+        chat_id INTEGER PRIMARY KEY,
+        payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS drafts (
+        chat_id INTEGER PRIMARY KEY,
+        payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS read_states (
+        chat_id INTEGER PRIMARY KEY,
+        read_inbox_max INTEGER NOT NULL DEFAULT 0,
+        read_outbox_max INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS media_cas (
+        file_id TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL,
+        mime_type TEXT,
+        size_bytes INTEGER NOT NULL,
+        local_path TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS message_reactions (
+        chat_id INTEGER NOT NULL,
+        msg_id INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (chat_id, msg_id)
+    );
+    CREATE TABLE IF NOT EXISTS cache_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS outbox_messages (
+        client_nonce INTEGER PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        text_preview TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at_ms INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        server_message_id INTEGER,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbox_status_retry
+        ON outbox_messages(status, next_retry_at_ms, client_nonce);
+    CREATE TABLE IF NOT EXISTS file_transfers (
+        transfer_id TEXT PRIMARY KEY,
+        upload_id TEXT,
+        direction TEXT NOT NULL DEFAULT 'upload',
+        file_path TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        total_size INTEGER NOT NULL,
+        part_size INTEGER NOT NULL,
+        total_parts INTEGER NOT NULL,
+        file_sha256 TEXT NOT NULL,
+        chunk_hashes_json TEXT NOT NULL,
+        uploaded_parts_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        server_file_id TEXT,
+        last_error TEXT,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_transfers_status
+        ON file_transfers(status, updated_at_ms);
+    CREATE TABLE IF NOT EXISTS folders (
+        folder_id INTEGER PRIMARY KEY,
+        payload_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chat_ttls (
+        chat_id INTEGER PRIMARY KEY,
+        ttl_seconds INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_identity (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        x25519_sec BLOB NOT NULL,
+        x25519_pub BLOB NOT NULL,
+        ed25519_sec BLOB NOT NULL,
+        ed25519_pub BLOB NOT NULL,
+        next_spk_id INTEGER NOT NULL,
+        next_otpk_id INTEGER NOT NULL,
+        created_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_signed_prekeys (
+        key_id INTEGER PRIMARY KEY,
+        secret BLOB NOT NULL,
+        public BLOB NOT NULL,
+        signature BLOB NOT NULL,
+        created_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_one_time_prekeys (
+        key_id INTEGER PRIMARY KEY,
+        secret BLOB NOT NULL,
+        public BLOB NOT NULL,
+        consumed INTEGER NOT NULL DEFAULT 0,
+        created_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_sessions (
+        peer_user_id INTEGER NOT NULL,
+        peer_device_id TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (peer_user_id, peer_device_id)
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_sender_keys (
+        chat_id INTEGER NOT NULL,
+        sender_user_id INTEGER NOT NULL,
+        sender_device_id TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, sender_user_id, sender_device_id)
+    );
+    CREATE TABLE IF NOT EXISTS e2ee_distributed_keys (
+        chat_id INTEGER NOT NULL,
+        chain_id INTEGER NOT NULL,
+        peer_user_id INTEGER NOT NULL,
+        peer_device_id TEXT NOT NULL,
+        distributed_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (chat_id, chain_id, peer_user_id, peer_device_id)
+    );
+";
 
 impl SqliteClientCache {
     pub(crate) fn open(base_dir: &Path) -> Result<Self> {
@@ -51,53 +185,21 @@ impl SqliteClientCache {
         std::fs::create_dir_all(&media_dir)?;
         let db_path = base_dir.join("client_cache.db");
         let conn = Connection::open(&db_path).map_err(db_err)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             CREATE TABLE IF NOT EXISTS messages (
-                 chat_id INTEGER NOT NULL,
-                 msg_id INTEGER NOT NULL,
-                 date_ms INTEGER NOT NULL,
-                 payload_json TEXT NOT NULL,
-                 PRIMARY KEY (chat_id, msg_id)
-             );
-             CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages(chat_id, date_ms, msg_id);
-             CREATE TABLE IF NOT EXISTS chats (
-                 chat_id INTEGER PRIMARY KEY,
-                 payload_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS drafts (
-                 chat_id INTEGER PRIMARY KEY,
-                 payload_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS read_states (
-                 chat_id INTEGER PRIMARY KEY,
-                 read_inbox_max INTEGER NOT NULL DEFAULT 0,
-                 read_outbox_max INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE TABLE IF NOT EXISTS media_cas (
-                 file_id TEXT PRIMARY KEY,
-                 sha256 TEXT NOT NULL,
-                 mime_type TEXT,
-                 size_bytes INTEGER NOT NULL,
-                 local_path TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS message_reactions (
-                 chat_id INTEGER NOT NULL,
-                 msg_id INTEGER NOT NULL,
-                 payload_json TEXT NOT NULL,
-                 PRIMARY KEY (chat_id, msg_id)
-             );
-             CREATE TABLE IF NOT EXISTS cache_meta (
-                 key TEXT PRIMARY KEY,
-                 value TEXT NOT NULL
-             );",
-        )
-        .map_err(db_err)?;
+        conn.execute_batch(CLIENT_SCHEMA_SQL).map_err(db_err)?;
         Ok(Self {
             conn: Mutex::new(conn),
             base_dir: base_dir.to_path_buf(),
             media_dir,
+        })
+    }
+
+    pub(crate) fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().map_err(db_err)?;
+        conn.execute_batch(CLIENT_SCHEMA_SQL).map_err(db_err)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            base_dir: PathBuf::new(),
+            media_dir: PathBuf::new(),
         })
     }
 
@@ -193,8 +295,105 @@ impl SqliteClientCache {
              DELETE FROM chats;
              DELETE FROM drafts;
              DELETE FROM read_states;
-             DELETE FROM cache_meta;",
+             DELETE FROM cache_meta;
+             DELETE FROM outbox_messages;
+             DELETE FROM file_transfers;
+             DELETE FROM folders;
+             DELETE FROM chat_ttls;
+             DELETE FROM e2ee_identity;
+             DELETE FROM e2ee_signed_prekeys;
+             DELETE FROM e2ee_one_time_prekeys;
+             DELETE FROM e2ee_sessions;
+             DELETE FROM e2ee_sender_keys;
+             DELETE FROM e2ee_distributed_keys;",
         );
+    }
+
+    pub(crate) fn max_outbox_nonce(&self) -> u64 {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT COALESCE(MAX(client_nonce), 0) FROM outbox_messages",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as u64
+    }
+
+    pub(crate) fn load_folders(&self) -> Result<Vec<ChatFolderDto>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT payload_json FROM folders ORDER BY folder_id ASC")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row.map_err(db_err)?;
+            if let Ok(folder) = serde_json::from_str::<ChatFolderDto>(&json) {
+                out.push(folder);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn replace_folders(&self, folders: &[ChatFolderDto]) {
+        let conn = self.conn.lock();
+        let _ = conn.execute("DELETE FROM folders", []);
+        for f in folders {
+            if let Ok(json) = serde_json::to_string(f) {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO folders (folder_id, payload_json) VALUES (?1, ?2)",
+                    params![f.id, json],
+                );
+            }
+        }
+    }
+
+    pub(crate) fn upsert_folder(&self, folder: &ChatFolderDto) {
+        if let Ok(json) = serde_json::to_string(folder) {
+            let conn = self.conn.lock();
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO folders (folder_id, payload_json) VALUES (?1, ?2)",
+                params![folder.id, json],
+            );
+        }
+    }
+
+    pub(crate) fn delete_folder(&self, folder_id: i64) {
+        let conn = self.conn.lock();
+        let _ = conn.execute("DELETE FROM folders WHERE folder_id = ?1", params![folder_id]);
+    }
+
+    pub(crate) fn load_chat_ttls(&self) -> Result<HashMap<ChatId, u32>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT chat_id, ttl_seconds FROM chat_ttls")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(db_err)?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (cid, ttl) = row.map_err(db_err)?;
+            if ttl > 0 {
+                out.insert(ChatId(cid), ttl as u32);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn upsert_chat_ttl(&self, chat_id: ChatId, ttl_seconds: u32) {
+        let conn = self.conn.lock();
+        if ttl_seconds == 0 {
+            let _ = conn.execute("DELETE FROM chat_ttls WHERE chat_id = ?1", params![chat_id.0]);
+        } else {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO chat_ttls (chat_id, ttl_seconds) VALUES (?1, ?2)",
+                params![chat_id.0, ttl_seconds as i64],
+            );
+        }
     }
 
     pub(crate) fn load_messages(&self) -> Result<HashMap<ChatId, Vec<MessageItem>>> {

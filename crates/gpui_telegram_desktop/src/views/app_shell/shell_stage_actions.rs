@@ -6,8 +6,11 @@ use gpui::{AppContext, AsyncApp, ClipboardItem, Context, WeakEntity};
 use gpui_telegram_client::net::hermes_client::{
     HermesApprovalDecisionRequest, HermesCommandRequest, HermesRichChatDto,
 };
+use gpui_telegram_core::types::ChatId;
+use gpui_telegram_proto::contracts::DraftDto;
 use gpui_telegram_proto::miniapp_contracts::{parse_miniapp_uri, MiniAppLaunchMode};
 
+use crate::app::session::send_as_peers::{SendAsKey, SendAsPeer};
 use crate::i18n::tr_str;
 use crate::theme::TdesktopThemeMode;
 use crate::views::app_shell::shell_actions::{
@@ -21,6 +24,7 @@ use crate::views::app_shell::shell_truth::{
     derive_initials, select_authoritative_dialog, SessionRequestFence,
 };
 use crate::views::boxes::modal_types::ModalDialogKind;
+use crate::views::conversation_stage::PinnedBannerEntry;
 use crate::views::iv::IvViewer;
 use crate::views::media_viewer::MediaViewerItem;
 use crate::views::nav_rail::NavDestination;
@@ -202,8 +206,146 @@ impl AppShell {
         });
     }
 
+    /// Flushes any pending unsaved composer draft for `chat_id` immediately (e.g. on chat switch).
+    pub fn flush_pending_draft_for_chat(&mut self, chat_id: u64, cx: &mut Context<Self>) {
+        if !self.is_authenticated || chat_id == 0 {
+            return;
+        }
+        let Some(token) = self.session_sync.session_token.clone() else {
+            return;
+        };
+        let text = self.composer.read(cx).text().to_string();
+        let trimmed_empty = text.trim().is_empty();
+        let already_saved = self
+            .session_sync
+            .last_saved_draft_by_chat
+            .get(&chat_id)
+            .is_some_and(|prev| prev == &text);
+        if already_saved {
+            return;
+        }
+        self.session_sync
+            .last_draft_text_by_chat
+            .insert(chat_id, text.clone());
+        self.session_sync
+            .last_saved_draft_by_chat
+            .insert(chat_id, text.clone());
+        self.session_sync.draft_debounce_gen =
+            self.session_sync.draft_debounce_gen.wrapping_add(1);
+        let draft_dto = DraftDto {
+            chat_id: chat_id as i64,
+            text: text.clone(),
+            entities: Vec::new(),
+            reply_to_msg_id: None,
+            topic_id: None,
+            date_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        self.client.local_store.set_draft(
+            ChatId(chat_id as i64),
+            (!trimmed_empty).then(|| draft_dto.clone()),
+        );
+        self.sidebar
+            .update(cx, |sb, _| sb.set_draft(chat_id, text.clone()));
+        let client = self.client.clone();
+        cx.spawn(async move |_, _| {
+            let _ = client
+                .http_client
+                .save_draft(&token, chat_id as i64, &draft_dto)
+                .await;
+        })
+        .detach();
+    }
+
+    /// Handles composer text changes with local draft caching and 450ms server save debouncing.
+    pub fn handle_composer_draft_change(&mut self, cx: &mut Context<Self>) {
+        if !self.is_authenticated {
+            return;
+        }
+        let Some(chat_id) = resolve_active_target_chat_id(
+            self.stage.read(cx).active_chat_id,
+            self.sidebar.read(cx).active_chat_id,
+        ) else {
+            return;
+        };
+        let Some(token) = self.session_sync.session_token.clone() else {
+            return;
+        };
+        let text = self.composer.read(cx).text().to_string();
+        if self
+            .session_sync
+            .last_draft_text_by_chat
+            .get(&chat_id)
+            .is_some_and(|prev| prev == &text)
+        {
+            return;
+        }
+        self.session_sync
+            .last_draft_text_by_chat
+            .insert(chat_id, text.clone());
+        self.sidebar
+            .update(cx, |sb, _| sb.set_draft(chat_id, text.clone()));
+        let draft_dto = DraftDto {
+            chat_id: chat_id as i64,
+            text: text.clone(),
+            entities: Vec::new(),
+            reply_to_msg_id: None,
+            topic_id: None,
+            date_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        self.client.local_store.set_draft(
+            ChatId(chat_id as i64),
+            (!text.trim().is_empty()).then(|| draft_dto.clone()),
+        );
+
+        self.session_sync.draft_debounce_gen =
+            self.session_sync.draft_debounce_gen.wrapping_add(1);
+        let debounce_gen = self.session_sync.draft_debounce_gen;
+        let auth_gen = self.session_sync.auth_generation;
+        let client = self.client.clone();
+        cx.spawn(async move |weak: WeakEntity<Self>, app: &mut AsyncApp| {
+            app.background_executor()
+                .timer(std::time::Duration::from_millis(450))
+                .await;
+            let should_save = weak
+                .read_with(app, |shell, _| {
+                    shell.is_authenticated
+                        && shell.session_sync.auth_generation == auth_gen
+                        && shell.session_sync.draft_debounce_gen == debounce_gen
+                        && shell
+                            .session_sync
+                            .last_saved_draft_by_chat
+                            .get(&chat_id)
+                            != Some(&text)
+                })
+                .unwrap_or(false);
+            if !should_save {
+                return;
+            }
+            if client
+                .http_client
+                .save_draft(&token, chat_id as i64, &draft_dto)
+                .await
+                .is_ok()
+            {
+                let _ = weak.update(app, |shell, _| {
+                    if shell.session_sync.auth_generation == auth_gen {
+                        shell
+                            .session_sync
+                            .last_saved_draft_by_chat
+                            .insert(chat_id, text);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     /// Synchronizes sidebar/stage/inspector selection and asynchronously fetches authoritative chat details.
     pub fn sync_selected_chat_inspector_and_stage(&mut self, chat_id: u64, cx: &mut Context<Self>) {
+        let prev_chat_id = self.stage.read(cx).active_chat_id;
+        if let Some(prev) = prev_chat_id.filter(|&p| p != chat_id) {
+            self.flush_pending_draft_for_chat(prev, cx);
+        }
         let mut selected = false;
         let mut max_msg_id = 0i64;
         let Some(fence) = session_fence(self) else {
@@ -241,6 +383,33 @@ impl AppShell {
         });
         if !selected {
             return;
+        }
+        if prev_chat_id != Some(chat_id) {
+            let cached_draft = self
+                .client
+                .local_store
+                .get_draft(ChatId(chat_id as i64))
+                .map(|d| d.text)
+                .unwrap_or_default();
+            self.session_sync
+                .last_draft_text_by_chat
+                .insert(chat_id, cached_draft.clone());
+            let cached_send_as_list = self
+                .session_sync
+                .send_as_peers
+                .list(&SendAsKey::message(chat_id))
+                .to_vec();
+            let cached_chosen_send_as = self.session_sync.send_as_peers.chosen(chat_id);
+            self.composer.update(cx, |c, _| {
+                if cached_draft.is_empty() {
+                    c.clear();
+                } else {
+                    c.set_text(cached_draft.clone());
+                }
+                c.set_send_as_options(cached_send_as_list, cached_chosen_send_as);
+            });
+            self.sidebar
+                .update(cx, |sb, _| sb.set_draft(chat_id, cached_draft));
         }
         self.miniapps.pending_prestart_bot = None;
         let sb_is_bot = self.sidebar.read(cx).bot_ids.contains(&chat_id);
@@ -299,6 +468,11 @@ impl AppShell {
             let pins = client.list_pinned_messages(chat_id as i64).await.ok();
             let draft = client.get_draft(chat_id as i64).await.ok().flatten();
             let stats = client.get_channel_statistics(chat_id as i64).await.ok();
+            let send_as_dto = client
+                .http_client
+                .get_send_as_peers(&fence.token, chat_id as i64)
+                .await
+                .ok();
             if max_msg_id > 0 {
                 let _ = client.mark_chat_read(chat_id as i64, max_msg_id, None).await;
             }
@@ -342,135 +516,196 @@ impl AppShell {
                         }
                     });
                 }
-                let viewer_uid = shell.session_sync.user_id;
-                let peer_uid_for_fabushi = rich_chat
-                    .as_ref()
-                    .and_then(|rc| rc.peer_user_id)
-                    .or_else(|| bot_profile.as_ref().map(|p| p.bot.bot_user_id.max(0) as u64));
-                let is_fabushi_owner_bot = peer_uid_for_fabushi.is_some_and(|uid| {
-                    shell
-                        .miniapps
-                        .fabushi_bots
-                        .iter()
-                        .any(|fb| fb.bot_user_id > 0 && fb.bot_user_id as u64 == uid)
-                }) || bot_profile.as_ref().is_some_and(|p| {
-                    p.bot.is_fabushi_bot && viewer_uid.is_some_and(|u| p.bot.owner_user_id == u as i64)
-                });
-                shell.inspector.update(cx, |insp, _| {
-                    let mut username = String::new();
-                    let mut phone = String::new();
-                    let mut bio = String::new();
-                    let mut status = insp.profile.status.clone();
-                    let mut avatar_path = details.as_ref().and_then(|d| d.photo_file_id.clone());
-                    let mut facts = details.as_ref().map(|d| build_chat_profile_facts(d, &lang)).unwrap_or_default();
+                let is_active_chat = shell.stage.read(cx).active_chat_id == Some(chat_id);
+                if is_active_chat {
+                    let viewer_uid = shell.session_sync.user_id;
+                    let peer_uid_for_fabushi = rich_chat
+                        .as_ref()
+                        .and_then(|rc| rc.peer_user_id)
+                        .or_else(|| bot_profile.as_ref().map(|p| p.bot.bot_user_id.max(0) as u64));
+                    let is_fabushi_owner_bot = peer_uid_for_fabushi.is_some_and(|uid| {
+                        shell
+                            .miniapps
+                            .fabushi_bots
+                            .iter()
+                            .any(|fb| fb.bot_user_id > 0 && fb.bot_user_id as u64 == uid)
+                    }) || bot_profile.as_ref().is_some_and(|p| {
+                        p.bot.is_fabushi_bot && viewer_uid.is_some_and(|u| p.bot.owner_user_id == u as i64)
+                    });
+                    shell.inspector.update(cx, |insp, _| {
+                        let mut username = String::new();
+                        let mut phone = String::new();
+                        let mut bio = String::new();
+                        let mut status = insp.profile.status.clone();
+                        let mut avatar_path = details.as_ref().and_then(|d| d.photo_file_id.clone());
+                        let mut facts = details.as_ref().map(|d| build_chat_profile_facts(d, &lang)).unwrap_or_default();
 
-                    if let Some(ref rc) = rich_chat {
-                        let resolved_title = rc
-                            .peer_display_name
-                            .as_deref()
-                            .filter(|s| !s.trim().is_empty())
-                            .or_else(|| Some(rc.title.trim()).filter(|t| !t.is_empty()));
-                        if let Some(title) = resolved_title {
-                            insp.profile.name = title.to_string();
-                            let init = derive_initials(title);
-                            if !init.is_empty() {
-                                insp.profile.avatar_initials = init;
+                        if let Some(ref rc) = rich_chat {
+                            let resolved_title = rc
+                                .peer_display_name
+                                .as_deref()
+                                .filter(|s| !s.trim().is_empty())
+                                .or_else(|| Some(rc.title.trim()).filter(|t| !t.is_empty()));
+                            if let Some(title) = resolved_title {
+                                insp.profile.name = title.to_string();
+                                let init = derive_initials(title);
+                                if !init.is_empty() {
+                                    insp.profile.avatar_initials = init;
+                                }
                             }
-                        }
-                        username = normalized_username(rc.peer_username.as_deref().or(rc.username.as_deref()));
-                        phone = rc.peer_phone.clone().unwrap_or_default();
-                        bio = rc.peer_bio.as_deref().or(rc.about.as_deref()).unwrap_or("").trim().to_string();
-                        if rc.is_bot {
-                            if is_fabushi_owner_bot {
-                                status = tr_str(&lang, "AI 机器人 · Fabushi 智能体", "AI Bot · Fabushi Agent").to_string();
-                            } else if let Some(ref prof) = bot_profile {
-                                if prof.bot.mau_count > 0 {
-                                    status = crate::views::drawer::bot_computer_inspector::format_bot_mau_subtitle(
-                                        prof.bot.mau_count,
-                                        &lang,
-                                    );
+                            username = normalized_username(rc.peer_username.as_deref().or(rc.username.as_deref()));
+                            phone = rc.peer_phone.clone().unwrap_or_default();
+                            bio = rc.peer_bio.as_deref().or(rc.about.as_deref()).unwrap_or("").trim().to_string();
+                            if rc.is_bot {
+                                if is_fabushi_owner_bot {
+                                    status = tr_str(&lang, "AI 机器人 · Fabushi 智能体", "AI Bot · Fabushi Agent").to_string();
+                                } else if let Some(ref prof) = bot_profile {
+                                    if prof.bot.mau_count > 0 {
+                                        status = crate::views::drawer::bot_computer_inspector::format_bot_mau_subtitle(
+                                            prof.bot.mau_count,
+                                            &lang,
+                                        );
+                                    } else {
+                                        status = tr_str(&lang, "机器人", "bot").to_string();
+                                    }
                                 } else {
                                     status = tr_str(&lang, "机器人", "bot").to_string();
                                 }
-                            } else {
-                                status = tr_str(&lang, "机器人", "bot").to_string();
+                            }
+                            facts = enrich_facts_with_rich_chat(facts, rc, is_fabushi_owner_bot, &lang);
+                        }
+                        if let Some(ref prof) = bot_profile {
+                            if username.is_empty() && !prof.bot.username.trim().is_empty() {
+                                username = normalized_username(Some(prof.bot.username.as_str()));
+                            }
+                            if bio.is_empty() {
+                                let b = if !prof.bot.about.trim().is_empty() {
+                                    prof.bot.about.trim()
+                                } else {
+                                    prof.bot.description.trim()
+                                };
+                                if !b.is_empty() {
+                                    bio = b.to_string();
+                                }
                             }
                         }
-                        facts = enrich_facts_with_rich_chat(facts, rc, is_fabushi_owner_bot, &lang);
-                    }
-                    if let Some(ref prof) = bot_profile {
-                        if username.is_empty() && !prof.bot.username.trim().is_empty() {
-                            username = normalized_username(Some(prof.bot.username.as_str()));
+                        if username.is_empty() {
+                            let contact = rich_chat
+                                .as_ref()
+                                .and_then(|rc| rc.peer_user_id)
+                                .and_then(|pid| contacts.iter().find(|c| c.user_id == pid))
+                                .or_else(|| contacts.iter().find(|c| c.chat_id == Some(chat_id as i64) || c.user_id == chat_id));
+                            if let Some(c) = contact {
+                                username = normalized_username(c.username.as_deref());
+                                if phone.is_empty() {
+                                    phone = c.phone.clone().unwrap_or_default();
+                                }
+                            }
                         }
                         if bio.is_empty() {
-                            let b = if !prof.bot.about.trim().is_empty() {
-                                prof.bot.about.trim()
-                            } else {
-                                prof.bot.description.trim()
-                            };
-                            if !b.is_empty() {
-                                bio = b.to_string();
+                            if let Some(about) = details.as_ref().and_then(|d| d.about.as_ref()).filter(|a| !a.trim().is_empty()) {
+                                bio = about.trim().to_string();
                             }
                         }
-                    }
-                    if username.is_empty() {
-                        let contact = rich_chat
+                        if !bio.is_empty() {
+                            insp.profile.bio = bio;
+                        }
+                        if avatar_path.is_none() {
+                            avatar_path = insp.profile.avatar_path.clone();
+                        }
+                        insp.sync_profile_details(username, phone, status, avatar_path, facts);
+                        let inv = invites.as_ref().and_then(|v| v.first()).map(|i| i.link.clone()).unwrap_or_default();
+                        let is_grp = rich_chat
                             .as_ref()
-                            .and_then(|rc| rc.peer_user_id)
-                            .and_then(|pid| contacts.iter().find(|c| c.user_id == pid))
-                            .or_else(|| contacts.iter().find(|c| c.chat_id == Some(chat_id as i64) || c.user_id == chat_id));
-                        if let Some(c) = contact {
-                            username = normalized_username(c.username.as_deref());
-                            if phone.is_empty() {
-                                phone = c.phone.clone().unwrap_or_default();
+                            .map(|rc| rc.is_group || rc.is_channel || matches!(rc.chat_type, 1 | 2 | 3))
+                            .unwrap_or_else(|| details.as_ref().is_some_and(|d| d.chat_type != 0) && !rc_is_bot_flag);
+                        if is_grp {
+                            if let Some(ref mems) = members {
+                                insp.sync_members(map_chat_members_to_inspector(mems, &contacts), inv, true);
+                            } else {
+                                insp.sync_members(Vec::new(), inv, true);
                             }
-                        }
-                    }
-                    if bio.is_empty() {
-                        if let Some(about) = details.as_ref().and_then(|d| d.about.as_ref()).filter(|a| !a.trim().is_empty()) {
-                            bio = about.trim().to_string();
-                        }
-                    }
-                    if !bio.is_empty() {
-                        insp.profile.bio = bio;
-                    }
-                    if avatar_path.is_none() {
-                        avatar_path = insp.profile.avatar_path.clone();
-                    }
-                    insp.sync_profile_details(username, phone, status, avatar_path, facts);
-                    let inv = invites.as_ref().and_then(|v| v.first()).map(|i| i.link.clone()).unwrap_or_default();
-                    let is_grp = rich_chat
-                        .as_ref()
-                        .map(|rc| rc.is_group || rc.is_channel || matches!(rc.chat_type, 1 | 2 | 3))
-                        .unwrap_or_else(|| details.as_ref().is_some_and(|d| d.chat_type != 0) && !rc_is_bot_flag);
-                    if is_grp {
-                        if let Some(ref mems) = members {
-                            insp.sync_members(map_chat_members_to_inspector(mems, &contacts), inv, true);
                         } else {
-                            insp.sync_members(Vec::new(), inv, true);
+                            insp.sync_members(Vec::new(), String::new(), false);
                         }
-                    } else {
-                        insp.sync_members(Vec::new(), String::new(), false);
-                    }
-                    if let Some(ref st) = stats {
-                        let (lvl, cur, tgt, bars) = map_channel_stats_to_chart(st);
-                        insp.sync_channel_statistics(lvl, cur, tgt, bars);
-                    }
-                });
-                if let Some(p) = pins.and_then(|v| v.into_iter().next()) {
+                        if let Some(ref st) = stats {
+                            let (lvl, cur, tgt, bars) = map_channel_stats_to_chart(st);
+                            insp.sync_channel_statistics(lvl, cur, tgt, bars);
+                        }
+                    });
+                }
+                if let Some(pin_list) = pins {
+                    let entries: Vec<PinnedBannerEntry> = pin_list
+                        .into_iter()
+                        .filter_map(|p| {
+                            let msg_id = u64::try_from(p.message_id).ok()?;
+                            let preview = if p.preview_text.trim().is_empty() {
+                                format!("Pinned message #{msg_id}")
+                            } else {
+                                p.preview_text
+                            };
+                            Some(PinnedBannerEntry {
+                                msg_id,
+                                preview_text: preview,
+                                sender_name: String::new(),
+                                thumb_url: None,
+                            })
+                        })
+                        .collect();
                     shell.stage.update(cx, |st, _| {
-                        st.pinned_message = Some(p.preview_text);
-                        st.sync_pinned_tracker();
+                        st.set_pinned_entries(chat_id, entries);
                     });
                 }
                 if let Some(dr) = draft {
+                    shell
+                        .client
+                        .local_store
+                        .set_draft(ChatId(chat_id as i64), Some(dr.clone()));
+                    shell
+                        .session_sync
+                        .last_saved_draft_by_chat
+                        .insert(chat_id, dr.text.clone());
+                    shell
+                        .session_sync
+                        .last_draft_text_by_chat
+                        .insert(chat_id, dr.text.clone());
                     shell.sidebar.update(cx, |sb, _| sb.set_draft(chat_id, dr.text.clone()));
-                    if !dr.text.is_empty() && shell.composer.read(cx).text().is_empty() {
+                    if shell.stage.read(cx).active_chat_id == Some(chat_id)
+                        && !dr.text.is_empty()
+                        && shell.composer.read(cx).text().is_empty()
+                    {
                         shell.composer.update(cx, |c, _| c.set_text(dr.text));
                     }
                 }
-                shell.sync_composer_and_inspector_miniapp_state(cx);
-                shell.sync_active_bot_computer_to_inspector(cx);
+                let my_uid = shell.session_sync.user_id.unwrap_or(0);
+                let my_name = shell
+                    .session_sync
+                    .username
+                    .clone()
+                    .unwrap_or_else(|| "Me".to_string());
+                let mut send_as_list: Vec<SendAsPeer> = send_as_dto
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|p| SendAsPeer::new(p.peer_id, p.title, false))
+                    .collect();
+                if send_as_list.is_empty() && my_uid > 0 {
+                    send_as_list.push(SendAsPeer::new(my_uid, my_name, false));
+                }
+                let key = SendAsKey::message(chat_id);
+                shell
+                    .session_sync
+                    .send_as_peers
+                    .set_list(key, send_as_list.clone());
+                let chosen = shell.session_sync.send_as_peers.chosen(chat_id);
+                if shell.stage.read(cx).active_chat_id == Some(chat_id) {
+                    shell.composer.update(cx, |c, _| {
+                        c.set_send_as_options(send_as_list, chosen);
+                    });
+                }
+                if is_active_chat {
+                    shell.sync_composer_and_inspector_miniapp_state(cx);
+                    shell.sync_active_bot_computer_to_inspector(cx);
+                }
                 shell.sync_fabushi_bots_to_views(cx);
                 cx.notify();
             });

@@ -1,21 +1,24 @@
+pub mod acp;
+pub mod actions;
+pub mod analytics_wallet;
 pub mod auth_advanced;
 pub mod auth_factors;
+pub mod bots_miniapps;
 pub mod chat_extras;
 pub mod chat_lifecycle;
+pub mod computers;
+pub mod devices;
+pub mod e2ee;
+pub mod fabushi_miniapp_api;
+pub mod hermes;
+pub mod magpie_api;
 pub mod media;
 pub mod messages;
 pub mod social;
 pub mod sync_polls;
-pub mod users;
-pub mod analytics_wallet;
-pub mod acp;
-pub mod hermes;
-pub mod magpie_api;
-pub mod bots_miniapps;
-pub mod fabushi_miniapp_api;
-pub mod telegram_bot_api;
-pub mod computers;
 pub mod tailnet;
+pub mod telegram_bot_api;
+pub mod users;
 
 use crate::db::schema::{ChatMemberRecord, ChatRecord, UserRecord};
 use crate::server::AppState;
@@ -157,40 +160,54 @@ pub fn issue_persistent_session(
     device_name: &str,
 ) -> gpui_telegram_proto::contracts::AuthResponse {
     let created_at = chrono::DateTime::from_timestamp_millis(user.created_at_ms).unwrap_or_else(chrono::Utc::now);
+    let username = user
+        .username
+        .clone()
+        .unwrap_or_else(|| format!("user_{}", user.user_id.0));
+    let account_gen = user.account_generation.max(1);
+    let ttl_secs = 30 * 24 * 3600u64;
+
+    if let Ok((sess_rec, token)) = state.session_store.issue_session(
+        user.user_id.raw(),
+        device_name,
+        "gpui_desktop",
+        env!("CARGO_PKG_VERSION"),
+        account_gen,
+        ttl_secs,
+    ) {
+        let expires_at = chrono::DateTime::from_timestamp_millis(sess_rec.expires_at_ms)
+            .unwrap_or_else(chrono::Utc::now);
+        return gpui_telegram_proto::contracts::AuthResponse {
+            user_id: user.user_id.raw(),
+            username,
+            session_id: sess_rec.session_id,
+            token,
+            first_name: Some(user.first_name.clone()),
+            last_name: user.last_name.clone(),
+            account_generation: Some(sess_rec.account_generation),
+            created_at: Some(created_at.to_rfc3339()),
+            expires_at: Some(expires_at.to_rfc3339()),
+        };
+    }
+
     let mem_user = crate::auth::session_manager::UserRecord {
         user_id: user.user_id,
-        username: user.username.clone().unwrap_or_else(|| format!("user_{}", user.user_id.0)),
+        username: username.clone(),
         first_name: user.first_name.clone(),
         last_name: user.last_name.clone(),
         password_hash: user.password_hash.clone().unwrap_or_default(),
         created_at,
     };
-    state.session_manager.insert_user(mem_user.clone());
+    state.session_manager.insert_user(mem_user);
     let (session, token) = state.session_manager.create_session(user.user_id, device_name, chrono::Duration::days(30));
-    let db_sess = crate::db::schema::SessionRecord {
-        session_id: session.session_id.clone(),
-        user_id: user.user_id,
-        device_id: device_name.to_string(),
-        client_type: "gpui_desktop".into(),
-        app_version: env!("CARGO_PKG_VERSION").into(),
-        ip_address: None,
-        location_desc: None,
-        account_generation: state.session_manager.get_or_create_fence(user.user_id).current(),
-        token_hash: session.token_hash.clone(),
-        created_at_ms: session.created_at.timestamp_millis(),
-        last_active_ms: session.created_at.timestamp_millis(),
-        expires_at_ms: session.expires_at.timestamp_millis(),
-        revoked_at_ms: None,
-    };
-    let _ = state.db.create_session(&db_sess);
     gpui_telegram_proto::contracts::AuthResponse {
         user_id: user.user_id.raw(),
-        username: mem_user.username,
+        username,
         session_id: session.session_id,
         token,
         first_name: Some(user.first_name.clone()),
         last_name: user.last_name.clone(),
-        account_generation: Some(db_sess.account_generation),
+        account_generation: Some(account_gen),
         created_at: Some(created_at.to_rfc3339()),
         expires_at: Some(session.expires_at.to_rfc3339()),
     }

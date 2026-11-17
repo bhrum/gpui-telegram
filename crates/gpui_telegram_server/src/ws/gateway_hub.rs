@@ -14,12 +14,48 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+#[derive(Clone)]
+struct WsSubscriberEntry {
+    session_id: Option<String>,
+    sender: mpsc::UnboundedSender<WsServerFrame>,
+}
+
+struct BusTaskGuard {
+    tasks: Arc<RwLock<Vec<tokio::task::AbortHandle>>>,
+}
+
+impl Drop for BusTaskGuard {
+    fn drop(&mut self) {
+        let drained: Vec<_> = self.tasks.write().drain(..).collect();
+        for handle in drained {
+            handle.abort();
+        }
+    }
+}
+
+struct WsTaskGuard {
+    tasks: Arc<RwLock<HashMap<u64, Vec<tokio::task::AbortHandle>>>>,
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Drop for WsTaskGuard {
+    fn drop(&mut self) {
+        let _ = self.shutdown_tx.send(true);
+        let drained: Vec<_> = self.tasks.write().drain().collect();
+        for (_conn_id, handles) in drained {
+            for handle in handles {
+                handle.abort();
+            }
+        }
+    }
+}
+
 /// GatewayHub manages real-time WebSocket connections across multiple devices per user,
 /// chat event fan-out, and bidirectional frame handling.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GatewayHub {
-    /// Multi-device socket registry: UserId -> list of active socket senders
-    subscribers: Arc<RwLock<HashMap<UserId, Vec<mpsc::UnboundedSender<WsServerFrame>>>>>,
+    /// Multi-device socket registry: UserId -> list of active socket entries
+    subscribers: Arc<RwLock<HashMap<UserId, Vec<WsSubscriberEntry>>>>,
     /// Chat subscriptions: ChatId -> Set of subscribed UserIds
     chat_subscribers: Arc<RwLock<HashMap<i64, HashSet<UserId>>>>,
     /// Next allocated sequential message ID
@@ -34,10 +70,96 @@ pub struct GatewayHub {
     search_indexer: Arc<RwLock<Option<Arc<crate::search::tantivy_indexer::TantivyIndexer>>>>,
     /// Optional WebRTC signaling hub for call session state & relay
     signaling_hub: Arc<RwLock<Option<Arc<crate::webrtc::signaling_hub::SignalingHub>>>>,
+    /// Optional CrossNodeEventBus for cluster-wide stateless event fan-out
+    event_bus: Arc<RwLock<Option<Arc<dyn crate::bus::CrossNodeEventBus>>>>,
+    /// Ordered outbound bus publisher channel
+    outbound_bus_tx: Arc<RwLock<Option<mpsc::UnboundedSender<(String, crate::bus::ServerEvent)>>>>,
+    /// Background task abort handles for active event bus tasks
+    bus_tasks: Arc<RwLock<Vec<tokio::task::AbortHandle>>>,
+    /// Guard that aborts background event bus tasks when all GatewayHub handles drop
+    bus_guard: Arc<BusTaskGuard>,
+    /// Active WebSocket helper task abort handles keyed by connection id
+    ws_tasks: Arc<RwLock<HashMap<u64, Vec<tokio::task::AbortHandle>>>>,
+    /// Monotonic WebSocket connection id allocator
+    next_ws_conn_id: Arc<AtomicU64>,
+    /// Shutdown signal broadcast to active WebSocket connections
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Guard that signals and aborts active WebSocket tasks when all GatewayHub handles drop
+    ws_guard: Arc<WsTaskGuard>,
+    /// Optional callback invoked when a remote SessionRevoked event arrives
+    session_revoked_handler: Arc<RwLock<Option<Arc<dyn Fn(u64, &str) + Send + Sync>>>>,
+    /// Shared liveness token for clean background task shutdown
+    liveness: Arc<()>,
+}
+
+struct WeakGatewayHub {
+    subscribers: std::sync::Weak<RwLock<HashMap<UserId, Vec<WsSubscriberEntry>>>>,
+    chat_subscribers: std::sync::Weak<RwLock<HashMap<i64, HashSet<UserId>>>>,
+    next_msg_id: std::sync::Weak<AtomicI64>,
+    next_pts: std::sync::Weak<AtomicU64>,
+    pipeline: std::sync::Weak<RwLock<Option<Arc<crate::messaging::pipeline::MessagePipeline>>>>,
+    db: std::sync::Weak<RwLock<Option<Arc<crate::db::ServerDatabase>>>>,
+    search_indexer: std::sync::Weak<RwLock<Option<Arc<crate::search::tantivy_indexer::TantivyIndexer>>>>,
+    signaling_hub: std::sync::Weak<RwLock<Option<Arc<crate::webrtc::signaling_hub::SignalingHub>>>>,
+    event_bus: std::sync::Weak<RwLock<Option<Arc<dyn crate::bus::CrossNodeEventBus>>>>,
+    outbound_bus_tx: std::sync::Weak<RwLock<Option<mpsc::UnboundedSender<(String, crate::bus::ServerEvent)>>>>,
+    bus_tasks: std::sync::Weak<RwLock<Vec<tokio::task::AbortHandle>>>,
+    bus_guard: std::sync::Weak<BusTaskGuard>,
+    ws_tasks: std::sync::Weak<RwLock<HashMap<u64, Vec<tokio::task::AbortHandle>>>>,
+    next_ws_conn_id: std::sync::Weak<AtomicU64>,
+    shutdown_tx: std::sync::Weak<tokio::sync::watch::Sender<bool>>,
+    ws_guard: std::sync::Weak<WsTaskGuard>,
+    session_revoked_handler: std::sync::Weak<RwLock<Option<Arc<dyn Fn(u64, &str) + Send + Sync>>>>,
+    liveness: std::sync::Weak<()>,
+}
+
+impl WeakGatewayHub {
+    fn upgrade(&self) -> Option<GatewayHub> {
+        Some(GatewayHub {
+            subscribers: self.subscribers.upgrade()?,
+            chat_subscribers: self.chat_subscribers.upgrade()?,
+            next_msg_id: self.next_msg_id.upgrade()?,
+            next_pts: self.next_pts.upgrade()?,
+            pipeline: self.pipeline.upgrade()?,
+            db: self.db.upgrade()?,
+            search_indexer: self.search_indexer.upgrade()?,
+            signaling_hub: self.signaling_hub.upgrade()?,
+            event_bus: self.event_bus.upgrade()?,
+            outbound_bus_tx: self.outbound_bus_tx.upgrade()?,
+            bus_tasks: self.bus_tasks.upgrade()?,
+            bus_guard: self.bus_guard.upgrade()?,
+            ws_tasks: self.ws_tasks.upgrade()?,
+            next_ws_conn_id: self.next_ws_conn_id.upgrade()?,
+            shutdown_tx: self.shutdown_tx.upgrade()?,
+            ws_guard: self.ws_guard.upgrade()?,
+            session_revoked_handler: self.session_revoked_handler.upgrade()?,
+            liveness: self.liveness.upgrade()?,
+        })
+    }
+}
+
+impl std::fmt::Debug for GatewayHub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayHub")
+            .field("subscribers_count", &self.subscribers.read().len())
+            .field("chat_subscribers_count", &self.chat_subscribers.read().len())
+            .finish()
+    }
 }
 
 impl Default for GatewayHub {
     fn default() -> Self {
+        let bus_tasks = Arc::new(RwLock::new(Vec::new()));
+        let bus_guard = Arc::new(BusTaskGuard {
+            tasks: bus_tasks.clone(),
+        });
+        let ws_tasks = Arc::new(RwLock::new(HashMap::new()));
+        let (shutdown_tx_raw, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let shutdown_tx = Arc::new(shutdown_tx_raw);
+        let ws_guard = Arc::new(WsTaskGuard {
+            tasks: ws_tasks.clone(),
+            shutdown_tx: shutdown_tx.clone(),
+        });
         Self {
             subscribers: Arc::new(RwLock::new(HashMap::new())),
             chat_subscribers: Arc::new(RwLock::new(HashMap::new())),
@@ -47,6 +169,16 @@ impl Default for GatewayHub {
             db: Arc::new(RwLock::new(None)),
             search_indexer: Arc::new(RwLock::new(None)),
             signaling_hub: Arc::new(RwLock::new(None)),
+            event_bus: Arc::new(RwLock::new(None)),
+            outbound_bus_tx: Arc::new(RwLock::new(None)),
+            bus_tasks,
+            bus_guard,
+            ws_tasks,
+            next_ws_conn_id: Arc::new(AtomicU64::new(0)),
+            shutdown_tx,
+            ws_guard,
+            session_revoked_handler: Arc::new(RwLock::new(None)),
+            liveness: Arc::new(()),
         }
     }
 }
@@ -87,19 +219,310 @@ impl GatewayHub {
         self.signaling_hub.read().clone()
     }
 
+    pub fn set_session_revoked_handler(&self, handler: Arc<dyn Fn(u64, &str) + Send + Sync>) {
+        *self.session_revoked_handler.write() = Some(handler);
+    }
+
+    pub fn set_event_bus(&self, bus: Arc<dyn crate::bus::CrossNodeEventBus>) {
+        {
+            let mut tasks = self.bus_tasks.write();
+            for handle in tasks.drain(..) {
+                handle.abort();
+            }
+        }
+        *self.outbound_bus_tx.write() = None;
+        *self.event_bus.write() = Some(bus);
+        self.ensure_bus_started();
+    }
+
+    /// Subscribe to the hub shutdown signal (`true` when shutting down).
+    pub fn subscribe_shutdown(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
+    }
+
+    /// Returns `true` if `shutdown()` has been initiated on this hub.
+    pub fn is_shutdown(&self) -> bool {
+        *self.shutdown_tx.borrow()
+    }
+
+    fn register_ws_tasks(&self, handles: Vec<tokio::task::AbortHandle>) -> u64 {
+        let conn_id = self.next_ws_conn_id.fetch_add(1, Ordering::Relaxed) + 1;
+        self.ws_tasks.write().insert(conn_id, handles);
+        if self.is_shutdown() {
+            if let Some(removed) = self.ws_tasks.write().remove(&conn_id) {
+                for handle in removed {
+                    handle.abort();
+                }
+            }
+        }
+        conn_id
+    }
+
+    fn unregister_ws_tasks(&self, conn_id: u64) {
+        self.ws_tasks.write().remove(&conn_id);
+    }
+
+    /// Signals all active WebSocket connections to close, aborts background bus & WS helper tasks,
+    /// and clears strong references to `TantivyIndexer`, `ServerDatabase`, `MessagePipeline`,
+    /// `SignalingHub`, and `CrossNodeEventBus`.
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+
+        let ws_drained: Vec<_> = self.ws_tasks.write().drain().collect();
+        let mut forward_handles_for_reap = Vec::new();
+        for (_conn_id, handles) in ws_drained {
+            // Index 0 is forward_task (which sends Message::Close(None) on shutdown_tx);
+            // abort helper tasks (like sig_task) immediately, and give forward_task a brief
+            // bounded grace period to flush the WebSocket Close frame cleanly.
+            for (idx, handle) in handles.into_iter().enumerate() {
+                if idx == 0 {
+                    forward_handles_for_reap.push(handle);
+                } else {
+                    handle.abort();
+                }
+            }
+        }
+        if !forward_handles_for_reap.is_empty() {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    for handle in forward_handles_for_reap {
+                        handle.abort();
+                    }
+                });
+            }
+        }
+
+        let bus_drained: Vec<_> = self.bus_tasks.write().drain(..).collect();
+        for handle in bus_drained {
+            handle.abort();
+        }
+
+        let old_outbound = self.outbound_bus_tx.write().take();
+        drop(old_outbound);
+
+        let old_subs: Vec<_> = self.subscribers.write().drain().collect();
+        drop(old_subs);
+
+        let old_chat_subs: Vec<_> = self.chat_subscribers.write().drain().collect();
+        drop(old_chat_subs);
+
+        let old_search = self.search_indexer.write().take();
+        drop(old_search);
+
+        let old_pipeline = self.pipeline.write().take();
+        drop(old_pipeline);
+
+        let old_db = self.db.write().take();
+        drop(old_db);
+
+        let old_sh = self.signaling_hub.write().take();
+        drop(old_sh);
+
+        let old_bus = self.event_bus.write().take();
+        drop(old_bus);
+
+        let old_revoked = self.session_revoked_handler.write().take();
+        drop(old_revoked);
+    }
+
+    fn downgrade(&self) -> WeakGatewayHub {
+        WeakGatewayHub {
+            subscribers: Arc::downgrade(&self.subscribers),
+            chat_subscribers: Arc::downgrade(&self.chat_subscribers),
+            next_msg_id: Arc::downgrade(&self.next_msg_id),
+            next_pts: Arc::downgrade(&self.next_pts),
+            pipeline: Arc::downgrade(&self.pipeline),
+            db: Arc::downgrade(&self.db),
+            search_indexer: Arc::downgrade(&self.search_indexer),
+            signaling_hub: Arc::downgrade(&self.signaling_hub),
+            event_bus: Arc::downgrade(&self.event_bus),
+            outbound_bus_tx: Arc::downgrade(&self.outbound_bus_tx),
+            bus_tasks: Arc::downgrade(&self.bus_tasks),
+            bus_guard: Arc::downgrade(&self.bus_guard),
+            ws_tasks: Arc::downgrade(&self.ws_tasks),
+            next_ws_conn_id: Arc::downgrade(&self.next_ws_conn_id),
+            shutdown_tx: Arc::downgrade(&self.shutdown_tx),
+            ws_guard: Arc::downgrade(&self.ws_guard),
+            session_revoked_handler: Arc::downgrade(&self.session_revoked_handler),
+            liveness: Arc::downgrade(&self.liveness),
+        }
+    }
+
+    pub fn ensure_bus_started(&self) {
+        if self.is_shutdown() {
+            return;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let Some(bus) = self.event_bus.read().clone() else {
+            return;
+        };
+
+        let mut tasks = self.bus_tasks.write();
+        if !tasks.is_empty() && self.outbound_bus_tx.read().is_some() {
+            return;
+        }
+        for handle in tasks.drain(..) {
+            handle.abort();
+        }
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<(String, crate::bus::ServerEvent)>();
+        *self.outbound_bus_tx.write() = Some(out_tx);
+
+        let bus_out = bus.clone();
+        let liveness_out = Arc::downgrade(&self.liveness);
+        let out_handle = rt.spawn(async move {
+            while let Some((channel, event)) = out_rx.recv().await {
+                if liveness_out.upgrade().is_none() {
+                    break;
+                }
+                if let Err(e) = bus_out.publish(&channel, &event).await {
+                    warn!("CrossNodeEventBus publish failed on {channel}: {e}");
+                }
+            }
+        });
+        tasks.push(out_handle.abort_handle());
+
+        let hub_weak = self.downgrade();
+        let liveness_in = Arc::downgrade(&self.liveness);
+        let in_handle = rt.spawn(async move {
+            let local_node_id = bus.node_id().to_string();
+            let mut sub_user = match bus.subscribe("user:*").await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("GatewayHub failed to subscribe user:*: {e}");
+                    return;
+                }
+            };
+            let mut sub_chat = match bus.subscribe("chat:*").await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("GatewayHub failed to subscribe chat:*: {e}");
+                    return;
+                }
+            };
+            let mut sub_sys = match bus.subscribe("system:*").await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("GatewayHub failed to subscribe system:*: {e}");
+                    return;
+                }
+            };
+
+            loop {
+                if liveness_in.upgrade().is_none() {
+                    break;
+                }
+
+                let evt_res = tokio::select! {
+                    r = sub_user.recv() => r,
+                    r = sub_chat.recv() => r,
+                    r = sub_sys.recv() => r,
+                };
+
+                match evt_res {
+                    Ok(evt) => {
+                        if evt.origin_node_id == local_node_id {
+                            continue;
+                        }
+                        let Some(hub) = hub_weak.upgrade() else {
+                            break;
+                        };
+                        hub.handle_remote_event(evt);
+                    }
+                    Err(crate::bus::EventBusError::ChannelLagged(n)) => {
+                        warn!("GatewayHub cluster subscription lagged {n} events");
+                        continue;
+                    }
+                    Err(crate::bus::EventBusError::ChannelClosed) => {
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("GatewayHub cluster subscription error: {e}");
+                        continue;
+                    }
+                }
+            }
+        });
+        tasks.push(in_handle.abort_handle());
+    }
+
+    fn handle_remote_event(&self, evt: crate::bus::ServerEvent) {
+        match evt.payload {
+            crate::bus::EventPayload::RawJson { event_type, data }
+                if event_type == "ws_server_frame" =>
+            {
+                let Ok(frame) = serde_json::from_value::<WsServerFrame>(data) else {
+                    return;
+                };
+                if let Some(uid_str) = evt.channel.strip_prefix("user:") {
+                    if let Ok(uid) = uid_str.parse::<u64>() {
+                        self.broadcast_to_user_local(UserId(uid), frame);
+                    }
+                } else if let Some(cid_str) = evt.channel.strip_prefix("chat:") {
+                    if let Ok(cid) = cid_str.parse::<i64>() {
+                        let targets = self.get_chat_subscribers(cid);
+                        for uid in targets {
+                            self.broadcast_to_user_local(uid, frame.clone());
+                        }
+                    }
+                } else if evt.channel.starts_with("system:") {
+                    let targets: Vec<UserId> = self.subscribers.read().keys().copied().collect();
+                    for uid in targets {
+                        self.broadcast_to_user_local(uid, frame.clone());
+                    }
+                }
+            }
+            crate::bus::EventPayload::SessionRevoked {
+                user_id,
+                session_id,
+                reason: _,
+            } => {
+                if let Some(handler) = self.session_revoked_handler.read().clone() {
+                    handler(user_id, &session_id);
+                }
+                self.disconnect_session(UserId(user_id), &session_id);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn event_bus(&self) -> Option<Arc<dyn crate::bus::CrossNodeEventBus>> {
+        self.event_bus.read().clone()
+    }
+
     /// Register an active WebSocket connection sender for a user
     pub fn register(&self, user_id: UserId, sender: mpsc::UnboundedSender<WsServerFrame>) {
+        self.register_session(user_id, None, sender);
+    }
+
+    /// Register an active WebSocket connection sender associated with an optional session_id
+    pub fn register_session(
+        &self,
+        user_id: UserId,
+        session_id: Option<String>,
+        sender: mpsc::UnboundedSender<WsServerFrame>,
+    ) {
+        if self.is_shutdown() {
+            return;
+        }
+        self.ensure_bus_started();
         let mut subs = self.subscribers.write();
-        subs.entry(user_id).or_default().push(sender);
+        subs.entry(user_id).or_default().push(WsSubscriberEntry {
+            session_id,
+            sender,
+        });
         info!("Registered new WebSocket connection for {}", user_id);
     }
 
     /// Unregister a specific connection sender for a user
     pub fn unregister_sender(&self, user_id: UserId, sender: &mpsc::UnboundedSender<WsServerFrame>) {
         let mut subs = self.subscribers.write();
-        if let Some(senders) = subs.get_mut(&user_id) {
-            senders.retain(|s| !s.is_closed() && !s.same_channel(sender));
-            if senders.is_empty() {
+        if let Some(entries) = subs.get_mut(&user_id) {
+            entries.retain(|e| !e.sender.is_closed() && !e.sender.same_channel(sender));
+            if entries.is_empty() {
                 subs.remove(&user_id);
             }
         }
@@ -111,12 +534,42 @@ impl GatewayHub {
         self.subscribers.write().remove(&user_id);
     }
 
+    /// Disconnect active sockets for a specific session (or un-scoped legacy registrations)
+    pub fn disconnect_session(&self, user_id: UserId, session_id: &str) {
+        let mut removed = Vec::new();
+        {
+            let mut subs = self.subscribers.write();
+            if let Some(entries) = subs.get_mut(&user_id) {
+                let mut i = 0;
+                while i < entries.len() {
+                    let matches = entries[i].session_id.as_deref() == Some(session_id)
+                        || entries[i].session_id.is_none();
+                    if matches {
+                        removed.push(entries.swap_remove(i));
+                    } else {
+                        i += 1;
+                    }
+                }
+                if entries.is_empty() {
+                    subs.remove(&user_id);
+                }
+            }
+        }
+        for entry in removed {
+            let _ = entry.sender.send(WsServerFrame::Error {
+                code: 401,
+                message: "Session has been revoked".into(),
+                details: None,
+            });
+        }
+    }
+
     /// Disconnect all active sockets for a user (called on logout/revocation)
     pub fn disconnect_user(&self, user_id: UserId) {
-        let senders = self.subscribers.write().remove(&user_id);
-        if let Some(list) = senders {
-            for sender in list {
-                let _ = sender.send(WsServerFrame::Error {
+        let entries = self.subscribers.write().remove(&user_id);
+        if let Some(list) = entries {
+            for entry in list {
+                let _ = entry.sender.send(WsServerFrame::Error {
                     code: 401,
                     message: "Session has been revoked".into(),
                     details: None,
@@ -130,7 +583,7 @@ impl GatewayHub {
         self.subscribers
             .read()
             .get(&user_id)
-            .map(|list| list.iter().filter(|s| !s.is_closed()).count())
+            .map(|list| list.iter().filter(|e| !e.sender.is_closed()).count())
             .unwrap_or(0)
     }
 
@@ -139,22 +592,47 @@ impl GatewayHub {
         self.subscribers
             .read()
             .values()
-            .map(|list| list.iter().filter(|s| !s.is_closed()).count())
+            .map(|list| list.iter().filter(|e| !e.sender.is_closed()).count())
             .sum()
     }
 
-    /// Broadcast frame to all active device sockets belonging to a user
-    pub fn broadcast_to_user(&self, user_id: UserId, frame: WsServerFrame) {
+    /// Local-only broadcast frame to all active device sockets belonging to a user on this process
+    pub fn broadcast_to_user_local(&self, user_id: UserId, frame: WsServerFrame) {
         let mut subs = self.subscribers.write();
-        if let Some(senders) = subs.get_mut(&user_id) {
-            senders.retain(|tx| tx.send(frame.clone()).is_ok());
-            if senders.is_empty() {
+        if let Some(entries) = subs.get_mut(&user_id) {
+            entries.retain(|e| e.sender.send(frame.clone()).is_ok());
+            if entries.is_empty() {
                 subs.remove(&user_id);
             }
         }
     }
 
-    /// Broadcast frame to all subscribers of a chat
+    fn publish_to_event_bus(&self, channel: String, frame: &WsServerFrame) {
+        self.ensure_bus_started();
+        let Some(bus) = self.event_bus.read().clone() else {
+            return;
+        };
+        let payload = crate::bus::EventPayload::RawJson {
+            event_type: "ws_server_frame".to_string(),
+            data: serde_json::to_value(frame).unwrap_or_default(),
+        };
+        let event = crate::bus::ServerEvent::new(&channel, bus.node_id(), payload);
+        if let Some(tx) = self.outbound_bus_tx.read().clone() {
+            let _ = tx.send((channel, event));
+        } else if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = bus.publish(&channel, &event).await;
+            });
+        }
+    }
+
+    /// Broadcast frame to all active device sockets belonging to a user (local sockets + CrossNodeEventBus)
+    pub fn broadcast_to_user(&self, user_id: UserId, frame: WsServerFrame) {
+        self.broadcast_to_user_local(user_id, frame.clone());
+        self.publish_to_event_bus(format!("user:{}", user_id.0), &frame);
+    }
+
+    /// Broadcast frame to all subscribers of a chat (local subscribers + CrossNodeEventBus)
     pub fn broadcast_to_chat(&self, chat_id: i64, frame: WsServerFrame) {
         let targets: Vec<UserId> = self
             .chat_subscribers
@@ -166,12 +644,15 @@ impl GatewayHub {
             .collect();
 
         for target in targets {
-            self.broadcast_to_user(target, frame.clone());
+            self.broadcast_to_user_local(target, frame.clone());
         }
+
+        self.publish_to_event_bus(format!("chat:{}", chat_id), &frame);
     }
 
     /// Subscribe user to chat events
     pub fn subscribe_chat(&self, chat_id: i64, user_id: UserId) {
+        self.ensure_bus_started();
         self.chat_subscribers
             .write()
             .entry(chat_id)
@@ -299,6 +780,9 @@ impl GatewayHub {
     }
 
     fn index_ws_message(&self, chat_id: ChatId, msg_id: i64, sender_id: UserId, date_ms: i64, content: &MessageContent) {
+        if matches!(content, MessageContent::Encrypted(_)) {
+            return;
+        }
         if let Some(ref indexer) = *self.search_indexer.read() {
             let text = match content {
                 MessageContent::Text { text, .. } => text.clone(),
@@ -361,6 +845,16 @@ impl GatewayHub {
                 }
             }
             WsClientFrame::SendMessage(req) => {
+                if let MessageContent::Encrypted(ref env) = req.content {
+                    if env.sender_user_id != user_id.0 {
+                        let _ = reply_tx.send(WsServerFrame::Error {
+                            code: 403,
+                            message: "EncryptedEnvelope sender_user_id must match authenticated user".into(),
+                            details: None,
+                        });
+                        return;
+                    }
+                }
                 let maybe_pipeline = self.pipeline.read().clone();
                 let maybe_db = self.db.read().clone();
 
@@ -395,6 +889,9 @@ impl GatewayHub {
                         forward_info: None,
                         reactions: Vec::new(),
                         client_nonce: Some(req.client_nonce),
+                        inline_keyboard: req.inline_keyboard.clone(),
+                        ttl_seconds: None,
+                        expires_at_ms: None,
                     };
 
                     match pipeline.process_incoming_message_strict(msg) {
@@ -445,6 +942,9 @@ impl GatewayHub {
                         forward_info: None,
                         reactions: Vec::new(),
                         client_nonce: Some(req.client_nonce),
+                        inline_keyboard: req.inline_keyboard.clone(),
+                        ttl_seconds: None,
+                        expires_at_ms: None,
                     };
                     let _ = reply_tx.send(WsServerFrame::Ack {
                         correlation_id: 0,
@@ -458,6 +958,16 @@ impl GatewayHub {
                 }
             }
             WsClientFrame::EditMessage(req) => {
+                if let MessageContent::Encrypted(ref env) = req.content {
+                    if env.sender_user_id != user_id.0 {
+                        let _ = reply_tx.send(WsServerFrame::Error {
+                            code: 403,
+                            message: "EncryptedEnvelope sender_user_id must match authenticated user".into(),
+                            details: None,
+                        });
+                        return;
+                    }
+                }
                 let maybe_pipeline = self.pipeline.read().clone();
                 let maybe_db = self.db.read().clone();
                 if let (Some(pipeline), Some(db)) = (maybe_pipeline, maybe_db) {
@@ -499,6 +1009,9 @@ impl GatewayHub {
                         flags: MessageFlags { is_out: true, is_edited: true, ..Default::default() },
                         date: now, edit_date: Some(now), content: req.content, reply_to: None,
                         forward_info: None, reactions: Vec::new(), client_nonce: None,
+                        inline_keyboard: None,
+                        ttl_seconds: None,
+                        expires_at_ms: None,
                     };
                     let pts_update = PtsUpdate::new(req.chat_id, pts, 1, UpdateEvent::EditMessage(message), now.timestamp_millis());
                     self.broadcast_to_user(user_id, WsServerFrame::PtsPush(pts_update.clone()));
@@ -736,91 +1249,257 @@ pub async fn handle_ws_socket(
     heartbeat_interval_secs: u64,
     inactivity_timeout_secs: u64,
 ) {
+    handle_ws_socket_with_session(
+        socket,
+        user_id,
+        None,
+        hub,
+        heartbeat_interval_secs,
+        inactivity_timeout_secs,
+    )
+    .await
+}
+
+/// Upgraded WebSocket connection handler bound to a specific session_id
+pub async fn handle_ws_socket_with_session(
+    socket: axum::extract::ws::WebSocket,
+    user_id: UserId,
+    session_id: Option<String>,
+    hub: Arc<GatewayHub>,
+    heartbeat_interval_secs: u64,
+    inactivity_timeout_secs: u64,
+) {
+    let hub_weak = Arc::downgrade(&hub);
+    drop(hub);
+    handle_ws_socket_with_session_weak(
+        socket,
+        user_id,
+        session_id,
+        hub_weak,
+        heartbeat_interval_secs,
+        inactivity_timeout_secs,
+    )
+    .await
+}
+
+struct WsTaskCleanup {
+    hub_weak: std::sync::Weak<GatewayHub>,
+    conn_id: u64,
+    forward_abort: tokio::task::AbortHandle,
+    sig_abort: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for WsTaskCleanup {
+    fn drop(&mut self) {
+        self.forward_abort.abort();
+        if let Some(ref sig) = self.sig_abort {
+            sig.abort();
+        }
+        if let Some(hub) = self.hub_weak.upgrade() {
+            hub.unregister_ws_tasks(self.conn_id);
+        }
+    }
+}
+
+/// Upgraded WebSocket connection handler using a `Weak<GatewayHub>` so idle WebSocket tasks
+/// never pin `GatewayHub` or `TantivyIndexer` across server shutdown, exiting immediately on
+/// `GatewayHub::shutdown()` or hub drop.
+pub async fn handle_ws_socket_with_session_weak(
+    socket: axum::extract::ws::WebSocket,
+    user_id: UserId,
+    session_id: Option<String>,
+    hub_weak: std::sync::Weak<GatewayHub>,
+    heartbeat_interval_secs: u64,
+    inactivity_timeout_secs: u64,
+) {
     use axum::extract::ws::Message;
     use futures::{SinkExt, StreamExt};
     use std::time::Duration;
 
+    let Some(hub) = hub_weak.upgrade() else {
+        return;
+    };
+    if hub.is_shutdown() {
+        return;
+    }
+    let mut shutdown_rx = hub.subscribe_shutdown();
+    if *shutdown_rx.borrow_and_update() {
+        return;
+    }
+
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<WsServerFrame>();
+    let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
 
-    hub.register(user_id, tx.clone());
+    hub.register_session(user_id, session_id, tx.clone());
     hub.broadcast_user_status(user_id, true);
-    if let Some(sh) = hub.signaling_hub() {
+    let sig_task = if let Some(sh) = hub.signaling_hub() {
         let (sig_tx, mut sig_rx) = mpsc::channel::<SignalingFrame>(64);
         sh.register_client(user_id, sig_tx);
         let tx_sig = tx.clone();
-        tokio::spawn(async move {
-            while let Some(sf) = sig_rx.recv().await {
-                let (call_id, state, signal) = match &sf {
-                    SignalingFrame::Invite { call_id, .. } => (call_id.clone(), "ringing".into(), None),
-                    SignalingFrame::Ringing { call_id } => (call_id.clone(), "ringing".into(), None),
-                    SignalingFrame::Accept { call_id } => (call_id.clone(), "connected".into(), None),
-                    SignalingFrame::Offer { call_id, sdp } => (
-                        call_id.clone(),
-                        "offer".into(),
-                        Some(CallSignalRequest {
-                            call_id: call_id.clone(), signal_type: "offer".into(),
-                            sdp: Some(sdp.clone()), candidate: None, sdp_mid: None, sdp_mline_index: None, reason: None,
-                        }),
-                    ),
-                    SignalingFrame::Answer { call_id, sdp } => (
-                        call_id.clone(),
-                        "answer".into(),
-                        Some(CallSignalRequest {
-                            call_id: call_id.clone(), signal_type: "answer".into(),
-                            sdp: Some(sdp.clone()), candidate: None, sdp_mid: None, sdp_mline_index: None, reason: None,
-                        }),
-                    ),
-                    SignalingFrame::IceCandidate { call_id, candidate, sdp_mid, sdp_mline_index } => (
-                        call_id.clone(),
-                        "ice_candidate".into(),
-                        Some(CallSignalRequest {
-                            call_id: call_id.clone(), signal_type: "ice_candidate".into(),
-                            sdp: None, candidate: Some(candidate.clone()), sdp_mid: sdp_mid.clone(),
-                            sdp_mline_index: sdp_mline_index.map(|v| v as u32), reason: None,
-                        }),
-                    ),
-                    SignalingFrame::Hangup { call_id, reason } => (
-                        call_id.clone(),
-                        "ended".into(),
-                        Some(CallSignalRequest {
-                            call_id: call_id.clone(), signal_type: "hangup".into(),
-                            sdp: None, candidate: None, sdp_mid: None, sdp_mline_index: None, reason: Some(reason.clone()),
-                        }),
-                    ),
-                };
-                if tx_sig.send(WsServerFrame::Update(UpdateEvent::CallUpdated { call_id, state, signal })).is_err() {
+        let mut sig_shutdown_rx = hub.subscribe_shutdown();
+        Some(tokio::spawn(async move {
+            loop {
+                if *sig_shutdown_rx.borrow_and_update() {
                     break;
                 }
-            }
-        });
-    }
-
-    // Task forwarding outgoing frames to the WebSocket client
-    let forward_task = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            match serde_json::to_string(&frame) {
-                Ok(json) => {
-                    if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                tokio::select! {
+                    _ = sig_shutdown_rx.changed() => {
                         break;
                     }
+                    maybe_sf = sig_rx.recv() => {
+                        let Some(sf) = maybe_sf else {
+                            break;
+                        };
+                        let (call_id, state, signal) = match &sf {
+                            SignalingFrame::Invite { call_id, .. } => (call_id.clone(), "ringing".into(), None),
+                            SignalingFrame::Ringing { call_id } => (call_id.clone(), "ringing".into(), None),
+                            SignalingFrame::Accept { call_id } => (call_id.clone(), "connected".into(), None),
+                            SignalingFrame::Offer { call_id, sdp } => (
+                                call_id.clone(),
+                                "offer".into(),
+                                Some(CallSignalRequest {
+                                    call_id: call_id.clone(), signal_type: "offer".into(),
+                                    sdp: Some(sdp.clone()), candidate: None, sdp_mid: None, sdp_mline_index: None, reason: None,
+                                }),
+                            ),
+                            SignalingFrame::Answer { call_id, sdp } => (
+                                call_id.clone(),
+                                "answer".into(),
+                                Some(CallSignalRequest {
+                                    call_id: call_id.clone(), signal_type: "answer".into(),
+                                    sdp: Some(sdp.clone()), candidate: None, sdp_mid: None, sdp_mline_index: None, reason: None,
+                                }),
+                            ),
+                            SignalingFrame::IceCandidate { call_id, candidate, sdp_mid, sdp_mline_index } => (
+                                call_id.clone(),
+                                "ice_candidate".into(),
+                                Some(CallSignalRequest {
+                                    call_id: call_id.clone(), signal_type: "ice_candidate".into(),
+                                    sdp: None, candidate: Some(candidate.clone()), sdp_mid: sdp_mid.clone(),
+                                    sdp_mline_index: sdp_mline_index.map(|v| v as u32), reason: None,
+                                }),
+                            ),
+                            SignalingFrame::Hangup { call_id, reason } => (
+                                call_id.clone(),
+                                "ended".into(),
+                                Some(CallSignalRequest {
+                                    call_id: call_id.clone(), signal_type: "hangup".into(),
+                                    sdp: None, candidate: None, sdp_mid: None, sdp_mline_index: None, reason: Some(reason.clone()),
+                                }),
+                            ),
+                        };
+                        if tx_sig.send(WsServerFrame::Update(UpdateEvent::CallUpdated { call_id, state, signal })).is_err() {
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!("Failed to serialize WsServerFrame: {e}");
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Task forwarding outgoing frames to the WebSocket client
+    let mut forward_shutdown_rx = hub.subscribe_shutdown();
+    let forward_task = tokio::spawn(async move {
+        let mut close_tx = Some(close_tx);
+        loop {
+            if *forward_shutdown_rx.borrow_and_update() {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(150),
+                    ws_sender.send(Message::Close(None)),
+                )
+                .await;
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(50),
+                    ws_sender.close(),
+                )
+                .await;
+                if let Some(tx_done) = close_tx.take() {
+                    let _ = tx_done.send(());
+                }
+                break;
+            }
+            tokio::select! {
+                _ = forward_shutdown_rx.changed() => {
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(150),
+                        ws_sender.send(Message::Close(None)),
+                    )
+                    .await;
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(50),
+                        ws_sender.close(),
+                    )
+                    .await;
+                    if let Some(tx_done) = close_tx.take() {
+                        let _ = tx_done.send(());
+                    }
+                    break;
+                }
+                maybe_frame = rx.recv() => {
+                    let Some(frame) = maybe_frame else {
+                        break;
+                    };
+                    let is_revoked_close = matches!(&frame, WsServerFrame::Error { code: 401, .. });
+                    match serde_json::to_string(&frame) {
+                        Ok(json) => {
+                            if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                            if is_revoked_close {
+                                let _ = ws_sender.send(Message::Close(None)).await;
+                                if let Some(tx_done) = close_tx.take() {
+                                    let _ = tx_done.send(());
+                                }
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to serialize WsServerFrame: {e}");
+                        }
+                    }
                 }
             }
         }
     });
 
+    let mut tracked_handles = vec![forward_task.abort_handle()];
+    let sig_abort = sig_task.as_ref().map(|t| t.abort_handle());
+    if let Some(ref sa) = sig_abort {
+        tracked_handles.push(sa.clone());
+    }
+    let conn_id = hub.register_ws_tasks(tracked_handles);
+    let cleanup_guard = WsTaskCleanup {
+        hub_weak: hub_weak.clone(),
+        conn_id,
+        forward_abort: forward_task.abort_handle(),
+        sig_abort,
+    };
+
+    // Drop strong Arc<GatewayHub> before entering the idle select loop.
+    drop(hub);
+
     let tx_clone = tx.clone();
-    let hub_clone = hub.clone();
     let mut last_activity = tokio::time::Instant::now();
     let inactivity_limit = Duration::from_secs(inactivity_timeout_secs);
     let ping_interval = Duration::from_secs(heartbeat_interval_secs);
     let mut heartbeat_timer = tokio::time::interval(ping_interval);
 
     loop {
+        if *shutdown_rx.borrow_and_update() {
+            let _ = tokio::time::timeout(Duration::from_millis(200), &mut close_rx).await;
+            break;
+        }
         tokio::select! {
+            _ = shutdown_rx.changed() => {
+                let _ = tokio::time::timeout(Duration::from_millis(200), &mut close_rx).await;
+                break;
+            }
+            _ = &mut close_rx => {
+                break;
+            }
             _ = heartbeat_timer.tick() => {
                 if last_activity.elapsed() >= inactivity_limit {
                     warn!("WebSocket client {} timed out after {}s inactivity", user_id, inactivity_timeout_secs);
@@ -833,7 +1512,13 @@ pub async fn handle_ws_socket(
                         last_activity = tokio::time::Instant::now();
                         match serde_json::from_str::<WsClientFrame>(&text) {
                             Ok(client_frame) => {
-                                hub_clone.handle_client_frame(user_id, client_frame, &tx_clone);
+                                let Some(hub) = hub_weak.upgrade() else {
+                                    break;
+                                };
+                                if hub.is_shutdown() {
+                                    break;
+                                }
+                                hub.handle_client_frame(user_id, client_frame, &tx_clone);
                             }
                             Err(e) => {
                                 let _ = tx_clone.send(WsServerFrame::Error {
@@ -863,12 +1548,14 @@ pub async fn handle_ws_socket(
         }
     }
 
-    forward_task.abort();
-    hub.unregister_sender(user_id, &tx);
-    if hub.user_connection_count(user_id) == 0 {
-        hub.broadcast_user_status(user_id, false);
-        if let Some(sh) = hub.signaling_hub() {
-            sh.unregister_client(user_id);
+    drop(cleanup_guard);
+    if let Some(hub) = hub_weak.upgrade() {
+        hub.unregister_sender(user_id, &tx);
+        if !hub.is_shutdown() && hub.user_connection_count(user_id) == 0 {
+            hub.broadcast_user_status(user_id, false);
+            if let Some(sh) = hub.signaling_hub() {
+                sh.unregister_client(user_id);
+            }
         }
     }
 }

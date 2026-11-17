@@ -526,27 +526,30 @@ impl SettingsRouter {
             |router: &mut SettingsRouter,
              sa: Entity<SettingsAdvancedSections>,
              cx: &mut Context<SettingsRouter>| {
-                let (open_ls, open_ps, open_conn, open_exp, prefs_sync) = sa.update(cx, |s, _| {
-                    let prefs_sync = if s.pending_prefs_sync {
-                        s.pending_prefs_sync = false;
-                        Some((
-                            s.ask_download_path,
-                            s.opengl_enabled,
-                            s.native_window_frame,
-                            s.tray_icon_enabled,
-                            s.auto_update_enabled,
-                        ))
-                    } else {
-                        None
-                    };
-                    (
-                        std::mem::take(&mut s.pending_open_local_storage),
-                        std::mem::take(&mut s.pending_open_power_saving),
-                        std::mem::take(&mut s.pending_open_connection_box),
-                        std::mem::take(&mut s.pending_open_export_box),
-                        prefs_sync,
-                    )
-                });
+                let (open_ls, open_ps, open_conn, open_exp, check_upd, apply_upd, prefs_sync) =
+                    sa.update(cx, |s, _| {
+                        let prefs_sync = if s.pending_prefs_sync {
+                            s.pending_prefs_sync = false;
+                            Some((
+                                s.ask_download_path,
+                                s.opengl_enabled,
+                                s.native_window_frame,
+                                s.tray_icon_enabled,
+                                s.auto_update_enabled,
+                            ))
+                        } else {
+                            None
+                        };
+                        (
+                            std::mem::take(&mut s.pending_open_local_storage),
+                            std::mem::take(&mut s.pending_open_power_saving),
+                            std::mem::take(&mut s.pending_open_connection_box),
+                            std::mem::take(&mut s.pending_open_export_box),
+                            std::mem::take(&mut s.pending_check_updates),
+                            std::mem::take(&mut s.pending_apply_update),
+                            prefs_sync,
+                        )
+                    });
                 if let Some((
                     ask_download_path,
                     opengl_enabled,
@@ -567,6 +570,12 @@ impl SettingsRouter {
                         tray_icon_enabled,
                         auto_update_enabled,
                     });
+                }
+                if check_upd {
+                    cx.emit(SettingsRouterEvent::CheckForUpdates);
+                }
+                if apply_upd {
+                    cx.emit(SettingsRouterEvent::TriggerOneClickUpdate);
                 }
                 if open_ls {
                     router.navigate_to(SettingsSectionType::LocalStorage, false, cx);

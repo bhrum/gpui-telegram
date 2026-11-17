@@ -106,6 +106,7 @@ pub fn commit_incoming_message_tx(
             MessageContent::Document { .. } => Some("document"),
             MessageContent::Poll(_) => Some("poll"),
             MessageContent::Todo(_) => Some("todo"),
+            MessageContent::GenerativeCard(_) => Some("generative_card"),
             _ => None,
         };
 

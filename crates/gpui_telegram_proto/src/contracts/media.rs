@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkedUploadInitRequest {
+    pub size_bytes: u64,
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkedUploadStatusResponse {
+    pub upload_id: String,
+    pub total_size: u64,
+    pub part_size: u32,
+    pub total_parts: u32,
+    pub uploaded_parts: Vec<bool>,
+    pub missing_parts: Vec<u32>,
+    pub is_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaUploadInitResponse {
     pub upload_id: String,
     pub chunk_size: u64,

@@ -199,6 +199,7 @@ pub enum ModalActionOutcome {
         also_for_peer: bool,
     },
     ConfirmLeaveOrDeleteChat,
+    CheckForUpdates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

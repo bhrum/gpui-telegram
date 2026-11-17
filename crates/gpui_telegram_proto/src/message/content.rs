@@ -1,4 +1,5 @@
 use crate::cards::{InvoiceCard, PollCard, TodoCard};
+use crate::e2ee::EncryptedEnvelope;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -135,6 +136,7 @@ pub enum MessageContent {
     Todo(TodoCard),
     Poll(PollCard),
     Invoice(InvoiceCard),
+    GenerativeCard(crate::cards::GenerativeCard),
     Photo {
         file_id: String,
         caption: Option<String>,
@@ -160,6 +162,7 @@ pub enum MessageContent {
         mime_type: String,
         size_bytes: u64,
     },
+    Encrypted(EncryptedEnvelope),
 }
 
 impl MessageContent {

@@ -30,10 +30,14 @@ pub struct AccountSessionRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyEndpointRecord {
     pub id: u32,
-    pub kind: String, // "Direct", "SOCKS5", "MTProto", "HTTP"
+    pub kind: String, // "Direct", "SOCKS5", "HTTP"
     pub host: String,
     pub port: u16,
     pub secret_or_user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
     pub ping_ms: u32,
     pub enabled: bool,
 }
@@ -122,7 +126,7 @@ impl PersistedClientState {
                     display_name: "Bhrum Developer".to_string(),
                     username: "bhrum_dev".to_string(),
                     phone: "+1 541 555 0145".to_string(),
-                    bio: "Rust & GPUI 120fps Desktop Architecture • MTProto 2.0".to_string(),
+                    bio: "Rust & GPUI 120fps Desktop Architecture • Modern Protocol".to_string(),
                     emoji_status: "🦀".to_string(),
                     is_premium: true,
                     is_verified: true,
@@ -165,16 +169,20 @@ impl PersistedClientState {
                     host: "149.154.167.50".to_string(),
                     port: 443,
                     secret_or_user: String::new(),
+                    username: None,
+                    password: None,
                     ping_ms: 18,
                     enabled: true,
                 },
                 ProxyEndpointRecord {
                     id: 2,
-                    kind: "MTProto".to_string(),
-                    host: "mtproxy.gpui-telegram.org".to_string(),
-                    port: 8443,
-                    secret_or_user: "ee1603010200010001fc030386e26c3a".to_string(),
-                    ping_ms: 34,
+                    kind: "HTTP".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 8081,
+                    secret_or_user: String::new(),
+                    username: None,
+                    password: None,
+                    ping_ms: 12,
                     enabled: false,
                 },
                 ProxyEndpointRecord {
@@ -183,6 +191,8 @@ impl PersistedClientState {
                     host: "127.0.0.1".to_string(),
                     port: 1080,
                     secret_or_user: String::new(),
+                    username: None,
+                    password: None,
                     ping_ms: 4,
                     enabled: false,
                 },

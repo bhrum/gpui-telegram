@@ -39,6 +39,18 @@ struct BoolFlagBody {
     mute_until_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SendAsPeerDto {
+    pub peer_id: u64,
+    pub title: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
 #[derive(Serialize)]
 struct PinMessageBody {
     message_id: i64,
@@ -173,7 +185,16 @@ impl HttpClient {
 
     pub async fn save_draft(&self, token: &str, chat_id: i64, draft: &DraftDto) -> Result<DraftDto, HttpClientError> {
         let path = format!("/api/v1/chats/{}/draft", chat_id);
-        self.request_json(Method::PUT, &path, Some(token), Some(draft)).await
+        let val: serde_json::Value = self.request_json(Method::PUT, &path, Some(token), Some(draft)).await?;
+        if let Some(inner) = val.get("draft") {
+            return Ok(serde_json::from_value(inner.clone())?);
+        }
+        Ok(serde_json::from_value(val)?)
+    }
+
+    pub async fn get_send_as_peers(&self, token: &str, chat_id: i64) -> Result<Vec<SendAsPeerDto>, HttpClientError> {
+        let path = format!("/api/v1/chats/{}/send_as", chat_id);
+        self.request_vec_or_field(Method::GET, &path, Some(token), &["peers", "items"]).await
     }
 
     pub async fn clear_draft(&self, token: &str, chat_id: i64) -> Result<(), HttpClientError> {

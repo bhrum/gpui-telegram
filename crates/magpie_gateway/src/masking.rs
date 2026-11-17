@@ -547,6 +547,9 @@ fn detect_api_keys(text: &str, out: &mut Vec<DetectedSpan>) {
         ("sk-ant-", 20),
         ("sk-proj-", 20),
         ("sk-", 16),
+        ("GOCSPX-", 20),
+        ("ya29.", 20),
+        ("1//", 20),
         ("AIza", 30),
         ("ghp_", 24),
         ("gho_", 24),
@@ -571,8 +574,18 @@ fn detect_api_keys(text: &str, out: &mut Vec<DetectedSpan>) {
             let pb = prefix.as_bytes();
             if i + pb.len() <= bytes.len() && &bytes[i..i + pb.len()] == pb {
                 let mut end = i + pb.len();
-                while end < bytes.len() && is_token_char(bytes[end]) {
-                    end += 1;
+                while end < bytes.len() {
+                    if is_token_char(bytes[end]) {
+                        end += 1;
+                    } else if (prefix == "ya29." || prefix == "1//")
+                        && (bytes[end] == b'.' || bytes[end] == b'/')
+                        && end + 1 < bytes.len()
+                        && is_token_char(bytes[end + 1])
+                    {
+                        end += 1;
+                    } else {
+                        break;
+                    }
                 }
                 if end - i >= min_len {
                     if prefix == "AKIA" && (end - i != 20 || !bytes[i..end].iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())) {

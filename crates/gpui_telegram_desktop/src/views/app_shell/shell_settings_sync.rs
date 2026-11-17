@@ -479,7 +479,7 @@ impl AppShell {
                             ids_map.insert(h, s.session_id.clone());
                             SessionRowData {
                                 hash: h,
-                                app_name: "AI Chat Desktop".to_string(),
+                                app_name: "Fabushi Desktop".to_string(),
                                 device_model: if s.device_name.is_empty() {
                                     "Desktop Session".to_string()
                                 } else {

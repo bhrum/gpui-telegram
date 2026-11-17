@@ -21,6 +21,9 @@ pub fn make_test_message(id: i64, chat_id: i64, user_id: u64, text: &str) -> Mes
         forward_info: None,
         reactions: Vec::new(),
         client_nonce: Some(rand_nonce()),
+        inline_keyboard: None,
+        ttl_seconds: None,
+        expires_at_ms: None,
     }
 }
 

@@ -1,0 +1,61 @@
+[package]
+name = "e2e_suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gpui_telegram_core = { workspace = true }
+gpui_telegram_proto = { workspace = true }
+gpui_telegram_media = { workspace = true }
+gpui_telegram_webrtc = { workspace = true }
+gpui_telegram_agent = { workspace = true }
+gpui_telegram_server = { workspace = true }
+gpui_telegram_client = { workspace = true }
+gpui_telegram_desktop = { workspace = true }
+gpui_telegram_test_harness = { workspace = true }
+gpui = { workspace = true }
+
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+rusqlite = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+tempfile = "3"
+
+[[test]]
+name = "tier1_feature_coverage"
+path = "tests/tier1_feature_coverage.rs"
+
+[[test]]
+name = "tier2_boundaries"
+path = "tests/tier2_boundaries.rs"
+
+[[test]]
+name = "tier3_combinations"
+path = "tests/tier3_combinations.rs"
+
+[[test]]
+name = "tier4_real_world"
+path = "tests/tier4_real_world.rs"

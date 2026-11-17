@@ -50,6 +50,7 @@ impl AppShell {
                     if !fence_matches(&fence, shell) {
                         return;
                     }
+                    shell.client.local_store.set_folders(folders.clone());
                     apply_folders_to_shell(shell, &folders, cx);
                     cx.notify();
                 });

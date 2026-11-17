@@ -4808,16 +4808,31 @@ pub async fn openai_chat_completions(
                         finished = true;
                         return Some((Ok(axum::body::Bytes::from(payload_str)), (rx, finished, emitted_text, id, mdl)));
                     }
-                    HermesEvent::Error { message, .. } => {
-                        let err_chunk = json!({ "error": { "message": message } });
-                        let payload_str = format!("data: {err_chunk}\n\ndata: [DONE]\n\n");
+                    HermesEvent::Error { code, message } => {
+                        let err_chunk = json!({
+                            "error": {
+                                "message": message,
+                                "type": "upstream_error",
+                                "code": code,
+                            }
+                        });
+                        let payload_str = format!("data: {err_chunk}\n\n");
                         finished = true;
                         return Some((Ok(axum::body::Bytes::from(payload_str)), (rx, finished, emitted_text, id, mdl)));
                     }
                     _ => continue,
                 }
             }
-            Some((Ok(axum::body::Bytes::from("data: [DONE]\n\n")), (rx, true, emitted_text, id, mdl)))
+            let err_chunk = json!({
+                "error": {
+                    "message": "Hermes stream terminated unexpectedly without completion",
+                    "type": "upstream_error",
+                }
+            });
+            Some((
+                Ok(axum::body::Bytes::from(format!("data: {err_chunk}\n\n"))),
+                (rx, true, emitted_text, id, mdl),
+            ))
         })
         .boxed();
 

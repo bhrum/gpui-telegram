@@ -673,6 +673,24 @@ fn decode_historical_content(hm: &HistoricalMessage) -> MessageContent {
                 .unwrap_or("")
                 .to_string(),
         },
+        Some("encrypted") => MessageContent::Text {
+            text: if hm.text.trim().is_empty() {
+                "🔒 Encrypted message".to_string()
+            } else {
+                hm.text.clone()
+            },
+            is_edited: false,
+        },
+        Some("generativecard") | Some("generative_card") => {
+            if let Ok(card) = serde_json::from_value::<gpui_telegram_proto::cards::GenerativeCard>(payload.clone()) {
+                MessageContent::GenerativeCard(card)
+            } else {
+                MessageContent::Text {
+                    text: hm.text.clone(),
+                    is_edited: false,
+                }
+            }
+        }
         _ => MessageContent::Text {
             text: hm.text.clone(),
             is_edited: payload
@@ -725,6 +743,7 @@ fn message_content_preview(content: &MessageContent) -> String {
         MessageContent::Story { caption, .. } => caption.clone(),
         MessageContent::Invoice { title, .. } => title.clone(),
         MessageContent::BotKeyboard { .. } => "Keyboard".to_string(),
+        MessageContent::GenerativeCard(card) => card.title.clone(),
     }
 }
 

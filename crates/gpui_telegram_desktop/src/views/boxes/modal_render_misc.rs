@@ -288,14 +288,14 @@ pub fn render_about_telegram<V: 'static>(
 ) -> AnyElement {
     let pal = dlg.palette;
     let lang = &dlg.language_id;
-    let about = AboutBox::new();
+    let about = AboutBox::new_fabushi();
     let faq = about.faq_url.clone();
     let github = about.github_url.clone();
 
     modal_card(400.0, pal)
         .child(modal_header(
             IconName::BotRobot,
-            tr_str(lang, "关于 AI Chat", "About AI Chat"),
+            tr_str(lang, "关于 Fabushi", "About Fabushi"),
             pal,
             on_close,
             cx,
@@ -315,7 +315,7 @@ pub fn render_about_telegram<V: 'static>(
                                 .text_size(px(15.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(rgb(pal.text_primary))
-                                .child("AI Chat Desktop"),
+                                .child("Fabushi Desktop"),
                         )
                         .child(
                             div()
@@ -330,7 +330,16 @@ pub fn render_about_telegram<V: 'static>(
                 .flex()
                 .gap(px(8.0))
                 .child(modal_toggle_chip(
-                    "FAQ",
+                    tr_str(lang, "检查更新", "Check Updates"),
+                    true,
+                    pal,
+                    move |this| {
+                        access(this).pending_outcome = Some(ModalActionOutcome::CheckForUpdates);
+                    },
+                    cx,
+                ))
+                .child(modal_toggle_chip(
+                    "Releases",
                     false,
                     pal,
                     move |this| {

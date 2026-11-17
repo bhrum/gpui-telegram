@@ -50,7 +50,7 @@ use gpui_telegram_desktop::views::sidebar::sidebar_search_view::{
 };
 use gpui_telegram_desktop::views::stage::cards::{
     DeliveryStatus, InlineButtonType, InlineKeyboardButton, MessageContent, MessageDirection,
-    MessageItemModel,
+    MessageItemModel, ServiceType,
 };
 use gpui_telegram_desktop::views::stage::cards_interactive::InteractiveCardAction;
 use gpui_telegram_desktop::views::stage::stage_bubble::BubbleUiAction;
@@ -144,6 +144,13 @@ fn dispatch_headless_target(target: &str) -> ! {
             Runner::Async(|app| {
                 Box::pin(
                     headless_body_tos_confirm_modal_write_access_popup_and_dialog_open_pill(app),
+                )
+            })
+        }
+        "test_headless_gpui_altery_inline_webapp_custom_url_and_live_bot_pin_banner" => {
+            Runner::Async(|app| {
+                Box::pin(
+                    headless_body_altery_inline_webapp_custom_url_and_live_bot_pin_banner(app),
                 )
             })
         }
@@ -1470,10 +1477,19 @@ fn spawn_parity_mock_http_server(
                         serde_json::to_string(&json!({ "chats": chats })).unwrap()
                     } else if path.ends_with("/launch") {
                         st.launched_once = true;
+                        let req_json: serde_json::Value =
+                            serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
                         let cid_opt = st.chat_created.then_some(st.chat_id);
                         let mut app =
                             build_shop_miniapp(st.app_tos_accepted, st.allows_write_to_pm, cid_opt);
                         app.is_installed = false;
+                        if let Some(cu) = req_json
+                            .get("custom_url")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            app.web_url = cu.to_string();
+                        }
                         let mut bot = build_third_party_shop_bot();
                         bot.allows_write_to_pm = st.allows_write_to_pm;
                         bot.app_tos_accepted = st.app_tos_accepted;
@@ -2300,5 +2316,236 @@ async fn headless_body_tos_confirm_modal_write_access_popup_and_dialog_open_pill
             .any(|(m, p, _)| m == "GET" && p == "/api/v1/miniapps/recent"));
     })
     .expect("assert write access granted & dialog refreshed");
+}
+
+#[test]
+fn test_headless_gpui_altery_inline_webapp_custom_url_and_live_bot_pin_banner() {
+    run_in_headless_subprocess(
+        "test_headless_gpui_altery_inline_webapp_custom_url_and_live_bot_pin_banner",
+    );
+}
+
+async fn headless_body_altery_inline_webapp_custom_url_and_live_bot_pin_banner(app: AsyncApp) {
+    let seed_client = new_isolated_client("http://127.0.0.1:9".to_string());
+    let (base_url, recorded_http, _mock_state) = spawn_parity_mock_http_server(
+        &seed_client,
+        ParityMockState {
+            chat_created: true,
+            chat_id: 600_000_777,
+            allows_write_to_pm: true,
+            app_tos_accepted: false,
+            is_blocked: false,
+            has_started_chat: true,
+            launched_once: false,
+        },
+    );
+    let client = new_isolated_client(base_url);
+    let bot_cid = 600_000_777u64;
+    let bot_uid = 600_777u64;
+    let resume_url = "https://app.altery.example/kyc?resume=1";
+
+    let shell = app
+        .update(|cx| {
+            cx.new(|cx| {
+                let mut s = AppShell::new_with_client(client.clone(), cx);
+                s.is_authenticated = true;
+                s.session_sync.user_id = Some(100_001);
+                s.session_sync.session_token = Some("tok_altery_e2e".to_string());
+                s.session_sync.rich_chats_by_id.insert(
+                    bot_cid,
+                    HermesRichChatDto {
+                        chat_id: bot_cid as i64,
+                        title: "Altery".to_string(),
+                        is_bot: true,
+                        peer_user_id: Some(bot_uid),
+                        peer_username: Some("AlteryVerifyBot".to_string()),
+                        menu_button_text: Some("Launch Altery".to_string()),
+                        menu_button_url: Some("https://app.altery.example/start".to_string()),
+                        has_mini_app: false,
+                        ..Default::default()
+                    },
+                );
+                s.stage.update(cx, |st, _| {
+                    st.set_chat(bot_cid, "Altery", "bot", "AL", 0x2481cc);
+                });
+                s.sidebar.update(cx, |sb, _| {
+                    sb.dialogs.push(
+                        gpui_telegram_desktop::views::chat_sidebar::DialogItemModel {
+                            id: bot_cid,
+                            peer_name: "Altery".to_string(),
+                            avatar_initials: "AL".to_string(),
+                            avatar_color: 0x2481cc,
+                            last_message: "📌 Welcome to Altery".to_string(),
+                            timestamp: "06:00".to_string(),
+                            unread_count: 0,
+                            is_muted: false,
+                            is_pinned: false,
+                            is_online: true,
+                            typing_indicator: None,
+                            delivery_status:
+                                gpui_telegram_desktop::views::chat_sidebar::DialogDeliveryStatus::Read,
+                            folder: "Bots".to_string(),
+                        },
+                    );
+                });
+                s
+            })
+        })
+        .expect("create shell");
+
+    // 1. Simulate live incoming `UpdateEvent::NewMessage` carrying an inline `web_app` button
+    app.update(|cx| {
+        shell.update(cx, |s, cx| {
+            let mut incoming = gpui_telegram_proto::message::MessageItem::new(
+                gpui_telegram_core::types::MsgId(501),
+                gpui_telegram_core::types::ChatId(bot_cid as i64),
+                gpui_telegram_core::types::UserId(bot_uid),
+                gpui_telegram_core::types::PeerId::Chat(gpui_telegram_core::types::ChatId(
+                    bot_cid as i64,
+                )),
+                gpui_telegram_proto::message::MessageContent::plain_text(
+                    "⏳ Remember to Get Verified\nTap here to verify your Altery account.",
+                ),
+            );
+            incoming.flags.is_out = false;
+            incoming.inline_keyboard = Some(vec![vec![
+                gpui_telegram_proto::message::InlineKeyboardButton {
+                    text: "🆔 Verify Account".to_string(),
+                    callback_data: None,
+                    url: None,
+                    web_app_url: Some(resume_url.to_string()),
+                },
+            ]]);
+            s.apply_update_event(
+                gpui_telegram_core::types::ChatId(bot_cid as i64),
+                gpui_telegram_proto::sync::UpdateEvent::NewMessage(incoming),
+                cx,
+            );
+        });
+
+        let st = shell.read(cx).stage.read(cx);
+        let msg = st
+            .messages
+            .iter()
+            .find(|m| m.id == 501)
+            .expect("live NewMessage 501 on stage");
+        let kb = msg
+            .bot_keyboard
+            .as_ref()
+            .expect("live NewMessage must populate bot_keyboard immediately");
+        assert_eq!(kb[0][0].text, "🆔 Verify Account");
+        assert_eq!(
+            kb[0][0].button_type,
+            InlineButtonType::WebApp(resume_url.to_string())
+        );
+    })
+    .expect("assert live NewMessage inline keyboard");
+
+    // 2. Simulate live `UpdateEvent::PinnedMessagesChanged` from Bot `pinChatMessage`
+    app.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.apply_update_event(
+                gpui_telegram_core::types::ChatId(bot_cid as i64),
+                gpui_telegram_proto::sync::UpdateEvent::PinnedMessagesChanged {
+                    chat_id: gpui_telegram_core::types::ChatId(bot_cid as i64),
+                    pinned_ids: vec![gpui_telegram_core::types::MsgId(501)],
+                },
+                cx,
+            );
+        });
+
+        let s = shell.read(cx);
+        let st = s.stage.read(cx);
+        assert_eq!(
+            st.pinned_message.as_deref(),
+            Some("⏳ Remember to Get Verified")
+        );
+        let banner = st
+            .pinned_banner_info()
+            .expect("pinned_banner_info must be populated");
+        assert_eq!(banner.0, "⏳ Remember to Get Verified");
+
+        let has_service_pin_row = st.messages.iter().any(|m| {
+            matches!(
+                &m.content,
+                MessageContent::Service {
+                    service_type: ServiceType::PinnedMessage,
+                    text,
+                } if text.contains("⏳ Remember to Get Verified")
+            )
+        });
+        assert!(
+            has_service_pin_row,
+            "stage must append centered ServiceType::PinnedMessage notice"
+        );
+        let dlg_preview = &s.sidebar.read(cx).dialogs[0].last_message;
+        assert!(
+            dlg_preview.contains("⏳ Remember to Get Verified"),
+            "sidebar preview must reflect pin notice: {dlg_preview}"
+        );
+    })
+    .expect("assert live PinnedMessagesChanged banner & service row");
+
+    // 3. Click `🆔 Verify Account` (`InlineButtonType::WebApp(resume_url)`) -> ToS confirm -> launch with `custom_url`
+    app.update(|cx| {
+        shell.update(cx, |s, cx| {
+            s.handle_stage_bot_button(
+                501,
+                InlineButtonType::WebApp(resume_url.to_string()),
+                cx,
+            );
+        });
+        assert!(
+            shell.read(cx).miniapps.pending_miniapp_confirm.is_some(),
+            "first-time inline WebApp click opens ToS confirmation"
+        );
+        shell.update(cx, |s, cx| {
+            s.confirm_pending_miniapp_launch(cx);
+        });
+    })
+    .expect("click inline WebApp button and confirm ToS");
+
+    for _ in 0..50 {
+        app.background_executor()
+            .timer(std::time::Duration::from_millis(20))
+            .await;
+        let ready = app
+            .update(|cx| {
+                shell
+                    .read(cx)
+                    .miniapps
+                    .miniapp_overlay
+                    .as_ref()
+                    .is_some_and(|ov| ov.read(cx).launch_context.is_some())
+            })
+            .unwrap();
+        if ready {
+            break;
+        }
+    }
+
+    app.update(|cx| {
+        let s = shell.read(cx);
+        let ov = s
+            .miniapps
+            .miniapp_overlay
+            .as_ref()
+            .expect("miniapp_overlay open")
+            .read(cx);
+        let resolved = ov.resolved_webview_url();
+        assert!(
+            resolved.starts_with("https://app.altery.example/kyc?resume=1#tgWebAppData="),
+            "resolved_webview_url must preserve custom_url and append #tgWebAppData: {resolved}"
+        );
+
+        let log = recorded_http.lock().unwrap();
+        let launch_call = log
+            .iter()
+            .find(|(m, p, _)| m == "POST" && p == "/api/v1/miniapps/AlteryVerifyBot/app/launch")
+            .expect("expected POST /api/v1/miniapps/AlteryVerifyBot/app/launch");
+        let sent_json: serde_json::Value = serde_json::from_str(&launch_call.2).unwrap();
+        assert_eq!(sent_json["custom_url"], resume_url);
+    })
+    .expect("assert custom_url sent and resolved with #tgWebAppData");
 }
 

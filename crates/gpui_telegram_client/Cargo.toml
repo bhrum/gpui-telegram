@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 gpui_telegram_core = { workspace = true }
 gpui_telegram_proto = { workspace = true }
+gpui_telegram_media = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+base64 = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }

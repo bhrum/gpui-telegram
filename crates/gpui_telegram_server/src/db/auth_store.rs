@@ -43,7 +43,7 @@ impl ServerDatabase {
     }
 
     pub fn get_latest_phone_challenge(&self, phone: &str) -> Result<Option<PhoneChallengeRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"SELECT challenge_id, phone, phone_code_hash, code_hash, attempts_left, cooldown_until_ms, expires_at_ms, created_at_ms
                    FROM account_phone_challenges WHERE phone = ?1 ORDER BY created_at_ms DESC LIMIT 1"#,
@@ -79,7 +79,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_by_phone(&self, phone: &str) -> Result<Option<UserRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"SELECT user_id, username, phone, first_name, last_name, bio, password_hash,
                           is_bot, is_verified, is_support, is_scam, is_fake, profile_photo_file_id,
@@ -116,14 +116,14 @@ impl ServerDatabase {
     }
 
     pub fn get_user_emoji_status(&self, user_id: UserId) -> Result<Option<String>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row("SELECT emoji_status FROM users WHERE user_id = ?1", params![user_id.0 as i64], |r| r.get(0))
                 .optional().map_db().map(|o| o.flatten())
         })
     }
 
     pub fn get_two_factor_status(&self, user_id: UserId) -> Result<TwoFactorStatusResponse> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let row: Option<(Option<String>, Option<String>)> = conn.query_row(
                 "SELECT hint, recovery_email FROM two_factor_auth WHERE user_id = ?1",
                 params![user_id.0 as i64],
@@ -137,7 +137,7 @@ impl ServerDatabase {
     }
 
     pub fn get_two_factor_hash(&self, user_id: UserId) -> Result<Option<String>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row("SELECT password_hash FROM two_factor_auth WHERE user_id = ?1", params![user_id.0 as i64], |r| r.get(0))
                 .optional().map_db()
         })
@@ -174,7 +174,7 @@ impl ServerDatabase {
     }
 
     pub fn verify_two_factor_challenge(&self, token: &str) -> Result<Option<(UserId, i32, i64)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT user_id, attempts_left, expires_at_ms FROM two_factor_challenges WHERE challenge_token = ?1",
                 params![token],
@@ -233,7 +233,7 @@ impl ServerDatabase {
     }
 
     pub fn get_passkey_credential(&self, credential_id: &str) -> Result<Option<PasskeyCredentialRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT credential_id, user_id, public_key, sign_count, device_name, created_at_ms, last_used_at_ms FROM passkey_credentials WHERE credential_id = ?1",
                 params![credential_id],
@@ -247,7 +247,7 @@ impl ServerDatabase {
     }
 
     pub fn list_user_passkeys(&self, user_id: UserId) -> Result<Vec<PasskeyCredentialRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT credential_id, user_id, public_key, sign_count, device_name, created_at_ms, last_used_at_ms FROM passkey_credentials WHERE user_id = ?1 ORDER BY created_at_ms DESC"
             ).map_db()?;
@@ -284,7 +284,7 @@ impl ServerDatabase {
 
     pub fn get_qr_session(&self, pair_token: &str) -> Result<Option<QrPairStatusResponse>> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let row: Option<(String, Option<String>, i64)> = conn.query_row(
                 "SELECT status, session_json, expires_at_ms FROM qr_login_sessions WHERE pair_token = ?1",
                 params![pair_token],
@@ -301,7 +301,7 @@ impl ServerDatabase {
 
     pub fn list_user_sessions(&self, user_id: UserId, current_session_id: &str) -> Result<Vec<SessionDto>> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT session_id, device_id, client_type, ip_address, created_at_ms, last_active_ms FROM sessions WHERE user_id = ?1 AND revoked_at_ms IS NULL AND expires_at_ms > ?2 ORDER BY last_active_ms DESC"
             ).map_db()?;

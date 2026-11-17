@@ -23,9 +23,8 @@ struct RecorderShared {
 }
 
 #[cfg(target_os = "macos")]
-mod macos_aq {
-    use super::*;
-    use std::ptr;
+pub(crate) mod macos_aq_ffi {
+    use std::ffi::c_void;
 
     pub type AudioQueueRef = *mut c_void;
     pub type AudioQueueBufferRef = *mut AudioQueueBuffer;
@@ -54,13 +53,18 @@ mod macos_aq {
         pub m_packet_description_count: u32,
     }
 
-    type InputCb = unsafe extern "C" fn(
-        *mut c_void, AudioQueueRef, AudioQueueBufferRef, *const c_void, u32, *const c_void,
+    pub type InputCb = unsafe extern "C" fn(
+        *mut c_void,
+        AudioQueueRef,
+        AudioQueueBufferRef,
+        *const c_void,
+        u32,
+        *const c_void,
     );
 
     #[link(name = "AudioToolbox", kind = "framework")]
     unsafe extern "C" {
-        fn AudioQueueNewInput(
+        pub fn AudioQueueNewInput(
             in_format: *const AudioStreamBasicDescription,
             in_callback_proc: InputCb,
             in_user_data: *mut c_void,
@@ -69,12 +73,29 @@ mod macos_aq {
             in_flags: u32,
             out_aq: *mut AudioQueueRef,
         ) -> i32;
-        fn AudioQueueAllocateBuffer(aq: AudioQueueRef, bytes: u32, out_buf: *mut AudioQueueBufferRef) -> i32;
-        fn AudioQueueEnqueueBuffer(aq: AudioQueueRef, buf: AudioQueueBufferRef, n: u32, d: *const c_void) -> i32;
-        fn AudioQueueStart(aq: AudioQueueRef, start_time: *const c_void) -> i32;
-        fn AudioQueueStop(aq: AudioQueueRef, immediate: u8) -> i32;
-        fn AudioQueueDispose(aq: AudioQueueRef, immediate: u8) -> i32;
+        pub fn AudioQueueAllocateBuffer(
+            aq: AudioQueueRef,
+            bytes: u32,
+            out_buf: *mut AudioQueueBufferRef,
+        ) -> i32;
+        pub fn AudioQueueEnqueueBuffer(
+            aq: AudioQueueRef,
+            buf: AudioQueueBufferRef,
+            n: u32,
+            d: *const c_void,
+        ) -> i32;
+        pub fn AudioQueueStart(aq: AudioQueueRef, start_time: *const c_void) -> i32;
+        pub fn AudioQueuePause(aq: AudioQueueRef) -> i32;
+        pub fn AudioQueueStop(aq: AudioQueueRef, immediate: u8) -> i32;
+        pub fn AudioQueueDispose(aq: AudioQueueRef, immediate: u8) -> i32;
     }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_aq {
+    use super::macos_aq_ffi::*;
+    use super::*;
+    use std::ptr;
 
     pub struct ActiveQueue {
         queue: AudioQueueRef,

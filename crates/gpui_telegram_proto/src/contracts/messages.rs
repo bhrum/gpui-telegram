@@ -30,6 +30,8 @@ pub struct SendMessageHttpRequest {
     pub scheduled_at_ms: Option<i64>,
     #[serde(default)]
     pub inline_keyboard: Option<Vec<Vec<InlineKeyboardButton>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_as_peer_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -108,8 +108,21 @@ impl AppShell {
             sb_cx.notify();
         });
 
+        // Clear any pending draft for this chat upon sending
+        self.session_sync.last_draft_text_by_chat.remove(&active_chat_id);
+        self.session_sync.last_saved_draft_by_chat.remove(&active_chat_id);
+        self.session_sync.draft_debounce_gen = self.session_sync.draft_debounce_gen.wrapping_add(1);
+        self.sidebar.update(cx, |sb, _| sb.set_draft(active_chat_id, String::new()));
+
+        let send_as_peer_id = self
+            .session_sync
+            .send_as_peers
+            .chosen(active_chat_id)
+            .or_else(|| self.composer.read(cx).selected_send_as_peer_id);
+
         {
             let client = self.client.clone();
+            let draft_token = token.clone();
             let http_req = RichSendMessageRequest {
                 chat_id: active_chat_id as i64,
                 text: Some(text.clone()),
@@ -126,12 +139,28 @@ impl AppShell {
                 silent: false,
                 scheduled_at_ms: None,
                 inline_keyboard: None,
+                send_as_peer_id,
             };
             let sent_msg_id = msg_id;
             let http_fence = fence.clone();
 
             cx.spawn(async move |weak_shell: WeakEntity<Self>, app: &mut AsyncApp| {
-                let res = client.http_client.send_message_rich(&token, &http_req).await;
+                let res = client.send_message_durable(http_req).await;
+                let clear_draft = gpui_telegram_proto::contracts::DraftDto {
+                    chat_id: active_chat_id as i64,
+                    text: String::new(),
+                    entities: Vec::new(),
+                    reply_to_msg_id: None,
+                    topic_id: None,
+                    date_ms: chrono::Utc::now().timestamp_millis(),
+                };
+                client
+                    .local_store
+                    .set_draft(gpui_telegram_core::types::ChatId(active_chat_id as i64), None);
+                let _ = client
+                    .http_client
+                    .save_draft(&draft_token, active_chat_id as i64, &clear_draft)
+                    .await;
                 let _ = weak_shell.update(app, |shell, cx| {
                     if !http_fence.matches(
                         shell.is_authenticated,

@@ -5,6 +5,17 @@ use gpui_telegram_proto::contracts::{CallRecordDto, GifResultDto, StickerItemDto
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallSignalOutcome {
+    Applied(CallRecordDto),
+    NotFound,
+    Forbidden(&'static str),
+    Conflict {
+        code: &'static str,
+        message: &'static str,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaMetadataDto {
     pub media_id: String,
@@ -42,7 +53,7 @@ impl ServerDatabase {
     }
 
     pub fn get_media_file(&self, media_id: &str) -> Result<Option<(MediaMetadataDto, UserId, Option<ChatId>)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT media_id, uploader_id, chat_id, filename, mime_type, size_bytes, sha256, width, height, duration_seconds, waveform_json, thumbnail_data_url, is_voice, is_video_note, created_at_ms FROM media_files WHERE media_id = ?1",
                 params![media_id],
@@ -100,7 +111,7 @@ impl ServerDatabase {
     }
 
     pub fn list_sticker_sets(&self, user_id: UserId) -> Result<Vec<StickerSetDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT s.set_id, s.short_name, s.title, s.is_animated, s.is_video, EXISTS(SELECT 1 FROM user_sticker_sets u WHERE u.user_id = ?1 AND u.set_id = s.set_id) FROM sticker_sets s ORDER BY s.created_at_ms ASC"
             ).map_db()?;
@@ -139,7 +150,7 @@ impl ServerDatabase {
 
     pub fn search_gifs(&self, query: &str, limit: usize) -> Result<Vec<GifResultDto>> {
         let q = format!("%{}%", query.trim().to_lowercase());
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare("SELECT gif_id, title, width, height, mime_type, url, preview_url FROM gifs_catalog WHERE lower(title) LIKE ?1 OR lower(tags) LIKE ?1 LIMIT ?2").map_db()?;
             let rows = stmt.query_map(params![q, limit as i64], |r| {
                 let id: String = r.get(0)?;
@@ -173,7 +184,7 @@ impl ServerDatabase {
 
     pub fn list_active_stories(&self, viewer: UserId) -> Result<Vec<StoryDto>> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 r#"SELECT s.story_id, s.user_id, u.username, u.first_name, s.media_id, s.media_type, s.caption, s.privacy, s.view_count,
                           EXISTS(SELECT 1 FROM story_views sv WHERE sv.story_id = s.story_id AND sv.viewer_user_id = ?1), s.created_at_ms, s.expires_at_ms
@@ -222,6 +233,20 @@ impl ServerDatabase {
         })
     }
 
+    pub fn get_call(&self, call_id: &str) -> Result<Option<CallRecordDto>> {
+        self.pool.with_reader(|conn| {
+            conn.query_row(
+                "SELECT call_id, caller_id, callee_id, is_video, state, duration_secs, rating, started_at_ms, ended_at_ms FROM calls WHERE call_id = ?1",
+                params![call_id],
+                |r| Ok(CallRecordDto {
+                    call_id: r.get(0)?, caller_id: r.get::<_, i64>(1)? as u64, callee_id: r.get::<_, i64>(2)? as u64,
+                    is_video: r.get::<_, i64>(3)? != 0, state: r.get(4)?, duration_secs: r.get::<_, i64>(5)? as u32,
+                    rating: r.get::<_, Option<i64>>(6)?.map(|v| v as u8), started_at_ms: r.get(7)?, ended_at_ms: r.get(8)?,
+                }),
+            ).optional().map_db()
+        })
+    }
+
     pub fn update_call_state_and_rating(&self, call_id: &str, state: Option<&str>, ended_at_ms: Option<i64>, rating: Option<u8>, feedback: Option<&str>) -> Result<Option<CallRecordDto>> {
         self.pool.with_transaction(|tx| {
             if let Some(st) = state {
@@ -247,8 +272,89 @@ impl ServerDatabase {
         })
     }
 
+    pub fn apply_call_signal(&self, call_id: &str, actor_user_id: u64, signal_type: &str, ended_at_ms: i64) -> Result<CallSignalOutcome> {
+        self.pool.with_transaction(|tx| {
+            let row: Option<CallRecordDto> = tx.query_row(
+                "SELECT call_id, caller_id, callee_id, is_video, state, duration_secs, rating, started_at_ms, ended_at_ms FROM calls WHERE call_id = ?1",
+                params![call_id],
+                |r| Ok(CallRecordDto {
+                    call_id: r.get(0)?,
+                    caller_id: r.get::<_, i64>(1)? as u64,
+                    callee_id: r.get::<_, i64>(2)? as u64,
+                    is_video: r.get::<_, i64>(3)? != 0,
+                    state: r.get(4)?,
+                    duration_secs: r.get::<_, i64>(5)? as u32,
+                    rating: r.get::<_, Option<i64>>(6)?.map(|v| v as u8),
+                    started_at_ms: r.get(7)?,
+                    ended_at_ms: r.get(8)?,
+                }),
+            ).optional().map_err(|e| TelegramError::Database(e.to_string()))?;
+
+            let Some(rec) = row else {
+                return Ok(CallSignalOutcome::NotFound);
+            };
+
+            if rec.caller_id != actor_user_id && rec.callee_id != actor_user_id {
+                return Ok(CallSignalOutcome::Forbidden("Caller did not participate in this call"));
+            }
+
+            if rec.state == "ended" {
+                return Ok(CallSignalOutcome::Conflict {
+                    code: "call_ended",
+                    message: "Cannot signal an ended call",
+                });
+            }
+
+            if matches!(signal_type, "ringing" | "accept") && rec.callee_id != actor_user_id {
+                return Ok(CallSignalOutcome::Forbidden("Only callee can acknowledge ringing or accept call"));
+            }
+
+            let (new_state, ended_at) = match signal_type {
+                "ringing" => {
+                    if matches!(rec.state.as_str(), "active" | "connected") {
+                        return Ok(CallSignalOutcome::Conflict {
+                            code: "invalid_state_transition",
+                            message: "Cannot revert an active call to ringing",
+                        });
+                    }
+                    (Some("ringing"), None)
+                }
+                "accept" | "answer" => (Some("active"), None),
+                "hangup" | "end" | "decline" => (Some("ended"), Some(ended_at_ms)),
+                _ => (None, None),
+            };
+
+            if let Some(st) = new_state {
+                tx.execute("UPDATE calls SET state = ?1 WHERE call_id = ?2", params![st, call_id])
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+            }
+            if let Some(end) = ended_at {
+                tx.execute("UPDATE calls SET ended_at_ms = ?1, duration_secs = MAX((?1 - started_at_ms) / 1000, 0) WHERE call_id = ?2", params![end, call_id])
+                    .map_err(|e| TelegramError::Database(e.to_string()))?;
+            }
+
+            let updated = tx.query_row(
+                "SELECT call_id, caller_id, callee_id, is_video, state, duration_secs, rating, started_at_ms, ended_at_ms FROM calls WHERE call_id = ?1",
+                params![call_id],
+                |r| Ok(CallRecordDto {
+                    call_id: r.get(0)?,
+                    caller_id: r.get::<_, i64>(1)? as u64,
+                    callee_id: r.get::<_, i64>(2)? as u64,
+                    is_video: r.get::<_, i64>(3)? != 0,
+                    state: r.get(4)?,
+                    duration_secs: r.get::<_, i64>(5)? as u32,
+                    rating: r.get::<_, Option<i64>>(6)?.map(|v| v as u8),
+                    started_at_ms: r.get(7)?,
+                    ended_at_ms: r.get(8)?,
+                }),
+            ).map_err(|e| TelegramError::Database(e.to_string()))?;
+
+            Ok(CallSignalOutcome::Applied(updated))
+        })
+    }
+
     pub fn list_calls_for_user(&self, user_id: UserId) -> Result<Vec<CallRecordDto>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT call_id, caller_id, callee_id, is_video, state, duration_secs, rating, started_at_ms, ended_at_ms FROM calls WHERE caller_id = ?1 OR callee_id = ?1 ORDER BY started_at_ms DESC LIMIT 100"
             ).map_db()?;

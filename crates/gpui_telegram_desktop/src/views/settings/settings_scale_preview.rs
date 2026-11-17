@@ -110,7 +110,7 @@ impl Render for SettingsScalePreview {
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_xs()
-                            .child("AI Chat"),
+                            .child("Fabushi"),
                     )
                     .child(
                         div()

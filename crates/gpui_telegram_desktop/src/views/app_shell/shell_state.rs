@@ -5,6 +5,7 @@
 //! so `AppShell` stays concise and modular.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use gpui::Entity;
 use gpui_telegram_agent::TalkCoordinator;
@@ -17,8 +18,12 @@ use gpui_telegram_proto::contracts::auth::ContactDto;
 use gpui_telegram_proto::miniapp_contracts::{
     BotPublicProfileDto, BotRegistryEntry, FabushiBotSummaryDto, MiniAppEntry, MiniAppLaunchMode,
 };
+use gpui_telegram_webrtc::calls::WebRtcPeerTransport;
+use gpui_telegram_webrtc::media::DefaultAiMediaTap;
 use gpui_telegram_webrtc::WebRtcCallEngine;
 
+use crate::app::session::send_as_peers::SendAsPeersSession;
+use crate::app::updater::DesktopUpdateState;
 use crate::components::bots::bot_attach_web_view::BotAttachWebView;
 use crate::theme::{TdesktopThemeMode, TdesktopThemePalette};
 use crate::views::boxes::peers::bot_profile_box::BotProfileBox;
@@ -48,6 +53,10 @@ pub struct ShellSessionSyncState {
     pub in_flight_reactions: HashMap<(u64, u64), usize>,
     pub reaction_pts_by_msg: HashMap<(u64, u64), u64>,
     pub latest_http_reaction_by_msg: HashMap<(u64, u64), (u64, Option<Vec<ReactionItem>>)>,
+    pub send_as_peers: SendAsPeersSession,
+    pub draft_debounce_gen: u64,
+    pub last_draft_text_by_chat: HashMap<u64, String>,
+    pub last_saved_draft_by_chat: HashMap<u64, String>,
 }
 
 impl Default for ShellSessionSyncState {
@@ -79,6 +88,10 @@ impl ShellSessionSyncState {
             in_flight_reactions: HashMap::new(),
             reaction_pts_by_msg: HashMap::new(),
             latest_http_reaction_by_msg: HashMap::new(),
+            send_as_peers: SendAsPeersSession::default(),
+            draft_debounce_gen: 0,
+            last_draft_text_by_chat: HashMap::new(),
+            last_saved_draft_by_chat: HashMap::new(),
         }
     }
 
@@ -102,6 +115,8 @@ impl ShellSessionSyncState {
         self.session_id = Some(session_id);
         self.user_id = Some(user_id);
         self.username = Some(username);
+        self.send_as_peers = SendAsPeersSession::new(user_id);
+        self.draft_debounce_gen = self.draft_debounce_gen.wrapping_add(1);
     }
 
     /// Clears per-message optimistic nonce and reaction tracking maps.
@@ -126,6 +141,10 @@ impl ShellSessionSyncState {
         self.contacts_list.clear();
         self.rich_chats_by_id.clear();
         self.chat_peer_user_ids.clear();
+        self.send_as_peers = SendAsPeersSession::default();
+        self.draft_debounce_gen = self.draft_debounce_gen.wrapping_add(1);
+        self.last_draft_text_by_chat.clear();
+        self.last_saved_draft_by_chat.clear();
         self.clear_message_tracking();
     }
 }
@@ -142,6 +161,7 @@ pub struct PendingMiniAppConfirm {
     pub source_chat_id: Option<u64>,
     pub launch_mode: MiniAppLaunchMode,
     pub start_param: Option<String>,
+    pub custom_url: Option<String>,
 }
 
 /// Virtual pre-start bot conversation state before a DB DM chat is created on click of `开始`.
@@ -197,6 +217,8 @@ pub struct ShellRtcTalkState {
     pub active_talk_session_is_ai: bool,
     pub active_talk_bot_chat_id: Option<u64>,
     pub active_talk_session_id: Option<String>,
+    pub ai_media_tap: Arc<DefaultAiMediaTap>,
+    pub ai_peer_transport: Option<Arc<WebRtcPeerTransport>>,
 }
 
 impl Default for ShellRtcTalkState {
@@ -218,6 +240,8 @@ impl ShellRtcTalkState {
             active_talk_session_is_ai: false,
             active_talk_bot_chat_id: None,
             active_talk_session_id: None,
+            ai_media_tap: Arc::new(DefaultAiMediaTap::new(48_000, 1, 0.05)),
+            ai_peer_transport: None,
         }
     }
 
@@ -232,6 +256,8 @@ impl ShellRtcTalkState {
         self.active_talk_session_is_ai = false;
         self.active_talk_bot_chat_id = None;
         self.active_talk_session_id = None;
+        self.ai_media_tap.reset_barge_in();
+        self.ai_peer_transport = None;
     }
 }
 
@@ -248,6 +274,9 @@ pub struct ShellOverlayState {
     pub last_viewport_width: f32,
     pub last_sidebar_selection_revision: u64,
     pub last_sidebar_collapse_revision: u64,
+    pub updater_state: DesktopUpdateState,
+    pub update_banner_dismissed_version: Option<String>,
+    pub update_op_in_flight: bool,
 }
 
 impl Default for ShellOverlayState {
@@ -271,6 +300,9 @@ impl ShellOverlayState {
             last_viewport_width: 1280.0,
             last_sidebar_selection_revision: 0,
             last_sidebar_collapse_revision: 0,
+            updater_state: DesktopUpdateState::default(),
+            update_banner_dismissed_version: None,
+            update_op_in_flight: false,
         }
     }
 

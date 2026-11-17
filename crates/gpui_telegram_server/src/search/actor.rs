@@ -184,7 +184,16 @@ impl TantivyWriterTask {
                             let _ = reply.send(());
                             break;
                         }
-                        None => break,
+                        None => {
+                            if pending_commits > 0 {
+                                if let Err(e) = self.writer.commit() {
+                                    tracing::error!("Tantivy commit on channel close failed: {e}");
+                                } else {
+                                    let _ = self.reader.reload();
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }

@@ -828,6 +828,9 @@ async fn dispatch_bot_api_call(
         "sendmessage" => handle_send_message(state, &bot, &params),
         "editmessagetext" => handle_edit_message_text(state, &bot, &params),
         "deletemessage" => handle_delete_message(state, &bot, &params),
+        "pinchatmessage" => handle_pin_chat_message(state, &bot, &params),
+        "unpinchatmessage" => handle_unpin_chat_message(state, &bot, &params),
+        "unpinallchatmessages" => handle_unpin_all_chat_messages(state, &bot, &params),
         "answercallbackquery" => handle_answer_callback_query(&params),
         "answerwebappquery" => handle_answer_web_app_query(state, &bot, &params),
         "setmycommands" => handle_set_my_commands(state, &bot, &params),
@@ -1022,6 +1025,9 @@ fn handle_send_message(
     if let Some(rid) = reply_to_id.filter(|&id| id > 0) {
         msg.reply_to = Some(ReplyHeader::new(MsgId(rid)));
     }
+    if !kb_rows.is_empty() {
+        msg.inline_keyboard = Some(kb_rows.clone());
+    }
 
     let pts_update = match state.message_pipeline.process_incoming_message(msg) {
         Ok(u) => u,
@@ -1154,7 +1160,7 @@ fn handle_edit_message_text(
     }
 
     let entities = parse_message_entities_from_params(params, text_raw);
-    let pts_update = match state.message_pipeline.edit_message(
+    let mut pts_update = match state.message_pipeline.edit_message(
         cid,
         msg_id,
         MessageContent::text_with_entities(text_raw, entities.clone()),
@@ -1176,6 +1182,10 @@ fn handle_edit_message_text(
             .and_then(|(ikb, _, _)| ikb)
             .and_then(|s| serde_json::from_str::<Vec<Vec<InlineKeyboardButton>>>(&s).ok())
     };
+    if let gpui_telegram_proto::sync::UpdateEvent::EditMessage(ref mut edited_msg) = pts_update.event
+    {
+        edited_msg.inline_keyboard = kb_rows.clone();
+    }
     broadcast_chat_pts(state, cid, pts_update);
 
     let msg_json = build_tg_message_json(
@@ -1246,6 +1256,194 @@ fn handle_delete_message(
             bot_ok(json!(true))
         }
         Err(e) => bot_err(StatusCode::BAD_REQUEST, 400, &e.to_string()),
+    }
+}
+
+fn resolve_bot_pin_target_chat(
+    state: &AppState,
+    bot: &BotRegistryRecord,
+    chat_id_val: Option<&Value>,
+    require_existing_dm: bool,
+) -> std::result::Result<Option<ChatId>, Response> {
+    let target = resolve_bot_target_chat(state, bot, chat_id_val)?;
+    match target {
+        BotTargetChat::PrivateUser { user, existing_chat } => {
+            if state
+                .db
+                .is_user_blocked(user.user_id, UserId(bot.bot_user_id as u64))
+                .unwrap_or(false)
+            {
+                return Err(bot_err(
+                    StatusCode::FORBIDDEN,
+                    403,
+                    "Forbidden: bot was blocked by the user",
+                ));
+            }
+            match existing_chat {
+                Some(c) => Ok(Some(c.chat_id)),
+                None if require_existing_dm => Err(bot_err(
+                    StatusCode::BAD_REQUEST,
+                    400,
+                    "Bad Request: message to pin not found",
+                )),
+                None => Ok(None),
+            }
+        }
+        BotTargetChat::GroupChat { chat } => {
+            let bot_uid = UserId(bot.bot_user_id as u64);
+            let allowed = if chat.creator_id == bot_uid {
+                true
+            } else if let Ok(Some(member)) = state.db.get_chat_member(chat.chat_id, bot_uid) {
+                let role = member.role.trim().to_ascii_lowercase();
+                matches!(role.as_str(), "owner" | "creator")
+                    || (matches!(role.as_str(), "admin" | "administrator")
+                        && (member.admin_rights == 0
+                            || (member.admin_rights & crate::server::ADMIN_RIGHTS_PIN_MESSAGES)
+                                != 0))
+            } else {
+                false
+            };
+            if !allowed {
+                return Err(bot_err(
+                    StatusCode::BAD_REQUEST,
+                    400,
+                    "Bad Request: not enough rights to manage pinned messages in the chat",
+                ));
+            }
+            Ok(Some(chat.chat_id))
+        }
+    }
+}
+
+fn emit_bot_pinned_messages_changed(state: &AppState, cid: ChatId, ids: &[i64]) {
+    if let Ok((_, pts_update)) = state.pts_engine.advance_pts(
+        cid,
+        1,
+        gpui_telegram_proto::sync::UpdateEvent::PinnedMessagesChanged {
+            chat_id: cid,
+            pinned_ids: ids.iter().copied().map(MsgId).collect(),
+        },
+    ) {
+        broadcast_chat_pts(state, cid, pts_update);
+    }
+}
+
+fn handle_pin_chat_message(
+    state: &AppState,
+    bot: &BotRegistryRecord,
+    params: &Map<String, Value>,
+) -> Response {
+    let Some(message_id) = param_i64(params, "message_id").filter(|&id| id > 0) else {
+        return bot_err(
+            StatusCode::BAD_REQUEST,
+            400,
+            "Bad Request: message_id is required",
+        );
+    };
+    let Some(cid) = (match resolve_bot_pin_target_chat(state, bot, params.get("chat_id"), true) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    }) else {
+        return bot_err(
+            StatusCode::BAD_REQUEST,
+            400,
+            "Bad Request: message to pin not found",
+        );
+    };
+    if state
+        .db
+        .get_message(cid, MsgId(message_id))
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return bot_err(
+            StatusCode::BAD_REQUEST,
+            400,
+            "Bad Request: message to pin not found",
+        );
+    }
+    match state
+        .db
+        .pin_message(cid, MsgId(message_id), UserId(bot.bot_user_id as u64))
+    {
+        Ok(ids) => {
+            emit_bot_pinned_messages_changed(state, cid, &ids);
+            bot_ok(json!(true))
+        }
+        Err(e) => bot_err(StatusCode::INTERNAL_SERVER_ERROR, 500, &e.to_string()),
+    }
+}
+
+fn handle_unpin_chat_message(
+    state: &AppState,
+    bot: &BotRegistryRecord,
+    params: &Map<String, Value>,
+) -> Response {
+    let msg_id_opt = param_i64(params, "message_id").filter(|&id| id > 0);
+    let Some(cid) = (match resolve_bot_pin_target_chat(
+        state,
+        bot,
+        params.get("chat_id"),
+        msg_id_opt.is_some(),
+    ) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    }) else {
+        return bot_ok(json!(true));
+    };
+
+    let target_mid = if let Some(mid) = msg_id_opt {
+        if state
+            .db
+            .get_message(cid, MsgId(mid))
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return bot_err(
+                StatusCode::BAD_REQUEST,
+                400,
+                "Bad Request: message to unpin not found",
+            );
+        }
+        Some(MsgId(mid))
+    } else {
+        match state.db.list_pinned_messages(cid) {
+            Ok(list) => match list.first().copied() {
+                Some(latest) => Some(MsgId(latest)),
+                None => return bot_ok(json!(true)),
+            },
+            Err(e) => return bot_err(StatusCode::INTERNAL_SERVER_ERROR, 500, &e.to_string()),
+        }
+    };
+
+    match state.db.unpin_message(cid, target_mid) {
+        Ok(ids) => {
+            emit_bot_pinned_messages_changed(state, cid, &ids);
+            bot_ok(json!(true))
+        }
+        Err(e) => bot_err(StatusCode::INTERNAL_SERVER_ERROR, 500, &e.to_string()),
+    }
+}
+
+fn handle_unpin_all_chat_messages(
+    state: &AppState,
+    bot: &BotRegistryRecord,
+    params: &Map<String, Value>,
+) -> Response {
+    let Some(cid) = (match resolve_bot_pin_target_chat(state, bot, params.get("chat_id"), false) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    }) else {
+        return bot_ok(json!(true));
+    };
+    match state.db.unpin_message(cid, None) {
+        Ok(_) => {
+            emit_bot_pinned_messages_changed(state, cid, &[]);
+            bot_ok(json!(true))
+        }
+        Err(e) => bot_err(StatusCode::INTERNAL_SERVER_ERROR, 500, &e.to_string()),
     }
 }
 
@@ -1345,6 +1543,9 @@ fn handle_answer_web_app_query(
         MessageContent::plain_text(msg_text),
     );
     msg.flags.is_out = false;
+    if !kb_rows.is_empty() {
+        msg.inline_keyboard = Some(kb_rows.clone());
+    }
     let pts_update = match state.message_pipeline.process_incoming_message(msg) {
         Ok(u) => u,
         Err(e) => return bot_err(StatusCode::INTERNAL_SERVER_ERROR, 500, &e.to_string()),

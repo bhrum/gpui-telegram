@@ -69,6 +69,26 @@ pub enum ClientDomainEvent {
     StoryUpdated {
         story: StoryDto,
     },
+    AgentFloorChanged {
+        chat_id: ChatId,
+        current_speaker: Option<String>,
+        queued_count: usize,
+        loop_hops: u32,
+    },
+    AgentWorkspaceUpdated {
+        chat_id: ChatId,
+        revision: u64,
+        key: String,
+        value: serde_json::Value,
+        updated_by: String,
+    },
+    AgentHandoffEvent {
+        chat_id: ChatId,
+        from_agent: String,
+        to_agent: String,
+        hop: u32,
+        max_hops: u32,
+    },
     ChatAction {
         chat_id: Option<ChatId>,
         action: ChatActionEvent,
@@ -223,6 +243,7 @@ pub(crate) fn apply_update_event(
             out_events.push(ClientDomainEvent::ForumTopicChanged { chat_id, topic });
         }
         UpdateEvent::FolderChanged { folder } => {
+            store.upsert_folder(folder.clone());
             out_events.push(ClientDomainEvent::FolderChanged { folder });
         }
         UpdateEvent::CallUpdated { call_id, state, signal } => {
@@ -230,6 +251,49 @@ pub(crate) fn apply_update_event(
         }
         UpdateEvent::StoryUpdated { story } => {
             out_events.push(ClientDomainEvent::StoryUpdated { story });
+        }
+        UpdateEvent::AgentFloorChanged {
+            chat_id,
+            current_speaker,
+            queued_count,
+            loop_hops,
+        } => {
+            out_events.push(ClientDomainEvent::AgentFloorChanged {
+                chat_id,
+                current_speaker,
+                queued_count,
+                loop_hops,
+            });
+        }
+        UpdateEvent::AgentWorkspaceUpdated {
+            chat_id,
+            revision,
+            key,
+            value,
+            updated_by,
+        } => {
+            out_events.push(ClientDomainEvent::AgentWorkspaceUpdated {
+                chat_id,
+                revision,
+                key,
+                value,
+                updated_by,
+            });
+        }
+        UpdateEvent::AgentHandoffEvent {
+            chat_id,
+            from_agent,
+            to_agent,
+            hop,
+            max_hops,
+        } => {
+            out_events.push(ClientDomainEvent::AgentHandoffEvent {
+                chat_id,
+                from_agent,
+                to_agent,
+                hop,
+                max_hops,
+            });
         }
     }
 }

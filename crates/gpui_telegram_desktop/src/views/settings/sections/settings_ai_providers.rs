@@ -9,13 +9,90 @@ use gpui_telegram_client::net::hermes_client::{
     MagpieImportRequest, MagpieMaskingConfigDto, MagpieMaskingPreviewRequest,
     MagpieMaskingPreviewResponse, MagpiePresetDto, MagpieProbeResponse, MagpieProviderDto,
     MagpieRoutingGroupDto, MagpieRoutingGroupMemberDto, MagpieSaveProviderRequest, MagpieStateDto,
+    MagpieSubscriptionDto,
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionAccountDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    pub kind: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionActivateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionActivateResponse {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub active_provider_id: String,
+    #[serde(default)]
+    pub active_model: String,
+}
+
+pub fn sub_dto_to_account_dto(s: &MagpieSubscriptionDto) -> SubscriptionAccountDto {
+    let models = match s.kind.as_str() {
+        "google_vertex" | "google-vertex" => vec![
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-pro".to_string(),
+            "gemini-1.5-pro".to_string(),
+        ],
+        "codex_chatgpt" | "codex" => {
+            let mut m = vec![];
+            if let Some(ref dm) = s.default_model {
+                m.push(dm.clone());
+            } else {
+                m.push("codex-mini-latest".to_string());
+            }
+            m.push("gpt-4o".to_string());
+            m.push("o3-mini".to_string());
+            m
+        }
+        "claude_code" | "claude" => vec![
+            "claude-sonnet-4-20250514".to_string(),
+            "claude-3-5-haiku-20241022".to_string(),
+            "claude-3-5-sonnet-20241022".to_string(),
+        ],
+        "gemini_code_assist" | "gemini" => vec![
+            "gemini-2.5-flash".to_string(),
+            "gemini-2.5-pro".to_string(),
+        ],
+        "github_copilot" => vec![
+            "gpt-4o".to_string(),
+            "claude-3-5-sonnet".to_string(),
+        ],
+        _ => s.default_model.clone().into_iter().collect(),
+    };
+    SubscriptionAccountDto {
+        id: s.id.clone(),
+        account_id: s.account_id.clone().or_else(|| s.email.clone()),
+        kind: s.kind.clone(),
+        label: s.label.clone(),
+        plan: s.plan.clone(),
+        models,
+        active: s.active,
+    }
+}
 
 use crate::components::ui::{
     TextInputController, delete_prev_word, pop_last_char, sanitize_paste_text,
 };
 use crate::i18n::tr_str;
-use crate::theme::assets::IconName;
+use crate::theme::assets::{tg_icon, IconName};
 use crate::theme::palette::TdesktopThemePalette;
 use crate::views::computer_workbench::render_ime_text_preview;
 use crate::views::settings::settings_theme_ui::{
@@ -66,6 +143,10 @@ pub enum AiProviderField {
 pub enum SettingsAiProvidersEvent {
     RefreshState,
     ScanSubscriptions,
+    ActivateSubscription {
+        subscription_id: String,
+        model: Option<String>,
+    },
     SaveProvider(MagpieSaveProviderRequest),
     DeleteProvider(String),
     ProbeProvider {
@@ -88,6 +169,8 @@ pub struct SettingsAiProvidersSections {
     pub tab: AiProvidersTab,
     pub category: AiPresetCategory,
     pub state: Option<MagpieStateDto>,
+    pub subscription_accounts: Vec<SubscriptionAccountDto>,
+    pub selected_subscription_models: HashMap<String, String>,
     pub loading: bool,
     pub status_message: Option<String>,
     pub error_message: Option<String>,
@@ -139,6 +222,8 @@ impl SettingsAiProvidersSections {
             tab: AiProvidersTab::Overview,
             category: AiPresetCategory::All,
             state: None,
+            subscription_accounts: Vec::new(),
+            selected_subscription_models: HashMap::new(),
             loading: true,
             status_message: None,
             error_message: None,
@@ -187,6 +272,57 @@ impl SettingsAiProvidersSections {
         self.pending_event.take()
     }
 
+    /// Selects a target model for the specified local subscription card.
+    pub fn select_subscription_model(&mut self, sub_id: &str, model: &str) {
+        self.selected_subscription_models
+            .insert(sub_id.to_string(), model.to_string());
+    }
+
+    /// Dispatches an event to activate the specified local subscription agent as primary.
+    pub fn activate_subscription_action(&mut self, sub_id: &str) {
+        let chosen_model = self.selected_subscription_models.get(sub_id).cloned();
+        self.loading = true;
+        self.pending_event = Some(SettingsAiProvidersEvent::ActivateSubscription {
+            subscription_id: sub_id.to_string(),
+            model: chosen_model,
+        });
+    }
+
+    /// Resolves effective discovered subscription accounts, falling back from server DTOs to state scan.
+    pub fn effective_subscriptions(&self) -> Vec<SubscriptionAccountDto> {
+        let mut list = if !self.subscription_accounts.is_empty() {
+            self.subscription_accounts.clone()
+        } else if let Some(ref st) = self.state {
+            st.subscriptions
+                .iter()
+                .map(sub_dto_to_account_dto)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if let Some(ref st) = self.state {
+            for sub in &mut list {
+                sub.active = sub.id == st.active_provider;
+            }
+        }
+        list
+    }
+
+    /// Synchronizes explicit `SubscriptionAccountDto` records fetched from the server.
+    pub fn sync_subscriptions(&mut self, subs: Vec<SubscriptionAccountDto>) {
+        self.loading = false;
+        if let Some(ref st) = self.state {
+            let mut updated = subs;
+            for sa in &mut updated {
+                sa.active = sa.id == st.active_provider;
+            }
+            self.subscription_accounts = updated;
+        } else {
+            self.subscription_accounts = subs;
+        }
+    }
+
     /// Hydrates live Magpie backend state into the view while preserving unsaved input drafts.
     pub fn sync_state(&mut self, state: MagpieStateDto) {
         self.loading = false;
@@ -201,6 +337,34 @@ impl SettingsAiProvidersSections {
         if self.group_strategy_draft.trim().is_empty() && !state.routing_strategy.is_empty() {
             self.group_strategy_draft = state.routing_strategy.clone();
         }
+
+        // Reconcile subscription_accounts against state.subscriptions:
+        // retain existing server-fetched DTOs still present, prune removed IDs, append newly discovered ones.
+        let state_ids: std::collections::HashSet<&str> = state
+            .subscriptions
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        self.subscription_accounts
+            .retain(|sa| state_ids.contains(sa.id.as_str()));
+
+        let mut existing_ids: std::collections::HashSet<String> = self
+            .subscription_accounts
+            .iter()
+            .map(|sa| sa.id.clone())
+            .collect();
+        for sub in &state.subscriptions {
+            if existing_ids.insert(sub.id.clone()) {
+                self.subscription_accounts
+                    .push(sub_dto_to_account_dto(sub));
+            }
+        }
+
+        // Always synchronize active flag according to current active provider
+        for sa in &mut self.subscription_accounts {
+            sa.active = sa.id == state.active_provider;
+        }
+
         self.state = Some(state);
     }
 
@@ -882,6 +1046,308 @@ impl SettingsAiProvidersSections {
             .into_any_element()
     }
 
+    fn render_discovered_subscriptions(
+        &self,
+        pal: TdesktopThemePalette,
+        lang: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let subs = self.effective_subscriptions();
+        if subs.is_empty() {
+            return div()
+                .p(px(12.0))
+                .rounded(px(8.0))
+                .bg(rgb(pal.input_bg))
+                .border_1()
+                .border_color(rgb(pal.border_fg))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(pal.text_secondary))
+                        .child(tr_str(
+                            lang,
+                            "未检测到本机 AI 智能体凭证（支持 Vertex AI ADC、Codex/ChatGPT、Claude Code、Gemini CLI 等）。",
+                            "No local AI agent credentials detected (Vertex AI ADC, Codex/ChatGPT, Claude, Gemini).",
+                        )),
+                );
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .children(subs.into_iter().map(|sub| {
+                let sub_id = sub.id.clone();
+                let sub_id_for_act = sub.id.clone();
+                let is_active = sub.active;
+                let card_border_col = if is_active { pal.accent } else { pal.border_fg };
+                let plan_label = sub.plan.clone().unwrap_or_else(|| match sub.kind.as_str() {
+                    "google_vertex" | "google-vertex" => "Vertex ADC".to_string(),
+                    "codex_chatgpt" | "codex" => "ChatGPT Plus / Team".to_string(),
+                    "claude_code" | "claude" => "Claude CLI".to_string(),
+                    "gemini_code_assist" | "gemini" => "Gemini CLI".to_string(),
+                    _ => sub.kind.clone(),
+                });
+                let account_str = sub.account_id.clone().unwrap_or_else(|| sub.kind.clone());
+
+                div()
+                    .id(SharedString::from(format!("magpie-sub-card-{}", sub_id)))
+                    .p(px(12.0))
+                    .rounded(px(10.0))
+                    .bg(rgb(pal.input_bg))
+                    .border_1()
+                    .border_color(rgb(card_border_col))
+                    .hover(move |s| s.border_color(rgb(pal.accent)))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    // Header row: Icon + Label + Plan + Active Badge
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.0))
+                                    .child(
+                                        div()
+                                            .w(px(36.0))
+                                            .h(px(36.0))
+                                            .rounded(px(8.0))
+                                            .bg(TdesktopThemePalette::rgba_with_alpha(
+                                                if is_active { pal.accent } else { pal.border_fg },
+                                                0.18,
+                                            ))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(tg_icon(
+                                                IconName::BotRobot,
+                                                20.0,
+                                                if is_active { pal.accent } else { pal.text_secondary },
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(2.0))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap(px(6.0))
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(rgb(pal.text_primary))
+                                                            .child(sub.label.clone()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .px(px(6.0))
+                                                            .py(px(1.5))
+                                                            .rounded(px(4.0))
+                                                            .bg(TdesktopThemePalette::rgba_with_alpha(
+                                                                pal.accent, 0.16,
+                                                            ))
+                                                            .text_size(px(10.0))
+                                                            .font_weight(FontWeight::BOLD)
+                                                            .text_color(rgb(pal.accent))
+                                                            .child(plan_label),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.0))
+                                                    .text_color(rgb(pal.text_secondary))
+                                                    .child(format!("{} · {}", account_str, sub.kind)),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(3.5))
+                                    .rounded(px(6.0))
+                                    .bg(if is_active {
+                                        rgb(pal.success)
+                                    } else {
+                                        TdesktopThemePalette::rgba_with_alpha(pal.text_secondary, 0.14)
+                                    })
+                                    .border_1()
+                                    .border_color(rgb(if is_active { pal.success } else { pal.border_fg }))
+                                    .text_size(px(10.5))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(if is_active {
+                                        pal.active_button_fg
+                                    } else {
+                                        pal.text_secondary
+                                    }))
+                                    .child(if is_active {
+                                        tr_str(lang, "已激活 / 当前生效", "Active / Current")
+                                    } else {
+                                        tr_str(lang, "未激活 / 点击切换", "Inactive / Click to switch")
+                                    }),
+                            ),
+                    )
+                    // Available Models Badges
+                    .when(!sub.models.is_empty(), |el| {
+                        let sub_id_for_models = sub_id.clone();
+                        let current_chosen = self.selected_subscription_models.get(&sub_id).cloned();
+                        el.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(pal.text_secondary))
+                                        .child(tr_str(
+                                            lang,
+                                            "可用模型 (点击选择激活模型):",
+                                            "Available Models (Click to select target):",
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap(px(6.0))
+                                        .children(sub.models.iter().map(|model_name| {
+                                            let m_name = model_name.clone();
+                                            let m_click = model_name.clone();
+                                            let sid = sub_id_for_models.clone();
+                                            let is_m_selected = current_chosen
+                                                .as_ref()
+                                                .map_or(false, |c| c == &m_name)
+                                                || (current_chosen.is_none()
+                                                    && is_active
+                                                    && self
+                                                        .state
+                                                        .as_ref()
+                                                        .map_or(false, |st| st.active_model == m_name));
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "magpie-sub-{}-m-{}",
+                                                    sid, m_name
+                                                )))
+                                                .cursor_pointer()
+                                                .px(px(7.0))
+                                                .py(px(2.5))
+                                                .rounded(px(5.0))
+                                                .bg(rgb(if is_m_selected {
+                                                    pal.accent
+                                                } else {
+                                                    pal.card_bg
+                                                }))
+                                                .border_1()
+                                                .border_color(rgb(if is_m_selected {
+                                                    pal.accent
+                                                } else {
+                                                    pal.border_fg
+                                                }))
+                                                .text_size(px(10.5))
+                                                .font_weight(if is_m_selected {
+                                                    FontWeight::BOLD
+                                                } else {
+                                                    FontWeight::NORMAL
+                                                })
+                                                .text_color(rgb(if is_m_selected {
+                                                    pal.active_button_fg
+                                                } else {
+                                                    pal.text_primary
+                                                }))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _, _, cx| {
+                                                        this.select_subscription_model(&sid, &m_click);
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(m_name)
+                                        })),
+                                ),
+                        )
+                    })
+                    // Action Footer: Status prompt & Activate Button
+                    .child(
+                        div()
+                            .pt(px(4.0))
+                            .border_t_1()
+                            .border_color(rgb(pal.border_fg))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .text_color(rgb(if is_active {
+                                        pal.success
+                                    } else {
+                                        pal.text_secondary
+                                    }))
+                                    .child(if is_active {
+                                        tr_str(
+                                            lang,
+                                            "★ 官方 AI Bot 已绑定此本地凭据，对话零配置可用",
+                                            "★ Official AI Bot bound to this credential, zero config needed",
+                                        )
+                                    } else {
+                                        tr_str(
+                                            lang,
+                                            "一键设为主要模型供应商，免手动配置 API Key",
+                                            "One-click activate to use without manual API key",
+                                        )
+                                    }),
+                            )
+                            .child(if is_active {
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "magpie-sub-active-btn-{}",
+                                        sub_id
+                                    )))
+                                    .px(px(10.0))
+                                    .py(px(4.0))
+                                    .rounded(px(6.0))
+                                    .bg(TdesktopThemePalette::rgba_with_alpha(
+                                        pal.success, 0.16,
+                                    ))
+                                    .border_1()
+                                    .border_color(rgb(pal.success))
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(rgb(pal.success))
+                                    .child(tr_str(lang, "当前主要供应商", "Current Primary"))
+                            } else {
+                                Self::pill_btn(
+                                    "magpie-activate-sub-btn",
+                                    tr_str(
+                                        lang,
+                                        "激活此智能体 / 设为主要供应商",
+                                        "Activate Agent / Set as Primary",
+                                    ),
+                                    pal.accent,
+                                    pal.active_button_fg,
+                                    move |this, _| {
+                                        this.activate_subscription_action(&sub_id_for_act);
+                                    },
+                                    cx,
+                                )
+                            }),
+                    )
+            }))
+    }
+
     fn render_overview_tab(
         &self,
         pal: TdesktopThemePalette,
@@ -894,7 +1360,7 @@ impl SettingsAiProvidersSections {
 
         let st_opt = self.state.as_ref();
         let needs_sel = st_opt.is_none_or(|s| s.needs_provider_selection);
-        let subs = st_opt.map(|s| s.subscriptions.clone()).unwrap_or_default();
+        let subs = self.effective_subscriptions();
         let providers = st_opt.map(|s| s.providers.clone()).unwrap_or_default();
         let presets = st_opt.map(|s| s.presets.clone()).unwrap_or_default();
         let q = self.preset_search.trim().to_ascii_lowercase();
@@ -934,7 +1400,7 @@ impl SettingsAiProvidersSections {
                             .items_center()
                             .justify_between()
                             .child(settings_subsection_title(
-                                tr_str(lang, "本地 AI 订阅检测", "Detected AI Subscriptions"),
+                                tr_str(lang, "本地 AI 订阅与智能体发现", "Discovered AI Subscriptions & Agents"),
                                 pal,
                             ))
                             .child(Self::pill_btn(
@@ -978,61 +1444,14 @@ impl SettingsAiProvidersSections {
                                         .text_color(rgb(pal.text_secondary))
                                         .child(tr_str(
                                             lang,
-                                            "请在下方选择一个模型供应商预设（DeepSeek、Kimi、智谱 GLM、OpenAI、Anthropic、Gemini 或本地 Ollama）并保存。",
-                                            "Pick a provider preset below (DeepSeek, Kimi, Zhipu GLM, OpenAI, Anthropic, Gemini, or local Ollama) to activate AI replies.",
+                                            "请在下方选择一个已发现的本地智能体并点击「激活」，或配置模型供应商以启用 AI 对话。",
+                                            "Activate a discovered local agent below, or configure a provider preset to enable AI chat replies.",
                                         )),
                                 ),
                         )
                     })
-                    .when(!subs.is_empty(), |el| {
-                        el.child(div().flex().flex_col().gap(px(6.0)).children(subs.into_iter().map(
-                            |sub| {
-                                let status_col = if sub.active { pal.success } else { pal.text_secondary };
-                                div()
-                                    .px(px(9.0))
-                                    .py(px(6.0))
-                                    .rounded(px(7.0))
-                                    .bg(rgb(pal.input_bg))
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::BOLD)
-                                                    .text_color(rgb(pal.text_primary))
-                                                    .child(format!(
-                                                        "{} · {}",
-                                                        sub.label,
-                                                        sub.plan.as_deref().unwrap_or(&sub.kind)
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.0))
-                                                    .text_color(rgb(pal.text_secondary))
-                                                    .child(sub.email.unwrap_or(sub.source_path)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(rgb(status_col))
-                                            .child(if sub.active {
-                                                tr_str(lang, "已激活", "Active")
-                                            } else {
-                                                tr_str(lang, "未登录/过期", "Inactive")
-                                            }),
-                                    )
-                            },
-                        )))
-                    })
-                    .when(subs_is_empty(st_opt) && !needs_sel, |el| {
+                    .child(self.render_discovered_subscriptions(pal, lang, cx))
+                    .when(subs.is_empty() && !needs_sel, |el| {
                         el.child(
                             div()
                                 .text_xs()
@@ -1962,6 +2381,7 @@ impl SettingsAiProvidersSections {
     }
 }
 
+#[allow(dead_code)]
 fn subs_is_empty(st: Option<&MagpieStateDto>) -> bool {
     st.is_none_or(|s| s.subscriptions.is_empty())
 }
@@ -2215,5 +2635,199 @@ mod tests {
             }
             other => panic!("expected UpdateMasking, got {other:?}"),
         }
+    }
+
+    #[std::prelude::v1::test]
+    fn discovered_ai_agents_cards_and_activation_event_work() {
+        let pal = TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12);
+        let mut view = SettingsAiProvidersSections::new_live(pal, "zh-CN");
+        let mut st = sample_state();
+        st.subscriptions = vec![
+            MagpieSubscriptionDto {
+                id: "google-vertex".to_string(),
+                kind: "google_vertex".to_string(),
+                label: "Google Vertex AI (test@vertex.com)".to_string(),
+                email: Some("test@vertex.com".to_string()),
+                account_id: Some("test-project-123".to_string()),
+                plan: Some("vertex_adc".to_string()),
+                active: false,
+                default_model: Some("gemini-2.5-flash".to_string()),
+                ..Default::default()
+            },
+            MagpieSubscriptionDto {
+                id: "codex".to_string(),
+                kind: "codex_chatgpt".to_string(),
+                label: "Codex / ChatGPT (Plus)".to_string(),
+                email: Some("user@openai.com".to_string()),
+                account_id: Some("chatgpt-sub-123".to_string()),
+                plan: Some("plus".to_string()),
+                active: false,
+                default_model: Some("gpt-4o".to_string()),
+                ..Default::default()
+            },
+        ];
+        view.sync_state(st);
+
+        let subs = view.effective_subscriptions();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0].id, "google-vertex");
+        assert_eq!(subs[0].plan.as_deref(), Some("vertex_adc"));
+        assert!(subs[0].models.contains(&"gemini-2.5-flash".to_string()));
+        assert!(subs[0].models.contains(&"gemini-2.5-pro".to_string()));
+        assert!(!subs[0].active);
+
+        // Model selection
+        view.select_subscription_model("google-vertex", "gemini-2.5-pro");
+        assert_eq!(
+            view.selected_subscription_models
+                .get("google-vertex")
+                .map(String::as_str),
+            Some("gemini-2.5-pro")
+        );
+
+        // Click activate
+        view.activate_subscription_action("google-vertex");
+        match view.take_event() {
+            Some(SettingsAiProvidersEvent::ActivateSubscription {
+                subscription_id,
+                model,
+            }) => {
+                assert_eq!(subscription_id, "google-vertex");
+                assert_eq!(model.as_deref(), Some("gemini-2.5-pro"));
+            }
+            other => panic!("expected ActivateSubscription event, got {other:?}"),
+        }
+
+        // Test sync_subscriptions with server DTOs and active state reflection
+        // When google-vertex is activated, server state active_provider is updated
+        let mut st_act = view.state.clone().unwrap();
+        st_act.active_provider = "google-vertex".to_string();
+        view.sync_state(st_act);
+
+        let server_subs = vec![
+            SubscriptionAccountDto {
+                id: "google-vertex".to_string(),
+                account_id: Some("test-project-123".to_string()),
+                kind: "google_vertex".to_string(),
+                label: "Google Vertex AI (ADC)".to_string(),
+                plan: Some("vertex_adc".to_string()),
+                models: vec![
+                    "gemini-2.5-flash".to_string(),
+                    "gemini-2.5-pro".to_string(),
+                ],
+                active: true,
+            },
+            SubscriptionAccountDto {
+                id: "codex".to_string(),
+                account_id: Some("user@openai.com".to_string()),
+                kind: "codex_chatgpt".to_string(),
+                label: "Codex / ChatGPT".to_string(),
+                plan: Some("plus".to_string()),
+                models: vec!["gpt-4o".to_string(), "codex-mini-latest".to_string()],
+                active: false,
+            },
+        ];
+        view.sync_subscriptions(server_subs);
+        let eff = view.effective_subscriptions();
+        assert_eq!(eff.len(), 2);
+        assert!(eff[0].active);
+        assert!(!eff[1].active);
+
+        // Switch active provider to codex: codex becomes active, google-vertex becomes inactive
+        let mut st_codex = view.state.clone().unwrap();
+        st_codex.active_provider = "codex".to_string();
+        view.sync_state(st_codex);
+        let eff_switched = view.effective_subscriptions();
+        assert_eq!(eff_switched.len(), 2);
+        assert!(!eff_switched[0].active);
+        assert!(eff_switched[1].active);
+    }
+
+    #[std::prelude::v1::test]
+    fn sync_state_reconciles_added_and_removed_subscriptions_while_preserving_server_metadata() {
+        let pal = TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12);
+        let mut view = SettingsAiProvidersSections::new_live(pal, "en");
+
+        let sub_vertex = MagpieSubscriptionDto {
+            id: "google_vertex:a".to_string(),
+            kind: "google_vertex".to_string(),
+            label: "Google Vertex A".to_string(),
+            email: Some("a@vertex.internal".to_string()),
+            account_id: Some("acct-a".to_string()),
+            plan: Some("vertex_adc".to_string()),
+            active: true,
+            default_model: Some("gemini-2.5-flash".to_string()),
+            ..Default::default()
+        };
+        let sub_codex = MagpieSubscriptionDto {
+            id: "codex:b".to_string(),
+            kind: "codex_chatgpt".to_string(),
+            label: "Codex B".to_string(),
+            email: Some("b@example.com".to_string()),
+            account_id: Some("acct-b".to_string()),
+            plan: Some("plus".to_string()),
+            active: false,
+            default_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
+
+        // 1. Initial sync_state + sync_subscriptions with server-enriched metadata
+        let mut st1 = sample_state();
+        st1.active_provider = "google_vertex:a".to_string();
+        st1.subscriptions = vec![sub_vertex.clone()];
+        view.sync_state(st1.clone());
+        view.sync_subscriptions(vec![SubscriptionAccountDto {
+            id: "google_vertex:a".to_string(),
+            account_id: Some("acct-a".to_string()),
+            kind: "google_vertex".to_string(),
+            label: "Server Label Vertex A".to_string(),
+            plan: Some("vertex_adc".to_string()),
+            models: vec!["gemini-2.5-pro-server-custom".to_string()],
+            active: true,
+        }]);
+        assert_eq!(view.effective_subscriptions().len(), 1);
+
+        // 2. Subsequent sync_state adds codex:b and switches active_provider to codex:b (without sync_subscriptions)
+        let mut st2 = sample_state();
+        st2.active_provider = "codex:b".to_string();
+        st2.subscriptions = vec![sub_vertex.clone(), sub_codex.clone()];
+        view.sync_state(st2);
+
+        let eff2 = view.effective_subscriptions();
+        assert_eq!(eff2.len(), 2, "newly added subscription must appear after sync_state");
+        let v_after_add = eff2.iter().find(|s| s.id == "google_vertex:a").unwrap();
+        let c_after_add = eff2.iter().find(|s| s.id == "codex:b").unwrap();
+        assert_eq!(
+            v_after_add.label, "Server Label Vertex A",
+            "existing server-fetched metadata must be preserved"
+        );
+        assert_eq!(
+            v_after_add.models,
+            vec!["gemini-2.5-pro-server-custom".to_string()]
+        );
+        assert!(!v_after_add.active);
+        assert!(c_after_add.active);
+
+        // 3. Subsequent sync_state removes google_vertex:a
+        let mut st3 = sample_state();
+        st3.active_provider = "codex:b".to_string();
+        st3.subscriptions = vec![sub_codex];
+        view.sync_state(st3);
+
+        let eff3 = view.effective_subscriptions();
+        assert_eq!(eff3.len(), 1, "removed subscription must be pruned");
+        assert_eq!(eff3[0].id, "codex:b");
+        assert!(eff3[0].active);
+
+        // 4. Subsequent sync_state clears all subscriptions
+        let mut st4 = sample_state();
+        st4.active_provider = "local_hermes".to_string();
+        st4.subscriptions = Vec::new();
+        view.sync_state(st4);
+
+        assert!(
+            view.effective_subscriptions().is_empty(),
+            "all subscriptions must be pruned when state.subscriptions becomes empty"
+        );
     }
 }

@@ -952,7 +952,7 @@ impl ServerDatabase {
         if clean.is_empty() {
             return Ok(None);
         }
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_token = ?1"),
                 params![clean],
@@ -964,7 +964,7 @@ impl ServerDatabase {
     }
 
     pub fn get_bot_by_user_id(&self, bot_user_id: i64) -> Result<Option<BotRegistryRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 &format!("SELECT {BOT_COLS} FROM bots_registry WHERE bot_user_id = ?1"),
                 params![bot_user_id],
@@ -980,7 +980,7 @@ impl ServerDatabase {
         if clean.is_empty() {
             return Ok(None);
         }
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 &format!("SELECT {BOT_COLS} FROM bots_registry WHERE LOWER(username) = LOWER(?1)"),
                 params![clean],
@@ -992,7 +992,7 @@ impl ServerDatabase {
     }
 
     pub fn list_bots_by_owner(&self, owner_user_id: i64) -> Result<Vec<BotRegistryRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {BOT_COLS} FROM bots_registry WHERE owner_user_id = ?1 ORDER BY created_at DESC"
@@ -1008,7 +1008,7 @@ impl ServerDatabase {
     }
 
     pub fn list_all_bots(&self) -> Result<Vec<BotRegistryRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {BOT_COLS} FROM bots_registry ORDER BY is_official DESC, created_at ASC"
@@ -1027,7 +1027,7 @@ impl ServerDatabase {
         &self,
         user_id: i64,
     ) -> Result<Vec<(BotRegistryRecord, Option<MiniAppRecord>, bool)>> {
-        let bots = self.pool.with_conn(|conn| {
+        let bots = self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT DISTINCT {BOT_COLS} FROM bots_registry
@@ -1050,7 +1050,7 @@ impl ServerDatabase {
             let apps = self.list_mini_apps_for_bot(bot.bot_user_id)?;
             let primary = apps.into_iter().find(|a| a.is_published);
             let installed = if let Some(ref app) = primary {
-                self.pool.with_conn(|conn| {
+                self.pool.with_reader(|conn| {
                     let count: i64 = conn
                         .query_row(
                             "SELECT COUNT(*) FROM user_mini_apps WHERE user_id = ?1 AND app_id = ?2",
@@ -1637,7 +1637,7 @@ impl ServerDatabase {
     pub fn generate_unique_bot_username(&self, desired_or_name: &str) -> Result<String> {
         let trimmed = desired_or_name.trim().trim_start_matches('@');
         if let Ok(valid) = validate_bot_username(trimmed) {
-            let taken = self.pool.with_conn(|conn| {
+            let taken = self.pool.with_reader(|conn| {
                 let exists: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?1)",
@@ -1705,7 +1705,7 @@ impl ServerDatabase {
             if validate_bot_username(&candidate).is_err() {
                 continue;
             }
-            let taken = self.pool.with_conn(|conn| {
+            let taken = self.pool.with_reader(|conn| {
                 let exists: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?1)",
@@ -1731,7 +1731,7 @@ impl ServerDatabase {
         bot_user_id: i64,
         user_id: i64,
     ) -> Result<Option<ChatId>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"SELECT c.chat_id FROM chats c
                    JOIN chat_members m1 ON m1.chat_id = c.chat_id AND m1.user_id = ?1
@@ -1749,7 +1749,7 @@ impl ServerDatabase {
     }
 
     pub fn list_all_bot_user_ids_from_users(&self) -> Result<Vec<i64>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare("SELECT user_id FROM users WHERE is_bot = 1 ORDER BY user_id ASC")
                 .map_db()?;
@@ -1923,7 +1923,7 @@ impl ServerDatabase {
     // --- BotFather Conversation State Machine Persistence ---
 
     pub fn get_botfather_session(&self, user_id: i64) -> Result<Option<BotfatherSessionRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT user_id, chat_id, state, draft_json, updated_at FROM botfather_sessions WHERE user_id = ?1",
                 params![user_id],
@@ -2174,7 +2174,7 @@ impl ServerDatabase {
     ) -> Result<Option<MiniAppRecord>> {
         let clean_bot = normalize_bot_slug(bot_username);
         let clean_short = short_name.trim().trim_start_matches('/');
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 &format!(
                     "SELECT {MINIAPP_COLS} FROM mini_apps WHERE LOWER(bot_username) = LOWER(?1) AND LOWER(short_name) = LOWER(?2)"
@@ -2188,7 +2188,7 @@ impl ServerDatabase {
     }
 
     pub fn list_mini_apps_for_bot(&self, bot_user_id: i64) -> Result<Vec<MiniAppRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {MINIAPP_COLS} FROM mini_apps WHERE bot_user_id = ?1 ORDER BY created_at DESC"
@@ -2204,13 +2204,13 @@ impl ServerDatabase {
     }
 
     pub fn list_mini_apps_by_owner(&self, owner_user_id: i64) -> Result<Vec<MiniAppRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color
                      FROM mini_apps m
                      JOIN bots_registry b ON b.bot_user_id = m.bot_user_id
-                     WHERE b.owner_user_id = ?1
+                     WHERE b.owner_user_id = ?1 AND m.category != '__bot_inline_webapp__'
                      ORDER BY m.created_at DESC",
                 )
                 .map_db()?;
@@ -2232,7 +2232,7 @@ impl ServerDatabase {
         let cat = category
             .map(str::trim)
             .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("all"));
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {MINIAPP_COLS} FROM mini_apps WHERE is_published = 1 ORDER BY install_count DESC, created_at DESC"
@@ -2332,7 +2332,7 @@ impl ServerDatabase {
             .ok_or_else(|| TelegramError::NotFound(format!("Bot {} not found", bot_user_id.0)))?;
 
         // 1. Check if a 1:1 bot/direct chat between user_id and bot_user_id already exists
-        let existing_chat: Option<i64> = self.pool.with_conn(|conn| {
+        let existing_chat: Option<i64> = self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"SELECT c.chat_id FROM chats c
                    JOIN chat_members m1 ON m1.chat_id = c.chat_id AND m1.user_id = ?1
@@ -2566,7 +2566,7 @@ impl ServerDatabase {
         &self,
         user_id: i64,
     ) -> Result<Vec<(MiniAppRecord, UserMiniAppRecord, BotRegistryRecord)>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color,
@@ -2720,7 +2720,7 @@ impl ServerDatabase {
     }
 
     pub fn get_mini_app_session(&self, query_id: &str) -> Result<Option<MiniAppSessionRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT query_id, user_id, app_id, bot_user_id, chat_id, launch_mode, start_param, init_data_raw, auth_date, state_json, created_at, updated_at FROM mini_app_sessions WHERE query_id = ?1",
                 params![query_id],
@@ -2736,7 +2736,7 @@ impl ServerDatabase {
         user_id: i64,
         app_id: &str,
     ) -> Result<Option<MiniAppSessionRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT query_id, user_id, app_id, bot_user_id, chat_id, launch_mode, start_param, init_data_raw, auth_date, state_json, created_at, updated_at FROM mini_app_sessions WHERE user_id = ?1 AND app_id = ?2 ORDER BY updated_at DESC LIMIT 1",
                 params![user_id, app_id],
@@ -2752,7 +2752,7 @@ impl ServerDatabase {
         user_id: i64,
         bot_user_id: i64,
     ) -> Result<Option<MiniAppSessionRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT query_id, user_id, app_id, bot_user_id, chat_id, launch_mode, start_param, init_data_raw, auth_date, state_json, created_at, updated_at FROM mini_app_sessions WHERE user_id = ?1 AND bot_user_id = ?2 ORDER BY updated_at DESC LIMIT 1",
                 params![user_id, bot_user_id],
@@ -2782,7 +2782,7 @@ impl ServerDatabase {
         user_id: i64,
         bot_user_id: i64,
     ) -> Result<BTreeMap<String, String>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT storage_key, storage_value FROM mini_app_cloud_storage WHERE user_id = ?1 AND bot_user_id = ?2 ORDER BY storage_key ASC",
@@ -2804,7 +2804,7 @@ impl ServerDatabase {
         user_id: i64,
         bot_user_id: i64,
     ) -> Result<Vec<CloudStorageItem>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT storage_key, storage_value, updated_at FROM mini_app_cloud_storage WHERE user_id = ?1 AND bot_user_id = ?2 ORDER BY storage_key ASC",
@@ -2922,7 +2922,7 @@ impl ServerDatabase {
         user_id: i64,
         bot_user_id: i64,
     ) -> Result<UserBotPermissionRecord> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let rec = conn
                 .query_row(
                     "SELECT user_id, bot_user_id, allows_write_to_pm, app_tos_accepted_at, has_started_chat, updated_at FROM user_bot_permissions WHERE user_id = ?1 AND bot_user_id = ?2",
@@ -3086,7 +3086,7 @@ impl ServerDatabase {
         limit: usize,
     ) -> Result<Vec<(MiniAppRecord, i64)>> {
         let lim = limit.clamp(1, 100) as i64;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT m.app_id, m.bot_user_id, m.bot_username, m.short_name, m.title, m.description, m.category, m.icon_emoji, m.web_url, m.ui_schema_json, m.peer_types_json, m.is_published, m.is_attach_enabled, m.install_count, m.created_by_nl, m.created_at, m.updated_at, m.header_color, m.background_color, e.last_launched_at
@@ -3115,7 +3115,7 @@ impl ServerDatabase {
         user_id: i64,
         app_id: &str,
     ) -> Result<Option<i64>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT last_launched_at FROM mini_app_usage_events WHERE user_id = ?1 AND app_id = ?2",
                 params![user_id, app_id],
@@ -3128,7 +3128,7 @@ impl ServerDatabase {
 
     pub fn compute_bot_mau_30d(&self, bot_user_id: i64) -> Result<i64> {
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - 30 * 86_400_000;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 r#"SELECT COUNT(DISTINCT user_id) FROM (
                        SELECT user_id FROM mini_app_usage_events WHERE bot_user_id = ?1 AND last_launched_at >= ?2
@@ -3144,7 +3144,7 @@ impl ServerDatabase {
 
     pub fn compute_app_mau_30d(&self, app_id: &str) -> Result<i64> {
         let cutoff_ms = chrono::Utc::now().timestamp_millis() - 30 * 86_400_000;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT COUNT(DISTINCT user_id) FROM mini_app_usage_events WHERE app_id = ?1 AND last_launched_at >= ?2",
                 params![app_id, cutoff_ms],
@@ -3171,7 +3171,7 @@ impl ServerDatabase {
     }
 
     pub fn get_mini_app_hosted_bundle(&self, app_id: &str) -> Result<Option<String>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT html_content FROM mini_app_hosted_bundles WHERE app_id = ?1",
                 params![app_id],
@@ -3246,7 +3246,7 @@ impl ServerDatabase {
     }
 
     pub fn count_bot_api_updates(&self, bot_user_id: i64) -> Result<i64> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT COUNT(*) FROM bot_api_updates WHERE bot_user_id = ?1",
                 params![bot_user_id],

@@ -15,6 +15,18 @@ impl TelegramClient {
         self.local_store.media_cas_path(file_id)
     }
 
+    pub async fn upload_file_resumable(
+        &self,
+        file_path: impl AsRef<std::path::Path>,
+        mime_type: &str,
+        chat_id: Option<i64>,
+        transfer_id: Option<&str>,
+    ) -> gpui_telegram_core::error::Result<MediaUploadCompleteResponse> {
+        self.chunked_transfers
+            .start_or_resume_upload(file_path.as_ref(), mime_type, chat_id, transfer_id)
+            .await
+    }
+
     pub async fn upload_media(
         &self,
         filename: &str,

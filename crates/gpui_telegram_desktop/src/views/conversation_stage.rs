@@ -189,6 +189,9 @@ impl RowHeightCache {
             MessageContent::Story { .. } => 220.0 + margin,
             MessageContent::Invoice { .. } => 240.0 + margin,
             MessageContent::BotKeyboard { .. } => 60.0 + margin,
+            MessageContent::GenerativeCard(card) => {
+                (64.0 + (card.components.len() as f32 * 28.0) + margin).clamp(64.0, 600.0)
+            }
         };
         estimated.clamp(24.0, 600.0)
     }
@@ -258,6 +261,14 @@ pub struct MessageContextMenuState {
     pub text_snippet: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedBannerEntry {
+    pub msg_id: u64,
+    pub preview_text: String,
+    pub sender_name: String,
+    pub thumb_url: Option<String>,
+}
+
 pub struct ConversationStage {
     pub active_chat_id: Option<u64>,
     pub chat_title: String,
@@ -304,6 +315,8 @@ pub struct ConversationStage {
     pub ttl_submenu_open: bool,
     pub chat_histories: std::collections::HashMap<u64, Vec<MessageItemModel>>,
     pub chat_pinned_messages: std::collections::HashMap<u64, Option<String>>,
+    pub chat_pinned_entries: std::collections::HashMap<u64, Vec<PinnedBannerEntry>>,
+    pub message_expirations: std::collections::HashMap<u64, i64>,
     pub scroll_handle: ScrollHandle,
     pub row_height_cache: RowHeightCache,
     pub is_anchored_to_bottom: bool,
@@ -404,6 +417,8 @@ impl ConversationStage {
             ttl_submenu_open: false,
             chat_histories: std::collections::HashMap::new(),
             chat_pinned_messages: std::collections::HashMap::new(),
+            chat_pinned_entries: std::collections::HashMap::new(),
+            message_expirations: std::collections::HashMap::new(),
             scroll_handle: ScrollHandle::new(),
             row_height_cache: RowHeightCache::new(),
             is_anchored_to_bottom: true,
@@ -462,6 +477,8 @@ impl ConversationStage {
         self.clear_selection();
         self.chat_histories.clear();
         self.chat_pinned_messages.clear();
+        self.chat_pinned_entries.clear();
+        self.message_expirations.clear();
         self.chat_scroll_positions.clear();
         self.message_meta.clear();
         self.revealed_spoilers.clear();
@@ -576,20 +593,40 @@ impl ConversationStage {
         self.row_height_cache.mark_dirty();
 
         // 2. Cleanly load pinned banner without cross-chat bleeding + sync multi-pin tracker
-        let pinned_ids: Vec<i64> = self
+        let mut pinned_ids: Vec<i64> = self
             .messages
             .iter()
             .filter(|m| m.is_pinned)
             .map(|m| m.id as i64)
             .collect();
+        if let Some(entries) = self.chat_pinned_entries.get(&chat_id) {
+            for e in entries {
+                let id = e.msg_id as i64;
+                if !pinned_ids.contains(&id) {
+                    pinned_ids.push(id);
+                }
+            }
+        }
         self.pinned_tracker.set_pinned_ids(pinned_ids);
-        self.pinned_message = self.chat_pinned_messages.get(&chat_id).cloned().unwrap_or_else(|| {
-            self.messages.iter().rev().find(|m| m.is_pinned).and_then(|m| match &m.content {
-                MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
-                MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => caption.clone(),
-                _ => None,
+        self.pinned_tracker.reset_to_latest();
+        self.pinned_message = self
+            .chat_pinned_entries
+            .get(&chat_id)
+            .and_then(|v| {
+                let active_id = self.pinned_tracker.current_msg_id().map(|id| id as u64);
+                active_id
+                    .and_then(|aid| v.iter().find(|e| e.msg_id == aid))
+                    .or_else(|| v.last())
+                    .map(|e| e.preview_text.clone())
             })
-        });
+            .or_else(|| self.chat_pinned_messages.get(&chat_id).cloned().flatten())
+            .or_else(|| {
+                self.messages.iter().rev().find(|m| m.is_pinned).and_then(|m| match &m.content {
+                    MessageContent::Text { text, .. } => Some(text.lines().next().unwrap_or(text).to_string()),
+                    MessageContent::Media { caption, .. } | MessageContent::Album { caption, .. } => caption.clone(),
+                    _ => None,
+                })
+            });
 
         // 3. Restore scroll position or scroll to bottom
         if let Some(&(saved_offset, was_at_bottom)) = self.chat_scroll_positions.get(&chat_id) {

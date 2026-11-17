@@ -489,13 +489,15 @@ impl AppShell {
                     bot_username,
                     short_name,
                     chat_id,
+                    custom_url,
                 } => {
-                    self.launch_miniapp(
+                    self.launch_miniapp_with_url(
                         &bot_username,
                         &short_name,
                         chat_id.filter(|&id| id > 0).map(|id| id as u64),
                         MiniAppLaunchMode::DirectLink,
                         None,
+                        custom_url,
                         cx,
                     );
                 }
@@ -854,9 +856,18 @@ impl AppShell {
         );
         match btn_type {
             InlineButtonType::WebApp(url) => {
-                if !self.launch_miniapp_from_uri(
+                let sender_uid = self
+                    .stage
+                    .read(cx)
+                    .messages
+                    .iter()
+                    .find(|m| m.id == msg_id)
+                    .map(|m| m.sender_id)
+                    .filter(|&id| id > 0);
+                if !self.launch_miniapp_from_webapp_button(
                     &url,
                     active_chat,
+                    sender_uid,
                     MiniAppLaunchMode::InlineKeyboard,
                     cx,
                 ) {

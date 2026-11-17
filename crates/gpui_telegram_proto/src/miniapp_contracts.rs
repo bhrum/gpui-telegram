@@ -479,6 +479,392 @@ pub struct MiniAppManifestDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MiniAppActionSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
+    pub risk_level: String,
+    pub requires_approval: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AgentManifest {
+    pub app_id: String,
+    pub version: String,
+    pub readable_state_schema: serde_json::Value,
+    pub actions: Vec<MiniAppActionSpec>,
+}
+
+fn is_valid_json_schema_type_name(s: &str) -> bool {
+    matches!(
+        s,
+        "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+    )
+}
+
+fn validate_schema_definition(schema: &serde_json::Value, label: &str) -> Result<(), String> {
+    let obj = schema
+        .as_object()
+        .ok_or_else(|| format!("{label} must be a JSON Schema object"))?;
+    if let Some(ty) = obj.get("type") {
+        match ty {
+            serde_json::Value::String(s) => {
+                if !is_valid_json_schema_type_name(s) {
+                    return Err(format!("{label} has invalid schema type '{s}'"));
+                }
+            }
+            serde_json::Value::Array(arr) if !arr.is_empty() => {
+                for item in arr {
+                    let s = item
+                        .as_str()
+                        .ok_or_else(|| format!("{label}.type array elements must be strings"))?;
+                    if !is_valid_json_schema_type_name(s) {
+                        return Err(format!("{label} has invalid schema type '{s}'"));
+                    }
+                }
+            }
+            _ => {
+                return Err(format!("{label}.type must be a valid JSON Schema type string or array"));
+            }
+        }
+    }
+    if let Some(req) = obj.get("required") {
+        let arr = req
+            .as_array()
+            .ok_or_else(|| format!("{label}.required must be an array of field names"))?;
+        for item in arr {
+            if item.as_str().is_none() {
+                return Err(format!("{label}.required entries must be strings"));
+            }
+        }
+    }
+    if let Some(props) = obj.get("properties") {
+        let prop_map = props
+            .as_object()
+            .ok_or_else(|| format!("{label}.properties must be a JSON object"))?;
+        for (k, v) in prop_map {
+            validate_schema_definition(v, &format!("{label}.properties.{k}"))?;
+        }
+    }
+    if let Some(add_props) = obj.get("additionalProperties") {
+        if !add_props.is_boolean() {
+            validate_schema_definition(add_props, &format!("{label}.additionalProperties"))?;
+        }
+    }
+    if let Some(items) = obj.get("items") {
+        validate_schema_definition(items, &format!("{label}.items"))?;
+    }
+    Ok(())
+}
+
+fn value_matches_json_type(val: &serde_json::Value, ty: &str) -> bool {
+    match ty {
+        "object" => val.is_object(),
+        "array" => val.is_array(),
+        "string" => val.is_string(),
+        "number" => val.is_number(),
+        "integer" => val.as_i64().is_some() || val.as_u64().is_some(),
+        "boolean" => val.is_boolean(),
+        "null" => val.is_null(),
+        _ => false,
+    }
+}
+
+fn schema_allows_null(schema: &serde_json::Value) -> bool {
+    match schema.get("type") {
+        Some(serde_json::Value::String(s)) => s == "null",
+        Some(serde_json::Value::Array(arr)) => arr.iter().any(|t| t.as_str() == Some("null")),
+        _ => false,
+    }
+}
+
+fn validate_value_against_schema(
+    val: &serde_json::Value,
+    schema: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    if let Some(b) = schema.as_bool() {
+        return if b {
+            Ok(())
+        } else {
+            Err(format!("Schema validation failed at '{path}': schema is false"))
+        };
+    }
+    let obj = schema
+        .as_object()
+        .ok_or_else(|| format!("Invalid schema at '{path}': expected schema object"))?;
+
+    if let Some(ty) = obj.get("type") {
+        let matched = match ty {
+            serde_json::Value::String(s) => value_matches_json_type(val, s),
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|x| x.as_str())
+                .any(|s| value_matches_json_type(val, s)),
+            _ => false,
+        };
+        if !matched {
+            return Err(format!(
+                "Schema validation failed at '{path}': expected type {ty}, got {val}"
+            ));
+        }
+    }
+
+    if let Some(enum_vals) = obj.get("enum").and_then(|v| v.as_array()) {
+        if !enum_vals.iter().any(|candidate| candidate == val) {
+            return Err(format!(
+                "Schema validation failed at '{path}': value {val} is not in enum"
+            ));
+        }
+    }
+
+    if let Some(map) = val.as_object() {
+        let props_map = obj.get("properties").and_then(|v| v.as_object());
+
+        if let Some(req_fields) = obj.get("required").and_then(|v| v.as_array()) {
+            for req in req_fields {
+                if let Some(name) = req.as_str() {
+                    match map.get(name) {
+                        None => {
+                            return Err(format!("Missing required parameter: {name}"));
+                        }
+                        Some(v) if v.is_null() => {
+                            let null_allowed = props_map
+                                .and_then(|pm| pm.get(name))
+                                .is_some_and(schema_allows_null);
+                            if !null_allowed {
+                                return Err(format!(
+                                    "Required parameter '{name}' at '{path}' cannot be null"
+                                ));
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(pm) = props_map {
+            for (k, prop_schema) in pm {
+                if let Some(v) = map.get(k) {
+                    validate_value_against_schema(v, prop_schema, &format!("{path}.{k}"))?;
+                }
+            }
+        }
+
+        if let Some(add_props) = obj.get("additionalProperties") {
+            match add_props {
+                serde_json::Value::Bool(false) => {
+                    for k in map.keys() {
+                        let declared = props_map.is_some_and(|pm| pm.contains_key(k));
+                        if !declared {
+                            return Err(format!(
+                                "Schema validation failed at '{path}': additional property '{k}' is not allowed"
+                            ));
+                        }
+                    }
+                }
+                serde_json::Value::Object(_) => {
+                    for (k, v) in map {
+                        let declared = props_map.is_some_and(|pm| pm.contains_key(k));
+                        if !declared {
+                            validate_value_against_schema(v, add_props, &format!("{path}.{k}"))?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else if let Some(arr) = val.as_array() {
+        if let Some(min_items) = obj.get("minItems").and_then(|v| v.as_u64()) {
+            if (arr.len() as u64) < min_items {
+                return Err(format!(
+                    "Schema validation failed at '{path}': expected at least {min_items} items"
+                ));
+            }
+        }
+        if let Some(max_items) = obj.get("maxItems").and_then(|v| v.as_u64()) {
+            if (arr.len() as u64) > max_items {
+                return Err(format!(
+                    "Schema validation failed at '{path}': expected at most {max_items} items"
+                ));
+            }
+        }
+        if let Some(item_schema) = obj.get("items") {
+            for (i, item) in arr.iter().enumerate() {
+                validate_value_against_schema(item, item_schema, &format!("{path}[{i}]"))?;
+            }
+        }
+    } else if let Some(s) = val.as_str() {
+        let len = s.chars().count() as u64;
+        if let Some(min_len) = obj.get("minLength").and_then(|v| v.as_u64()) {
+            if len < min_len {
+                return Err(format!(
+                    "Schema validation failed at '{path}': string length {len} < minLength {min_len}"
+                ));
+            }
+        }
+        if let Some(max_len) = obj.get("maxLength").and_then(|v| v.as_u64()) {
+            if len > max_len {
+                return Err(format!(
+                    "Schema validation failed at '{path}': string length {len} > maxLength {max_len}"
+                ));
+            }
+        }
+    } else if let Some(n) = val.as_f64() {
+        if let Some(min) = obj.get("minimum").and_then(|v| v.as_f64()) {
+            if n < min {
+                return Err(format!(
+                    "Schema validation failed at '{path}': {n} < minimum {min}"
+                ));
+            }
+        }
+        if let Some(max) = obj.get("maximum").and_then(|v| v.as_f64()) {
+            if n > max {
+                return Err(format!(
+                    "Schema validation failed at '{path}': {n} > maximum {max}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+impl AgentManifest {
+    pub fn from_json(raw: &str) -> Result<Self, String> {
+        let manifest = serde_json::from_str::<Self>(raw)
+            .map_err(|e| format!("Invalid AgentManifest JSON: {e}"))?;
+        if manifest.app_id.trim().is_empty() {
+            return Err("AgentManifest 'app_id' cannot be empty".into());
+        }
+        validate_schema_definition(&manifest.readable_state_schema, "readable_state_schema")?;
+        for (idx, action) in manifest.actions.iter().enumerate() {
+            if action.name.trim().is_empty() {
+                return Err(format!("AgentManifest actions[{idx}].name cannot be empty"));
+            }
+            validate_schema_definition(
+                &action.input_schema,
+                &format!("actions[{}].input_schema", action.name),
+            )?;
+            validate_schema_definition(
+                &action.output_schema,
+                &format!("actions[{}].output_schema", action.name),
+            )?;
+        }
+        Ok(manifest)
+    }
+
+    pub fn validate_action_call<'a>(
+        &'a self,
+        action_name: &str,
+        params: &serde_json::Value,
+    ) -> Result<&'a MiniAppActionSpec, String> {
+        let action = self
+            .actions
+            .iter()
+            .find(|a| a.name == action_name)
+            .ok_or_else(|| format!("Action not declared: {action_name}"))?;
+
+        validate_value_against_schema(params, &action.input_schema, "params")?;
+        Ok(action)
+    }
+
+    pub fn execute_action(
+        &self,
+        action_name: &str,
+        params: &serde_json::Value,
+        approved: bool,
+    ) -> Result<serde_json::Value, String> {
+        let spec = self.validate_action_call(action_name, params)?;
+        if (spec.requires_approval
+            || spec.risk_level.eq_ignore_ascii_case("high")
+            || spec.risk_level.eq_ignore_ascii_case("critical"))
+            && !approved
+        {
+            return Err(format!(
+                "Confirmation required for {} risk action '{}'",
+                spec.risk_level, spec.name
+            ));
+        }
+        Ok(serde_json::json!({
+            "app_id": self.app_id,
+            "action": spec.name,
+            "risk_level": spec.risk_level,
+            "approved": approved,
+            "params": params,
+            "status": "executed"
+        }))
+    }
+
+    pub fn validate_state(&self, state: &serde_json::Value) -> Result<(), String> {
+        if !state.is_object() {
+            return Err("State must be a JSON object".into());
+        }
+        validate_value_against_schema(state, &self.readable_state_schema, "state")
+    }
+}
+
+impl MiniAppManifestDto {
+    pub fn to_agent_manifest(&self) -> AgentManifest {
+        let mut actions = Vec::new();
+        for w in &self.ui_schema.widgets {
+            let value_schema = match w.kind {
+                MiniAppWidgetType::Counter | MiniAppWidgetType::MetricCard => {
+                    serde_json::json!({ "type": "number" })
+                }
+                MiniAppWidgetType::Toggle => serde_json::json!({ "type": "boolean" }),
+                _ => serde_json::json!({ "type": "string" }),
+            };
+            actions.push(MiniAppActionSpec {
+                name: format!("widget:{}", w.id),
+                description: w.label.clone(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "value": value_schema
+                    }
+                }),
+                output_schema: serde_json::json!({ "type": "object" }),
+                risk_level: "low".to_string(),
+                requires_approval: false,
+            });
+        }
+        if let Some(btn) = &self.ui_schema.main_button {
+            actions.push(MiniAppActionSpec {
+                name: "main_button_click".to_string(),
+                description: btn.text.clone(),
+                input_schema: serde_json::json!({ "type": "object" }),
+                output_schema: serde_json::json!({ "type": "object" }),
+                risk_level: "low".to_string(),
+                requires_approval: false,
+            });
+        }
+        if let Some(btn) = &self.ui_schema.secondary_button {
+            actions.push(MiniAppActionSpec {
+                name: "secondary_button_click".to_string(),
+                description: btn.text.clone(),
+                input_schema: serde_json::json!({ "type": "object" }),
+                output_schema: serde_json::json!({ "type": "object" }),
+                risk_level: "low".to_string(),
+                requires_approval: false,
+            });
+        }
+        AgentManifest {
+            app_id: self.app_id.clone(),
+            version: if self.version.is_empty() {
+                "1.0.0".to_string()
+            } else {
+                self.version.clone()
+            },
+            readable_state_schema: serde_json::json!({ "type": "object" }),
+            actions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MiniAppEntry {
     pub app_id: String,
     pub bot_user_id: i64,
@@ -921,6 +1307,8 @@ pub struct LaunchMiniAppRequest {
     pub launch_mode: MiniAppLaunchMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_param: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1195,6 +1583,42 @@ pub fn parse_miniapp_uri(raw: &str) -> Option<(String, String, Option<String>)> 
     Some((bot, short, start_param))
 }
 
+/// Validates a concrete Mini App `web_app.url` deep-link override (`http(s)://...` or `/path...`),
+/// rejecting wrapper URIs (`gpui-miniapp://`, `tg://`, `t.me/`) and unsafe schemes (`javascript:`, `data:`, `file:`, `//`).
+pub fn sanitize_webapp_custom_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("gpui-miniapp://")
+        || lower.starts_with("tg://")
+        || lower.starts_with("https://t.me/")
+        || lower.starts_with("http://t.me/")
+        || lower == "https://t.me"
+        || lower == "http://t.me"
+        || lower.starts_with("t.me/")
+    {
+        return None;
+    }
+    if let Some(rest) = lower.strip_prefix("https://") {
+        if rest.is_empty() || rest.starts_with('/') {
+            return None;
+        }
+        return Some(format!("https://{}", &trimmed[8..]));
+    }
+    if let Some(rest) = lower.strip_prefix("http://") {
+        if rest.is_empty() || rest.starts_with('/') {
+            return None;
+        }
+        return Some(format!("http://{}", &trimmed[7..]));
+    }
+    if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,6 +1690,32 @@ mod tests {
             ))
         );
         assert_eq!(parse_miniapp_uri("https://example.com/docs"), None);
+    }
+
+    #[test]
+    fn test_sanitize_webapp_custom_url() {
+        assert_eq!(
+            sanitize_webapp_custom_url("  https://app.altery.com/kyc?resume=1  "),
+            Some("https://app.altery.com/kyc?resume=1".to_string())
+        );
+        assert_eq!(
+            sanitize_webapp_custom_url("HTTP://127.0.0.1:8080/miniapps/Bot/app?resume=1"),
+            Some("http://127.0.0.1:8080/miniapps/Bot/app?resume=1".to_string())
+        );
+        assert_eq!(
+            sanitize_webapp_custom_url("/miniapps/AlteryBot/app?step=2"),
+            Some("/miniapps/AlteryBot/app?step=2".to_string())
+        );
+        assert_eq!(sanitize_webapp_custom_url(""), None);
+        assert_eq!(sanitize_webapp_custom_url("gpui-miniapp://Bot/app"), None);
+        assert_eq!(sanitize_webapp_custom_url("tg://resolve?domain=Bot"), None);
+        assert_eq!(sanitize_webapp_custom_url("https://t.me/Bot/app"), None);
+        assert_eq!(sanitize_webapp_custom_url("t.me/Bot/app"), None);
+        assert_eq!(sanitize_webapp_custom_url("javascript:alert(1)"), None);
+        assert_eq!(sanitize_webapp_custom_url("data:text/html,hi"), None);
+        assert_eq!(sanitize_webapp_custom_url("file:///etc/passwd"), None);
+        assert_eq!(sanitize_webapp_custom_url("//evil.example.com/x"), None);
+        assert_eq!(sanitize_webapp_custom_url("https://"), None);
     }
 
     #[test]
@@ -1583,5 +2033,121 @@ mod tests {
             block_req,
             serde_json::from_str(&serde_json::to_string(&block_req).unwrap()).unwrap()
         );
+    }
+
+    #[test]
+    fn test_agent_manifest_validation_and_execution() {
+        let m = AgentManifest {
+            app_id: "ops".into(),
+            version: "1.0.0".into(),
+            readable_state_schema: serde_json::json!({ "type": "object" }),
+            actions: vec![MiniAppActionSpec {
+                name: "deploy".into(),
+                description: "Deploy".into(),
+                input_schema: serde_json::json!({ "type": "object", "required": ["env"] }),
+                output_schema: serde_json::json!({ "type": "object" }),
+                risk_level: "high".into(),
+                requires_approval: true,
+            }],
+        };
+        assert!(m.validate_state(&serde_json::json!({})).is_ok());
+        assert!(m.validate_state(&serde_json::json!(123)).is_err());
+        assert!(m.execute_action("deploy", &serde_json::json!({ "env": "prod" }), false).is_err());
+        let ok = m.execute_action("deploy", &serde_json::json!({ "env": "prod" }), true).unwrap();
+        assert_eq!(ok["status"], "executed");
+    }
+
+    #[test]
+    fn test_agent_manifest_strict_schema_validation() {
+        // Non-object schemas rejected by from_json
+        assert!(AgentManifest::from_json(
+            r#"{
+                "app_id": "bad",
+                "version": "1.0.0",
+                "readable_state_schema": "not_an_object",
+                "actions": []
+            }"#
+        )
+        .is_err());
+        assert!(AgentManifest::from_json(
+            r#"{
+                "app_id": "bad",
+                "version": "1.0.0",
+                "readable_state_schema": { "type": "object" },
+                "actions": [{
+                    "name": "act",
+                    "description": "act",
+                    "input_schema": 12345,
+                    "output_schema": { "type": "object" },
+                    "risk_level": "low",
+                    "requires_approval": false
+                }]
+            }"#
+        )
+        .is_err());
+
+        let m = AgentManifest::from_json(
+            r#"{
+                "app_id": "pay_bot",
+                "version": "1.0.0",
+                "readable_state_schema": {
+                    "type": "object",
+                    "required": ["balance"],
+                    "properties": {
+                        "balance": { "type": "number" }
+                    },
+                    "additionalProperties": false
+                },
+                "actions": [{
+                    "name": "transfer",
+                    "description": "Transfer funds",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["amount", "recipient"],
+                        "properties": {
+                            "amount": { "type": "number" },
+                            "recipient": { "type": "string" }
+                        },
+                        "additionalProperties": false
+                    },
+                    "output_schema": { "type": "object" },
+                    "risk_level": "low",
+                    "requires_approval": false
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(m.validate_state(&serde_json::json!({})).is_err());
+        assert!(m.validate_state(&serde_json::json!({ "balance": "nan" })).is_err());
+        assert!(m.validate_state(&serde_json::json!({ "balance": 100.5 })).is_ok());
+
+        assert!(m.validate_action_call("transfer", &serde_json::json!(12345)).is_err());
+        assert!(m
+            .validate_action_call(
+                "transfer",
+                &serde_json::json!({ "amount": "not_a_num", "recipient": [1, 2] })
+            )
+            .is_err());
+        assert!(m
+            .validate_action_call(
+                "transfer",
+                &serde_json::json!({ "amount": null, "recipient": "alice" })
+            )
+            .is_err());
+        assert!(m
+            .execute_action(
+                "transfer",
+                &serde_json::json!({ "amount": 10, "recipient": "alice", "admin_bypass": true }),
+                false
+            )
+            .is_err());
+        assert!(m
+            .execute_action(
+                "transfer",
+                &serde_json::json!({ "amount": 10, "recipient": "alice" }),
+                false
+            )
+            .is_ok());
     }
 }

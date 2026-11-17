@@ -3,6 +3,7 @@
 pub mod album_card;
 pub mod bot_keyboard;
 pub mod call_card;
+pub mod generative_card;
 pub mod invoice_card;
 pub mod location_card;
 pub mod media_card;
@@ -16,6 +17,7 @@ pub mod voice_card;
 pub use album_card::AlbumMessageView;
 pub use bot_keyboard::InlineBotKeyboardView;
 pub use call_card::CallMessageView;
+pub use generative_card::render_generative_card;
 pub use invoice_card::InvoiceMessageView;
 pub use location_card::LocationMessageView;
 pub use media_card::MediaMessageView;

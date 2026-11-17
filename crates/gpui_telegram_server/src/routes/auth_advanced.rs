@@ -192,8 +192,23 @@ pub async fn pair_verify(
 }
 
 pub async fn auth_sessions_list(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
-    match state.db.list_user_sessions(auth.user_id, &auth.session.session_id) {
-        Ok(mut sessions) => {
+    match state
+        .session_store
+        .list_active_sessions_for_user(auth.user_id.raw())
+    {
+        Ok(records) => {
+            let mut sessions: Vec<gpui_telegram_proto::contracts::SessionDto> = records
+                .into_iter()
+                .map(|r| gpui_telegram_proto::contracts::SessionDto {
+                    is_current: r.session_id == auth.session.session_id,
+                    session_id: r.session_id,
+                    device_name: r.device_id,
+                    platform: Some(r.client_type),
+                    ip_address: r.ip_address,
+                    created_at_ms: r.created_at_ms,
+                    last_active_ms: r.last_active_ms,
+                })
+                .collect();
             let mut seen: std::collections::HashSet<String> =
                 sessions.iter().map(|s| s.session_id.clone()).collect();
             for s in state.session_manager.list_user_sessions(auth.user_id) {
@@ -217,13 +232,27 @@ pub async fn auth_sessions_list(auth: AuthBearer, State(state): State<Arc<AppSta
 }
 
 pub async fn auth_revoke_other_sessions(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
-    match state.db.revoke_other_sessions(auth.user_id, &auth.session.session_id) {
-        Ok(db_count) => {
+    match state
+        .session_store
+        .revoke_other_sessions_async(
+            auth.user_id.raw(),
+            &auth.session.session_id,
+            "Other sessions revoked by user",
+        )
+        .await
+    {
+        Ok(revoked_ids) => {
+            let db_count = revoked_ids.len() as u64;
+            for sid in &revoked_ids {
+                state.session_manager.revoke_session(sid);
+                state.gateway_hub.disconnect_session(auth.user_id, sid);
+            }
             let mut mem_count: u64 = 0;
             for s in state.session_manager.list_user_sessions(auth.user_id) {
                 if s.session_id != auth.session.session_id
                     && state.session_manager.revoke_session(&s.session_id).is_some()
                 {
+                    state.gateway_hub.disconnect_session(auth.user_id, &s.session_id);
                     mem_count += 1;
                 }
             }
@@ -238,7 +267,11 @@ pub async fn auth_delete_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Response {
-    match state.db.revoke_user_session(auth.user_id, &session_id) {
+    match state
+        .session_store
+        .revoke_user_session_async(auth.user_id.raw(), &session_id, "Session revoked by user")
+        .await
+    {
         Ok(db_revoked) => {
             let mem_revoked = match state.session_manager.get(&session_id) {
                 Some(tok) if tok.user_id == auth.user_id => {
@@ -247,6 +280,9 @@ pub async fn auth_delete_session(
                 _ => false,
             };
             if db_revoked || mem_revoked {
+                state
+                    .gateway_hub
+                    .disconnect_session(auth.user_id, &session_id);
                 let fence = state.session_manager.get_or_create_fence(auth.user_id);
                 (StatusCode::OK, Json(json!({ "revoked": true, "session_id": session_id, "account_generation": fence.current() }))).into_response()
             } else {

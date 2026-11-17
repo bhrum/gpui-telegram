@@ -1903,7 +1903,12 @@ pub async fn handle_botfather_message(
                                     .db
                                     .list_mini_apps_for_bot(bot_id)
                                     .ok()
-                                    .and_then(|mut apps| apps.pop().map(|a| a.web_url))
+                                    .and_then(|apps| {
+                                        apps.into_iter()
+                                            .filter(|a| a.category != "__bot_inline_webapp__")
+                                            .last()
+                                            .map(|a| a.web_url)
+                                    })
                                     .unwrap_or_default();
                                 (text.to_string(), existing_url)
                             };
@@ -1940,7 +1945,13 @@ pub async fn handle_botfather_message(
                                 Err(e) => (format!("❌ {}", e), Vec::new()),
                             }
                         } else {
-                            let apps = state.db.list_mini_apps_for_bot(bot_id).unwrap_or_default();
+                            let apps: Vec<_> = state
+                                .db
+                                .list_mini_apps_for_bot(bot_id)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|a| a.category != "__bot_inline_webapp__")
+                                .collect();
                             if !apps.iter().any(|a| a.short_name == text) {
                                 return (
                                     format!("❌ 未在该机器人名下找到 short_name 为 `{}` 的 Mini App。请先 `/newapp` 创建，或发送正确 short_name。", text),
@@ -2536,6 +2547,9 @@ pub fn send_bot_chat_reply(
         MessageContent::plain_text(text.trim()),
     );
     bot_msg.flags.is_out = false;
+    if !kb_rows.is_empty() {
+        bot_msg.inline_keyboard = Some(kb_rows.clone());
+    }
     let pts_update = state.message_pipeline.process_incoming_message(bot_msg)?;
     let mut saved_id = MsgId(0);
     if let gpui_telegram_proto::sync::UpdateEvent::NewMessage(saved) = &pts_update.event {
@@ -4106,6 +4120,177 @@ pub async fn miniapps_uninstall(
         .into_response()
 }
 
+const ADHOC_WEBAPP_CATEGORY: &str = "__bot_inline_webapp__";
+
+fn resolve_app_and_bot(
+    state: &AppState,
+    bot_target: &str,
+    short_name: &str,
+    custom_url_hint: Option<&str>,
+    persist_for_session: bool,
+) -> Option<(MiniAppRecord, BotRegistryRecord)> {
+    let clean_short = short_name.trim().trim_start_matches('/');
+    let clean_custom = custom_url_hint
+        .and_then(gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url);
+
+    if let Some(mut app) = state.db.get_mini_app(bot_target, clean_short).ok().flatten() {
+        let bot = state.db.get_bot_by_user_id(app.bot_user_id).ok().flatten()?;
+        if app.category == ADHOC_WEBAPP_CATEGORY {
+            if let Some(ref u) = clean_custom {
+                app.web_url = u.clone();
+            } else if let Some(menu_url) =
+                gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(
+                    &bot.menu_button_url,
+                )
+            {
+                app.web_url = menu_url;
+            }
+        }
+        return Some((app, bot));
+    }
+
+    let clean_bot = bot_target.trim().trim_start_matches('@');
+    let bot = if clean_bot.is_empty() {
+        None
+    } else if let Some(b) = state.db.get_bot_by_username(clean_bot).ok().flatten() {
+        Some(b)
+    } else if let Some(bot_uid) = clean_bot.parse::<i64>().ok().filter(|&id| id > 0) {
+        state.db.get_bot_by_user_id(bot_uid).ok().flatten()
+    } else {
+        None
+    }?;
+
+    let apps = state
+        .db
+        .list_mini_apps_for_bot(bot.bot_user_id)
+        .unwrap_or_default();
+    if let Some(mut found) = apps
+        .iter()
+        .find(|a| a.short_name.eq_ignore_ascii_case(clean_short))
+        .cloned()
+    {
+        if found.category == ADHOC_WEBAPP_CATEGORY {
+            if let Some(ref u) = clean_custom {
+                found.web_url = u.clone();
+            } else if let Some(menu_url) =
+                gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(
+                    &bot.menu_button_url,
+                )
+            {
+                found.web_url = menu_url;
+            }
+        }
+        return Some((found, bot));
+    }
+
+    let is_alias = clean_short.is_empty()
+        || clean_short.eq_ignore_ascii_case("app")
+        || clean_short.eq_ignore_ascii_case("default")
+        || clean_short.eq_ignore_ascii_case("webview");
+    if is_alias {
+        if !bot.main_app_short_name.trim().is_empty() {
+            if let Some(main_app) = apps
+                .iter()
+                .find(|a| {
+                    a.short_name
+                        .eq_ignore_ascii_case(bot.main_app_short_name.trim())
+                        && a.category != ADHOC_WEBAPP_CATEGORY
+                })
+                .cloned()
+            {
+                return Some((main_app, bot));
+            }
+        }
+        if let Some(first_pub) = apps
+            .iter()
+            .find(|a| a.is_published && a.category != ADHOC_WEBAPP_CATEGORY)
+            .cloned()
+        {
+            return Some((first_pub, bot));
+        }
+    }
+
+    let menu_url = gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(
+        &bot.menu_button_url,
+    );
+    if clean_custom.is_none() && menu_url.is_none() && !clean_short.eq_ignore_ascii_case("app") {
+        return None;
+    }
+
+    let resolved_short = if gpui_telegram_proto::miniapp_contracts::validate_miniapp_short_name(
+        clean_short,
+    )
+    .is_ok()
+    {
+        clean_short.to_string()
+    } else {
+        "app".to_string()
+    };
+    let resolved_title = if !bot.menu_button_text.trim().is_empty() {
+        bot.menu_button_text.trim().to_string()
+    } else if !bot.display_name.trim().is_empty() {
+        bot.display_name.trim().to_string()
+    } else {
+        bot.username.clone()
+    };
+    let resolved_url = clean_custom.or(menu_url).unwrap_or_default();
+
+    if persist_for_session {
+        if let Ok(persisted) = state.db.create_or_upsert_mini_app_with_options(
+            bot.bot_user_id,
+            &bot.username,
+            &resolved_short,
+            &resolved_title,
+            &bot.about,
+            ADHOC_WEBAPP_CATEGORY,
+            "🧩",
+            if resolved_url.is_empty() {
+                None
+            } else {
+                Some(&resolved_url)
+            },
+            "{}",
+            false,
+            bot.allow_attach_menu,
+            false,
+            "",
+            "",
+            Some(false),
+            false,
+        ) {
+            return Some((persisted, bot));
+        }
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let app = MiniAppRecord {
+        app_id: format!(
+            "{}_{}",
+            bot.bot_user_id,
+            resolved_short.to_ascii_lowercase()
+        ),
+        bot_user_id: bot.bot_user_id,
+        bot_username: bot.username.clone(),
+        short_name: resolved_short,
+        title: resolved_title,
+        description: bot.about.clone(),
+        category: ADHOC_WEBAPP_CATEGORY.to_string(),
+        icon_emoji: "🧩".to_string(),
+        web_url: resolved_url,
+        ui_schema_json: "{}".to_string(),
+        peer_types_json: "[\"users\",\"bots\",\"groups\"]".to_string(),
+        is_published: false,
+        is_attach_enabled: bot.allow_attach_menu,
+        install_count: 0,
+        created_by_nl: false,
+        created_at: now_ms,
+        updated_at: now_ms,
+        header_color: String::new(),
+        background_color: String::new(),
+    };
+    Some((app, bot))
+}
+
 /// POST /api/v1/miniapps/{bot_username}/{short_name}/launch
 pub async fn miniapps_launch(
     auth: AuthBearer,
@@ -4119,15 +4304,20 @@ pub async fn miniapps_launch(
         serde_json::from_slice(&body).unwrap_or_default()
     };
 
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, bot)) = resolve_app_and_bot(
+        &state,
+        &bot_username,
+        &short_name,
+        req.custom_url.as_deref(),
+        true,
+    ) else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
-    };
-    let Some(bot) = state.db.get_bot_by_user_id(app.bot_user_id).ok().flatten() else {
-        return err_resp(StatusCode::NOT_FOUND, "bot_not_found", "Companion bot not found");
     };
 
     let uid = auth.user_id.0 as i64;
-    let _ = state.db.record_mini_app_launch(uid, &app.app_id, app.bot_user_id);
+    if app.is_published && app.category != ADHOC_WEBAPP_CATEGORY {
+        let _ = state.db.record_mini_app_launch(uid, &app.app_id, app.bot_user_id);
+    }
 
     let existing_chat_id = state
         .db
@@ -4212,13 +4402,24 @@ pub async fn miniapps_launch(
         &initial_state.to_string(),
     );
 
-    let updated_app = state
-        .db
-        .get_mini_app(&bot.username, &app.short_name)
-        .ok()
-        .flatten()
-        .unwrap_or(app);
-    let app_entry = miniapp_record_to_entry(&state, &updated_app, uid, None);
+    let updated_app = if app.category == ADHOC_WEBAPP_CATEGORY {
+        app.clone()
+    } else {
+        state
+            .db
+            .get_mini_app(&bot.username, &app.short_name)
+            .ok()
+            .flatten()
+            .unwrap_or(app)
+    };
+    let mut app_entry = miniapp_record_to_entry(&state, &updated_app, uid, None);
+    if let Some(override_url) = req
+        .custom_url
+        .as_deref()
+        .and_then(gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url)
+    {
+        app_entry.web_url = override_url;
+    }
     let cloud_storage = state
         .db
         .list_cloud_storage_items(uid, bot.bot_user_id)
@@ -4255,11 +4456,9 @@ pub async fn miniapps_validate_init_data(
     Path((bot_username, short_name)): Path<(String, String)>,
     Json(req): Json<ValidateInitDataRequest>,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, false)
+    else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
-    };
-    let Some(bot) = state.db.get_bot_by_user_id(app.bot_user_id).ok().flatten() else {
-        return err_resp(StatusCode::NOT_FOUND, "bot_not_found", "Companion bot not found");
     };
 
     match verify_webapp_init_data(&bot.bot_token, &req.init_data) {
@@ -4307,11 +4506,9 @@ pub async fn miniapps_action(
     Path((bot_username, short_name)): Path<(String, String)>,
     Json(req): Json<MiniAppActionRequest>,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, true)
+    else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
-    };
-    let Some(bot) = state.db.get_bot_by_user_id(app.bot_user_id).ok().flatten() else {
-        return err_resp(StatusCode::NOT_FOUND, "bot_not_found", "Companion bot not found");
     };
     let uid = auth.user_id.0 as i64;
 
@@ -4602,7 +4799,8 @@ pub async fn miniapps_storage_get(
     State(state): State<Arc<AppState>>,
     Path((bot_username, short_name)): Path<(String, String)>,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, _bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, false)
+    else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
     };
     let uid = auth.user_id.0 as i64;
@@ -4629,7 +4827,8 @@ pub async fn miniapps_storage_put(
     Path((bot_username, short_name)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, _bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, false)
+    else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
     };
     let uid = auth.user_id.0 as i64;
@@ -4689,7 +4888,8 @@ pub async fn miniapps_storage_delete(
     Query(params): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let Some((app, _bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, false)
+    else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
     };
     let uid = auth.user_id.0 as i64;
@@ -4730,12 +4930,11 @@ pub async fn serve_miniapp_html(
     Path((bot_username, short_name)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let Some(app) = state.db.get_mini_app(&bot_username, &short_name).ok().flatten() else {
+    let custom_hint = params.get("url").map(String::as_str);
+    let Some((app, bot)) =
+        resolve_app_and_bot(&state, &bot_username, &short_name, custom_hint, false)
+    else {
         return (StatusCode::NOT_FOUND, Html("<h1>404 Mini App Not Found</h1>".to_string()))
-            .into_response();
-    };
-    let Some(bot) = state.db.get_bot_by_user_id(app.bot_user_id).ok().flatten() else {
-        return (StatusCode::NOT_FOUND, Html("<h1>404 Bot Not Found</h1>".to_string()))
             .into_response();
     };
     let init_data = params.get("init_data").cloned().unwrap_or_default();

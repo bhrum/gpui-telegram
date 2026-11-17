@@ -112,15 +112,15 @@ impl ServerDatabase {
     }
 
     pub fn get_poll_for_user(&self, poll_id: i64, viewer: UserId) -> Result<Option<(ChatId, PollCard)>> {
-        self.pool.with_transaction(|tx| {
-            let row: Option<(i64, String, i64, i64, i64, Option<i64>, Option<String>, i64, Option<i64>, Option<i64>)> = tx.query_row(
+        self.pool.with_reader(|conn| {
+            let row: Option<(i64, String, i64, i64, i64, Option<i64>, Option<String>, i64, Option<i64>, Option<i64>)> = conn.query_row(
                 "SELECT chat_id, question, is_anonymous, multiple_choice, is_quiz, correct_option_id, solution, is_closed, close_period, close_date FROM polls WHERE poll_id = ?1",
                 params![poll_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
             ).optional().map_err(|e| TelegramError::Database(e.to_string()))?;
             match row {
                 Some((cid, q, anon, mult, quiz, corr, sol, closed, cp, cd)) => {
-                    let card = Self::build_poll_card_tx(tx, poll_id, viewer, q, anon != 0, mult != 0, quiz != 0, corr.map(|v| v as u8), sol, closed != 0, cp.map(|v| v as u32), cd)?;
+                    let card = Self::build_poll_card_conn(conn, poll_id, viewer, q, anon != 0, mult != 0, quiz != 0, corr.map(|v| v as u8), sol, closed != 0, cp.map(|v| v as u32), cd)?;
                     Ok(Some((ChatId(cid), card)))
                 }
                 None => Ok(None),
@@ -139,7 +139,7 @@ impl ServerDatabase {
     }
 
     pub fn get_message_extras(&self, chat_id: ChatId, message_id: MsgId) -> Result<(Option<String>, Option<i64>, u32)> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             conn.query_row(
                 "SELECT inline_keyboard_json, scheduled_at_ms, view_count FROM messages WHERE chat_id = ?1 AND message_id = ?2",
                 params![chat_id.0, message_id.0],
@@ -158,7 +158,7 @@ impl ServerDatabase {
     ) -> Result<(Vec<MessageRecord>, bool)> {
         let fetch_limit = limit.clamp(1, 100) as usize;
         let query_limit = (fetch_limit + 1) as i64;
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MessageRecord> {
                 Ok(MessageRecord {
                     chat_id: ChatId(row.get(0)?),

@@ -1,5 +1,11 @@
 //! Auto-generated module tree
 
+pub mod peer_transport;
+pub use peer_transport::{
+    AudioFrameCallback, IceCandidateCallback, PeerConnectionState, PeerTransportConfig,
+    StateChangeCallback, TransportMode, VideoFrameCallback, VideoFrameData, WebRtcPeerTransport,
+    WebRtcTransportError,
+};
 pub mod engine;
 pub use engine::{
     build_sdp, gather_local_ice_candidates, sha256_digest, AudioLevelMeter, WebRtcCallEngine,

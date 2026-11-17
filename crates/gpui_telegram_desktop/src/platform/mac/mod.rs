@@ -32,7 +32,11 @@ pub use mac_iconv_helper::MacIconvHelperMac;
 pub use main_window_mac::MainWindowMacMac;
 pub use native_event_mac::NativeEventMacMac;
 pub use notifications_manager_mac::NotificationsManagerMacMac;
-pub use notifications_manager_mac_un::NotificationsManagerMacUnMac;
+pub use notifications_manager_mac_un::{
+    MacNotificationPayload, NotificationsManagerMacUnMac, UNInFlightRequest, UNNotificationAction,
+    UNNotificationParsed,
+};
+pub type MacNotificationManager = NotificationsManagerMacUnMac;
 pub use overlay_widget_mac::OverlayWidgetMacMac;
 pub use specific_mac::SpecificMacMac;
 pub use specific_mac_p::SpecificMacPMac;

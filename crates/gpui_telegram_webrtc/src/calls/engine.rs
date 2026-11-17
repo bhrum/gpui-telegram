@@ -4,11 +4,14 @@ use super::calls_controller_tgvoip::TgVoipEndpoint;
 use super::calls_controller_webrtc::{CallsControllerWebrtc, WebrtcSessionState};
 use super::calls_emoji_fingerprint::CallsEmojiFingerprint;
 use super::calls_instance::{CallSound, CallsInstance};
+use super::peer_transport::WebRtcPeerTransport;
 use crate::ice::TurnToken;
 use crate::signaling::{CallSession, CallState as SignalState, SignalingFrame};
 use gpui_telegram_core::types::UserId;
 use std::collections::VecDeque;
 use std::net::UdpSocket;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Pure-Rust SHA-256 digest (FIPS 180-4) for WebRTC DTLS fingerprint & 4-emoji verification.
 pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
@@ -115,6 +118,7 @@ pub struct WebRtcCallEngine {
     pub turn_tokens: Vec<TurnToken>,
     pub local_sdp: Option<String>,
     pub remote_sdp: Option<String>,
+    pub peer_transport: Option<Arc<Mutex<WebRtcPeerTransport>>>,
     outbound: VecDeque<SignalingFrame>,
     _local_udp: Option<UdpSocket>,
 }
@@ -134,9 +138,19 @@ impl WebRtcCallEngine {
             turn_tokens,
             local_sdp: None,
             remote_sdp: None,
+            peer_transport: None,
             outbound: VecDeque::new(),
             _local_udp: UdpSocket::bind("0.0.0.0:0").ok(),
         }
+    }
+
+    pub fn attach_peer_transport(&mut self, transport: WebRtcPeerTransport) {
+        self.peer_transport = Some(Arc::new(Mutex::new(transport)));
+    }
+
+    pub fn with_peer_transport(mut self, transport: WebRtcPeerTransport) -> Self {
+        self.attach_peer_transport(transport);
+        self
     }
 
     pub fn start_outgoing(&mut self, call_id: i64, local_user: UserId, remote_user: UserId, is_video: bool) {

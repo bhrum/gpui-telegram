@@ -1,6 +1,7 @@
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
+use crate::components::video_viewport::VideoViewport;
 use crate::i18n::tr_str;
 use crate::theme::assets::{tg_icon, IconName};
 use crate::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
@@ -35,6 +36,7 @@ pub struct CallOverlay {
     pub is_screen_sharing: bool,
     pub noise_suppression_on: bool,
     pub is_group_call_grid: bool,
+    pub video_viewport: VideoViewport,
     pub palette: TdesktopThemePalette,
     pub language_id: String,
     pub avatar_path: Option<String>,
@@ -56,7 +58,7 @@ impl CallOverlay {
         let seed = peer_name.bytes().fold(0x9E3779B9usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
         let e2ee_emojis = (0..4).map(|i| emoji_pool[(seed.wrapping_shr((i * 4) as u32)) % emoji_pool.len()]).collect::<Vec<_>>().join(" ");
         Self {
-            peer_name,
+            peer_name: peer_name.clone(),
             persona_name,
             state: TalkModeState::Listening,
             is_connected: true,
@@ -69,6 +71,7 @@ impl CallOverlay {
             is_screen_sharing: false,
             noise_suppression_on: true,
             is_group_call_grid: false,
+            video_viewport: VideoViewport::new(peer_name.clone(), TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12)),
             palette: TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12),
             language_id: "en".to_string(),
             avatar_path: None,
@@ -85,24 +88,35 @@ impl CallOverlay {
     }
 
     pub fn new_live(peer_name: String, avatar_path: Option<String>, e2ee_emojis: Option<String>, palette: TdesktopThemePalette, language_id: &str) -> Self {
-        let mut s = Self::new(peer_name);
+        let mut s = Self::new(peer_name.clone());
         s.state = TalkModeState::Connecting;
         s.is_connected = false;
         s.signal_bars = 0;
-        s.avatar_path = avatar_path;
+        s.avatar_path = avatar_path.clone();
         if let Some(emojis) = e2ee_emojis.filter(|e| !e.trim().is_empty()) { s.e2ee_emojis = emojis; }
-        s.palette = palette;
+        s.palette = palette.clone();
+        s.video_viewport = VideoViewport::new(peer_name.clone(), palette);
+        s.video_viewport.avatar_path = avatar_path;
         s.language_id = language_id.to_string();
         s
     }
 
-    pub fn set_palette(&mut self, palette: TdesktopThemePalette) { self.palette = palette; }
+    pub fn set_palette(&mut self, palette: TdesktopThemePalette) {
+        self.palette = palette.clone();
+        self.video_viewport.palette = palette;
+    }
     pub fn set_language(&mut self, language_id: impl Into<String>) { self.language_id = language_id.into(); }
     pub fn set_signal_bars(&mut self, bars: u8) { self.signal_bars = bars.min(4); }
     pub fn set_latency(&mut self, ms: u32) { self.latency_ms = ms; }
     pub fn set_duration(&mut self, secs: u64) { self.duration_secs = secs; }
-    pub fn toggle_camera(&mut self) { self.is_camera_on = !self.is_camera_on; }
-    pub fn toggle_screen_share(&mut self) { self.is_screen_sharing = !self.is_screen_sharing; }
+    pub fn toggle_camera(&mut self) {
+        self.is_camera_on = !self.is_camera_on;
+        self.video_viewport.set_local_camera_active(self.is_camera_on);
+    }
+    pub fn toggle_screen_share(&mut self) {
+        self.is_screen_sharing = !self.is_screen_sharing;
+        self.video_viewport.set_screen_sharing(self.is_screen_sharing);
+    }
     pub fn toggle_speaker(&mut self) { self.is_speaker_on = !self.is_speaker_on; }
     pub fn enter_rate_call(&mut self) { self.show_rate_call = true; self.is_connected = false; }
     pub fn take_rating_submission(&mut self) -> Option<u8> { self.pending_rating_submit.take() }
@@ -188,15 +202,20 @@ impl Render for CallOverlay {
                 .child(div().flex().flex_row().items_center().gap(px(8.0))
                     .child(div().px(px(8.0)).py(px(3.0)).rounded_full().bg(TdesktopThemePalette::rgba_with_alpha(pal.card_bg, 0.72)).flex().flex_row().items_center().gap(px(4.0)).child(tg_icon(IconName::Lock, 11.0, pal.text_secondary)).child(div().text_xs().text_color(rgb(pal.text_primary)).child(self.e2ee_emojis.clone())))
                     .child(div().cursor_pointer().p(px(5.0)).rounded_full().bg(rgb(pal.input_bg)).on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.should_close = true; cx.notify(); })).child(tg_icon(IconName::Close, 13.0, pal.icon_fg)))))
-            .child(div().flex().flex_col().items_center().gap(px(10.0))
-                .child(div().size(px(124.0)).rounded_full().bg(TdesktopThemePalette::rgba_with_alpha(state_color, 0.20)).flex().items_center().justify_center().child(if let Some(ref path) = self.avatar_path {
-                    div().size(px(96.0)).rounded_full().overflow_hidden().child(img(path.clone()).size_full().object_fit(ObjectFit::Cover)).into_any_element()
-                } else {
-                    div().size(px(96.0)).rounded_full().bg(rgb(av_top)).flex().items_center().justify_center().text_size(px(32.0)).font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg)).child(initial).into_any_element()
-                }))
-                .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(self.persona_name.clone()))
-                .child(div().text_xs().text_color(rgb(state_color)).child(if self.is_camera_on { format!("{} · Video On", state_label) } else { state_label.to_string() }))
-                .child(div().px(px(10.0)).py(px(4.0)).rounded_full().bg(rgb(pal.card_bg)).border_1().border_color(rgb(pal.border_fg)).text_xs().text_color(rgb(pal.text_secondary)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.cycle_audio_output(); cx.notify(); })).child(self.selected_output_device.clone())))
+            .child(if self.video_viewport.has_active_video() {
+                div().w_full().h(px(260.0)).rounded(px(12.0)).overflow_hidden().child(self.video_viewport.render_viewport(340.0, 260.0)).into_any_element()
+            } else {
+                div().flex().flex_col().items_center().gap(px(10.0))
+                    .child(div().size(px(124.0)).rounded_full().bg(TdesktopThemePalette::rgba_with_alpha(state_color, 0.20)).flex().items_center().justify_center().child(if let Some(ref path) = self.avatar_path {
+                        div().size(px(96.0)).rounded_full().overflow_hidden().child(img(path.clone()).size_full().object_fit(ObjectFit::Cover)).into_any_element()
+                    } else {
+                        div().size(px(96.0)).rounded_full().bg(rgb(av_top)).flex().items_center().justify_center().text_size(px(32.0)).font_weight(FontWeight::BOLD).text_color(rgb(pal.active_button_fg)).child(initial).into_any_element()
+                    }))
+                    .child(div().text_lg().font_weight(FontWeight::BOLD).text_color(rgb(pal.text_primary)).child(self.persona_name.clone()))
+                    .child(div().text_xs().text_color(rgb(state_color)).child(if self.is_camera_on { format!("{} · Video On", state_label) } else { state_label.to_string() }))
+                    .child(div().px(px(10.0)).py(px(4.0)).rounded_full().bg(rgb(pal.card_bg)).border_1().border_color(rgb(pal.border_fg)).text_xs().text_color(rgb(pal.text_secondary)).cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| { this.cycle_audio_output(); cx.notify(); })).child(self.selected_output_device.clone()))
+                    .into_any_element()
+            })
             .when(!transcript_slice.is_empty(), |el| el.child(div().p(px(10.0)).rounded(px(10.0)).bg(rgb(pal.card_bg)).border_1().border_color(rgb(pal.border_fg)).flex().flex_col().gap(px(6.0)).children(transcript_slice.into_iter().map(|t| {
                 div().flex().flex_col().child(div().text_xs().font_weight(FontWeight::BOLD).text_color(rgb(if t.is_user { pal.accent } else { pal.success })).child(t.speaker)).child(div().text_xs().text_color(rgb(pal.text_primary)).child(t.text))
             }))))

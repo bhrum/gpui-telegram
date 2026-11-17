@@ -1,8 +1,10 @@
 pub mod acp_store;
+pub mod agentic_store;
 pub mod analytics_store;
 pub mod auth_store;
 pub mod chat_extras;
 pub mod computer_store;
+pub mod e2ee_store;
 pub mod migrations;
 pub mod miniapp_store;
 pub mod poll_store;
@@ -95,7 +97,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user(&self, user_id: UserId) -> Result<Option<UserRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -135,7 +137,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_by_username(&self, username: &str) -> Result<Option<UserRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -175,7 +177,7 @@ impl ServerDatabase {
     }
 
     pub fn get_max_user_id(&self) -> Result<u64> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let max_id: Option<i64> = conn
                 .query_row(
                     "SELECT MAX(user_id) FROM users",
@@ -188,7 +190,7 @@ impl ServerDatabase {
     }
 
     pub fn get_max_human_user_id(&self) -> Result<u64> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let max_id: Option<i64> = conn
                 .query_row(
                     "SELECT COALESCE(MAX(user_id), 100000) FROM users WHERE is_bot = 0 AND user_id < 500000",
@@ -201,7 +203,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -262,7 +264,7 @@ impl ServerDatabase {
     }
 
     pub fn get_user_by_alipay_id(&self, alipay_user_id: &str) -> Result<Option<UserRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -330,7 +332,7 @@ impl ServerDatabase {
     }
 
     pub fn get_latest_email_challenge(&self, email: &str) -> Result<Option<EmailChallengeRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -420,7 +422,7 @@ impl ServerDatabase {
     }
 
     pub fn get_oauth_attempt(&self, attempt_id: &str) -> Result<Option<OAuthAttemptRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -450,7 +452,7 @@ impl ServerDatabase {
     }
 
     pub fn get_oauth_attempt_by_state(&self, state: &str) -> Result<Option<OAuthAttemptRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -573,7 +575,7 @@ impl ServerDatabase {
     }
 
     pub fn get_session(&self, session_id: &str) -> Result<Option<SessionRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -732,7 +734,7 @@ impl ServerDatabase {
     }
 
     pub fn get_chat(&self, chat_id: ChatId) -> Result<Option<ChatRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -756,7 +758,7 @@ impl ServerDatabase {
     }
 
     pub fn get_chat_by_username(&self, username: &str) -> Result<Option<ChatRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -826,7 +828,7 @@ impl ServerDatabase {
     }
 
     pub fn get_chat_member(&self, chat_id: ChatId, user_id: UserId) -> Result<Option<ChatMemberRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -902,7 +904,7 @@ impl ServerDatabase {
     }
 
     pub fn list_forum_topics(&self, chat_id: ChatId) -> Result<Vec<ForumTopicRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1038,7 +1040,7 @@ impl ServerDatabase {
     }
 
     pub fn get_message(&self, chat_id: ChatId, message_id: MsgId) -> Result<Option<MessageRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1108,7 +1110,7 @@ impl ServerDatabase {
     // --- Deduplication Table Operations ---
 
     pub fn find_dedup_message(&self, sender_id: u64, nonce: u64) -> Result<Option<MessageDedupRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1160,7 +1162,7 @@ impl ServerDatabase {
     // --- PTS State Queries ---
 
     pub fn get_current_pts(&self, chat_id: ChatId) -> Result<u64> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let pts: i64 = conn
                 .query_row(
                     "SELECT pts FROM pts_sequences WHERE chat_id = ?1",
@@ -1173,7 +1175,7 @@ impl ServerDatabase {
     }
 
     pub fn get_journal_floor_pts(&self, chat_id: ChatId) -> Result<u64> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let floor: Option<i64> = conn
                 .query_row(
                     "SELECT MIN(pts) FROM pts_updates WHERE chat_id = ?1",
@@ -1233,7 +1235,7 @@ impl ServerDatabase {
         user_id: UserId,
         topic_id: TopicId,
     ) -> Result<Option<ReadStateRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1269,7 +1271,7 @@ impl ServerDatabase {
 
     /// Allocates the next sequential ChatId.
     pub fn next_chat_id(&self) -> Result<ChatId> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let max_id: i64 = conn
                 .query_row(
                     "SELECT COALESCE(MAX(chat_id), 0) FROM chats WHERE chat_id < 500000000",
@@ -1421,7 +1423,7 @@ impl ServerDatabase {
 
     /// Retrieves all user IDs belonging to a chat, ordered by join time.
     pub fn get_chat_members(&self, chat_id: ChatId) -> Result<Vec<UserId>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1456,7 +1458,7 @@ impl ServerDatabase {
 
     /// Lists dialog records for all chats where `user_id` is a member or creator.
     pub fn list_user_chats(&self, user_id: UserId) -> Result<Vec<ChatRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1567,7 +1569,7 @@ impl ServerDatabase {
     ) -> Result<Vec<MessageRecord>> {
         let fetch_limit = limit.clamp(1, 100);
 
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1654,7 +1656,7 @@ impl ServerDatabase {
     }
 
     pub fn get_order(&self, order_id: &str) -> Result<Option<OrderRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1714,7 +1716,7 @@ impl ServerDatabase {
     }
 
     pub fn get_redeem_code(&self, code: &str) -> Result<Option<RedeemCodeRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1834,7 +1836,7 @@ impl ServerDatabase {
 
     pub fn get_user_membership(&self, user_id: UserId) -> Result<UserMembershipRecord> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -1945,7 +1947,7 @@ impl ServerDatabase {
     // ========================================================================
 
     pub fn get_chat_member_details(&self, chat_id: ChatId) -> Result<Vec<ChatMemberDetail>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -2045,7 +2047,7 @@ impl ServerDatabase {
     }
 
     pub fn get_forum_topic(&self, chat_id: ChatId, topic_id: TopicId) -> Result<Option<ForumTopicRecord>> {
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -2212,7 +2214,7 @@ impl ServerDatabase {
     ) -> Result<Vec<MessageRecord>> {
         let fetch_limit = limit.clamp(1, 100);
 
-        self.pool.with_conn(|conn| {
+        self.pool.with_reader(|conn| {
             let mut stmt = conn
                 .prepare(
                     r#"
@@ -2268,6 +2270,92 @@ impl ServerDatabase {
                 items.push(r.map_db()?);
             }
             Ok(items)
+        })
+    }
+
+    pub fn save_device_push_token(&self, record: &crate::db::schema::DevicePushTokenRecord) -> Result<()> {
+        self.pool.with_writer(|conn| {
+            conn.execute(
+                r#"
+                INSERT INTO device_push_tokens (
+                    token, user_id, platform, device_id, endpoint,
+                    p256dh, auth_secret, app_version, created_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ON CONFLICT(user_id, token) DO UPDATE SET
+                    platform = excluded.platform,
+                    device_id = excluded.device_id,
+                    endpoint = excluded.endpoint,
+                    p256dh = excluded.p256dh,
+                    auth_secret = excluded.auth_secret,
+                    app_version = excluded.app_version,
+                    updated_at_ms = excluded.updated_at_ms
+                "#,
+                rusqlite::params![
+                    record.token,
+                    record.user_id.0 as i64,
+                    record.platform,
+                    record.device_id,
+                    record.endpoint,
+                    record.p256dh,
+                    record.auth_secret,
+                    record.app_version,
+                    record.created_at_ms,
+                    record.updated_at_ms,
+                ],
+            )
+            .map_db()?;
+            Ok(())
+        })
+    }
+
+    pub fn get_user_push_tokens(&self, user_id: UserId) -> Result<Vec<crate::db::schema::DevicePushTokenRecord>> {
+        self.pool.with_reader(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT token, user_id, platform, device_id, endpoint,
+                           p256dh, auth_secret, app_version, created_at_ms, updated_at_ms
+                    FROM device_push_tokens
+                    WHERE user_id = ?1
+                    ORDER BY updated_at_ms DESC
+                    "#,
+                )
+                .map_db()?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![user_id.0 as i64], |row| {
+                    Ok(crate::db::schema::DevicePushTokenRecord {
+                        token: row.get(0)?,
+                        user_id: UserId(row.get::<_, i64>(1)? as u64),
+                        platform: row.get(2)?,
+                        device_id: row.get(3)?,
+                        endpoint: row.get(4)?,
+                        p256dh: row.get(5)?,
+                        auth_secret: row.get(6)?,
+                        app_version: row.get(7)?,
+                        created_at_ms: row.get(8)?,
+                        updated_at_ms: row.get(9)?,
+                    })
+                })
+                .map_db()?;
+
+            let mut list = Vec::new();
+            for r in rows {
+                list.push(r.map_db()?);
+            }
+            Ok(list)
+        })
+    }
+
+    pub fn delete_device_push_token(&self, user_id: UserId, token: &str) -> Result<bool> {
+        self.pool.with_writer(|conn| {
+            let count = conn
+                .execute(
+                    "DELETE FROM device_push_tokens WHERE user_id = ?1 AND token = ?2",
+                    rusqlite::params![user_id.0 as i64, token],
+                )
+                .map_db()?;
+            Ok(count > 0)
         })
     }
 }

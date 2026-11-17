@@ -11,6 +11,7 @@ pub mod mainwidget;
 pub mod mainwindow;
 pub mod preferences;
 pub mod session;
+pub mod updater;
 
 pub use main::Main;
 pub use main_account::MainAccount;
@@ -24,6 +25,12 @@ pub use mainwindow::Mainwindow;
 pub use preferences::{
     AppPreferences, AutoDownloadPreferences, ChatAppearancePreferences, LocalizationPreferences,
     NotificationPreferences, ThemeMode,
+};
+pub use updater::{
+    compare_semver, is_newer_version, parse_github_release_json, parse_release_manifest,
+    AvailableUpdateInfo, DesktopUpdateSnapshot, DesktopUpdateState, DesktopUpdater,
+    PlatformAssetEntry, UpdateReleaseManifest, CURRENT_APP_VERSION, DEFAULT_GITHUB_LATEST_API_URL,
+    DEFAULT_GITHUB_REPO, DEFAULT_MANIFEST_URL,
 };
 
 
@@ -84,6 +91,14 @@ impl TelegramApp {
     ) {
         let name = full_name.into();
         self.domain_bridge.bind_actor(user_id);
+        self.domain.is_quitting = false;
+        self.domain.accounts.clear();
+        self.domain.active_index = None;
+        if self.domain.add_activated(false).is_ok() {
+            if let Some(acc) = self.domain.active_account_mut() {
+                acc.create_session(user_id, Some(name.clone()), None);
+            }
+        }
         self.domain.started = true;
         self.mainwindow.setup_main();
         self.window_runtime.bind_session_user(user_id, name, phone);
@@ -92,6 +107,10 @@ impl TelegramApp {
     /// Clears session-scoped desktop state upon logout or account switch.
     pub fn reset_session(&mut self) {
         self.domain_bridge.reset_session();
+        self.domain.finish();
+        self.domain.accounts.clear();
+        self.domain.active_index = None;
+        self.domain.is_quitting = false;
         self.mainwindow.setup_intro();
         self.window_runtime.clear_session_user();
     }

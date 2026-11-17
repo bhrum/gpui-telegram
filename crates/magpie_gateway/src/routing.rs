@@ -14,6 +14,7 @@ pub enum RoutingStrategy {
     Pace,
     Cheapest,
     Drain,
+    Fastest,
 }
 
 impl RoutingStrategy {
@@ -26,6 +27,7 @@ impl RoutingStrategy {
             Self::Pace => "pace",
             Self::Cheapest => "cheapest",
             Self::Drain => "drain",
+            Self::Fastest => "fastest",
         }
     }
 
@@ -38,6 +40,7 @@ impl RoutingStrategy {
             "pace" => Some(Self::Pace),
             "cheapest" | "cheap" => Some(Self::Cheapest),
             "drain" => Some(Self::Drain),
+            "fastest" | "lowest_latency" | "latency" => Some(Self::Fastest),
             _ => None,
         }
     }
@@ -51,6 +54,7 @@ impl RoutingStrategy {
             Self::Pace,
             Self::Cheapest,
             Self::Drain,
+            Self::Fastest,
         ]
     }
 }
@@ -150,6 +154,10 @@ pub struct RouteSeatMetrics {
     pub reset_at_ms: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
 }
 
 impl RouteSeatMetrics {
@@ -183,6 +191,23 @@ impl RouteSeatMetrics {
         }
     }
 
+    pub fn record_metrics(
+        &mut self,
+        tokens: u64,
+        latency_ms: Option<u64>,
+        ttft_ms: Option<u64>,
+        tps: Option<f64>,
+        now_ms: i64,
+    ) {
+        self.record_usage(tokens, latency_ms, now_ms);
+        if let Some(ms) = ttft_ms {
+            self.ttft_ms = Some(ms);
+        }
+        if let Some(rate) = tps {
+            self.tps = Some(rate);
+        }
+    }
+
     pub fn record_failure(
         &mut self,
         status: Option<u16>,
@@ -196,6 +221,10 @@ impl RouteSeatMetrics {
             (secs as i64).saturating_mul(1_000).max(1_000)
         } else {
             match status {
+                Some(401) | Some(403) => {
+                    let shift = self.consecutive_failures.saturating_sub(1).min(6);
+                    (5_000i64.saturating_mul(1i64 << shift)).min(300_000)
+                }
                 Some(402) => 300_000,
                 Some(429) => {
                     let shift = self.consecutive_failures.saturating_sub(1).min(7);
@@ -211,6 +240,267 @@ impl RouteSeatMetrics {
         if cooldown_ms > 0 {
             self.cooldown_until_ms = now_ms.saturating_add(cooldown_ms);
         }
+    }
+}
+
+/// Category of circuit breaker rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestKind {
+    QuotaRest,
+    CreditRest,
+    RateRest,
+    OverloadRest,
+}
+
+impl RestKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::QuotaRest => "quota_rest",
+            Self::CreditRest => "credit_rest",
+            Self::RateRest => "rate_rest",
+            Self::OverloadRest => "overload_rest",
+        }
+    }
+}
+
+/// CreditRest ladder in milliseconds: [30m, 1h, 2h, 4h, 8h, 24h, 7d]
+pub const CREDIT_REST_LADDER_MS: &[i64] = &[
+    30 * 60 * 1000,          // 30 min (1,800,000 ms)
+    60 * 60 * 1000,          // 1 hour (3,600,000 ms)
+    2 * 60 * 60 * 1000,      // 2 hours (7,200,000 ms)
+    4 * 60 * 60 * 1000,      // 4 hours (14,400,000 ms)
+    8 * 60 * 60 * 1000,      // 8 hours (28,800,000 ms)
+    24 * 60 * 60 * 1000,     // 24 hours (86,400,000 ms)
+    7 * 24 * 60 * 60 * 1000, // 7 days (604,800,000 ms)
+];
+
+pub const OVERLOAD_REST_MS: i64 = 30_000; // 30 seconds
+pub const MAX_RATE_REST_MS: i64 = 30 * 60 * 1000; // 30 minutes
+pub const BASE_RATE_REST_MS: i64 = 5_000; // 5 seconds
+
+/// Rest state tracking an active circuit-breaker rest on a seat or account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestState {
+    pub kind: RestKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    pub until_ms: i64,
+    pub failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl RestState {
+    pub fn is_active(&self, now_ms: i64) -> bool {
+        now_ms < self.until_ms
+    }
+
+    pub fn remaining_ms(&self, now_ms: i64) -> i64 {
+        (self.until_ms - now_ms).max(0)
+    }
+}
+
+/// Circuit breaker tracking rest ladders and forbiddenAlike disambiguation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CircuitBreaker {
+    #[serde(default)]
+    pub rests: HashMap<String, RestState>,
+    #[serde(default)]
+    pub credit_steps: HashMap<String, usize>,
+    #[serde(default)]
+    pub recent_error_fingerprints: HashMap<String, Vec<(String, i64)>>,
+    #[serde(default)]
+    pub known_forbidden_alike: HashSet<String>,
+    #[serde(default)]
+    pub last_cleared_accounts: Vec<String>,
+}
+
+impl CircuitBreaker {
+    pub fn error_fingerprint(provider_id: &str, status: u16, error_text: &str) -> String {
+        let norm_err = error_text
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .take(120)
+            .collect::<String>();
+        format!("{provider_id}::{status}::{norm_err}")
+    }
+
+    pub fn is_forbidden_alike(&self, provider_id: &str, status: u16, error_text: &str) -> bool {
+        let fp = Self::error_fingerprint(provider_id, status, error_text);
+        if self.known_forbidden_alike.contains(&fp) {
+            return true;
+        }
+        let err_lower = error_text.to_ascii_lowercase();
+        if status == 400 || status == 403 {
+            if err_lower.contains("safety")
+                || err_lower.contains("policy")
+                || err_lower.contains("prompt")
+                || err_lower.contains("content_filter")
+                || err_lower.contains("invalid_request")
+                || err_lower.contains("unsupported_country")
+                || err_lower.contains("context_length")
+                || err_lower.contains("maximum context")
+                || err_lower.contains("model not found")
+                || err_lower.contains("not supported")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn record_upstream_error(
+        &mut self,
+        seat_or_account: &str,
+        provider_id: &str,
+        status: u16,
+        error_text: &str,
+        retry_after_secs: Option<u64>,
+        reset_at_ms: Option<i64>,
+        now_ms: i64,
+    ) -> Result<Option<RestState>, String> {
+        let fp = Self::error_fingerprint(provider_id, status, error_text);
+
+        if self.known_forbidden_alike.contains(&fp) {
+            self.last_cleared_accounts = vec![seat_or_account.to_string()];
+            return Ok(None);
+        }
+
+        let err_lower = error_text.to_ascii_lowercase();
+        let inherent_rejection = (status == 400 || status == 403)
+            && (err_lower.contains("safety")
+                || err_lower.contains("policy")
+                || err_lower.contains("prompt")
+                || err_lower.contains("content_filter")
+                || err_lower.contains("invalid_request")
+                || err_lower.contains("unsupported_country")
+                || err_lower.contains("context_length")
+                || err_lower.contains("maximum context")
+                || err_lower.contains("model not found"));
+
+        if inherent_rejection {
+            self.known_forbidden_alike.insert(fp);
+            self.last_cleared_accounts = vec![seat_or_account.to_string()];
+            return Ok(None);
+        }
+
+        // Multi-account error disambiguation across identical 403 / 5xx
+        if status == 403 || status >= 500 {
+            let list = self.recent_error_fingerprints.entry(fp.clone()).or_default();
+            list.retain(|(_, ts)| now_ms.saturating_sub(*ts) <= 60_000);
+            list.push((seat_or_account.to_string(), now_ms));
+
+            let distinct_accounts: HashSet<String> = list.iter().map(|(a, _)| a.clone()).collect();
+            if distinct_accounts.len() >= 2 {
+                self.known_forbidden_alike.insert(fp);
+                let mut cleared = Vec::new();
+                for acct in &distinct_accounts {
+                    if let Some(r) = self.rests.get(acct) {
+                        if r.status == Some(status) {
+                            self.rests.remove(acct);
+                            cleared.push(acct.clone());
+                        }
+                    }
+                    cleared.push(acct.clone());
+                }
+                cleared.sort();
+                cleared.dedup();
+                self.last_cleared_accounts = cleared;
+                return Ok(None);
+            }
+        }
+
+        let (kind, duration_ms) = if status == 402
+            || err_lower.contains("credit")
+            || err_lower.contains("insufficient_quota")
+            || err_lower.contains("billing")
+            || err_lower.contains("balance")
+        {
+            let step = self.credit_steps.entry(seat_or_account.to_string()).or_insert(0);
+            let idx = (*step).min(CREDIT_REST_LADDER_MS.len().saturating_sub(1));
+            let dur = CREDIT_REST_LADDER_MS[idx];
+            *step = (*step + 1).min(CREDIT_REST_LADDER_MS.len().saturating_sub(1));
+            (RestKind::CreditRest, dur)
+        } else if (status == 429 && (err_lower.contains("overload") || err_lower.contains("capacity")))
+            || status == 503
+            || status == 529
+        {
+            (RestKind::OverloadRest, OVERLOAD_REST_MS)
+        } else if reset_at_ms.is_some() || err_lower.contains("quota") {
+            let dur = reset_at_ms
+                .map(|r| (r - now_ms).max(1000))
+                .or_else(|| retry_after_secs.map(|s| (s as i64).saturating_mul(1000).max(1000)))
+                .unwrap_or(3600 * 1000);
+            (RestKind::QuotaRest, dur)
+        } else if status == 429 || err_lower.contains("rate_limit") || err_lower.contains("rate limit") {
+            let current_failures = self
+                .rests
+                .get(seat_or_account)
+                .map(|r| r.failures)
+                .unwrap_or(0);
+            let shift = current_failures.min(9);
+            let exp_dur = (BASE_RATE_REST_MS.saturating_mul(1i64 << shift)).min(MAX_RATE_REST_MS);
+            let dur = if let Some(secs) = retry_after_secs {
+                ((secs as i64) * 1000).max(exp_dur).min(MAX_RATE_REST_MS)
+            } else {
+                exp_dur
+            };
+            (RestKind::RateRest, dur)
+        } else {
+            let current_failures = self
+                .rests
+                .get(seat_or_account)
+                .map(|r| r.failures)
+                .unwrap_or(0);
+            let dur = (5_000i64.saturating_mul(1i64 << current_failures.min(6))).min(300_000);
+            (RestKind::RateRest, dur)
+        };
+
+        let failures = self
+            .rests
+            .get(seat_or_account)
+            .map(|r| r.failures + 1)
+            .unwrap_or(1);
+
+        let rest_state = RestState {
+            kind,
+            status: Some(status),
+            until_ms: now_ms.saturating_add(duration_ms),
+            failures,
+            error: Some(error_text.to_string()),
+        };
+
+        self.rests.insert(seat_or_account.to_string(), rest_state.clone());
+        self.last_cleared_accounts.clear();
+        Ok(Some(rest_state))
+    }
+
+    pub fn is_in_rest(&self, seat_or_account: &str, now_ms: i64) -> bool {
+        self.rests
+            .get(seat_or_account)
+            .is_some_and(|r| r.is_active(now_ms))
+    }
+
+    pub fn get_rest_state(&self, seat_or_account: &str, now_ms: i64) -> Option<&RestState> {
+        let state = self.rests.get(seat_or_account)?;
+        if state.is_active(now_ms) {
+            Some(state)
+        } else {
+            None
+        }
+    }
+
+    pub fn clear_rest(&mut self, seat_or_account: &str) {
+        self.rests.remove(seat_or_account);
+        self.last_cleared_accounts = vec![seat_or_account.to_string()];
+    }
+
+    pub fn record_success(&mut self, seat_or_account: &str) {
+        self.rests.remove(seat_or_account);
+        self.credit_steps.remove(seat_or_account);
+        self.last_cleared_accounts = vec![seat_or_account.to_string()];
     }
 }
 
@@ -247,6 +537,8 @@ pub struct RouteRuntimeMetrics {
     pub session_affinity: HashMap<String, SessionAffinityEntry>,
     #[serde(default)]
     pub traces: VecDeque<RouteDecisionTrace>,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreaker,
 }
 
 const MAX_TRACE_RING: usize = 64;
@@ -257,6 +549,23 @@ impl RouteRuntimeMetrics {
             .entry(seat_key.to_string())
             .or_default()
             .record_usage(tokens, latency_ms, now_ms);
+        self.circuit_breaker.record_success(seat_key);
+    }
+
+    pub fn record_metrics(
+        &mut self,
+        seat_key: &str,
+        tokens: u64,
+        latency_ms: Option<u64>,
+        ttft_ms: Option<u64>,
+        tps: Option<f64>,
+        now_ms: i64,
+    ) {
+        self.seats
+            .entry(seat_key.to_string())
+            .or_default()
+            .record_metrics(tokens, latency_ms, ttft_ms, tps, now_ms);
+        self.circuit_breaker.record_success(seat_key);
     }
 
     pub fn record_failure(
@@ -270,6 +579,53 @@ impl RouteRuntimeMetrics {
             .entry(seat_key.to_string())
             .or_default()
             .record_failure(status, retry_after_secs, now_ms);
+    }
+
+    pub fn record_failure_disambiguated(
+        &mut self,
+        seat_key: &str,
+        provider_id: &str,
+        status: u16,
+        error_text: &str,
+        retry_after_secs: Option<u64>,
+        reset_at_ms: Option<i64>,
+        now_ms: i64,
+    ) -> bool {
+        match self.circuit_breaker.record_upstream_error(
+            seat_key,
+            provider_id,
+            status,
+            error_text,
+            retry_after_secs,
+            reset_at_ms,
+            now_ms,
+        ) {
+            Ok(Some(rest)) => {
+                let seat = self.seats.entry(seat_key.to_string()).or_default();
+                seat.consecutive_failures = rest.failures;
+                seat.last_status = rest.status;
+                seat.cooldown_until_ms = rest.until_ms;
+                true
+            }
+            Ok(None) => {
+                // When record_upstream_error returns Ok(None) (request-level rejection or
+                // multi-account identical error unwinding) or unwinds rests, synchronize self.seats:
+                // For any seat that is no longer in self.circuit_breaker.rests (or for all accounts
+                // whose rest was cleared), reset seat.cooldown_until_ms = 0 and seat.consecutive_failures = 0.
+                for acct in &self.circuit_breaker.last_cleared_accounts {
+                    if let Some(seat) = self.seats.get_mut(acct) {
+                        seat.cooldown_until_ms = 0;
+                        seat.consecutive_failures = 0;
+                    }
+                }
+                if let Some(seat) = self.seats.get_mut(seat_key) {
+                    seat.cooldown_until_ms = 0;
+                    seat.consecutive_failures = 0;
+                }
+                false
+            }
+            Err(_) => false,
+        }
     }
 
     pub fn push_trace(&mut self, trace: RouteDecisionTrace) {
@@ -459,6 +815,11 @@ pub fn resolve_group_targets(
         IntentTier::Standard => None,
     };
 
+    let is_cooled = |target: &str, m: &RouteRuntimeMetrics| -> bool {
+        m.seats.get(target).is_some_and(|s| s.is_in_cooldown(now_ms))
+            || m.circuit_breaker.is_in_rest(target, now_ms)
+    };
+
     // Check session affinity first (only if target still exists and is not cooled down)
     let mut pinned_first: Option<(String, String)> = None;
     if intent_target.is_none() && group.sticky_ttl_ms > 0 {
@@ -467,10 +828,7 @@ pub fn resolve_group_targets(
             if let Some(entry) = metrics.session_affinity.get(&aff_key) {
                 if now_ms < entry.expires_at_ms {
                     let exists = flat.iter().any(|m| m.target == entry.target);
-                    let in_cooldown = metrics
-                        .seats
-                        .get(&entry.target)
-                        .is_some_and(|s| s.is_in_cooldown(now_ms));
+                    let in_cooldown = is_cooled(&entry.target, metrics);
                     if exists && !in_cooldown {
                         pinned_first = Some((entry.target.clone(), "session_affinity".to_string()));
                     }
@@ -495,8 +853,8 @@ pub fn resolve_group_targets(
             ordered_indices.sort_by(|&a, &b| {
                 let sa = metrics.seats.get(&flat[a].target);
                 let sb = metrics.seats.get(&flat[b].target);
-                let ca = sa.is_some_and(|s| s.is_in_cooldown(now_ms));
-                let cb = sb.is_some_and(|s| s.is_in_cooldown(now_ms));
+                let ca = is_cooled(&flat[a].target, metrics);
+                let cb = is_cooled(&flat[b].target, metrics);
                 let ua = sa.map(|s| s.decayed_usage(now_ms)).unwrap_or(0.0);
                 let ub = sb.map(|s| s.decayed_usage(now_ms)).unwrap_or(0.0);
                 ca.cmp(&cb)
@@ -508,8 +866,8 @@ pub fn resolve_group_targets(
             ordered_indices.sort_by(|&a, &b| {
                 let sa = metrics.seats.get(&flat[a].target);
                 let sb = metrics.seats.get(&flat[b].target);
-                let ca = sa.is_some_and(|s| s.is_in_cooldown(now_ms));
-                let cb = sb.is_some_and(|s| s.is_in_cooldown(now_ms));
+                let ca = is_cooled(&flat[a].target, metrics);
+                let cb = is_cooled(&flat[b].target, metrics);
                 let score = |m: Option<&RouteSeatMetrics>| -> f64 {
                     let Some(seat) = m else { return 0.0 };
                     let urgency = if seat.reset_at_ms > now_ms {
@@ -529,14 +887,8 @@ pub fn resolve_group_targets(
             ordered_indices.sort_by(|&a, &b| {
                 let ma = &flat[a];
                 let mb = &flat[b];
-                let ca = metrics
-                    .seats
-                    .get(&ma.target)
-                    .is_some_and(|s| s.is_in_cooldown(now_ms));
-                let cb = metrics
-                    .seats
-                    .get(&mb.target)
-                    .is_some_and(|s| s.is_in_cooldown(now_ms));
+                let ca = is_cooled(&ma.target, metrics);
+                let cb = is_cooled(&mb.target, metrics);
                 let price = |m: &RoutingGroupMember| -> f64 {
                     if m.free {
                         0.0
@@ -549,23 +901,46 @@ pub fn resolve_group_targets(
                     .then_with(|| a.cmp(&b))
             });
         }
+        RoutingStrategy::Fastest => {
+            ordered_indices.sort_by(|&a, &b| {
+                let ma = &flat[a];
+                let mb = &flat[b];
+                let sa = metrics.seats.get(&ma.target);
+                let sb = metrics.seats.get(&mb.target);
+                let ca = is_cooled(&ma.target, metrics);
+                let cb = is_cooled(&mb.target, metrics);
+
+                let latency_score = |s: Option<&RouteSeatMetrics>| -> f64 {
+                    let Some(seat) = s else { return 500.0 };
+                    let base_latency = seat
+                        .ttft_ms
+                        .or(seat.last_latency_ms)
+                        .unwrap_or(500) as f64;
+                    let tps_bonus = seat.tps.map(|rate| (rate / 50.0).min(5.0) * 20.0).unwrap_or(0.0);
+                    (base_latency - tps_bonus).max(1.0)
+                };
+
+                let la = latency_score(sa);
+                let lb = latency_score(sb);
+
+                ca.cmp(&cb)
+                    .then_with(|| la.total_cmp(&lb))
+                    .then_with(|| a.cmp(&b))
+            });
+        }
         RoutingStrategy::Drain => {
             let pinned_target = metrics.drain_pinned.get(&pool_key).cloned();
             let valid_pinned = pinned_target.and_then(|pt| {
                 let pos = flat.iter().position(|m| m.target == pt)?;
-                let cooled = metrics
-                    .seats
-                    .get(&pt)
-                    .is_some_and(|s| s.is_in_cooldown(now_ms) || s.quota_used_pct >= 99.5);
+                let cooled = is_cooled(&pt, metrics)
+                    || metrics.seats.get(&pt).is_some_and(|s| s.quota_used_pct >= 99.5);
                 (!cooled).then_some(pos)
             });
             let chosen_pos = valid_pinned.unwrap_or_else(|| {
                 flat.iter()
                     .position(|m| {
-                        !metrics
-                            .seats
-                            .get(&m.target)
-                            .is_some_and(|s| s.is_in_cooldown(now_ms) || s.quota_used_pct >= 99.5)
+                        !is_cooled(&m.target, metrics)
+                            && !metrics.seats.get(&m.target).is_some_and(|s| s.quota_used_pct >= 99.5)
                     })
                     .unwrap_or(0)
             });
@@ -581,7 +956,7 @@ pub fn resolve_group_targets(
                 let sa = metrics.seats.get(&ma.target);
                 let sb = metrics.seats.get(&mb.target);
                 let smart_cost = |m: &RoutingGroupMember, seat: Option<&RouteSeatMetrics>| -> (u8, f64) {
-                    let cooled = seat.is_some_and(|s| s.is_in_cooldown(now_ms));
+                    let cooled = is_cooled(&m.target, metrics);
                     let tier = if cooled { 2 } else if seat.is_some_and(|s| s.quota_used_pct >= 90.0) { 1 } else { 0 };
                     let weight = m.weight.max(1) as f64;
                     let load = seat.map(|s| s.decayed_usage(now_ms)).unwrap_or(0.0) / weight;
@@ -603,6 +978,7 @@ pub fn resolve_group_targets(
         RoutingStrategy::Pace => "pace",
         RoutingStrategy::Cheapest => "cheapest",
         RoutingStrategy::Drain => "drain",
+        RoutingStrategy::Fastest => "fastest_latency",
     };
 
     let mut out = Vec::new();
@@ -652,4 +1028,52 @@ pub fn resolve_group_targets(
     }
 
     Ok(out)
+}
+
+/// Parse an HTTP `Retry-After` header value (integer seconds or RFC 7231 HTTP-date).
+pub fn parse_retry_after_header(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = trimmed.parse::<u64>() {
+        return Some(secs);
+    }
+
+    let now_ts = chrono::Utc::now().timestamp();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(trimmed) {
+        let diff = dt.timestamp().saturating_sub(now_ts);
+        return Some(diff.max(0) as u64);
+    }
+
+    for fmt in [
+        "%a, %d %b %Y %H:%M:%S GMT",
+        "%a, %d %b %Y %H:%M:%S UTC",
+        "%A, %d-%b-%y %H:%M:%S GMT",
+        "%a %b %e %H:%M:%S %Y",
+    ] {
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(trimmed, fmt) {
+            let diff = ndt.and_utc().timestamp().saturating_sub(now_ts);
+            return Some(diff.max(0) as u64);
+        }
+    }
+
+    // Fallback for HTTP-dates where weekday prefix is present (even if weekday mismatches calendar):
+    // strip leading "<day>, " and parse "%d %b %Y %H:%M:%S [GMT|UTC]".
+    if let Some((_wkday, rest)) = trimmed.split_once(',') {
+        let rest_trim = rest.trim();
+        for fmt in [
+            "%d %b %Y %H:%M:%S GMT",
+            "%d %b %Y %H:%M:%S UTC",
+            "%d-%b-%y %H:%M:%S GMT",
+            "%d-%b-%y %H:%M:%S UTC",
+        ] {
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(rest_trim, fmt) {
+                let diff = ndt.and_utc().timestamp().saturating_sub(now_ts);
+                return Some(diff.max(0) as u64);
+            }
+        }
+    }
+
+    None
 }
