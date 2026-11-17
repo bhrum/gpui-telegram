@@ -48,6 +48,9 @@ fn dispatch_headless_target(target: &str) -> ! {
         "test_gpui_appshell_ai_media_tap_barge_in_wiring" => {
             body_appshell_ai_media_tap_barge_in_wiring
         }
+        "test_tier5_appshell_semantic_tree_adversarial" => {
+            body_appshell_semantic_tree_adversarial
+        }
         other => {
             eprintln!("unknown headless gpui test target: {other}");
             std::process::exit(101);
@@ -283,4 +286,94 @@ fn body_appshell_ai_media_tap_barge_in_wiring(cx: &mut App) {
         assert!(!trig_next_silence);
         assert_eq!(s.rtc_talk.talk_coordinator.state, TalkSessionState::Speaking);
     });
+}
+
+#[test]
+fn test_tier5_appshell_semantic_tree_adversarial() {
+    run_in_headless_subprocess("test_tier5_appshell_semantic_tree_adversarial");
+}
+
+fn body_appshell_semantic_tree_adversarial(cx: &mut App) {
+    let client = new_isolated_client();
+    let _rt = client.runtime().enter();
+
+    let shell: Entity<AppShell> = cx.new(|cx| {
+        let s = AppShell::new_with_client(client.clone(), cx);
+        s.sidebar.update(cx, |sb, _| {
+            sb.dialogs.push(DialogItemModel {
+                id: 5001,
+                peer_name: "Tier 5 Adversarial Chat".to_string(),
+                avatar_initials: "T5".to_string(),
+                avatar_color: 0x3A7AFE,
+                last_message: String::new(),
+                timestamp: "now".to_string(),
+                unread_count: 0,
+                is_muted: false,
+                is_pinned: false,
+                is_online: true,
+                typing_indicator: None,
+                delivery_status: DialogDeliveryStatus::Read,
+                folder: "All".to_string(),
+            });
+        });
+        s
+    });
+
+    shell.update(cx, |s, cx| {
+        let t0 = s.inspect_state(cx);
+        assert_eq!(t0.state_hash, t0.compute_full_state_hash());
+
+        let r_no_chat = s.perform_action(SemanticAction::SendMessage, cx);
+        assert_eq!(r_no_chat.status, ActionExecutionStatus::Failed);
+        assert!(!r_no_chat.success);
+        assert_eq!(r_no_chat.resulting_state_hash, t0.state_hash);
+
+        let r_bad_chat = s.perform_action(SemanticAction::SelectChat { chat_id: 999_999 }, cx);
+        assert_eq!(r_bad_chat.status, ActionExecutionStatus::Failed);
+        assert_eq!(r_bad_chat.resulting_state_hash, t0.state_hash);
+
+        let r_bad_modal = s.perform_action(
+            SemanticAction::OpenModal { modal_id: " \t\n ".to_string() },
+            cx,
+        );
+        assert_eq!(r_bad_modal.status, ActionExecutionStatus::Failed);
+        assert_eq!(r_bad_modal.resulting_state_hash, t0.state_hash);
+
+        let r_close_idle = s.perform_action(SemanticAction::CloseModal, cx);
+        assert_eq!(r_close_idle.status, ActionExecutionStatus::Succeeded);
+        assert_eq!(r_close_idle.resulting_state_hash, t0.state_hash);
+
+        let r_sel = s.perform_action(SemanticAction::SelectChat { chat_id: 5001 }, cx);
+        assert_eq!(r_sel.status, ActionExecutionStatus::Succeeded);
+        let t1 = s.inspect_state(cx);
+        assert_ne!(t1.state_hash, t0.state_hash);
+
+        let _ = s.perform_action(SemanticAction::ComposeText { text: "   \n\t  ".to_string() }, cx);
+        let t2 = s.inspect_state(cx);
+        let r_empty_send = s.perform_action(SemanticAction::SendMessage, cx);
+        assert_eq!(r_empty_send.status, ActionExecutionStatus::Failed);
+        assert_eq!(r_empty_send.resulting_state_hash, t2.state_hash);
+        assert_eq!(s.inspect_state(cx).composer.text, "   \n\t  ");
+
+        let r_call_on = s.perform_action(SemanticAction::ToggleCall { peer_id: 5001, is_video: true }, cx);
+        assert_eq!(r_call_on.status, ActionExecutionStatus::Succeeded);
+        assert!(s.inspect_state(cx).is_call_active);
+
+        let r_call_off = s.perform_action(SemanticAction::ToggleCall { peer_id: 5001, is_video: true }, cx);
+        assert_eq!(r_call_off.status, ActionExecutionStatus::Succeeded);
+        assert!(!s.inspect_state(cx).is_call_active);
+        assert_ne!(r_call_on.resulting_state_hash, r_call_off.resulting_state_hash);
+    });
+
+    // VideoViewport malformed dimensions render check
+    use gpui_telegram_desktop::components::video_viewport::{encode_rgba_to_gpui_image, VideoViewport};
+    use gpui_telegram_desktop::theme::palette::{TdesktopThemeMode, TdesktopThemePalette};
+    let pal = TdesktopThemePalette::build(TdesktopThemeMode::Night, 0x5288C1, 14, 12);
+    let mut vp = VideoViewport::new("EdgePeer", pal);
+    let wide = encode_rgba_to_gpui_image(200, 2, &vec![0xAA; 200 * 2 * 4]).unwrap();
+    vp.set_remote_frame(Some(wide), 200, 2);
+    vp.set_local_camera_active(true);
+    let _ = vp.render_viewport(0.0, 0.0);
+    let _ = vp.render_viewport(-100.0, -50.0);
+    let _ = vp.render_viewport(f32::NAN, f32::INFINITY);
 }

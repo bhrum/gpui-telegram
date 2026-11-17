@@ -59,3 +59,11 @@ path = "tests/tier3_combinations.rs"
 [[test]]
 name = "tier4_real_world"
 path = "tests/tier4_real_world.rs"
+
+[[test]]
+name = "tier5_adversarial_core_resilience"
+path = "tests/tier5_adversarial_core_resilience.rs"
+
+[[test]]
+name = "tier5_adversarial_hardening"
+path = "tests/tier5_adversarial_hardening.rs"

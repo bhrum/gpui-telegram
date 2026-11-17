@@ -888,7 +888,7 @@ impl SettingsAiProvidersSections {
     }
 
     fn pill_btn(
-        id: &'static str,
+        id: impl Into<ElementId>,
         label: &str,
         bg_color: u32,
         fg_color: u32,
@@ -1330,7 +1330,10 @@ impl SettingsAiProvidersSections {
                                     .child(tr_str(lang, "当前主要供应商", "Current Primary"))
                             } else {
                                 Self::pill_btn(
-                                    "magpie-activate-sub-btn",
+                                    SharedString::from(format!(
+                                        "magpie-activate-sub-btn-{}",
+                                        sub_id
+                                    )),
                                     tr_str(
                                         lang,
                                         "激活此智能体 / 设为主要供应商",

@@ -99,16 +99,28 @@ impl VideoViewport {
 
     /// Sets remote video frame from decoded image
     pub fn set_remote_frame(&mut self, frame: Option<Arc<gpui::Image>>, width: u32, height: u32) {
-        self.remote_resolution = (width, height);
-        self.is_remote_video_active = frame.is_some() && width > 0 && height > 0;
-        self.remote_frame = frame;
+        if frame.is_none() || width == 0 || height == 0 {
+            self.remote_resolution = (0, 0);
+            self.is_remote_video_active = false;
+            self.remote_frame = None;
+        } else {
+            self.remote_resolution = (width, height);
+            self.is_remote_video_active = true;
+            self.remote_frame = frame;
+        }
     }
 
     /// Sets local camera preview frame
     pub fn set_local_frame(&mut self, frame: Option<Arc<gpui::Image>>, width: u32, height: u32) {
-        self.local_resolution = (width, height);
-        self.is_local_camera_active = frame.is_some() && width > 0 && height > 0;
-        self.local_frame = frame;
+        if frame.is_none() || width == 0 || height == 0 {
+            self.local_resolution = (0, 0);
+            self.is_local_camera_active = false;
+            self.local_frame = None;
+        } else {
+            self.local_resolution = (width, height);
+            self.is_local_camera_active = true;
+            self.local_frame = frame;
+        }
         self.bubble.is_visible = self.is_local_camera_active;
     }
 
@@ -246,8 +258,12 @@ impl VideoViewport {
         let bubble_element: Option<AnyElement> = if self.is_local_camera_active {
             let bw = self.bubble.width;
             let bh = self.bubble.height;
-            let bx = self.bubble.x.clamp(8.0, (viewport_w - bw - 8.0).max(8.0));
-            let by = self.bubble.y.clamp(8.0, (viewport_h - bh - 8.0).max(8.0));
+            let safe_vw = if viewport_w.is_finite() { viewport_w.max(0.0) } else { 0.0 };
+            let safe_vh = if viewport_h.is_finite() { viewport_h.max(0.0) } else { 0.0 };
+            let raw_x = if self.bubble.x.is_finite() { self.bubble.x } else { 8.0 };
+            let raw_y = if self.bubble.y.is_finite() { self.bubble.y } else { 8.0 };
+            let bx = raw_x.clamp(8.0, (safe_vw - bw - 8.0).max(8.0));
+            let by = raw_y.clamp(8.0, (safe_vh - bh - 8.0).max(8.0));
 
             let bubble_content: AnyElement = if let Some(ref local_img) = self.local_frame {
                 img(local_img.clone())
