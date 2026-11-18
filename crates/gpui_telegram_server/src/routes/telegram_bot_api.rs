@@ -1243,12 +1243,25 @@ fn handle_delete_message(
             "Bad Request: message to delete not found",
         );
     }
+    let prev_pins = state.db.list_pinned_messages(cid).unwrap_or_default();
+    let removed_pinned = prev_pins.contains(&msg_id.0);
     match state
         .message_pipeline
         .delete_messages(cid, vec![msg_id], true)
     {
         Ok(pts) => {
             broadcast_chat_pts(state, cid, pts);
+            if removed_pinned {
+                let pinned_ids = state.db.list_pinned_messages(cid).unwrap_or_default();
+                crate::routes::broadcast_chat_event(
+                    state,
+                    cid,
+                    gpui_telegram_proto::sync::UpdateEvent::PinnedMessagesChanged {
+                        chat_id: cid,
+                        pinned_ids: pinned_ids.into_iter().map(MsgId).collect(),
+                    },
+                );
+            }
             bot_ok(json!(true))
         }
         Err(e) => bot_err(StatusCode::BAD_REQUEST, 400, &e.to_string()),
@@ -1346,12 +1359,12 @@ fn handle_pin_chat_message(
             "Bad Request: message to pin not found",
         );
     };
-    if state
+    if !state
         .db
         .get_message(cid, MsgId(message_id))
         .ok()
         .flatten()
-        .is_none()
+        .is_some_and(|m| m.deleted_at_ms.is_none())
     {
         return bot_err(
             StatusCode::BAD_REQUEST,

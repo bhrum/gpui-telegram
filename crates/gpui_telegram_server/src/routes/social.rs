@@ -170,6 +170,21 @@ pub async fn calls_invite(auth: AuthBearer, State(state): State<Arc<AppState>>, 
     if target_user.user_id == auth.user_id {
         return err_resp(StatusCode::BAD_REQUEST, "invalid_callee", "Cannot call yourself");
     }
+    if state
+        .db
+        .is_user_blocked(target_user.user_id, auth.user_id)
+        .unwrap_or(false)
+        || state
+            .db
+            .is_user_blocked(auth.user_id, target_user.user_id)
+            .unwrap_or(false)
+    {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "user_is_blocked",
+            "Cannot initiate a call with a blocked user",
+        );
+    }
 
     let resolved_chat_id = resolved_chat.as_ref().map(|c| c.chat_id).or(req.chat_id.map(ChatId));
     let is_ai_bot = target_user.is_bot
@@ -196,19 +211,26 @@ pub async fn calls_invite(auth: AuthBearer, State(state): State<Arc<AppState>>, 
     }
 
     if is_ai_bot {
-        let (talk_session_id, talk_state, talk_generation, talk_signal_seq) = {
-            let mut coord = state.talk_coordinator.write();
-            coord.session_id = format!("talk_{}", Uuid::new_v4().simple());
+        let talk_session_id = format!("talk_{}_{}", auth.user_id.0, Uuid::new_v4().simple());
+        let (talk_state, talk_generation, talk_signal_seq) = {
+            let mut sessions = state.talk_sessions.write();
+            let coord = sessions
+                .entry(talk_session_id.clone())
+                .or_insert_with(gpui_telegram_agent::TalkCoordinator::new);
+            coord.session_id = talk_session_id.clone();
             coord.generation = coord.generation.saturating_add(1);
             coord.signal_seq = coord.signal_seq.saturating_add(1);
             coord.state = gpui_telegram_agent::TalkSessionState::Listening;
             (
-                coord.session_id.clone(),
                 coord.state,
                 coord.generation,
                 coord.signal_seq,
             )
         };
+        state
+            .user_active_talk_sessions
+            .write()
+            .insert(auth.user_id, talk_session_id.clone());
         let transcript_seed = json!([
             {
                 "role": "system",

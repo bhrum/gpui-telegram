@@ -195,4 +195,17 @@ impl ServerDatabase {
             rows.collect::<std::result::Result<Vec<_>, _>>().map_db()
         })
     }
+
+    pub fn get_talk_session_owner(&self, session_id: &str) -> Result<Option<u64>> {
+        self.pool.with_reader(|conn| {
+            conn.query_row(
+                "SELECT user_id FROM talk_sessions_db WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|opt| opt.map(|uid| uid.max(0) as u64))
+            .map_db()
+        })
+    }
 }

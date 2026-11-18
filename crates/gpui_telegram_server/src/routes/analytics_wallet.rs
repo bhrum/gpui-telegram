@@ -193,7 +193,13 @@ pub async fn search_unified(
                                 || q_lower.contains("机器人")
                                 || q_lower.contains("botfather")));
                     if q_ok {
-                        global_bots.push(crate::routes::bots_miniapps::bot_record_to_entry(&bot));
+                        global_bots.push(
+                            crate::routes::bots_miniapps::bot_record_to_entry_for_viewer(
+                                &state,
+                                &bot,
+                                auth.user_id.0 as i64,
+                            ),
+                        );
                         if bot_chat_map.contains_key(&bot.bot_user_id) && q_lower.is_empty() {
                             // Already represented as an active bot chat in `results` unless specifically queried
                             continue;

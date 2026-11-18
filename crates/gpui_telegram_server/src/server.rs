@@ -75,6 +75,8 @@ pub struct AppState {
     pub permission_dock: Arc<RwLock<gpui_telegram_agent::ToolPermissionDock>>,
     pub computer_lease_broker: Arc<RwLock<gpui_telegram_agent::ComputerLeaseBroker>>,
     pub talk_coordinator: Arc<RwLock<gpui_telegram_agent::TalkCoordinator>>,
+    pub talk_sessions: Arc<RwLock<HashMap<String, gpui_telegram_agent::TalkCoordinator>>>,
+    pub user_active_talk_sessions: Arc<RwLock<HashMap<UserId, String>>>,
     pub acp_runner: Arc<gpui_telegram_agent::acp::AcpRunner>,
     pub hermes: Arc<gpui_telegram_agent::hermes::HermesEngine>,
     pub fabushi_bots: Arc<gpui_telegram_agent::fabushi_bot::FabushiBotHost>,
@@ -524,6 +526,8 @@ impl AppState {
             permission_dock: Arc::new(RwLock::new(gpui_telegram_agent::ToolPermissionDock::new())),
             computer_lease_broker: Arc::new(RwLock::new(gpui_telegram_agent::ComputerLeaseBroker::new())),
             talk_coordinator: Arc::new(RwLock::new(gpui_telegram_agent::TalkCoordinator::new())),
+            talk_sessions: Arc::new(RwLock::new(HashMap::new())),
+            user_active_talk_sessions: Arc::new(RwLock::new(HashMap::new())),
             acp_runner,
             hermes,
             fabushi_bots,
@@ -3515,7 +3519,7 @@ fn deliver_proactive_message_raw(
         return;
     }
     let bot_user_id = bot_id_hint
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .and_then(crate::routes::hermes::parse_bot_id_str_u64)
         .map(UserId)
         .filter(|uid| db.get_user(*uid).ok().flatten().is_some_and(|u| u.is_bot))
         .or_else(|| {
@@ -5646,30 +5650,197 @@ async fn computer_action_execute(
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct OptionalTalkSessionQuery {
+    session_id: Option<String>,
+}
+
+fn resolve_authorized_talk_session_id(
+    state: &AppState,
+    user_id: UserId,
+    requested_sid: Option<&str>,
+) -> std::result::Result<String, Response> {
+    let is_admin = crate::routes::hermes::caller_is_admin(state, user_id);
+    if let Some(sid) = requested_sid.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(reserved_uid) =
+            crate::routes::hermes::extract_reserved_talk_session_owner(sid)
+        {
+            if reserved_uid != user_id.0 && !is_admin {
+                return Err(crate::routes::err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Caller is not authorized to access this talk session",
+                ));
+            }
+        }
+        match state.db.get_talk_session_owner(sid) {
+            Ok(Some(owner_uid)) => {
+                if owner_uid != user_id.0 && !is_admin {
+                    return Err(crate::routes::err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Caller is not authorized to access this talk session",
+                    ));
+                }
+                return Ok(sid.to_string());
+            }
+            Ok(None) => {
+                let (owned_in_memory, held_by_other) = {
+                    let active = state.user_active_talk_sessions.read();
+                    let owned = active.get(&user_id).is_some_and(|s| s == sid);
+                    let other = !owned && active.values().any(|s| s == sid);
+                    (owned, other)
+                };
+                let exists_in_sessions = state.talk_sessions.read().contains_key(sid);
+                if (held_by_other || (exists_in_sessions && !owned_in_memory)) && !is_admin {
+                    return Err(crate::routes::err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Caller is not authorized to access this talk session",
+                    ));
+                }
+                if !exists_in_sessions
+                    && !held_by_other
+                    && crate::routes::hermes::extract_reserved_talk_session_owner(sid)
+                        .is_some_and(|uid| uid != user_id.0)
+                {
+                    return Err(crate::routes::err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Caller is not authorized to pre-create another user's reserved talk session",
+                    ));
+                }
+                if !owned_in_memory && !is_admin {
+                    return Err(crate::routes::err_resp(
+                        StatusCode::NOT_FOUND,
+                        "talk_session_not_found",
+                        "Talk session not found",
+                    ));
+                }
+                return Ok(sid.to_string());
+            }
+            Err(e) => return Err(crate::routes::map_telegram_err(e)),
+        }
+    }
+    if let Some(active_sid) = state.user_active_talk_sessions.read().get(&user_id).cloned() {
+        match state.db.get_talk_session_owner(&active_sid) {
+            Ok(Some(owner_uid)) if owner_uid != user_id.0 && !is_admin => {}
+            Ok(_) => return Ok(active_sid),
+            Err(e) => return Err(crate::routes::map_telegram_err(e)),
+        }
+    }
+    let candidate_sid = format!("talk_user_{}", user_id.0);
+    let candidate_db_owner = match state.db.get_talk_session_owner(&candidate_sid) {
+        Ok(owner) => owner,
+        Err(e) => return Err(crate::routes::map_telegram_err(e)),
+    };
+    let candidate_held_by_other_db = candidate_db_owner.is_some_and(|owner| owner != user_id.0);
+    let candidate_held_by_other_mem = {
+        let active = state.user_active_talk_sessions.read();
+        let owned = active.get(&user_id).is_some_and(|s| s == &candidate_sid);
+        let active_other = active.iter().any(|(uid, s)| *uid != user_id && s == &candidate_sid);
+        drop(active);
+        active_other
+            || (candidate_db_owner.is_none()
+                && !owned
+                && state.talk_sessions.read().contains_key(&candidate_sid))
+    };
+    let fallback_sid = if candidate_held_by_other_db || candidate_held_by_other_mem {
+        format!("talk_{}_{}", user_id.0, Uuid::new_v4().simple())
+    } else {
+        candidate_sid.clone()
+    };
+    let needs_persist = if fallback_sid == candidate_sid {
+        candidate_db_owner.is_none()
+    } else {
+        true
+    };
+    if needs_persist {
+        let now_ms = Utc::now().timestamp_millis();
+        if let Err(e) = state.db.upsert_talk_session(
+            &fallback_sid,
+            user_id.0,
+            "listening",
+            &json!([]),
+            now_ms,
+        ) {
+            return Err(crate::routes::map_telegram_err(e));
+        }
+    }
+    state
+        .user_active_talk_sessions
+        .write()
+        .insert(user_id, fallback_sid.clone());
+    Ok(fallback_sid)
+}
+
 async fn talk_barge_in(
-    _auth: AuthBearer,
+    auth: AuthBearer,
     State(state): State<Arc<AppState>>,
-) -> Json<Value> {
-    let mut coord = state.talk_coordinator.write();
+    Query(q): Query<OptionalTalkSessionQuery>,
+    body: Bytes,
+) -> Response {
+    let body_sid = if !body.is_empty() {
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("session_id").and_then(|s| s.as_str()).map(str::to_string))
+    } else {
+        None
+    };
+    let req_sid = q.session_id.as_deref().or(body_sid.as_deref());
+    let sid = match resolve_authorized_talk_session_id(&state, auth.user_id, req_sid) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut sessions = state.talk_sessions.write();
+    let coord = sessions.entry(sid.clone()).or_insert_with(|| {
+        let mut c = gpui_telegram_agent::TalkCoordinator::new();
+        c.session_id = sid.clone();
+        c
+    });
     let flushed_count = coord.handle_barge_in();
-    Json(json!({
-        "status": "barge_in_handled",
-        "new_state": coord.state,
-        "flushed_audio_chunks": flushed_count,
-        "buffer_remaining": coord.buffered_chunks_count()
-    }))
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session_id": sid,
+            "status": "barge_in_handled",
+            "new_state": coord.state,
+            "flushed_audio_chunks": flushed_count,
+            "buffer_remaining": coord.buffered_chunks_count()
+        })),
+    )
+        .into_response()
 }
 
 async fn talk_audio_enqueue(
-    _auth: AuthBearer,
+    auth: AuthBearer,
     State(state): State<Arc<AppState>>,
+    Query(q): Query<OptionalTalkSessionQuery>,
     body: Bytes,
 ) -> Response {
-    let mut coord = state.talk_coordinator.write();
+    let body_sid = if q.session_id.is_none() && body.starts_with(b"{") {
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("session_id").and_then(|s| s.as_str()).map(str::to_string))
+    } else {
+        None
+    };
+    let req_sid = q.session_id.as_deref().or(body_sid.as_deref());
+    let sid = match resolve_authorized_talk_session_id(&state, auth.user_id, req_sid) {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    let mut sessions = state.talk_sessions.write();
+    let coord = sessions.entry(sid.clone()).or_insert_with(|| {
+        let mut c = gpui_telegram_agent::TalkCoordinator::new();
+        c.session_id = sid.clone();
+        c
+    });
     match coord.enqueue_audio(body.to_vec()) {
         Ok(()) => (
             StatusCode::OK,
             Json(json!({
+                "session_id": sid,
                 "status": "queued",
                 "buffered_chunks": coord.buffered_chunks_count()
             })),

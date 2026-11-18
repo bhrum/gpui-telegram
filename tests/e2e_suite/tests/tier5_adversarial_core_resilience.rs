@@ -1788,3 +1788,1207 @@ async fn tier5_membership_normalization_kick_ban_leave_and_chat_authz() {
         .unwrap();
     assert_eq!(dave_hist.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn tier5_ws_sync_restricted_and_dm_block_authz_parity() {
+    use futures::{SinkExt, StreamExt};
+    use gpui_telegram_proto::sync::{
+        SyncGetDifferenceRequest, TypingAction, TypingEvent,
+    };
+    use gpui_telegram_proto::ws::SendMessageRequest;
+    use gpui_telegram_server::db::schema::ChatMemberRecord;
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    let (_dir, state, app) = open_ephemeral_server();
+    let (alice_id, alice_tok) = register_user(&app, "t5_w5_alice").await;
+    let (bob_id, bob_tok) = register_user(&app, "t5_w5_bob").await;
+    let (dave_id, dave_tok) = register_user(&app, "t5_w5_dave").await;
+    let (malloy_id, malloy_tok) = register_user(&app, "t5_w5_malloy").await;
+    let (eve_id, eve_tok) = register_user(&app, "t5_w5_eve").await;
+    let _ = (&dave_tok, &malloy_tok);
+
+    // 1. Alice creates a private group with Bob, Dave, Malloy (Eve is never a member)
+    let create_grp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "W5 WS Authz Group",
+                        "chat_type": 2,
+                        "member_ids": [bob_id, dave_id, malloy_id]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_grp.status(), StatusCode::CREATED);
+    let chat_id = serde_json::from_slice::<Value>(
+        &to_bytes(create_grp.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    let post_secret = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{chat_id}/messages"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "text": "TOP_SECRET_WS_SYNC_NEEDLE",
+                        "client_nonce": 9001
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(post_secret.status(), StatusCode::CREATED);
+
+    // Kick Bob (with raw mixed-case DB role normalization check)
+    let kick_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/chats/{chat_id}/members/{bob_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "role": "  KiCkEd " }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(kick_bob.status(), StatusCode::OK);
+
+    let (tx_alice, mut rx_alice) = mpsc::unbounded_channel();
+    let (tx_bob, mut rx_bob) = mpsc::unbounded_channel();
+    let (tx_dave, mut rx_dave) = mpsc::unbounded_channel();
+    let (tx_malloy, mut rx_malloy) = mpsc::unbounded_channel();
+    let (tx_eve, mut rx_eve) = mpsc::unbounded_channel();
+    state
+        .gateway_hub
+        .register_session(UserId(alice_id), Some("w5_alice".into()), tx_alice.clone());
+    state
+        .gateway_hub
+        .register_session(UserId(bob_id), Some("w5_bob".into()), tx_bob.clone());
+    state
+        .gateway_hub
+        .register_session(UserId(dave_id), Some("w5_dave".into()), tx_dave.clone());
+    state
+        .gateway_hub
+        .register_session(UserId(malloy_id), Some("w5_malloy".into()), tx_malloy.clone());
+    state
+        .gateway_hub
+        .register_session(UserId(eve_id), Some("w5_eve".into()), tx_eve.clone());
+
+    // 1a. WsClientFrame::Sync authz (C1-W4-01)
+    state.gateway_hub.handle_client_frame(
+        UserId(eve_id),
+        WsClientFrame::Sync(SyncGetDifferenceRequest::new(ChatId(chat_id), 0, 100)),
+        &tx_eve,
+    );
+    let eve_sync_frame = tokio::time::timeout(Duration::from_millis(80), rx_eve.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(eve_sync_frame, WsServerFrame::Error { code: 403, .. }),
+        "Non-member Eve Sync must fail with 403, got: {eve_sync_frame:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), rx_eve.recv())
+            .await
+            .is_err(),
+        "Eve must receive 0 SyncDiff frames"
+    );
+
+    state.gateway_hub.handle_client_frame(
+        UserId(bob_id),
+        WsClientFrame::Sync(SyncGetDifferenceRequest::new(ChatId(chat_id), 0, 100)),
+        &tx_bob,
+    );
+    let bob_sync_frame = tokio::time::timeout(Duration::from_millis(80), rx_bob.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(bob_sync_frame, WsServerFrame::Error { code: 403, .. }),
+        "Kicked Bob Sync must fail with 403, got: {bob_sync_frame:?}"
+    );
+
+    for missing_cid in [999_999i64, 0, -1] {
+        state.gateway_hub.handle_client_frame(
+            UserId(dave_id),
+            WsClientFrame::Sync(SyncGetDifferenceRequest::new(ChatId(missing_cid), 0, 100)),
+            &tx_dave,
+        );
+        let missing_frame = tokio::time::timeout(Duration::from_millis(80), rx_dave.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(missing_frame, WsServerFrame::Error { code: 404, .. }),
+            "Nonexistent chat {missing_cid} Sync must fail with 404, got: {missing_frame:?}"
+        );
+    }
+
+    state.gateway_hub.handle_client_frame(
+        UserId(dave_id),
+        WsClientFrame::Sync(SyncGetDifferenceRequest::new(ChatId(chat_id), 0, 100)),
+        &tx_dave,
+    );
+    let dave_sync_frame = tokio::time::timeout(Duration::from_millis(80), rx_dave.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let dave_sync_json = serde_json::to_string(&dave_sync_frame).unwrap();
+    assert!(
+        matches!(dave_sync_frame, WsServerFrame::SyncDiff(_))
+            && dave_sync_json.contains("TOP_SECRET_WS_SYNC_NEEDLE"),
+        "Active member Dave Sync must succeed with message needle, got: {dave_sync_frame:?}"
+    );
+
+    // 2. WsClientFrame::SendMessage & SendTyping restricted mute (C1-W4-02)
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    state
+        .db
+        .add_chat_member(&ChatMemberRecord {
+            chat_id: ChatId(chat_id),
+            user_id: UserId(malloy_id),
+            role: " ReStRiCtEd ".to_string(),
+            permissions_bitmask: 0,
+            admin_title: None,
+            admin_rights: 0,
+            banned_rights: 1,
+            until_date_ms: None,
+            joined_at_ms: now_ms,
+            invited_by: Some(UserId(alice_id)),
+            updated_at_ms: now_ms,
+        })
+        .unwrap();
+
+    // Restricted Malloy can still Sync (HTTP read parity)
+    state.gateway_hub.handle_client_frame(
+        UserId(malloy_id),
+        WsClientFrame::Sync(SyncGetDifferenceRequest::new(ChatId(chat_id), 0, 100)),
+        &tx_malloy,
+    );
+    let malloy_sync = tokio::time::timeout(Duration::from_millis(80), rx_malloy.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(malloy_sync, WsServerFrame::SyncDiff(_)));
+
+    while rx_alice.try_recv().is_ok() {}
+    while rx_dave.try_recv().is_ok() {}
+    let pts_before = state.db.get_current_pts(ChatId(chat_id)).unwrap();
+
+    state.gateway_hub.handle_client_frame(
+        UserId(malloy_id),
+        WsClientFrame::SendMessage(SendMessageRequest::new(
+            ChatId(chat_id),
+            888_777,
+            MessageContent::plain_text("RESTRICTED_MALLOY_WS_BYPASS"),
+        )),
+        &tx_malloy,
+    );
+    let malloy_send_err = tokio::time::timeout(Duration::from_millis(80), rx_malloy.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(malloy_send_err, WsServerFrame::Error { code: 403, .. }),
+        "Restricted Malloy WS SendMessage must fail with 403, got: {malloy_send_err:?}"
+    );
+    assert_eq!(
+        state.db.get_current_pts(ChatId(chat_id)).unwrap(),
+        pts_before,
+        "Rejected restricted WS SendMessage must not advance pts"
+    );
+    assert!(tokio::time::timeout(Duration::from_millis(40), rx_alice.recv()).await.is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(40), rx_dave.recv()).await.is_err());
+
+    state.gateway_hub.handle_client_frame(
+        UserId(malloy_id),
+        WsClientFrame::SendTyping(TypingEvent::new(
+            ChatId(chat_id),
+            UserId(malloy_id),
+            TypingAction::Typing,
+        )),
+        &tx_malloy,
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), rx_alice.recv())
+            .await
+            .is_err(),
+        "Restricted Malloy WS SendTyping must not reach Alice"
+    );
+
+    // Sibling parity while Malloy is restricted: hermes_im_bridge + HTTP polls_create
+    let bridge = state.hermes.platform_im_bridge().unwrap();
+    assert!(
+        bridge
+            .execute_im_tool(
+                "send_message",
+                &json!({ "chat_id": chat_id, "text": "RESTRICTED_HERMES_BYPASS" }),
+                PlatformImCaller {
+                    user_id: Some(malloy_id),
+                    chat_id: Some(chat_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err(),
+        "PlatformIm send_message must reject restricted Malloy"
+    );
+    assert!(
+        bridge
+            .execute_im_tool(
+                "create_poll",
+                &json!({ "chat_id": chat_id, "question": "Bypass?", "options": ["Y", "N"] }),
+                PlatformImCaller {
+                    user_id: Some(malloy_id),
+                    chat_id: Some(chat_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .is_err(),
+        "PlatformIm create_poll must reject restricted Malloy"
+    );
+    let malloy_poll_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{chat_id}/polls"))
+                .header(header::AUTHORIZATION, format!("Bearer {malloy_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "question": "Restricted Poll?", "options": ["A", "B"] }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(malloy_poll_res.status(), StatusCode::FORBIDDEN);
+
+    // 2b. Live TCP/WS Upgrade authz smoke check (handle_ws_socket_with_session_weak)
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv_app = app.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let srv_task = tokio::spawn(async move {
+            let _ = axum::serve(listener, srv_app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+        });
+
+        for bad_url in [
+            format!("ws://{addr}/api/v1/ws"),
+            format!("ws://{addr}/api/v1/ws?token=invalid_ws_token_xyz"),
+        ] {
+            let err = tokio_tungstenite::connect_async(&bad_url).await.unwrap_err();
+            match err {
+                tokio_tungstenite::tungstenite::Error::Http(resp) => {
+                    assert_eq!(resp.status().as_u16(), 401, "Expected 401 on {bad_url}");
+                }
+                other => panic!("Expected HTTP 401 on {bad_url}, got {other:?}"),
+            }
+        }
+
+        let (mut eve_live_ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/api/v1/ws?token={eve_tok}"))
+                .await
+                .unwrap();
+
+        let ping_txt = serde_json::to_string(&WsClientFrame::Ping { nonce: 77 }).unwrap();
+        eve_live_ws.send(WsMsg::Text(ping_txt.into())).await.unwrap();
+        let pong_msg = tokio::time::timeout(Duration::from_secs(2), eve_live_ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let pong_frame: WsServerFrame =
+            serde_json::from_str(pong_msg.to_text().unwrap()).unwrap();
+        assert!(matches!(pong_frame, WsServerFrame::Pong { nonce: 77 }));
+
+        eve_live_ws
+            .send(WsMsg::Text("{\"type\":\"NotARealFrame\"}".into()))
+            .await
+            .unwrap();
+        let bad_msg = tokio::time::timeout(Duration::from_secs(2), eve_live_ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let bad_frame: WsServerFrame =
+            serde_json::from_str(bad_msg.to_text().unwrap()).unwrap();
+        assert!(matches!(bad_frame, WsServerFrame::Error { code: 400, .. }));
+
+        let eve_sync_txt = serde_json::to_string(&WsClientFrame::Sync(
+            SyncGetDifferenceRequest::new(ChatId(chat_id), 0, 50),
+        ))
+        .unwrap();
+        eve_live_ws
+            .send(WsMsg::Text(eve_sync_txt.into()))
+            .await
+            .unwrap();
+        let eve_live_resp = tokio::time::timeout(Duration::from_secs(2), eve_live_ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let eve_live_frame: WsServerFrame =
+            serde_json::from_str(eve_live_resp.to_text().unwrap()).unwrap();
+        assert!(
+            matches!(eve_live_frame, WsServerFrame::Error { code: 403, .. }),
+            "Live WS Sync from non-member Eve must fail with 403: {eve_live_frame:?}"
+        );
+
+        let (mut malloy_live_ws, _) = tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/api/v1/ws?token={malloy_tok}"
+        ))
+        .await
+        .unwrap();
+        let malloy_send_txt = serde_json::to_string(&WsClientFrame::SendMessage(
+            SendMessageRequest::new(
+                ChatId(chat_id),
+                888_778,
+                MessageContent::plain_text("LIVE_WS_RESTRICTED_BYPASS"),
+            ),
+        ))
+        .unwrap();
+        malloy_live_ws
+            .send(WsMsg::Text(malloy_send_txt.into()))
+            .await
+            .unwrap();
+        let malloy_live_resp =
+            tokio::time::timeout(Duration::from_secs(2), malloy_live_ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        let malloy_live_frame: WsServerFrame =
+            serde_json::from_str(malloy_live_resp.to_text().unwrap()).unwrap();
+        assert!(
+            matches!(malloy_live_frame, WsServerFrame::Error { code: 403, .. }),
+            "Live WS SendMessage from restricted Malloy must fail with 403: {malloy_live_frame:?}"
+        );
+
+        drop(eve_live_ws);
+        drop(malloy_live_ws);
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), srv_task).await;
+    }
+
+    // Non-muted restricted Malloy (banned_rights = 2, bit 0 clear) CAN send
+    state
+        .db
+        .add_chat_member(&ChatMemberRecord {
+            chat_id: ChatId(chat_id),
+            user_id: UserId(malloy_id),
+            role: "restricted".to_string(),
+            permissions_bitmask: 0,
+            admin_title: None,
+            admin_rights: 0,
+            banned_rights: 2,
+            until_date_ms: None,
+            joined_at_ms: now_ms,
+            invited_by: Some(UserId(alice_id)),
+            updated_at_ms: now_ms,
+        })
+        .unwrap();
+    state.gateway_hub.handle_client_frame(
+        UserId(malloy_id),
+        WsClientFrame::SendMessage(SendMessageRequest::new(
+            ChatId(chat_id),
+            888_779,
+            MessageContent::plain_text("RESTRICTED_NON_MUTED_OK"),
+        )),
+        &tx_malloy,
+    );
+    let malloy_ok = tokio::time::timeout(Duration::from_millis(80), rx_malloy.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(malloy_ok, WsServerFrame::Ack { .. }));
+
+    // 3. Bidirectional DM block (chat_type 0 | 4) & Group (chat_type 2) isolation
+    let dm_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "peer_user_id": bob_id, "chat_type": 0 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dm_res.status(), StatusCode::CREATED);
+    let dm_cid = serde_json::from_slice::<Value>(
+        &to_bytes(dm_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    let bot_rec = state
+        .db
+        .create_registered_bot(
+            alice_id as i64,
+            "t5_w5_dm_bot",
+            "W5 DM Bot",
+            "Bot",
+            "Bot",
+            "Bot",
+            "",
+            "",
+            "[]",
+            false,
+            false,
+        )
+        .unwrap();
+    let bot_uid = bot_rec.bot_user_id as u64;
+    let (tx_bot, mut rx_bot) = mpsc::unbounded_channel();
+    state
+        .gateway_hub
+        .register_session(UserId(bot_uid), Some("w5_bot".into()), tx_bot.clone());
+
+    let bot_dm_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "peer_user_id": bot_uid, "chat_type": 4 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bot_dm_res.status(), StatusCode::CREATED);
+    let bot_dm_cid = serde_json::from_slice::<Value>(
+        &to_bytes(bot_dm_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    // Shared group (chat_type 2) with Alice and Bob must remain unaffected by DM block
+    let grp2_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "W5 Group Unblocked",
+                        "chat_type": 2,
+                        "member_ids": [bob_id]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(grp2_res.status(), StatusCode::CREATED);
+    let grp2_cid = serde_json::from_slice::<Value>(
+        &to_bytes(grp2_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    // Alice blocks Bob and Bot
+    for target in [bob_id, bot_uid] {
+        let blk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/users/{target}/block"))
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blk.status(), StatusCode::OK);
+    }
+
+    while rx_alice.try_recv().is_ok() {}
+    while rx_bob.try_recv().is_ok() {}
+    while rx_bot.try_recv().is_ok() {}
+
+    let dm_pts_before = state.db.get_current_pts(ChatId(dm_cid)).unwrap();
+    let bot_dm_pts_before = state.db.get_current_pts(ChatId(bot_dm_cid)).unwrap();
+
+    // Both Bob (blocked) and Alice (blocker) rejected on DM (0) and Bot DM (4)
+    for (uid, cid, nonce) in [
+        (bob_id, dm_cid, 9101u64),
+        (alice_id, dm_cid, 9102u64),
+        (bot_uid, bot_dm_cid, 9103u64),
+        (alice_id, bot_dm_cid, 9104u64),
+    ] {
+        let (tx, rx) = if uid == bob_id {
+            (&tx_bob, &mut rx_bob)
+        } else if uid == bot_uid {
+            (&tx_bot, &mut rx_bot)
+        } else {
+            (&tx_alice, &mut rx_alice)
+        };
+        state.gateway_hub.handle_client_frame(
+            UserId(uid),
+            WsClientFrame::SendMessage(SendMessageRequest::new(
+                ChatId(cid),
+                nonce,
+                MessageContent::plain_text("BLOCKED_DM_ATTEMPT"),
+            )),
+            tx,
+        );
+        let err_frame = tokio::time::timeout(Duration::from_millis(80), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                err_frame,
+                WsServerFrame::Error {
+                    code: 403,
+                    details: Some(ref d),
+                    ..
+                } if d == "user_is_blocked"
+            ),
+            "Blocked DM SendMessage for uid={uid} cid={cid} must fail with 403 user_is_blocked, got: {err_frame:?}"
+        );
+    }
+    assert_eq!(state.db.get_current_pts(ChatId(dm_cid)).unwrap(), dm_pts_before);
+    assert_eq!(
+        state.db.get_current_pts(ChatId(bot_dm_cid)).unwrap(),
+        bot_dm_pts_before
+    );
+    assert!(tokio::time::timeout(Duration::from_millis(40), rx_alice.recv()).await.is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(40), rx_bob.recv()).await.is_err());
+
+    // Blocked Bob SendTyping in DM dropped silently
+    state.gateway_hub.handle_client_frame(
+        UserId(bob_id),
+        WsClientFrame::SendTyping(TypingEvent::new(
+            ChatId(dm_cid),
+            UserId(bob_id),
+            TypingAction::Typing,
+        )),
+        &tx_bob,
+    );
+    assert!(tokio::time::timeout(Duration::from_millis(40), rx_alice.recv()).await.is_err());
+
+    // Sibling parity in blocked DM: hermes_im_bridge & HTTP polls_create
+    for uid in [bob_id, alice_id] {
+        assert!(
+            bridge
+                .execute_im_tool(
+                    "send_message",
+                    &json!({ "chat_id": dm_cid, "text": "blocked_im_msg" }),
+                    PlatformImCaller {
+                        user_id: Some(uid),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            bridge
+                .execute_im_tool(
+                    "create_poll",
+                    &json!({ "chat_id": dm_cid, "question": "Blocked?", "options": ["Y", "N"] }),
+                    PlatformImCaller {
+                        user_id: Some(uid),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_err()
+        );
+    }
+    for tok in [&bob_tok, &alice_tok] {
+        let p_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/chats/{dm_cid}/polls"))
+                    .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "question": "Blocked?", "options": ["Y", "N"] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(p_res.status(), StatusCode::FORBIDDEN);
+        let p_json: Value =
+            serde_json::from_slice(&to_bytes(p_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(p_json["error"].as_str(), Some("user_is_blocked"));
+    }
+
+    // Group chat (chat_type == 2) works normally while Bob is DM-blocked
+    state.gateway_hub.handle_client_frame(
+        UserId(bob_id),
+        WsClientFrame::SendMessage(SendMessageRequest::new(
+            ChatId(grp2_cid),
+            9201,
+            MessageContent::plain_text("GROUP_ALLOWED_WHILE_DM_BLOCKED"),
+        )),
+        &tx_bob,
+    );
+    let grp_ack = tokio::time::timeout(Duration::from_millis(80), rx_bob.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(grp_ack, WsServerFrame::Ack { .. }));
+
+    let grp_poll_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{grp2_cid}/polls"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "question": "Group Poll?", "options": ["1", "2"] }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(grp_poll_ok.status(), StatusCode::CREATED);
+
+    // 4. Call invite block parity (Wave 6: HTTP POST /api/v1/calls/invite + WS CallSignal invite)
+    while rx_alice.try_recv().is_ok() {}
+    while rx_bob.try_recv().is_ok() {}
+    for (caller_tok, callee_id) in [(&bob_tok, alice_id), (&alice_tok, bob_id)] {
+        let inv_blk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/calls/invite")
+                    .header(header::AUTHORIZATION, format!("Bearer {caller_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "callee_id": callee_id, "is_video": false }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            inv_blk.status(),
+            StatusCode::FORBIDDEN,
+            "Blocked HTTP calls/invite must return 403"
+        );
+        let inv_json: Value =
+            serde_json::from_slice(&to_bytes(inv_blk.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(inv_json["error"].as_str(), Some("user_is_blocked"));
+    }
+
+    state.gateway_hub.handle_client_frame(
+        UserId(bob_id),
+        WsClientFrame::CallSignal {
+            call_id: "ws_blocked_call_1".into(),
+            signal_type: "invite".into(),
+            target_user_id: Some(alice_id),
+            sdp: None,
+            candidate: None,
+            sdp_mid: None,
+            sdp_mline_index: None,
+        },
+        &tx_bob,
+    );
+    let ws_call_err = tokio::time::timeout(Duration::from_millis(80), rx_bob.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            ws_call_err,
+            WsServerFrame::Error {
+                code: 403,
+                details: Some(ref d),
+                ..
+            } if d == "user_is_blocked"
+        ),
+        "Blocked WS CallSignal invite must return 403 user_is_blocked, got: {ws_call_err:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), rx_alice.recv())
+            .await
+            .is_err(),
+        "Alice must receive 0 CallUpdated frames from blocked Bob"
+    );
+
+    // 5. Unblock Bob -> DM messaging & call invite succeed immediately
+    let unblk = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/users/{bob_id}/block"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unblk.status(), StatusCode::OK);
+
+    state.gateway_hub.handle_client_frame(
+        UserId(bob_id),
+        WsClientFrame::SendMessage(SendMessageRequest::new(
+            ChatId(dm_cid),
+            9301,
+            MessageContent::plain_text("DM_OK_AFTER_UNBLOCK"),
+        )),
+        &tx_bob,
+    );
+    let dm_ack = tokio::time::timeout(Duration::from_millis(80), rx_bob.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(dm_ack, WsServerFrame::Ack { .. }));
+    let alice_push = tokio::time::timeout(Duration::from_millis(80), rx_alice.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(alice_push, WsServerFrame::PtsPush(_)));
+
+    let inv_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/calls/invite")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "callee_id": alice_id, "is_video": false }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inv_ok.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn tier5_pins_delete_revoke_and_ghost_cleanup() {
+    let (_dir, state, app) = open_ephemeral_server();
+    let (_alice_id, alice_tok) = register_user(&app, "pins_alice").await;
+    let (bob_id, bob_tok) = register_user(&app, "pins_bob").await;
+    let (_eve_id, eve_tok) = register_user(&app, "pins_eve").await;
+
+    // 1. Alice creates a group chat with Bob
+    let chat_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "Pins Delete Cleanup Group",
+                        "chat_type": 2,
+                        "member_ids": [bob_id]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat_res.status(), StatusCode::CREATED);
+    let cid = serde_json::from_slice::<Value>(
+        &to_bytes(chat_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    // 2. Post m1, m2, m3 and pin all three
+    let mut mids = Vec::new();
+    for (idx, text) in [
+        "KEEP_PIN_1",
+        "DELETED_PIN_REVOKED_SECRET_999",
+        "DELETED_PIN_LOCAL_SECRET_888",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let send_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/chats/{cid}/messages"))
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "text": text, "client_nonce": 8100 + idx as i64 }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(send_res.status(), StatusCode::CREATED);
+        let mid = serde_json::from_slice::<Value>(
+            &to_bytes(send_res.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap()["message_id"]
+            .as_i64()
+            .unwrap();
+        let pin_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/chats/{cid}/pins"))
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "message_id": mid }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pin_res.status(), StatusCode::OK);
+        mids.push(mid);
+    }
+    let (m1, m2, m3) = (mids[0], mids[1], mids[2]);
+
+    // 3. Outsider Eve gets 403; member Bob gets [m3, m2, m1] and chats/{cid}.pinned_message_id == m3
+    let eve_pins = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eve_pins.status(), StatusCode::FORBIDDEN);
+
+    let bob_pins_1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_pins_1.status(), StatusCode::OK);
+    let bob_pins_1_json: Value = serde_json::from_slice(
+        &to_bytes(bob_pins_1.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bob_pins_1_json["pinned_message_ids"], json!([m3, m2, m1]));
+
+    let chat_1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat_1.status(), StatusCode::OK);
+    let chat_1_json: Value = serde_json::from_slice(
+        &to_bytes(chat_1.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(chat_1_json["pinned_message_id"].as_i64(), Some(m3));
+
+    // 4. Revoked delete (?revoke=true) on m2 removes pin and plaintext leak
+    let del_m2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/chats/{cid}/messages/{m2}?revoke=true"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_m2.status(), StatusCode::OK);
+
+    let bob_pins_2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_pins_2.status(), StatusCode::OK);
+    let bob_pins_2_bytes = to_bytes(bob_pins_2.into_body(), usize::MAX).await.unwrap();
+    let bob_pins_2_txt = String::from_utf8_lossy(&bob_pins_2_bytes).to_string();
+    assert!(!bob_pins_2_txt.contains("DELETED_PIN_REVOKED_SECRET_999"));
+    let bob_pins_2_json: Value = serde_json::from_slice(&bob_pins_2_bytes).unwrap();
+    assert_eq!(bob_pins_2_json["pinned_message_ids"], json!([m3, m1]));
+    assert_eq!(bob_pins_2_json["pins"].as_array().unwrap().len(), 2);
+    assert_eq!(state.db.list_pinned_messages(ChatId(cid)).unwrap(), vec![m3, m1]);
+
+    // 5. Non-revoked delete (?revoke=false) on latest pin m3 removes pin and updates pinned_message_id -> m1
+    let del_m3 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/chats/{cid}/messages/{m3}?revoke=false"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_m3.status(), StatusCode::OK);
+
+    let bob_pins_3 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_pins_3.status(), StatusCode::OK);
+    let bob_pins_3_bytes = to_bytes(bob_pins_3.into_body(), usize::MAX).await.unwrap();
+    let bob_pins_3_txt = String::from_utf8_lossy(&bob_pins_3_bytes).to_string();
+    assert!(!bob_pins_3_txt.contains("DELETED_PIN_LOCAL_SECRET_888"));
+    let bob_pins_3_json: Value = serde_json::from_slice(&bob_pins_3_bytes).unwrap();
+    assert_eq!(bob_pins_3_json["pinned_message_ids"], json!([m1]));
+
+    let chat_2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat_2.status(), StatusCode::OK);
+    let chat_2_json: Value = serde_json::from_slice(
+        &to_bytes(chat_2.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(chat_2_json["pinned_message_id"].as_i64(), Some(m1));
+
+    // 6. Delete final remaining pin m1 via POST /api/v1/messages/delete -> pinned_message_id -> null
+    let del_m1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/messages/delete")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "chat_id": cid, "message_ids": [m1], "revoke": true }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del_m1.status(), StatusCode::OK);
+
+    let bob_pins_4 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_pins_4.status(), StatusCode::OK);
+    let bob_pins_4_json: Value = serde_json::from_slice(
+        &to_bytes(bob_pins_4.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bob_pins_4_json["pinned_message_ids"], json!([]));
+    assert_eq!(bob_pins_4_json["pins"], json!([]));
+
+    let chat_3 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat_3.status(), StatusCode::OK);
+    let chat_3_json: Value = serde_json::from_slice(
+        &to_bytes(chat_3.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert!(chat_3_json["pinned_message_id"].is_null());
+
+    // 7. Re-pinning deleted message m2 is rejected
+    let repin_m2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "message_id": m2 }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(repin_m2.status(), StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST),
+        "Re-pinning deleted message must fail with 404/400, got {}",
+        repin_m2.status()
+    );
+
+    // 8. Defense-in-depth ghost pin DB check: synthetic pinned_messages row pointing to soft-deleted m4
+    let send_m4 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{cid}/messages"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "text": "GHOST_DB_PIN_SECRET", "client_nonce": 8199 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(send_m4.status(), StatusCode::CREATED);
+    let m4 = serde_json::from_slice::<Value>(
+        &to_bytes(send_m4.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["message_id"]
+        .as_i64()
+        .unwrap();
+    let pin_m4 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "message_id": m4 }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pin_m4.status(), StatusCode::OK);
+
+    state
+        .db
+        .pool()
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE messages SET deleted_at_ms = 999 WHERE chat_id = ?1 AND message_id = ?2",
+                rusqlite::params![cid, m4],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let bob_pins_ghost = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/chats/{cid}/pins"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_pins_ghost.status(), StatusCode::OK);
+    let bob_pins_ghost_bytes = to_bytes(bob_pins_ghost.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let bob_pins_ghost_txt = String::from_utf8_lossy(&bob_pins_ghost_bytes).to_string();
+    assert!(!bob_pins_ghost_txt.contains("GHOST_DB_PIN_SECRET"));
+    let bob_pins_ghost_json: Value = serde_json::from_slice(&bob_pins_ghost_bytes).unwrap();
+    assert_eq!(bob_pins_ghost_json["pinned_message_ids"], json!([]));
+    assert!(state.db.list_pinned_messages(ChatId(cid)).unwrap().is_empty());
+}

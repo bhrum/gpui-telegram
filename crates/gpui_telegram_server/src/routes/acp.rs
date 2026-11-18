@@ -264,11 +264,17 @@ pub async fn computer_lease_emergency_takeover(auth: AuthBearer, State(state): S
 }
 
 pub async fn talk_session_create(auth: AuthBearer, State(state): State<Arc<AppState>>, Json(_payload): Json<Value>) -> Response {
-    let mut coord = state.talk_coordinator.write();
-    coord.session_id = format!("talk_{}_{}", auth.user_id.0, Uuid::new_v4().simple());
-    coord.state = gpui_telegram_agent::TalkSessionState::Listening;
-    let _ = state.db.upsert_talk_session(&coord.session_id, auth.user_id.0, "listening", &json!([]), Utc::now().timestamp_millis());
+    let sid = format!("talk_{}_{}", auth.user_id.0, Uuid::new_v4().simple());
+    let (talk_state, generation, signal_seq) = {
+        let mut sessions = state.talk_sessions.write();
+        let coord = sessions.entry(sid.clone()).or_insert_with(gpui_telegram_agent::TalkCoordinator::new);
+        coord.session_id = sid.clone();
+        coord.state = gpui_telegram_agent::TalkSessionState::Listening;
+        (coord.state, coord.generation, coord.signal_seq)
+    };
+    state.user_active_talk_sessions.write().insert(auth.user_id, sid.clone());
+    let _ = state.db.upsert_talk_session(&sid, auth.user_id.0, "listening", &json!([]), Utc::now().timestamp_millis());
     (StatusCode::CREATED, Json(json!({
-        "session_id": coord.session_id, "state": coord.state, "generation": coord.generation, "signal_seq": coord.signal_seq,
+        "session_id": sid, "state": talk_state, "generation": generation, "signal_seq": signal_seq,
     }))).into_response()
 }

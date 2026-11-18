@@ -209,8 +209,33 @@ pub fn delete_messages_tx(db: &ServerDatabase, chat_id: ChatId, message_ids: Vec
     let now_ms = chrono::Utc::now().timestamp_millis();
     db.pool().with_transaction(|tx| {
         for &id in &message_ids {
-            tx.execute("UPDATE messages SET deleted_at_ms = ?1 WHERE chat_id = ?2 AND message_id = ?3 AND deleted_at_ms IS NULL",
-                params![now_ms, chat_id.0, id.0]).map_err(|e| TelegramError::Database(e.to_string()))?;
+            tx.execute(
+                "UPDATE messages SET deleted_at_ms = ?1 WHERE chat_id = ?2 AND message_id = ?3 AND deleted_at_ms IS NULL",
+                params![now_ms, chat_id.0, id.0],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM pinned_messages WHERE chat_id = ?1 AND message_id = ?2",
+                params![chat_id.0, id.0],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+        }
+        if !message_ids.is_empty() {
+            tx.execute(
+                "UPDATE chats
+                 SET pinned_message_id = (
+                     SELECT pm.message_id
+                     FROM pinned_messages pm
+                     JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
+                     WHERE pm.chat_id = ?1 AND m.deleted_at_ms IS NULL
+                     ORDER BY pm.pinned_at_ms DESC, pm.message_id DESC
+                     LIMIT 1
+                 ),
+                 updated_at_ms = ?2
+                 WHERE chat_id = ?1",
+                params![chat_id.0, now_ms],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
         }
         let tombstone = DeleteTombstone::new(PeerId::Chat(chat_id), message_ids, for_everyone);
         let ev = UpdateEvent::DeleteMessages(tombstone);

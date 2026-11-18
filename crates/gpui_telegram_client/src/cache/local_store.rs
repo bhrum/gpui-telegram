@@ -272,6 +272,9 @@ impl LocalStore {
             if let Some(list) = guard.messages.get_mut(&chat_id) {
                 list.retain(|m| !message_ids.contains(&m.id));
             }
+            if let Some(pins) = guard.pinned_ids.get_mut(&chat_id) {
+                pins.retain(|id| !message_ids.contains(id));
+            }
             for &id in message_ids {
                 guard.message_reactions.remove(&(chat_id, id));
             }

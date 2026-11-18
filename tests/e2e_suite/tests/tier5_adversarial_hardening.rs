@@ -1466,3 +1466,2905 @@ async fn test_tier5_bot_takeover_and_acp_cron_isolation() {
     assert_eq!(alice_get_json["result"]["success"].as_bool(), Some(true));
     assert_eq!(alice_get_json["result"]["structured"]["enabled"].as_bool(), Some(true));
 }
+
+#[tokio::test]
+async fn test_tier5_wave5_wave6_bot_computer_miniapp_talk_and_isolation() {
+    use gpui_telegram_agent::computer::{AgentCloudServerConfigInput, ComputerCloudProvider};
+    use gpui_telegram_agent::hermes::memory::MemoryTarget;
+    use gpui_telegram_agent::hermes::skills::CreateSkillRequest;
+    use gpui_telegram_agent::hermes::HermesEngine;
+    use gpui_telegram_agent::SlashCommandParser;
+    use std::collections::HashSet;
+    use std::sync::atomic::AtomicBool;
+
+    let dir = TempDir::new().unwrap();
+    let db = Arc::new(ServerDatabase::open(dir.path().join("wave5_6_hardening.db")).unwrap());
+    let mut cfg = ServerConfig::default();
+    cfg.media_storage_path = dir.path().join("media").display().to_string();
+    let state = Arc::new(AppState::with_db(cfg, db.clone()));
+    let app = build_router_with_state(state.clone());
+
+    let reg = |uname: &str| {
+        let app_c = app.clone();
+        let u = uname.to_string();
+        async move {
+            let res = app_c
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/auth/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "username": u,
+                                "password": "Password123!",
+                                "first_name": u
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::CREATED);
+            let v: Value =
+                serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            (
+                v["user_id"].as_u64().unwrap(),
+                v["token"].as_str().unwrap().to_string(),
+            )
+        }
+    };
+
+    let (alice_id, alice_tok) = reg("w56_alice").await;
+    let (bob_id, bob_tok) = reg("w56_bob").await;
+
+    // Seed Alice private Fabushi bot + secret SOUL.md + secret skill + private vault + shared chat
+    let vault_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "W56 Alice Vault", "chat_type": 2 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(vault_res.status(), StatusCode::CREATED);
+    let vault_id = serde_json::from_slice::<Value>(
+        &to_bytes(vault_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    let bob_chat_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "W56 Bob Private", "chat_type": 2 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_chat_res.status(), StatusCode::CREATED);
+    let bob_chat_id = serde_json::from_slice::<Value>(
+        &to_bytes(bob_chat_res.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    let create_bot_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/fabushi-bots")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "display_name": "Alice W56 Bot",
+                        "username": "alice_w56_bot",
+                        "description": "Private W56 bot"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_bot_res.status(), StatusCode::CREATED);
+    let create_bot_json: Value = serde_json::from_slice(
+        &to_bytes(create_bot_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let alice_bot_id = create_bot_json["bot"]["bot_user_id"].as_u64().unwrap();
+    let alice_bot_un = create_bot_json["registry"]["username"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let put_soul = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/hermes/soul")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_id": alice_bot_id,
+                        "persona_name": "AlicePrivateSoul",
+                        "content": "# AlicePrivateSoul\nALICE_W56_PRIVATE_SOUL_SECRET"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_soul.status(), StatusCode::OK);
+
+    let create_skill = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/hermes/skills?bot_id={alice_bot_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "alice-secret-skill",
+                        "description": "Private skill",
+                        "content": "ALICE_W56_SECRET_SKILL_BODY"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_skill.status(), StatusCode::CREATED);
+
+    let shared_chat_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "W56 Shared Bot Chat",
+                        "chat_type": 2,
+                        "member_ids": [bob_id, alice_bot_id]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shared_chat_res.status(), StatusCode::CREATED);
+    let shared_cid = serde_json::from_slice::<Value>(
+        &to_bytes(shared_chat_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    // Seed an unowned non-official bot (owner_user_id = 0)
+    let unowned_bot = db
+        .create_registered_bot(
+            0,
+            "unowned_w56_bot",
+            "Unowned Bot",
+            "Shared utility",
+            "Shared utility",
+            "",
+            "",
+            "",
+            "[]",
+            false,
+            false,
+        )
+        .unwrap();
+    let unowned_bot_id = unowned_bot.bot_user_id as u64;
+
+    // ------------------------------------------------------------------------
+    // 1. bot_computer_{get,put}, computers/cloud bind_bot_id, ComputerControlService, unowned isolation
+    // ------------------------------------------------------------------------
+    for target_bid in [alice_bot_id, 777_000u64] {
+        let g = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/bots/{target_bid}/computer"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(g.status(), StatusCode::FORBIDDEN);
+        let g_body =
+            String::from_utf8_lossy(&to_bytes(g.into_body(), usize::MAX).await.unwrap())
+                .to_string();
+        assert!(!g_body.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+        let p = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/bots/{target_bid}/computer"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "persona_prompt": "BOB_HIJACKED_PERSONA",
+                            "preferred_model": "bob-evil-model"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(p.status(), StatusCode::FORBIDDEN);
+        assert!(db
+            .get_bot_computer_profile(bob_id, target_bid)
+            .unwrap()
+            .is_none());
+
+        let cloud_bind = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/computers/cloud")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "display_name": "Bob Evil Node",
+                            "host": "127.0.0.1",
+                            "port": 22,
+                            "username": "root",
+                            "auth_method": "agent_http_token",
+                            "secret": "tok",
+                            "verify_connection": false,
+                            "bind_bot_id": target_bid
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cloud_bind.status(), StatusCode::FORBIDDEN);
+        assert!(db
+            .get_bot_computer_profile(bob_id, target_bid)
+            .unwrap()
+            .is_none());
+
+        let svc_bind_err = ComputerCloudProvider::bind_bot_computer(
+            state.computers.as_ref(),
+            bob_id,
+            target_bid,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(svc_bind_err, TelegramError::PermissionDenied(_)));
+
+        let svc_cfg_err = ComputerCloudProvider::configure_cloud_server(
+            state.computers.as_ref(),
+            bob_id,
+            Some(target_bid),
+            AgentCloudServerConfigInput {
+                display_name: "SvcHijack".into(),
+                host: "127.0.0.1".into(),
+                bind_to_bot: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(svc_cfg_err, TelegramError::PermissionDenied(_)));
+    }
+
+    // Unowned bot per-user bot_computer_configs isolation (no global leak/mutation)
+    let alice_unowned_put = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/bots/{unowned_bot_id}/computer"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "persona_prompt": "ALICE_UNOWNED_PERSONA",
+                        "preferred_model": "alice-unowned-model"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alice_unowned_put.status(), StatusCode::OK);
+
+    let bob_unowned_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/bots/{unowned_bot_id}/computer"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_unowned_get.status(), StatusCode::OK);
+    let bob_unowned_body = String::from_utf8_lossy(
+        &to_bytes(bob_unowned_get.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!bob_unowned_body.contains("ALICE_UNOWNED_PERSONA"));
+    assert!(!bob_unowned_body.contains("alice-unowned-model"));
+    assert!(db
+        .get_bot_by_user_id(unowned_bot_id as i64)
+        .unwrap()
+        .unwrap()
+        .ai_persona
+        .is_empty());
+
+    // ------------------------------------------------------------------------
+    // 2. fabushi-bots/*, bots_public_profile, miniapps_action (ai_copilot + ad-hoc "app")
+    // ------------------------------------------------------------------------
+    let fb_list_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/fabushi-bots")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fb_list_bob.status(), StatusCode::OK);
+    let fb_list_body = String::from_utf8_lossy(
+        &to_bytes(fb_list_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!fb_list_body.contains(&alice_bot_id.to_string()));
+    assert!(!fb_list_body.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+    let fb_get_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/fabushi-bots/{alice_bot_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fb_get_bob.status(), StatusCode::FORBIDDEN);
+
+    for patch_bid in [alice_bot_id, 777_000u64, unowned_bot_id] {
+        let fb_patch_bob = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/fabushi-bots/{patch_bid}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "display_name": "BOB_HIJACKED_BOT" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fb_patch_bob.status(),
+            StatusCode::FORBIDDEN,
+            "Bob PATCH /fabushi-bots/{patch_bid} must return 403"
+        );
+    }
+
+    // bots_public_profile redacts ai_persona for non-owners of non-official bots
+    let pub_prof_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/bots/profile/{alice_bot_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_prof_bob.status(), StatusCode::OK);
+    let pub_prof_bob_json: Value = serde_json::from_slice(
+        &to_bytes(pub_prof_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pub_prof_bob_json["bot"]["ai_persona"].as_str(), Some(""));
+
+    let pub_prof_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/bots/profile/{alice_bot_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_prof_alice.status(), StatusCode::OK);
+    let pub_prof_alice_json: Value = serde_json::from_slice(
+        &to_bytes(pub_prof_alice.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(pub_prof_alice_json["bot"]["ai_persona"]
+        .as_str()
+        .unwrap()
+        .contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+    // Wave 6: miniapps_action ai_copilot + ad-hoc "app" on Alice's private bot must be blocked
+    // and must NOT leak SOUL or persist an ad-hoc MiniApp row
+    let adhoc_launch_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/app/launch"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "launch_mode": "DirectLink" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(adhoc_launch_bob.status(), StatusCode::NOT_FOUND);
+    assert!(db
+        .list_mini_apps_for_bot(alice_bot_id as i64)
+        .unwrap()
+        .is_empty());
+
+    // Wave 7 (Probe 1d-side): launch with custom_url on Alice's unconfigured private bot
+    // must be rejected (403), leak zero ai_persona, and persist zero ADHOC_WEBAPP_CATEGORY rows
+    let adhoc_custom_launch_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/app/launch"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "launch_mode": "DirectLink",
+                        "custom_url": "https://attacker.example/app"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(adhoc_custom_launch_bob.status(), StatusCode::FORBIDDEN);
+    let adhoc_custom_body = String::from_utf8_lossy(
+        &to_bytes(adhoc_custom_launch_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!adhoc_custom_body.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+    assert!(
+        db.list_mini_apps_for_bot(alice_bot_id as i64)
+            .unwrap()
+            .is_empty(),
+        "Non-owner ad-hoc /launch with custom_url must not persist MiniApp rows on unconfigured private bot"
+    );
+
+    let adhoc_copilot_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/app/action"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "action_type": "ai_copilot",
+                        "prompt": "/tools list"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            adhoc_copilot_bob.status(),
+            StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ),
+        "Bob calling ad-hoc miniapps/{alice_bot_un}/app/action ai_copilot must fail with 403/404, got {}",
+        adhoc_copilot_bob.status()
+    );
+    let adhoc_body = String::from_utf8_lossy(
+        &to_bytes(adhoc_copilot_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!adhoc_body.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+    assert!(
+        db.list_mini_apps_for_bot(alice_bot_id as i64)
+            .unwrap()
+            .is_empty(),
+        "Rejected ad-hoc miniapps_action must not persist MiniApp rows on Alice's bot"
+    );
+
+    // Published MiniApp chat-delivery guard & ai_copilot companion/shared-chat gate
+    let create_app = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_username": alice_bot_un,
+                        "short_name": "w56app",
+                        "title": "W56 App",
+                        "description": "Test app"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(create_app.status().is_success());
+
+    // Wave 7: Launching a published MiniApp as non-owner redacts companion_bot.ai_persona,
+    // while owner launch still receives ai_persona
+    let pub_launch_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/launch"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "launch_mode": "DirectLink" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_launch_bob.status(), StatusCode::OK);
+    let pub_launch_bob_json: Value = serde_json::from_slice(
+        &to_bytes(pub_launch_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        pub_launch_bob_json["companion_bot"]["ai_persona"].as_str(),
+        Some(""),
+        "Non-owner /launch must redact companion_bot.ai_persona"
+    );
+
+    let pub_launch_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/launch"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "launch_mode": "DirectLink" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_launch_alice.status(), StatusCode::OK);
+    let pub_launch_alice_json: Value = serde_json::from_slice(
+        &to_bytes(pub_launch_alice.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(pub_launch_alice_json["companion_bot"]["ai_persona"]
+        .as_str()
+        .unwrap()
+        .contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+    // Non-owner Bob calling ai_copilot on published app WITHOUT installing or sharing a chat -> 403
+    let pub_copilot_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/action"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "action_type": "ai_copilot",
+                        "prompt": "summarize"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pub_copilot_denied.status(), StatusCode::FORBIDDEN);
+
+    let app_submit_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/action"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "action_type": "submit",
+                        "data": "hi",
+                        "chat_id": bob_chat_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(app_submit_bob.status(), StatusCode::OK);
+    let submit_json: Value = serde_json::from_slice(
+        &to_bytes(app_submit_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(submit_json["companion_chat_id"].as_i64(), Some(bob_chat_id));
+    assert_ne!(submit_json["companion_chat_id"].as_i64(), Some(vault_id));
+
+    // Wave 8: GET /api/v1/search?category=bots, GET /api/v1/bots/attach-menu, and
+    // POST /api/v1/miniapps/{bot}/{short}/install must redact ai_persona for non-owner Bob
+    // while retaining full ai_persona for owner Alice.
+    let search_bots_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/search?category=bots&q={alice_bot_un}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search_bots_bob.status(), StatusCode::OK);
+    let search_bob_bytes = to_bytes(search_bots_bob.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let search_bob_text = String::from_utf8_lossy(&search_bob_bytes).to_string();
+    assert!(!search_bob_text.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+    let search_bob_json: Value = serde_json::from_slice(&search_bob_bytes).unwrap();
+    let bob_found_bot = search_bob_json["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["username"].as_str() == Some(alice_bot_un.as_str()))
+        .expect("Bob search should find alice_bot_un in bots list");
+    assert_eq!(
+        bob_found_bot["ai_persona"].as_str(),
+        Some(""),
+        "Non-owner GET /search must redact ai_persona"
+    );
+
+    let search_bots_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/search?category=bots&q={alice_bot_un}"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search_bots_alice.status(), StatusCode::OK);
+    let search_alice_json: Value = serde_json::from_slice(
+        &to_bytes(search_bots_alice.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let alice_found_bot = search_alice_json["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["username"].as_str() == Some(alice_bot_un.as_str()))
+        .expect("Alice search should find alice_bot_un in bots list");
+    assert!(alice_found_bot["ai_persona"]
+        .as_str()
+        .unwrap()
+        .contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+    let attach_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/bots/attach-menu")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(attach_bob.status(), StatusCode::OK);
+    let attach_bob_bytes = to_bytes(attach_bob.into_body(), usize::MAX).await.unwrap();
+    let attach_bob_text = String::from_utf8_lossy(&attach_bob_bytes).to_string();
+    assert!(!attach_bob_text.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+    let attach_bob_json: Value = serde_json::from_slice(&attach_bob_bytes).unwrap();
+    let bob_attach_bot = attach_bob_json["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["username"].as_str() == Some(alice_bot_un.as_str()))
+        .expect("Bob attach-menu should include bot with published app");
+    assert_eq!(
+        bob_attach_bot["ai_persona"].as_str(),
+        Some(""),
+        "Non-owner GET /bots/attach-menu must redact ai_persona"
+    );
+
+    let install_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/install"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "allow_write_access": true }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(install_bob.status(), StatusCode::OK);
+    let install_bob_bytes = to_bytes(install_bob.into_body(), usize::MAX).await.unwrap();
+    let install_bob_text = String::from_utf8_lossy(&install_bob_bytes).to_string();
+    assert!(!install_bob_text.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+    let install_bob_json: Value = serde_json::from_slice(&install_bob_bytes).unwrap();
+    assert_eq!(
+        install_bob_json["companion_bot"]["ai_persona"].as_str(),
+        Some(""),
+        "Non-owner /install must redact companion_bot.ai_persona"
+    );
+
+    let install_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/miniapps/{alice_bot_un}/w56app/install"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "allow_write_access": true }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(install_alice.status(), StatusCode::OK);
+    let install_alice_json: Value = serde_json::from_slice(
+        &to_bytes(install_alice.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(install_alice_json["companion_bot"]["ai_persona"]
+        .as_str()
+        .unwrap()
+        .contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+
+    // Wave 8: Non-owner launching an ad-hoc MiniApp on a non-official bot configured with an
+    // external menu_button_url and passing custom_url MUST NOT overwrite mini_apps.web_url in SQLite.
+    let create_menu_bot = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bots")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": "alice_menu_w8_bot",
+                        "display_name": "Alice Menu W8 Bot",
+                        "description": "External menu bot",
+                        "about": "External menu bot",
+                        "ai_persona": "ALICE_MENU_W8_PRIVATE_SOUL",
+                        "menu_button_text": "Open Menu",
+                        "menu_button_url": "https://alice-menu.example/start"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_menu_bot.status(), StatusCode::CREATED);
+    let create_menu_bot_json: Value = serde_json::from_slice(
+        &to_bytes(create_menu_bot.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let menu_bot_id = create_menu_bot_json["bot"]["bot_user_id"].as_i64().unwrap();
+
+    for attacker_url in [
+        "https://attacker.example/override",
+        "https://attacker.example/override2",
+    ] {
+        let menu_launch_bob = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/miniapps/alice_menu_w8_bot/app/launch")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "launch_mode": "DirectLink",
+                            "custom_url": attacker_url
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(menu_launch_bob.status(), StatusCode::OK);
+        let menu_launch_bob_json: Value = serde_json::from_slice(
+            &to_bytes(menu_launch_bob.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            menu_launch_bob_json["companion_bot"]["ai_persona"].as_str(),
+            Some(""),
+            "Non-owner ad-hoc /launch must redact companion_bot.ai_persona"
+        );
+        let persisted_apps = db.list_mini_apps_for_bot(menu_bot_id).unwrap();
+        assert_eq!(persisted_apps.len(), 1);
+        assert_eq!(
+            persisted_apps[0].web_url, "https://alice-menu.example/start",
+            "Non-owner custom_url must never overwrite mini_apps.web_url in SQLite"
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // 3. /api/v1/hermes/talk/turn, /api/v1/talk/{session,barge_in,audio}, and /tools command gating
+    // ------------------------------------------------------------------------
+    for cmd_str in [
+        "/tools",
+        "/tools list",
+        "/tools preset minimal",
+        "  /Tools@alice_w56_bot enable web",
+    ] {
+        assert!(
+            SlashCommandParser::is_bot_config_command(cmd_str),
+            "Expected is_bot_config_command == true for {cmd_str}"
+        );
+    }
+
+    let sig_seq_before = state.talk_coordinator.read().signal_seq;
+    for bot_val in [json!(alice_bot_id), json!(format!("bot_{alice_bot_id}"))] {
+        for cid_val in [Value::Null, json!(bob_chat_id)] {
+            for txt in ["hello", "/tools list", "/memory view", "/soul set PWN"] {
+                let r = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/api/v1/hermes/talk/turn")
+                            .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(
+                                json!({
+                                    "bot_id": bot_val,
+                                    "chat_id": cid_val,
+                                    "transcript": txt
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(r.status(), StatusCode::FORBIDDEN);
+                let body_s = String::from_utf8_lossy(
+                    &to_bytes(r.into_body(), usize::MAX).await.unwrap(),
+                )
+                .to_string();
+                assert!(!body_s.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+            }
+        }
+    }
+    assert_eq!(
+        state.talk_coordinator.read().signal_seq,
+        sig_seq_before,
+        "Rejected talk/turn calls must not mutate talk_coordinator.signal_seq"
+    );
+
+    // /tools list & /tools preset minimal in shared_cid blocked across all 5 endpoints
+    for tools_cmd in ["/tools list", "/tools preset minimal"] {
+        let r_cmd = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/command")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bot_id": alice_bot_id,
+                            "chat_id": shared_cid,
+                            "command": tools_cmd
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_cmd.status(), StatusCode::FORBIDDEN);
+
+        let r_turns = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/turns")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bot_id": alice_bot_id,
+                            "chat_id": shared_cid,
+                            "prompt": tools_cmd
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_turns.status(), StatusCode::FORBIDDEN);
+
+        let r_talk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/talk/turn")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "bot_id": alice_bot_id,
+                            "chat_id": shared_cid,
+                            "transcript": tools_cmd
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_talk.status(), StatusCode::FORBIDDEN);
+
+        for acp_body in [
+            json!({
+                "jsonrpc": "2.0", "id": 101, "method": "command/execute",
+                "params": { "bot_id": alice_bot_id, "chat_id": shared_cid, "command": tools_cmd }
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 102, "method": "session/prompt",
+                "params": { "bot_id": alice_bot_id, "chat_id": shared_cid, "prompt": tools_cmd }
+            }),
+        ] {
+            let r_acp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/hermes/acp")
+                        .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(acp_body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r_acp.status(), StatusCode::FORBIDDEN);
+        }
+    }
+
+    // Normal talk/turn in shared_cid succeeds; reusing that session_id with mismatched chat_id fails
+    let shared_talk_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_id": alice_bot_id,
+                        "chat_id": shared_cid,
+                        "transcript": "Hello voice bot"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shared_talk_ok.status(), StatusCode::OK);
+    let shared_talk_sid = serde_json::from_slice::<Value>(
+        &to_bytes(shared_talk_ok.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let talk_mismatch_cid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_id": alice_bot_id,
+                        "chat_id": bob_chat_id,
+                        "session_id": shared_talk_sid,
+                        "transcript": "Cross-chat reuse"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(talk_mismatch_cid.status(), StatusCode::FORBIDDEN);
+
+    // Alice talk/turn on alice_bot_id persists to FabushiBot's isolated store, NOT state.hermes
+    let alice_talk = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_id": alice_bot_id,
+                        "transcript": "Alice bot voice ping"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alice_talk.status(), StatusCode::OK);
+    let alice_talk_sid = serde_json::from_slice::<Value>(
+        &to_bytes(alice_talk.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expected_hermes_sid = format!("hermes_{alice_talk_sid}");
+    assert!(
+        state
+            .hermes
+            .store()
+            .get_session(&expected_hermes_sid)
+            .unwrap()
+            .is_none(),
+        "Fabushi bot talk/turn must NOT write session into host state.hermes"
+    );
+    assert!(
+        state
+            .fabushi_bots
+            .get_by_user_id(alice_bot_id as i64)
+            .unwrap()
+            .hermes()
+            .store()
+            .get_session(&expected_hermes_sid)
+            .unwrap()
+            .is_some(),
+        "Fabushi bot talk/turn must persist in FabushiBot's isolated HermesEngine"
+    );
+
+    // Wave 6: TalkCoordinator per-session / per-tenant isolation on /api/v1/talk/{audio,barge_in}
+    let alice_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/talk/audio?session_id={alice_talk_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::from(vec![1u8, 2, 3, 4]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alice_audio.status(), StatusCode::OK);
+
+    // Bob cannot barge_in or enqueue audio into Alice's session_id
+    let bob_barge_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "session_id": alice_talk_sid }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_barge_alice.status(), StatusCode::FORBIDDEN);
+
+    let bob_audio_alice = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/talk/audio?session_id={alice_talk_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::from(vec![9u8, 9, 9]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_audio_alice.status(), StatusCode::FORBIDDEN);
+
+    // POST /api/v1/talk/session mints fresh talk_{bob}_... without overwriting Alice's talk_sessions_db row
+    // and Bob's barge_in on his own session does not flush Alice's audio buffer
+    let bob_talk_sess = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/session")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_talk_sess.status(), StatusCode::CREATED);
+    let bob_talk_sess_id = serde_json::from_slice::<Value>(
+        &to_bytes(bob_talk_sess.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(bob_talk_sess_id, alice_talk_sid);
+
+    let bob_barge_own = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_barge_own.status(), StatusCode::OK);
+    let bob_barge_json: Value = serde_json::from_slice(
+        &to_bytes(bob_barge_own.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bob_barge_json["flushed_audio_chunks"].as_u64(), Some(0));
+    assert_eq!(
+        state
+            .talk_sessions
+            .read()
+            .get(&alice_talk_sid)
+            .unwrap()
+            .buffered_chunks_count(),
+        1,
+        "Bob barge_in must not flush Alice's isolated talk session audio buffer"
+    );
+
+    let talk_rows = db.load_talk_sessions().unwrap();
+    assert_eq!(
+        talk_rows
+            .iter()
+            .find(|(sid, _, _, _, _)| sid == &alice_talk_sid)
+            .map(|(_, uid, _, _, _)| *uid),
+        Some(alice_id)
+    );
+    assert_eq!(
+        talk_rows
+            .iter()
+            .find(|(sid, _, _, _, _)| sid == &bob_talk_sess_id)
+            .map(|(_, uid, _, _, _)| *uid),
+        Some(bob_id)
+    );
+
+    // Wave 7 (Probe 4d): Post-hoc hijack of Charlie's fallback talk_user_{charlie_id} session
+    // via hermes/talk/turn and talk/{barge_in,audio} must be rejected with 403
+    let (charlie_id, charlie_tok) = reg("w56_charlie").await;
+    let charlie_fallback_sid = format!("talk_user_{charlie_id}");
+    let charlie_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/audio")
+                .header(header::AUTHORIZATION, format!("Bearer {charlie_tok}"))
+                .body(Body::from(vec![1u8, 2, 3, 4]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(charlie_audio.status(), StatusCode::OK);
+    let charlie_audio_json: Value = serde_json::from_slice(
+        &to_bytes(charlie_audio.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        charlie_audio_json["session_id"].as_str(),
+        Some(charlie_fallback_sid.as_str())
+    );
+
+    // Charlie advances his own talk_user_{charlie_id} session to Speaking via hermes/talk/turn
+    let charlie_own_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {charlie_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": charlie_fallback_sid,
+                        "transcript": "charlie own turn"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(charlie_own_turn.status(), StatusCode::OK);
+
+    let bob_hijack_charlie_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": charlie_fallback_sid,
+                        "transcript": "hijack charlie"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bob_hijack_charlie_turn.status(),
+        StatusCode::FORBIDDEN,
+        "Probe 4d: Bob must not hijack Charlie's talk_user_{{id}} via hermes/talk/turn"
+    );
+
+    let bob_barge_charlie = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "session_id": charlie_fallback_sid }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_barge_charlie.status(), StatusCode::FORBIDDEN);
+
+    let bob_audio_charlie = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/talk/audio?session_id={charlie_fallback_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::from(vec![9u8, 9, 9]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_audio_charlie.status(), StatusCode::FORBIDDEN);
+
+    let charlie_barge_own = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {charlie_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "session_id": charlie_fallback_sid }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(charlie_barge_own.status(), StatusCode::OK);
+    let charlie_barge_json: Value = serde_json::from_slice(
+        &to_bytes(charlie_barge_own.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(charlie_barge_json["flushed_audio_chunks"].as_u64(), Some(1));
+    assert_eq!(
+        db.get_talk_session_owner(&charlie_fallback_sid).unwrap(),
+        Some(charlie_id)
+    );
+
+    // Wave 7 (Probe 4f): Pre-claim of talk_user_{dave_id} before Dave creates any talk session
+    // must be rejected with 403 and must not allow Bob to flush Dave's audio
+    let (dave_id, dave_tok) = reg("w56_dave").await;
+    let dave_fallback_sid = format!("talk_user_{dave_id}");
+
+    let bob_preclaim_dave_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": dave_fallback_sid,
+                        "transcript": "preclaim dave"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bob_preclaim_dave_turn.status(),
+        StatusCode::FORBIDDEN,
+        "Probe 4f: Bob must not pre-claim Dave's talk_user_{{id}} via hermes/talk/turn"
+    );
+
+    let bob_preclaim_barge = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "session_id": dave_fallback_sid }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_preclaim_barge.status(), StatusCode::FORBIDDEN);
+
+    let bob_preclaim_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/talk/audio?session_id={dave_fallback_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::from(vec![7u8, 7, 7]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_preclaim_audio.status(), StatusCode::FORBIDDEN);
+
+    let dave_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/audio")
+                .header(header::AUTHORIZATION, format!("Bearer {dave_tok}"))
+                .body(Body::from(vec![5u8, 6, 7, 8]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dave_audio.status(), StatusCode::OK);
+    let dave_audio_json: Value = serde_json::from_slice(
+        &to_bytes(dave_audio.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        dave_audio_json["session_id"].as_str(),
+        Some(dave_fallback_sid.as_str())
+    );
+
+    let bob_barge_dave_after = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "session_id": dave_fallback_sid }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bob_barge_dave_after.status(),
+        StatusCode::FORBIDDEN,
+        "Probe 4f: Bob must not flush Dave's talk_user_{{id}} audio buffer"
+    );
+    assert_eq!(
+        state
+            .talk_sessions
+            .read()
+            .get(&dave_fallback_sid)
+            .unwrap()
+            .buffered_chunks_count(),
+        1,
+        "Dave's audio buffer must remain intact after Bob's rejected barge_in"
+    );
+    assert_eq!(
+        db.get_talk_session_owner(&dave_fallback_sid).unwrap(),
+        Some(dave_id)
+    );
+
+    // Unowned bot on talk/turn requires per-user bot_computer_configs when chat_id is None
+    let unowned_talk_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "bot_id": unowned_bot_id, "transcript": "hi unowned" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unowned_talk_denied.status(), StatusCode::FORBIDDEN);
+
+    let bob_unowned_put = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/bots/{unowned_bot_id}/computer"))
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "persona_prompt": "Bob local persona" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_unowned_put.status(), StatusCode::OK);
+
+    let unowned_talk_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "bot_id": unowned_bot_id, "transcript": "hi unowned" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unowned_talk_ok.status(), StatusCode::OK);
+
+    // ------------------------------------------------------------------------
+    // 4. is_restricted_bot_caller on bound_agent_id == None (standard bot + standalone engine)
+    // ------------------------------------------------------------------------
+    let std_bot = db
+        .create_registered_bot_with_options(
+            alice_id as i64,
+            "std_w56_bot",
+            "Standard Bot",
+            "Standard",
+            "Standard",
+            "",
+            "default",
+            "",
+            "",
+            "[]",
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+    let std_bot_id = std_bot.bot_user_id as u64;
+    let std_shared_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/chats")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "W56 Std Bot Room",
+                        "chat_type": 2,
+                        "member_ids": [bob_id, std_bot_id]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(std_shared_res.status(), StatusCode::CREATED);
+    let std_shared_cid = serde_json::from_slice::<Value>(
+        &to_bytes(std_shared_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["chat_id"]
+        .as_i64()
+        .unwrap();
+
+    state
+        .hermes
+        .memory()
+        .add(MemoryTarget::Memory, "STD_BOT_HOST_SECRET")
+        .unwrap();
+
+    for (tool_name, args) in [
+        ("memory", json!({ "action": "read", "target": "memory" })),
+        ("skill_manage", json!({ "action": "list" })),
+        ("skill_list", json!({})),
+        ("skill_view", json!({ "name": "alice-secret-skill" })),
+    ] {
+        let r_std_acp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/acp")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 200,
+                            "method": "tools/call",
+                            "params": {
+                                "bot_id": std_bot_id,
+                                "chat_id": std_shared_cid,
+                                "name": tool_name,
+                                "arguments": args
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            r_std_acp.status(),
+            StatusCode::FORBIDDEN,
+            "Standard bot ACP tools/call {tool_name} as non-owner Bob must return 403"
+        );
+    }
+
+    // Direct HermesEngine::in_memory() (bound_agent_id == None) verification
+    let standalone_eng = HermesEngine::in_memory().unwrap();
+    standalone_eng
+        .memory()
+        .add(MemoryTarget::Memory, "STANDALONE_MEM_SECRET")
+        .unwrap();
+    standalone_eng
+        .skills()
+        .skill_create(CreateSkillRequest {
+            name: "standalone-skill".into(),
+            description: "Standalone".into(),
+            body: "STANDALONE_SKILL_BODY".into(),
+            platforms: None,
+            toolsets: None,
+            tags: None,
+            version: None,
+            origin: None,
+            trusted: Some(true),
+        })
+        .unwrap();
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let restricted_ctx = standalone_eng.build_tool_context_scoped(
+        "s_restricted",
+        Some(10),
+        Some(&std_bot_id.to_string()),
+        Some(&bob_id.to_string()),
+        1,
+        Some(ToolsetPreset::HermesTelegram),
+        0,
+        cancel_flag.clone(),
+        Some(HashSet::from([10])),
+        false,
+        false,
+    );
+    let mem_denied = HermesToolExecutor::execute(
+        "memory",
+        json!({ "action": "read", "target": "memory" }),
+        &restricted_ctx,
+    )
+    .await;
+    assert!(!mem_denied.success);
+    assert!(!mem_denied.output.contains("STANDALONE_MEM_SECRET"));
+
+    let skill_denied =
+        HermesToolExecutor::execute("skill_list", json!({}), &restricted_ctx).await;
+    assert!(!skill_denied.success);
+    assert!(!skill_denied.output.contains("standalone-skill"));
+
+    let owner_ctx = standalone_eng.build_tool_context_scoped(
+        "s_owner",
+        Some(10),
+        Some(&std_bot_id.to_string()),
+        Some(&alice_id.to_string()),
+        1,
+        Some(ToolsetPreset::HermesTelegram),
+        0,
+        cancel_flag.clone(),
+        Some(HashSet::from([10])),
+        false,
+        true,
+    );
+    let mem_allowed = HermesToolExecutor::execute(
+        "memory",
+        json!({ "action": "read", "target": "memory" }),
+        &owner_ctx,
+    )
+    .await;
+    assert!(mem_allowed.success);
+    assert!(mem_allowed.output.contains("STANDALONE_MEM_SECRET"));
+
+    // ------------------------------------------------------------------------
+    // 5. GET /soul, GET /skills*, heartbeat (incl. chatless hijack & "bot_" norm), Note 5 chatless cron & PATCH/upsert retarget
+    // ------------------------------------------------------------------------
+    for uri in [
+        format!("/api/v1/hermes/soul?bot_id={alice_bot_id}"),
+        format!("/api/v1/hermes/skills?bot_id={alice_bot_id}"),
+        format!("/api/v1/hermes/skills/alice-secret-skill?bot_id={alice_bot_id}"),
+    ] {
+        let r_bob = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_bob.status(), StatusCode::FORBIDDEN, "Bob GET {uri} must be 403");
+        let b_str =
+            String::from_utf8_lossy(&to_bytes(r_bob.into_body(), usize::MAX).await.unwrap())
+                .to_string();
+        assert!(!b_str.contains("ALICE_W56_PRIVATE_SOUL_SECRET"));
+        assert!(!b_str.contains("ALICE_W56_SECRET_SKILL_BODY"));
+
+        let r_alice = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_alice.status(), StatusCode::OK, "Alice GET {uri} must be 200");
+    }
+
+    // Wave 6: Chatless Heartbeat secret leak (GET), existing-bot hijack (POST), & "bot_" normalization
+    let hb_alice_chatless = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/heartbeat")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "chat_id": Value::Null,
+                        "bot_id": format!("bot_{alice_bot_id}"),
+                        "enabled": false,
+                        "prompt": "ALICE_CHATLESS_HB_SECRET"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hb_alice_chatless.status(), StatusCode::OK);
+    let hb_alice_json: Value = serde_json::from_slice(
+        &to_bytes(hb_alice_chatless.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(hb_alice_json["bot_id"].as_u64(), Some(alice_bot_id));
+
+    let hb_get_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/hermes/heartbeat")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hb_get_bob.status(), StatusCode::FORBIDDEN);
+    let hb_get_body = String::from_utf8_lossy(
+        &to_bytes(hb_get_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!hb_get_body.contains("ALICE_CHATLESS_HB_SECRET"));
+
+    let hb_rebind_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/heartbeat")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "chat_id": bob_chat_id,
+                        "enabled": true,
+                        "prompt": "BOB_HIJACKED_HB"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hb_rebind_bob.status(), StatusCode::FORBIDDEN);
+
+    let hb_alice_verify = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/hermes/heartbeat")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hb_alice_verify.status(), StatusCode::OK);
+    let hb_verify_json: Value = serde_json::from_slice(
+        &to_bytes(hb_alice_verify.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(hb_verify_json["prompt"].as_str(), Some("ALICE_CHATLESS_HB_SECRET"));
+    assert_eq!(hb_verify_json["bot_id"].as_u64(), Some(alice_bot_id));
+    assert!(hb_verify_json["chat_id"].is_null());
+
+    // Heartbeat with explicit vault_id + explicit bot_id checks
+    let hb_alice_vault = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/heartbeat")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "chat_id": vault_id,
+                        "bot_id": alice_bot_id,
+                        "prompt": "ALICE_VAULT_HB"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hb_alice_vault.status(), StatusCode::OK);
+
+    for bad_hb in [
+        json!({ "bot_id": alice_bot_id, "prompt": "PWN" }),
+        json!({ "prompt": "PWN" }),
+        json!({ "chat_id": Value::Null, "prompt": "PWN" }),
+    ] {
+        let r_hb = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/heartbeat")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(bad_hb.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r_hb.status(), StatusCode::FORBIDDEN);
+    }
+
+    // Note 5: Chatless cron isolation (HTTP + /cron + standalone ToolContextBridge)
+    let alice_chatless_cron = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/cron")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "alice_chatless_cron",
+                        "schedule": "@every 60s",
+                        "prompt": "ALICE_CHATLESS_CRON_SECRET"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(alice_chatless_cron.status(), StatusCode::CREATED);
+    let chatless_cron_id = serde_json::from_slice::<Value>(
+        &to_bytes(alice_chatless_cron.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bob_cron_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/hermes/cron")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bob_cron_list_body = String::from_utf8_lossy(
+        &to_bytes(bob_cron_list.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    assert!(!bob_cron_list_body.contains(&chatless_cron_id));
+    assert!(!bob_cron_list_body.contains("ALICE_CHATLESS_CRON_SECRET"));
+
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/api/v1/hermes/cron".to_string(),
+            json!({
+                "job_id": chatless_cron_id,
+                "name": "pwn",
+                "schedule": "@every 60s",
+                "prompt": "PWN"
+            })
+            .to_string(),
+        ),
+        (
+            "PATCH",
+            format!("/api/v1/hermes/cron/{chatless_cron_id}"),
+            json!({ "enabled": false }).to_string(),
+        ),
+        (
+            "POST",
+            format!("/api/v1/hermes/cron/{chatless_cron_id}/run"),
+            "{}".to_string(),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/hermes/cron/{chatless_cron_id}"),
+            String::new(),
+        ),
+    ] {
+        let mut rb = Request::builder()
+            .method(method)
+            .uri(&uri)
+            .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"));
+        if !body.is_empty() {
+            rb = rb.header(header::CONTENT_TYPE, "application/json");
+        }
+        let res = app.clone().oneshot(rb.body(Body::from(body)).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    for slash_cmd in [
+        "/cron list".to_string(),
+        format!("/cron pause {chatless_cron_id}"),
+        format!("/cron delete {chatless_cron_id}"),
+        format!("/cron history {chatless_cron_id}"),
+        format!("/cron run {chatless_cron_id}"),
+    ] {
+        let r_slash = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/command")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "command": slash_cmd }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_s = String::from_utf8_lossy(
+            &to_bytes(r_slash.into_body(), usize::MAX).await.unwrap(),
+        )
+        .to_string();
+        assert!(!body_s.contains("ALICE_CHATLESS_CRON_SECRET"));
+        if slash_cmd == "/cron list" {
+            assert!(!body_s.contains(&chatless_cron_id));
+        }
+    }
+
+    // Wave 6: PATCH /api/v1/hermes/cron/{id} & POST upsert retargeting chat_id without re-sending bot_id
+    let shared_cron_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/cron")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bob_shared_bot_cron",
+                        "schedule": "@every 60s",
+                        "prompt": "shared",
+                        "chat_id": shared_cid,
+                        "bot_id": format!("bot_{alice_bot_id}")
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shared_cron_create.status(), StatusCode::CREATED);
+    let shared_cron_json: Value = serde_json::from_slice(
+        &to_bytes(shared_cron_create.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(shared_cron_json["bot_id"].as_u64(), Some(alice_bot_id));
+    let shared_cron_id = shared_cron_json["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for retarget_cid in [json!(bob_chat_id), Value::Null] {
+        let patch_retarget = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/hermes/cron/{shared_cron_id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "chat_id": retarget_cid }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            patch_retarget.status(),
+            StatusCode::FORBIDDEN,
+            "PATCH /cron/{shared_cron_id} retargeting chat_id={retarget_cid} while retaining alice_bot_id must return 403"
+        );
+
+        let upsert_retarget = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/cron")
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "job_id": shared_cron_id,
+                            "name": "bob_retarget_upsert",
+                            "schedule": "@every 60s",
+                            "chat_id": retarget_cid
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            upsert_retarget.status(),
+            StatusCode::FORBIDDEN,
+            "POST /cron upsert retargeting chat_id={retarget_cid} while retaining alice_bot_id must return 403"
+        );
+    }
+    assert_eq!(
+        state
+            .hermes
+            .store()
+            .get_cron_job(&shared_cron_id)
+            .unwrap()
+            .unwrap()
+            .target_chat_id,
+        Some(shared_cid)
+    );
+
+    // Standalone HermesEngine::in_memory() (no agentic_backend) chatless cronjob_manage isolation
+    let alice_ctx = standalone_eng.build_tool_context_scoped(
+        "cron_alice",
+        None,
+        None,
+        Some(&alice_id.to_string()),
+        1,
+        Some(ToolsetPreset::HermesTelegram),
+        0,
+        cancel_flag.clone(),
+        Some(HashSet::from([vault_id])),
+        false,
+        true,
+    );
+    let created_standalone = HermesToolExecutor::execute(
+        "cronjob_manage",
+        json!({
+            "action": "create",
+            "name": "standalone_chatless",
+            "schedule": "@every 60s",
+            "prompt": "STANDALONE_CHATLESS_SECRET"
+        }),
+        &alice_ctx,
+    )
+    .await;
+    assert!(created_standalone.success);
+    let standalone_job_id = created_standalone
+        .structured
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    let bob_ctx = standalone_eng.build_tool_context_scoped(
+        "cron_bob",
+        None,
+        None,
+        Some(&bob_id.to_string()),
+        1,
+        Some(ToolsetPreset::HermesTelegram),
+        0,
+        cancel_flag,
+        Some(HashSet::from([bob_chat_id])),
+        false,
+        true,
+    );
+    let bob_list =
+        HermesToolExecutor::execute("cronjob_manage", json!({ "action": "list" }), &bob_ctx).await;
+    assert!(!bob_list.output.contains(&standalone_job_id));
+    assert!(!bob_list.output.contains("STANDALONE_CHATLESS_SECRET"));
+    for act in ["get", "pause", "delete", "run_now"] {
+        let res = HermesToolExecutor::execute(
+            "cronjob_manage",
+            json!({ "action": act, "id": standalone_job_id }),
+            &bob_ctx,
+        )
+        .await;
+        assert!(!res.success, "Bob standalone cronjob_manage action={act} must fail");
+    }
+}
+
+#[tokio::test]
+async fn test_tier5_wave8_official_bot_install_and_talk_isolation() {
+    use gpui_telegram_server::db::miniapp_store::BOTFATHER_USER_ID;
+
+    let dir = TempDir::new().unwrap();
+    let db = Arc::new(ServerDatabase::open(dir.path().join("wave8_reg.db")).unwrap());
+    let mut cfg = ServerConfig::default();
+    cfg.media_storage_path = dir.path().join("media").display().to_string();
+    let state = Arc::new(AppState::with_db(cfg, db.clone()));
+    let app = build_router_with_state(state.clone());
+
+    let reg = |uname: &str| {
+        let app_c = app.clone();
+        let u = uname.to_string();
+        async move {
+            let res = app_c
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/auth/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "username": u,
+                                "password": "Password123!",
+                                "first_name": u
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::CREATED);
+            let v: Value =
+                serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            (
+                v["user_id"].as_u64().unwrap(),
+                v["token"].as_str().unwrap().to_string(),
+            )
+        }
+    };
+
+    let (_alice_id, alice_tok) = reg("w8_alice").await;
+    let (bob_id, bob_tok) = reg("w8_bob").await;
+    let (eve_id, eve_tok) = reg("w8_eve").await;
+    let (dave_id, dave_tok) = reg("w8_dave").await;
+    let (admin_id, admin_tok) = reg("w8_admin").await;
+    db.pool()
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE users SET is_support = 1 WHERE user_id = ?1",
+                rusqlite::params![admin_id as i64],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    // ------------------------------------------------------------------------
+    // 1. Official Bots (@BotFather & @fabushi_ai_bot) non-owner custom_url DB non-persistence
+    // ------------------------------------------------------------------------
+    assert!(db.list_mini_apps_for_bot(BOTFATHER_USER_ID as i64).unwrap().is_empty());
+    assert!(db.list_mini_apps_for_bot(777_000).unwrap().is_empty());
+
+    for (bot_slug, bot_uid) in [
+        ("BotFather", BOTFATHER_USER_ID as i64),
+        ("fabushi_ai_bot", 777_000i64),
+    ] {
+        let launch_atk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/miniapps/{bot_slug}/app/launch"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "launch_mode": "DirectLink",
+                            "custom_url": format!("https://attacker.example/phish-{bot_slug}")
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            launch_atk.status(),
+            StatusCode::FORBIDDEN,
+            "Non-owner custom_url /launch on unconfigured official bot @{bot_slug} must return 403"
+        );
+        assert!(
+            db.list_mini_apps_for_bot(bot_uid).unwrap().is_empty(),
+            "Official bot @{bot_slug} must have zero persisted mini_apps rows"
+        );
+    }
+
+    let victim_launch_bf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps/BotFather/app/launch")
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "launch_mode": "DirectLink" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(victim_launch_bf.status(), StatusCode::NOT_FOUND);
+
+    let html_bf = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/miniapps/BotFather/app")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(html_bf.status(), StatusCode::NOT_FOUND);
+
+    // ------------------------------------------------------------------------
+    // 2. miniapps_install AuthZ (403 on unpublished, ad-hoc, and unpublished official 777_010)
+    // ------------------------------------------------------------------------
+    let create_bot_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/bots")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "username": "alice_w8_inst_bot",
+                        "display_name": "Alice W8 Inst Bot",
+                        "description": "Install AuthZ test bot",
+                        "about": "Install AuthZ test bot",
+                        "ai_persona": "ALICE_W8_INST_SECRET_PERSONA",
+                        "menu_button_text": "Open Menu",
+                        "menu_button_url": "https://alice-inst.example/menu"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_bot_res.status(), StatusCode::CREATED);
+    let alice_bot_id = serde_json::from_slice::<Value>(
+        &to_bytes(create_bot_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()["bot"]["bot_user_id"]
+        .as_i64()
+        .unwrap();
+
+    // (a) Materialize ad-hoc MiniApp row (__bot_inline_webapp__) via Bob launching menu URL
+    let adhoc_launch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps/alice_w8_inst_bot/app/launch")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "launch_mode": "DirectLink" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(adhoc_launch.status(), StatusCode::OK);
+
+    // (b) Unpublished real MiniApp (auto_menu_button=false so main_app_short_name remains unset)
+    db.create_or_upsert_mini_app_with_options(
+        alice_bot_id,
+        "alice_w8_inst_bot",
+        "secretapp",
+        "Secret Admin App",
+        "CONFIDENTIAL_UNPUB_DESC",
+        "tools",
+        "🔒",
+        Some("https://internal.alice.example/secret-admin"),
+        "{}",
+        false,
+        false,
+        false,
+        "",
+        "",
+        None,
+        false,
+    )
+    .unwrap();
+
+    // (c) Unpublished legacy official bot (777_010) MiniApp
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    db.pool()
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO users (user_id, username, first_name, is_bot, is_verified, account_generation, created_at_ms, updated_at_ms)
+                 VALUES (777010, 'legacy_official_demo_bot', 'Legacy Official', 1, 1, 1, ?1, ?1)",
+                rusqlite::params![now_ms],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR IGNORE INTO bots_registry (bot_user_id, owner_user_id, username, display_name, bot_token, description, about, ai_persona, menu_button_text, menu_button_url, is_official, is_inline, allow_attach_menu, attach_peer_types_json, commands_json, created_at, updated_at)
+                 VALUES (777010, 0, 'legacy_official_demo_bot', 'Legacy Official', '777010:AA_TEST', 'Legacy', 'Legacy', 'LEGACY_SECRET', '', '', 1, 0, 0, '[]', '[]', ?1, ?1)",
+                rusqlite::params![now_ms],
+            )
+            .map_err(|e| TelegramError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    db.create_or_upsert_mini_app(
+        777_010,
+        "legacy_official_demo_bot",
+        "legacyapp",
+        "Legacy Official App",
+        "LEGACY_UNPUB_DESC",
+        "tools",
+        "🧪",
+        Some("https://legacy.example/internal"),
+        "{}",
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+
+    // (d) Published real MiniApp
+    let create_pub = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bot_username": "alice_w8_inst_bot",
+                        "short_name": "pubapp",
+                        "title": "Public App",
+                        "description": "Published app"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(create_pub.status().is_success());
+
+    for (bot_un, short_un, check_bot_id) in [
+        ("alice_w8_inst_bot", "secretapp", alice_bot_id),
+        ("alice_w8_inst_bot", "app", alice_bot_id),
+        ("legacy_official_demo_bot", "legacyapp", 777_010i64),
+    ] {
+        let inst_forbid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/miniapps/{bot_un}/{short_un}/install"))
+                    .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "allow_write_access": true }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            inst_forbid.status(),
+            StatusCode::FORBIDDEN,
+            "Non-owner Bob installing {bot_un}/{short_un} must return 403"
+        );
+        let body_txt = String::from_utf8_lossy(
+            &to_bytes(inst_forbid.into_body(), usize::MAX).await.unwrap(),
+        )
+        .to_string();
+        assert!(!body_txt.contains("CONFIDENTIAL_UNPUB_DESC"));
+        assert!(!body_txt.contains("secret-admin"));
+        assert!(!body_txt.contains("ALICE_W8_INST_SECRET_PERSONA"));
+        assert!(!body_txt.contains("LEGACY_UNPUB_DESC"));
+        assert!(
+            db.find_companion_chat_id_for_user(check_bot_id, bob_id as i64)
+                .unwrap()
+                .is_none(),
+            "Rejected install must not create companion DM chat"
+        );
+    }
+    assert!(db.list_user_installed_mini_apps(bob_id as i64).unwrap().is_empty());
+    assert_eq!(
+        db.get_mini_app("alice_w8_inst_bot", "secretapp")
+            .unwrap()
+            .unwrap()
+            .install_count,
+        0
+    );
+
+    // Also verify non-owner miniapps_action on unpublished legacy official app 777_010 is 403
+    let action_legacy = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps/legacy_official_demo_bot/legacyapp/action")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "action_type": "refresh" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(action_legacy.status(), StatusCode::FORBIDDEN);
+
+    // Owner Alice can install her own unpublished app
+    let inst_owner_ok = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps/alice_w8_inst_bot/secretapp/install")
+                .header(header::AUTHORIZATION, format!("Bearer {alice_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "allow_write_access": true }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inst_owner_ok.status(), StatusCode::OK);
+
+    // Non-owner Bob can install published app with redacted ai_persona
+    let inst_pub_bob = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/miniapps/alice_w8_inst_bot/pubapp/install")
+                .header(header::AUTHORIZATION, format!("Bearer {bob_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "allow_write_access": true }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inst_pub_bob.status(), StatusCode::OK);
+    let inst_pub_json: Value = serde_json::from_slice(
+        &to_bytes(inst_pub_bob.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(inst_pub_json["companion_bot"]["ai_persona"].as_str(), Some(""));
+
+    // ------------------------------------------------------------------------
+    // 3. Talk Session Split-Brain & Admin Reserved Pre-Creation Prevention
+    // ------------------------------------------------------------------------
+    let eve_reserved_sids = [
+        format!("talk_user_{eve_id}"),
+        format!("talk_{eve_id}_custom"),
+    ];
+    for rsid in &eve_reserved_sids {
+        for bot_opt in [Value::Null, json!(777_000)] {
+            let adm_pre = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/hermes/talk/turn")
+                        .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "session_id": rsid,
+                                "bot_id": bot_opt,
+                                "transcript": "ADMIN_PRECREATE_SECRET_TRANSCRIPT"
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                adm_pre.status(),
+                StatusCode::FORBIDDEN,
+                "Admin pre-creation of {rsid} (bot_id={bot_opt}) must return 403"
+            );
+            assert!(
+                db.get_talk_session_owner(rsid).unwrap().is_none(),
+                "Rejected admin pre-creation must not write talk_sessions_db for {rsid}"
+            );
+            assert!(
+                state
+                    .hermes
+                    .store()
+                    .get_session(&format!("hermes_{rsid}"))
+                    .unwrap()
+                    .is_none(),
+                "Rejected admin pre-creation must not write HermesEngine for {rsid}"
+            );
+        }
+
+        let adm_audio = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/talk/audio?session_id={rsid}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                    .body(Body::from(vec![1u8, 2, 3, 4]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adm_audio.status(), StatusCode::FORBIDDEN);
+
+        let adm_barge = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/talk/barge_in?session_id={rsid}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adm_barge.status(), StatusCode::FORBIDDEN);
+
+        let adm_turns = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hermes/turns")
+                    .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "session_id": format!("hermes_{rsid}"),
+                            "prompt": "ADMIN_PRECREATE_TURNS"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adm_turns.status(), StatusCode::FORBIDDEN);
+    }
+
+    // Victim Eve flows: /talk/audio -> /talk/barge_in -> /hermes/talk/turn -> GET /hermes/sessions/hermes_{sid}
+    let eve_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/audio")
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .body(Body::from(vec![1u8, 2, 3, 4]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eve_audio.status(), StatusCode::OK);
+    let eve_audio_json: Value = serde_json::from_slice(
+        &to_bytes(eve_audio.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    let eve_sid = eve_audio_json["session_id"].as_str().unwrap().to_string();
+    assert_eq!(eve_sid, format!("talk_user_{eve_id}"));
+
+    let eve_barge = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/barge_in")
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eve_barge.status(), StatusCode::OK);
+    let eve_barge_json: Value = serde_json::from_slice(
+        &to_bytes(eve_barge.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(eve_barge_json["session_id"].as_str(), Some(eve_sid.as_str()));
+
+    let eve_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": eve_sid,
+                        "transcript": "Eve legitimate voice turn"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eve_turn.status(), StatusCode::OK);
+
+    let eve_sess_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/hermes/sessions/hermes_{eve_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {eve_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(eve_sess_get.status(), StatusCode::OK);
+    let eve_sess_txt = String::from_utf8_lossy(
+        &to_bytes(eve_sess_get.into_body(), usize::MAX).await.unwrap(),
+    )
+    .to_string();
+    assert!(!eve_sess_txt.contains("ADMIN_PRECREATE_SECRET_TRANSCRIPT"));
+
+    // Case C2 + Case D: Victim Dave creates talk_user_{dave_id} via /talk/audio only,
+    // Admin is blocked (403) from binding it to Alice's private bot,
+    // Admin calling hermes/talk/turn without private bot syncs HermesEngine owner_user_id = dave_id,
+    // and Dave's subsequent hermes/talk/turn & GET session remain 200 OK.
+    let dave_audio = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/talk/audio")
+                .header(header::AUTHORIZATION, format!("Bearer {dave_tok}"))
+                .body(Body::from(vec![9u8, 8, 7]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dave_audio.status(), StatusCode::OK);
+    let dave_sid = format!("talk_user_{dave_id}");
+    assert_eq!(
+        db.get_talk_session_owner(&dave_sid).unwrap(),
+        Some(dave_id)
+    );
+
+    let adm_private_bot_bind = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": dave_sid,
+                        "bot_id": alice_bot_id,
+                        "transcript": "Admin bind victim session to private bot"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        adm_private_bot_bind.status(),
+        StatusCode::FORBIDDEN,
+        "Admin must not bind victim session to a private bot victim cannot access"
+    );
+
+    let adm_c2_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {admin_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": dave_sid,
+                        "transcript": "Admin support turn on existing victim talk session"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(adm_c2_turn.status(), StatusCode::OK);
+
+    let dave_hermes_rec = state
+        .hermes
+        .store()
+        .get_session(&format!("hermes_{dave_sid}"))
+        .unwrap()
+        .expect("Hermes session must exist after Case C2 turn");
+    let dave_meta: Value = serde_json::from_str(&dave_hermes_rec.metadata_json).unwrap();
+    assert_eq!(
+        dave_meta["owner_user_id"].as_str(),
+        Some(dave_id.to_string().as_str()),
+        "HermesEngine owner_user_id must stay synced to victim Dave, not Admin"
+    );
+
+    let dave_followup_turn = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hermes/talk/turn")
+                .header(header::AUTHORIZATION, format!("Bearer {dave_tok}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "session_id": dave_sid,
+                        "transcript": "Dave follow-up turn"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dave_followup_turn.status(), StatusCode::OK);
+
+    let dave_sess_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/hermes/sessions/hermes_{dave_sid}"))
+                .header(header::AUTHORIZATION, format!("Bearer {dave_tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dave_sess_get.status(), StatusCode::OK);
+}

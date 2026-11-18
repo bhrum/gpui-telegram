@@ -1154,6 +1154,13 @@ impl GatewayHub {
                     }
                 }
                 if let Some(pipeline) = maybe_pipeline {
+                    let prev_pins = maybe_db
+                        .as_ref()
+                        .and_then(|db| db.list_pinned_messages(req.chat_id).ok())
+                        .unwrap_or_default();
+                    let removed_pinned = prev_pins
+                        .iter()
+                        .any(|pid| req.message_ids.iter().any(|mid| mid.0 == *pid));
                     let msg_ids: Vec<MsgId> = req.message_ids.iter().map(|m| MsgId(m.0)).collect();
                     match pipeline.delete_messages(req.chat_id, msg_ids, req.for_everyone) {
                         Ok(pts_update) => {
@@ -1164,6 +1171,19 @@ impl GatewayHub {
                                 indexer.commit_nonblocking();
                             }
                             self.broadcast_to_chat_and_members(req.chat_id, Some(user_id), WsServerFrame::PtsPush(pts_update));
+                            if removed_pinned {
+                                if let Some(ref db) = maybe_db {
+                                    let pinned_ids = db.list_pinned_messages(req.chat_id).unwrap_or_default();
+                                    self.broadcast_to_chat_and_members(
+                                        req.chat_id,
+                                        None,
+                                        WsServerFrame::Update(UpdateEvent::PinnedMessagesChanged {
+                                            chat_id: req.chat_id,
+                                            pinned_ids: pinned_ids.into_iter().map(MsgId).collect(),
+                                        }),
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             let _ = reply_tx.send(WsServerFrame::Error { code: 500, message: e.to_string(), details: None });
@@ -1410,7 +1430,20 @@ impl GatewayHub {
                                     return;
                                 }
                                 match target_user_id {
-                                    Some(tuid) if tuid != user_id.0 => Some(UserId(tuid)),
+                                    Some(tuid) if tuid != user_id.0 => {
+                                        let peer_uid = UserId(tuid);
+                                        if d.is_user_blocked(peer_uid, user_id).unwrap_or(false)
+                                            || d.is_user_blocked(user_id, peer_uid).unwrap_or(false)
+                                        {
+                                            let _ = reply_tx.send(WsServerFrame::Error {
+                                                code: 403,
+                                                message: "Cannot initiate a call with a blocked user".into(),
+                                                details: Some("user_is_blocked".into()),
+                                            });
+                                            return;
+                                        }
+                                        Some(peer_uid)
+                                    }
                                     _ => {
                                         let _ = reply_tx.send(WsServerFrame::Error {
                                             code: 400,

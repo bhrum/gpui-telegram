@@ -1,4 +1,4 @@
-use crate::routes::{broadcast_chat_pts, check_active_membership, err_resp, map_telegram_err, parse_json_object};
+use crate::routes::{broadcast_chat_event, broadcast_chat_pts, check_active_membership, err_resp, map_telegram_err, parse_json_object};
 use crate::server::{AppState, AuthBearer};
 use axum::{body::Bytes, extract::{Path, Query, State}, http::StatusCode, response::{IntoResponse, Json, Response}};
 use gpui_telegram_core::types::{ChatId, MsgId};
@@ -57,12 +57,25 @@ async fn delete_impl(state: &AppState, auth: &AuthBearer, chat_id: i64, ids: Vec
             if msg.sender_id != auth.user_id && !is_admin { return err_resp(StatusCode::FORBIDDEN, "forbidden", "Cannot delete another user's message"); }
         }
     }
+    let prev_pins = state.db.list_pinned_messages(ChatId(chat_id)).unwrap_or_default();
+    let removed_pinned = prev_pins.iter().any(|pid| ids.contains(pid));
     let msg_ids: Vec<MsgId> = ids.iter().copied().map(MsgId).collect();
     match state.message_pipeline.delete_messages(ChatId(chat_id), msg_ids, revoke) {
         Ok(pts_update) => {
             for &id in &ids { state.search_indexer.delete_message_nonblocking(id.to_string()); }
             state.search_indexer.commit_nonblocking();
             broadcast_chat_pts(state, ChatId(chat_id), pts_update.clone());
+            if removed_pinned {
+                let pinned_ids = state.db.list_pinned_messages(ChatId(chat_id)).unwrap_or_default();
+                broadcast_chat_event(
+                    state,
+                    ChatId(chat_id),
+                    UpdateEvent::PinnedMessagesChanged {
+                        chat_id: ChatId(chat_id),
+                        pinned_ids: pinned_ids.into_iter().map(MsgId).collect(),
+                    },
+                );
+            }
             (StatusCode::OK, Json(json!({ "success": true, "chat_id": chat_id, "deleted_ids": ids, "revoke": revoke, "pts": pts_update.pts }))).into_response()
         }
         Err(e) => map_telegram_err(e),

@@ -156,8 +156,11 @@ pub async fn chat_mute(auth: AuthBearer, State(state): State<Arc<AppState>>, Pat
 
 pub async fn pins_list(auth: AuthBearer, State(state): State<Arc<AppState>>, Path(chat_id): Path<i64>) -> Response {
     if let Err(r) = check_active_membership(&state, ChatId(chat_id), auth.user_id) { return r; }
-    match state.db.list_pinned_messages(ChatId(chat_id)) {
-        Ok(ids) => (StatusCode::OK, Json(json!({ "chat_id": chat_id, "pinned_message_ids": ids }))).into_response(),
+    match state.db.list_pinned_message_dtos(ChatId(chat_id)) {
+        Ok(pins) => {
+            let ids: Vec<i64> = pins.iter().map(|p| p.message_id).collect();
+            (StatusCode::OK, Json(json!({ "chat_id": chat_id, "pinned_message_ids": ids, "pins": pins }))).into_response()
+        }
         Err(e) => map_telegram_err(e),
     }
 }
@@ -170,6 +173,11 @@ pub async fn pins_pin(auth: AuthBearer, State(state): State<Arc<AppState>>, Path
         Some(id) => id,
         None => return err_resp(StatusCode::BAD_REQUEST, "invalid_message_id", "Positive message_id is required"),
     };
+    match state.db.get_message(ChatId(chat_id), MsgId(msg_id)) {
+        Ok(Some(m)) if m.deleted_at_ms.is_none() => {}
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "message_not_found", "Message not found or deleted"),
+        Err(e) => return map_telegram_err(e),
+    }
     match state.db.pin_message(ChatId(chat_id), MsgId(msg_id), auth.user_id) {
         Ok(ids) => {
             broadcast_chat_event(&state, ChatId(chat_id), UpdateEvent::PinnedMessagesChanged {

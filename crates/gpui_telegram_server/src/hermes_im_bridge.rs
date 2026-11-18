@@ -327,6 +327,8 @@ impl PlatformImBridge for ServerPlatformImBridge {
                         }
                     }
                     let revoke = args.get("revoke").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let prev_pins = self.db.list_pinned_messages(chat_id).unwrap_or_default();
+                    let removed_pinned = prev_pins.iter().any(|pid| ids.contains(pid));
                     let msg_ids: Vec<MsgId> = ids.iter().copied().map(MsgId).collect();
                     let pts_update = self
                         .pipeline
@@ -346,6 +348,16 @@ impl PlatformImBridge for ServerPlatformImBridge {
                     }
                     let pts = pts_update.pts;
                     self.broadcast_pts(chat_id, pts_update);
+                    if removed_pinned {
+                        let pinned_ids = self.db.list_pinned_messages(chat_id).unwrap_or_default();
+                        self.broadcast_event(
+                            chat_id,
+                            UpdateEvent::PinnedMessagesChanged {
+                                chat_id,
+                                pinned_ids: pinned_ids.into_iter().map(MsgId).collect(),
+                            },
+                        );
+                    }
                     Ok(json!({
                         "success": true,
                         "chat_id": chat_id.0,
@@ -365,6 +377,13 @@ impl PlatformImBridge for ServerPlatformImBridge {
                         .filter(|&id| id > 0)
                         .ok_or_else(|| "Positive 'message_id' is required".to_string())?;
                     let unpin = args.get("unpin").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !unpin {
+                        match self.db.get_message(chat_id, MsgId(msg_id)) {
+                            Ok(Some(m)) if m.deleted_at_ms.is_none() => {}
+                            Ok(_) => return Err("Message not found or deleted".into()),
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
                     let pinned_ids = if unpin {
                         self.db
                             .unpin_message(chat_id, Some(MsgId(msg_id)))

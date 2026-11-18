@@ -608,6 +608,10 @@ impl TypedPlatformAction for ServerDeleteMessageAction {
             }
 
             if !deletable_ids.is_empty() {
+                let prev_pins = self.db.list_pinned_messages(chat_id).unwrap_or_default();
+                let removed_pinned = prev_pins
+                    .iter()
+                    .any(|pid| deletable_ids.iter().any(|mid| mid.0 == *pid));
                 let pts_update = self
                     .pipeline
                     .delete_messages(chat_id, deletable_ids.clone(), input.for_everyone)
@@ -623,6 +627,17 @@ impl TypedPlatformAction for ServerDeleteMessageAction {
                     None,
                     WsServerFrame::PtsPush(pts_update),
                 );
+                if removed_pinned {
+                    let pinned_ids = self.db.list_pinned_messages(chat_id).unwrap_or_default();
+                    self.gateway_hub.broadcast_to_chat_and_members(
+                        chat_id,
+                        None,
+                        WsServerFrame::Update(UpdateEvent::PinnedMessagesChanged {
+                            chat_id,
+                            pinned_ids: pinned_ids.into_iter().map(MsgId).collect(),
+                        }),
+                    );
+                }
             }
 
             Ok(DeleteMessageOutput {

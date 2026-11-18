@@ -114,7 +114,7 @@ pub fn bot_record_to_entry(bot: &BotRegistryRecord) -> BotRegistryEntry {
     }
 }
 
-pub fn bot_record_to_entry_for_viewer(
+pub(crate) fn bot_record_to_entry_for_viewer(
     state: &AppState,
     bot: &BotRegistryRecord,
     viewer_user_id: i64,
@@ -133,6 +133,17 @@ pub fn bot_record_to_entry_for_viewer(
         entry.is_blocked_by_viewer = blocked;
         entry.allows_write_to_pm = !blocked && perm.as_ref().is_some_and(|p| p.allows_write_to_pm);
         entry.app_tos_accepted = perm.as_ref().is_some_and(|p| p.app_tos_accepted_at > 0);
+    }
+    if !bot.is_official
+        && (viewer_user_id <= 0
+            || crate::routes::hermes::caller_owns_bot_or_admin(
+                state,
+                UserId(viewer_user_id as u64),
+                bot.bot_user_id.max(0) as u64,
+            )
+            .is_err())
+    {
+        entry.ai_persona.clear();
     }
     entry
 }
@@ -2365,7 +2376,7 @@ pub async fn handle_botfather_callback(
             {
                 return PeerBotActionResult {
                     ok: true,
-                    companion_bot: Some(bot_record_to_entry(&bot)),
+                    companion_bot: Some(bot_record_to_entry_for_viewer(state, &bot, uid)),
                     companion_chat_id: Some(dm_cid.0),
                     toast: Some(format!("已打开 @{} 对话", bot.username)),
                     ..Default::default()
@@ -3524,10 +3535,13 @@ pub async fn bots_my(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Re
 
 /// GET /api/v1/bots/attach-menu
 pub async fn bots_attach_menu(auth: AuthBearer, State(state): State<Arc<AppState>>) -> Response {
-    match state.db.list_attach_menu_bots(auth.user_id.0 as i64) {
+    let viewer_uid = auth.user_id.0 as i64;
+    match state.db.list_attach_menu_bots(viewer_uid) {
         Ok(list) => {
-            let bots: Vec<BotRegistryEntry> =
-                list.into_iter().map(|(b, _, _)| bot_record_to_entry(&b)).collect();
+            let bots: Vec<BotRegistryEntry> = list
+                .into_iter()
+                .map(|(b, _, _)| bot_record_to_entry_for_viewer(&state, &b, viewer_uid))
+                .collect();
             (
                 StatusCode::OK,
                 Json(json!({ "bots": bots, "total": bots.len() })),
@@ -4052,6 +4066,18 @@ pub async fn miniapps_install(
         return err_resp(StatusCode::NOT_FOUND, "bot_not_found", "Companion bot not found");
     };
 
+    let bot_uid_u64 = bot.bot_user_id.max(0) as u64;
+    let owns_bot =
+        crate::routes::hermes::caller_owns_bot_or_admin(&state, auth.user_id, bot_uid_u64).is_ok();
+    let is_published_real_app = app.is_published && app.category != ADHOC_WEBAPP_CATEGORY;
+    if !owns_bot && !is_published_real_app {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the bot owner or server admin can install unpublished or ad-hoc Mini Apps",
+        );
+    }
+
     let (companion_cid, _) = match ensure_companion_bot_dm_with_welcome(
         &state,
         auth.user_id,
@@ -4224,10 +4250,14 @@ fn resolve_app_and_bot(
         }
     }
 
+    if !is_alias {
+        return None;
+    }
     let menu_url = gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(
         &bot.menu_button_url,
-    );
-    if clean_custom.is_none() && menu_url.is_none() && !clean_short.eq_ignore_ascii_case("app") {
+    )
+    .filter(|u| !u.starts_with("/miniapps/"));
+    if clean_custom.is_none() && menu_url.is_none() {
         return None;
     }
 
@@ -4318,15 +4348,59 @@ pub async fn miniapps_launch(
         serde_json::from_slice(&body).unwrap_or_default()
     };
 
-    let Some((app, bot)) = resolve_app_and_bot(
+    let Some((mut app, bot)) = resolve_app_and_bot(
         &state,
         &bot_username,
         &short_name,
         req.custom_url.as_deref(),
-        true,
+        false,
     ) else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
     };
+
+    let bot_uid_u64 = bot.bot_user_id.max(0) as u64;
+    let owns_bot =
+        crate::routes::hermes::caller_owns_bot_or_admin(&state, auth.user_id, bot_uid_u64).is_ok();
+    let has_external_menu_url = gpui_telegram_proto::miniapp_contracts::sanitize_webapp_custom_url(
+        &bot.menu_button_url,
+    )
+    .is_some_and(|u| !u.starts_with("/miniapps/"));
+    let is_published_real_app = app.is_published && app.category != ADHOC_WEBAPP_CATEGORY;
+
+    if !owns_bot && !is_published_real_app {
+        if app.category == ADHOC_WEBAPP_CATEGORY {
+            if !has_external_menu_url {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Only the bot owner or server admin can launch an ad-hoc Mini App without a configured menu URL",
+                );
+            }
+        } else {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Only the bot owner or server admin can launch an unpublished Mini App",
+            );
+        }
+    }
+
+    if app.category == ADHOC_WEBAPP_CATEGORY && (owns_bot || has_external_menu_url) {
+        let persist_custom_url = if owns_bot {
+            req.custom_url.as_deref()
+        } else {
+            None
+        };
+        if let Some((persisted_app, _)) = resolve_app_and_bot(
+            &state,
+            &bot_username,
+            &short_name,
+            persist_custom_url,
+            true,
+        ) {
+            app = persisted_app;
+        }
+    }
 
     let uid = auth.user_id.0 as i64;
     if app.is_published && app.category != ADHOC_WEBAPP_CATEGORY {
@@ -4439,9 +4513,14 @@ pub async fn miniapps_launch(
         .list_cloud_storage_items(uid, bot.bot_user_id)
         .unwrap_or_default();
 
+    let mut companion_bot_entry = bot_record_to_entry_for_viewer(&state, &bot, uid);
+    if !bot.is_official && !owns_bot {
+        companion_bot_entry.ai_persona.clear();
+    }
+
     let ctx = MiniAppLaunchContext {
         app: app_entry,
-        companion_bot: bot_record_to_entry_for_viewer(&state, &bot, uid),
+        companion_bot: companion_bot_entry,
         companion_chat_id: existing_chat_id,
         source_chat_id: req.chat_id,
         launch_mode: req.launch_mode,
@@ -4520,7 +4599,7 @@ pub async fn miniapps_action(
     Path((bot_username, short_name)): Path<(String, String)>,
     Json(req): Json<MiniAppActionRequest>,
 ) -> Response {
-    let Some((app, bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, true)
+    let Some((app, bot)) = resolve_app_and_bot(&state, &bot_username, &short_name, None, false)
     else {
         return err_resp(StatusCode::NOT_FOUND, "miniapp_not_found", "Mini App not found");
     };
@@ -4532,6 +4611,23 @@ pub async fn miniapps_action(
         .ok()
         .flatten()
         .unwrap_or(ChatId(0));
+
+    let bot_uid_u64 = bot.bot_user_id.max(0) as u64;
+    let owns_bot = crate::routes::hermes::caller_owns_bot_or_admin(&state, auth.user_id, bot_uid_u64).is_ok();
+    let is_published_real_app = app.is_published && app.category != ADHOC_WEBAPP_CATEGORY;
+    if !owns_bot && !is_published_real_app {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only the bot owner or server admin can invoke actions on unpublished or ad-hoc Mini Apps",
+        );
+    }
+    let in_shared_chat = req.chat_id.is_some_and(|cid| {
+        cid > 0
+            && check_active_membership(&state, ChatId(cid), auth.user_id).is_ok()
+            && crate::routes::hermes::is_bot_member_of_chat(&state, bot_uid_u64, ChatId(cid))
+    });
+    let has_companion_or_shared_chat = companion_cid.0 > 0 || in_shared_chat;
 
     let existing_session = req
         .query_id
@@ -4555,6 +4651,13 @@ pub async fn miniapps_action(
         .unwrap_or_else(|_| fallback_schema_for_app(&app));
 
     if req.action_type.trim() == "ai_copilot" {
+        if !owns_bot && !bot.is_official && !has_companion_or_shared_chat {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Install the Mini App or share a chat with the bot to use AI Copilot",
+            );
+        }
         let user_prompt = req
             .prompt
             .as_deref()
@@ -4563,16 +4666,21 @@ pub async fn miniapps_action(
             .filter(|s| !s.is_empty())
             .unwrap_or("请总结当前状态并给出下一步建议");
 
-        let bot_uid_u64 = bot.bot_user_id.max(0) as u64;
         let bot_user_id = UserId(bot_uid_u64);
-        let (_, bot_model, _) = crate::routes::hermes::load_bot_persona_config(&state, bot_user_id);
+        let allow_bot_persona = owns_bot || bot.is_official || companion_cid.0 > 0;
+        let (_, bot_model, _) = if allow_bot_persona {
+            crate::routes::hermes::load_bot_persona_config(&state, bot_user_id)
+        } else {
+            (None, None, None)
+        };
+        let copilot_persona = allow_bot_persona.then(|| bot.ai_persona.clone());
         let (enriched_sp, effective_model) =
             crate::routes::hermes::build_enriched_bot_turn_context(
                 &state,
                 uid.max(0) as u64,
                 Some(bot_uid_u64),
                 Some(&bot.display_name),
-                Some(bot.ai_persona.clone()),
+                copilot_persona,
                 None,
                 crate::routes::hermes::sanitize_model_override(&state, bot_model),
                 &[],
@@ -4591,7 +4699,6 @@ pub async fn miniapps_action(
         .ok()
         .map(|(sid, _)| sid);
 
-        let owns_bot = crate::routes::hermes::caller_owns_bot_or_admin(&state, auth.user_id, bot_uid_u64).is_ok();
         let caller_scope = crate::routes::hermes::build_caller_scope(&state, auth.user_id);
         let engine = crate::routes::hermes::resolve_hermes_for_bot(&state, Some(bot_uid_u64));
 

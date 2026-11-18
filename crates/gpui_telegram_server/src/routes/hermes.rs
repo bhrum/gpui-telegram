@@ -22,7 +22,7 @@ use gpui_telegram_agent::hermes::skills::{CreateSkillRequest, SkillDocument, Ski
 use gpui_telegram_agent::hermes::state_db::{
     ApprovalRecord, ApprovalStatus, CreateCronJobRequest, CreateKanbanCardRequest, CronJobPatch,
     CronJobRecord, KanbanBoardRecord, KanbanCardPatch, KanbanCardRecord, SessionListFilter,
-    SessionRecord,
+    SessionPatch, SessionRecord,
 };
 use gpui_telegram_agent::hermes::toolsets::{all_builtin_tool_specs, ToolsetId, ToolsetPreset};
 use gpui_telegram_agent::hermes::trajectory::TrajectoryFormat;
@@ -65,14 +65,31 @@ pub struct OptionalBotScopeQuery {
     pub bot_id: Option<u64>,
 }
 
+pub(crate) fn parse_bot_id_str_u64(raw: &str) -> Option<u64> {
+    raw.trim()
+        .trim_start_matches("bot_")
+        .parse::<u64>()
+        .ok()
+        .filter(|id| *id > 0)
+}
+
+pub(crate) fn extract_reserved_talk_session_owner(sid: &str) -> Option<u64> {
+    let lower = sid.trim().to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("talk_user_") {
+        return rest.split('_').next().and_then(|part| part.parse::<u64>().ok());
+    }
+    if let Some(rest) = lower.strip_prefix("talk_") {
+        return rest.split('_').next().and_then(|part| part.parse::<u64>().ok());
+    }
+    None
+}
+
 fn parse_bot_id_u64(v: Option<&Value>) -> Option<u64> {
     let val = v?;
     val.as_u64()
+        .filter(|id| *id > 0)
         .or_else(|| val.as_i64().filter(|n| *n > 0).map(|n| n as u64))
-        .or_else(|| {
-            val.as_str()
-                .and_then(|s| s.trim().trim_start_matches("bot_").parse::<u64>().ok())
-        })
+        .or_else(|| val.as_str().and_then(parse_bot_id_str_u64))
 }
 
 pub(crate) fn resolve_hermes_for_bot(state: &AppState, bot_id: Option<u64>) -> Arc<HermesEngine> {
@@ -417,7 +434,7 @@ fn cron_to_dto(rec: &CronJobRecord) -> Value {
         "schedule": rec.schedule,
         "prompt": rec.prompt,
         "chat_id": rec.target_chat_id.or(rec.origin_chat_id),
-        "bot_id": rec.deliver_to.as_deref().and_then(|s| s.parse::<u64>().ok()),
+        "bot_id": rec.deliver_to.as_deref().and_then(parse_bot_id_str_u64),
         "enabled": rec.enabled,
         "last_run_ms": rec.last_run_at,
         "next_run_ms": rec.next_run_at,
@@ -2076,7 +2093,7 @@ pub(crate) async fn deliver_hermes_proactive_message(
     }
 
     let bot_user_id = bot_id_hint
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .and_then(parse_bot_id_str_u64)
         .map(UserId)
         .filter(|uid| {
             state
@@ -2464,6 +2481,16 @@ pub async fn hermes_turns_create(
                     "Cannot run turn on a session not owned by caller",
                 );
             }
+        } else if sid
+            .strip_prefix("hermes_")
+            .and_then(extract_reserved_talk_session_owner)
+            .is_some_and(|reserved_uid| reserved_uid != auth.user_id.0)
+        {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Caller is not authorized to pre-create another user's reserved talk session",
+            );
         }
     }
     if let Some(bid_num) = bot_id_u64 {
@@ -2719,6 +2746,16 @@ pub async fn hermes_command_run(
             if let Err(resp) = authorize_hermes_session_access(&state, &auth, &existing, bot_id_u64) {
                 return resp;
             }
+        } else if sid
+            .strip_prefix("hermes_")
+            .and_then(extract_reserved_talk_session_owner)
+            .is_some_and(|reserved_uid| reserved_uid != auth.user_id.0)
+        {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Caller is not authorized to pre-create another user's reserved talk session",
+            );
         }
         sess_engine
     } else {
@@ -4498,6 +4535,26 @@ pub async fn hermes_cron_list(
     }
 }
 
+fn authorize_cron_bot_for_chat(
+    state: &AppState,
+    user_id: UserId,
+    bid: u64,
+    effective_cid: Option<i64>,
+) -> std::result::Result<(), Response> {
+    if caller_owns_bot_or_admin(state, user_id, bid).is_err()
+        && !effective_cid.is_some_and(|cid| {
+            is_official_bot(state, bid) || is_bot_member_of_chat(state, bid, ChatId(cid))
+        })
+    {
+        return Err(err_resp(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only bot owner or server admin can bind this bot to a cron job",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn hermes_cron_create(
     auth: AuthBearer,
     State(state): State<Arc<AppState>>,
@@ -4527,27 +4584,46 @@ pub async fn hermes_cron_create(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let chat_id = payload.get("chat_id").and_then(|v| v.as_i64());
-    if let Some(cid) = chat_id {
-        if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
-            return resp;
-        }
-    }
+    let is_admin = caller_is_admin(&state, auth.user_id);
+    let target_chat_patch = match payload.get("chat_id") {
+        Some(v) if v.is_null() => Some(None),
+        Some(v) => match v.as_i64() {
+            Some(cid) => {
+                if !is_admin {
+                    if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
+                        return resp;
+                    }
+                }
+                Some(Some(cid))
+            }
+            None => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_chat_id",
+                    "chat_id must be an integer or null",
+                );
+            }
+        },
+        None => None,
+    };
+    let chat_id = target_chat_patch.flatten();
 
-    let bot_id = parse_optional_bot_id(payload.get("bot_id"));
-    if let Some(bid) = parse_bot_id_u64(payload.get("bot_id")) {
-        if caller_owns_bot_or_admin(&state, auth.user_id, bid).is_err()
-            && !(chat_id.is_some_and(|cid| {
-                is_official_bot(&state, bid) || is_bot_member_of_chat(&state, bid, ChatId(cid))
-            }))
-        {
-            return err_resp(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Only bot owner or server admin can bind this bot to a cron job",
-            );
+    let (deliver_to_patch, requested_bid) = match payload.get("bot_id") {
+        Some(v) if v.is_null() => (Some(None), None),
+        Some(v) if v.as_str().is_some_and(|s| s.trim().is_empty()) => (Some(None), None),
+        Some(v) => {
+            let Some(bid) = parse_bot_id_u64(Some(v)).filter(|id| *id > 0) else {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_bot_id",
+                    "bot_id must be a valid integer or null",
+                );
+            };
+            (Some(Some(bid.to_string())), Some(bid))
         }
-    }
+        None => (None, None),
+    };
+    let bot_id = requested_bid.map(|id| id.to_string());
     let enabled = payload.get("enabled").and_then(|v| v.as_bool());
     let timezone = payload
         .get("timezone")
@@ -4573,12 +4649,28 @@ pub async fn hermes_cron_create(
             if let Err(resp) = authorize_cron_job_access(&state, auth.user_id, &existing) {
                 return resp;
             }
+            let existing_bid = existing.deliver_to.as_deref().and_then(parse_bot_id_str_u64);
+            let effective_cid = match target_chat_patch {
+                Some(new_opt) => new_opt,
+                None => existing.target_chat_id.or(existing.origin_chat_id),
+            };
+            let effective_bid = match deliver_to_patch {
+                Some(ref opt) => opt.as_deref().and_then(parse_bot_id_str_u64),
+                None => existing_bid,
+            };
+            if let Some(bid) = effective_bid {
+                if let Err(resp) =
+                    authorize_cron_bot_for_chat(&state, auth.user_id, bid, effective_cid)
+                {
+                    return resp;
+                }
+            }
             let patch = CronJobPatch {
                 name: (!name.is_empty()).then_some(name),
                 schedule: (!schedule.is_empty()).then_some(schedule),
                 prompt: (!prompt.is_empty()).then_some(prompt),
-                target_chat_id: chat_id.map(Some),
-                deliver_to: bot_id.map(Some),
+                target_chat_id: target_chat_patch,
+                deliver_to: deliver_to_patch,
                 enabled,
                 next_run_at: next_run_at.map(Some),
                 ..Default::default()
@@ -4587,6 +4679,12 @@ pub async fn hermes_cron_create(
                 Ok(rec) => (StatusCode::OK, Json(cron_to_dto(&rec))).into_response(),
                 Err(e) => map_telegram_err(e),
             };
+        }
+    }
+
+    if let Some(bid) = requested_bid {
+        if let Err(resp) = authorize_cron_bot_for_chat(&state, auth.user_id, bid, chat_id) {
+            return resp;
         }
     }
 
@@ -4632,29 +4730,51 @@ pub async fn hermes_cron_patch(
     if let Err(resp) = authorize_cron_job_access(&state, auth.user_id, &existing) {
         return resp;
     }
-    if !caller_is_admin(&state, auth.user_id) {
-        if let Some(new_cid) = payload.get("chat_id").and_then(|v| v.as_i64()) {
-            if let Err(resp) = check_active_membership(&state, ChatId(new_cid), auth.user_id) {
-                return resp;
+    let is_admin = caller_is_admin(&state, auth.user_id);
+    let target_chat_patch = match payload.get("chat_id") {
+        Some(v) if v.is_null() => Some(None),
+        Some(v) => match v.as_i64() {
+            Some(cid) => {
+                if !is_admin {
+                    if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
+                        return resp;
+                    }
+                }
+                Some(Some(cid))
             }
+            None => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_chat_id",
+                    "chat_id must be an integer or null",
+                );
+            }
+        },
+        None => None,
+    };
+    let effective_cid = match target_chat_patch {
+        Some(new_opt) => new_opt,
+        None => existing.target_chat_id.or(existing.origin_chat_id),
+    };
+    let existing_bid = existing.deliver_to.as_deref().and_then(parse_bot_id_str_u64);
+    let (deliver_to_patch, effective_bid) = match payload.get("bot_id") {
+        Some(v) if v.is_null() => (Some(None), None),
+        Some(v) if v.as_str().is_some_and(|s| s.trim().is_empty()) => (Some(None), None),
+        Some(v) => {
+            let Some(bid) = parse_bot_id_u64(Some(v)).filter(|id| *id > 0) else {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_bot_id",
+                    "bot_id must be a valid integer or null",
+                );
+            };
+            (Some(Some(bid.to_string())), Some(bid))
         }
-    }
-    if let Some(bid) = parse_bot_id_u64(payload.get("bot_id")) {
-        let effective_cid = payload
-            .get("chat_id")
-            .and_then(|v| v.as_i64())
-            .or(existing.target_chat_id)
-            .or(existing.origin_chat_id);
-        if caller_owns_bot_or_admin(&state, auth.user_id, bid).is_err()
-            && !(effective_cid.is_some_and(|cid| {
-                is_official_bot(&state, bid) || is_bot_member_of_chat(&state, bid, ChatId(cid))
-            }))
-        {
-            return err_resp(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Only bot owner or server admin can bind this bot to a cron job",
-            );
+        None => (None, existing_bid),
+    };
+    if let Some(bid) = effective_bid {
+        if let Err(resp) = authorize_cron_bot_for_chat(&state, auth.user_id, bid, effective_cid) {
+            return resp;
         }
     }
     let schedule = payload
@@ -4687,8 +4807,8 @@ pub async fn hermes_cron_patch(
             .get("prompt")
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
-        target_chat_id: payload.get("chat_id").map(|v| v.as_i64()),
-        deliver_to: payload.get("bot_id").map(|v| parse_optional_bot_id(Some(v))),
+        target_chat_id: target_chat_patch,
+        deliver_to: deliver_to_patch,
         enabled: payload.get("enabled").and_then(|v| v.as_bool()),
         next_run_at,
         ..Default::default()
@@ -4764,27 +4884,50 @@ pub async fn hermes_heartbeat_get(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let cfg = state.hermes.heartbeat().status();
-    if let Some(cid) = cfg.target_chat_id {
-        if !caller_is_admin(&state, auth.user_id) {
-            if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
-                return resp;
-            }
-        }
-    }
-    let bot_id = state
+    let existing_bid = state
         .hermes
         .store()
         .kv_get("heartbeat", "bot_id")
         .ok()
         .flatten()
-        .and_then(|s| s.parse::<u64>().ok());
+        .and_then(|s| parse_bot_id_str_u64(&s));
+    let owner = state
+        .hermes
+        .store()
+        .kv_get("heartbeat", "owner_user_id")
+        .ok()
+        .flatten();
+    if !caller_is_admin(&state, auth.user_id) {
+        if let Some(cid) = cfg.target_chat_id {
+            if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
+                return resp;
+            }
+        } else {
+            if let Some(ref owner_id) = owner {
+                if owner_id != &auth.user_id.0.to_string() {
+                    return err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Only heartbeat owner or server admin can view chatless heartbeat config",
+                    );
+                }
+            }
+            if let Some(bid) = existing_bid {
+                if !is_official_bot(&state, bid) {
+                    if let Err(resp) = caller_owns_bot_or_admin(&state, auth.user_id, bid) {
+                        return resp;
+                    }
+                }
+            }
+        }
+    }
     (
         StatusCode::OK,
         Json(json!({
             "enabled": cfg.enabled,
             "interval_secs": cfg.interval_secs,
             "chat_id": cfg.target_chat_id,
-            "bot_id": bot_id,
+            "bot_id": existing_bid,
             "prompt": cfg.prompt,
             "last_beat_ms": cfg.last_tick_ms,
         })),
@@ -4798,71 +4941,125 @@ pub async fn hermes_heartbeat_post(
     Json(payload): Json<Value>,
 ) -> Response {
     let mut cfg: HeartbeatConfig = state.hermes.heartbeat().status();
+    let existing_cid = cfg.target_chat_id;
+    let existing_bid = state
+        .hermes
+        .store()
+        .kv_get("heartbeat", "bot_id")
+        .ok()
+        .flatten()
+        .and_then(|s| parse_bot_id_str_u64(&s));
+    let existing_owner = state
+        .hermes
+        .store()
+        .kv_get("heartbeat", "owner_user_id")
+        .ok()
+        .flatten();
     let is_admin = caller_is_admin(&state, auth.user_id);
     if !is_admin {
-        if let Some(existing_cid) = cfg.target_chat_id {
-            if let Err(resp) = check_active_membership(&state, ChatId(existing_cid), auth.user_id) {
+        if let Some(ecid) = existing_cid {
+            if let Err(resp) = check_active_membership(&state, ChatId(ecid), auth.user_id) {
                 return resp;
+            }
+        } else {
+            if let Some(ref owner_id) = existing_owner {
+                if owner_id != &auth.user_id.0.to_string() {
+                    return err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Only heartbeat owner or server admin can modify chatless heartbeat config",
+                    );
+                }
+            }
+        }
+        if let Some(ebid) = existing_bid {
+            if !is_official_bot(&state, ebid) {
+                if let Err(resp) = caller_owns_bot_or_admin(&state, auth.user_id, ebid) {
+                    return resp;
+                }
             }
         }
     }
+
+    let new_cid = if let Some(chat_val) = payload.get("chat_id").or_else(|| payload.get("target_chat_id")) {
+        if chat_val.is_null() {
+            None
+        } else if let Some(cid) = chat_val.as_i64() {
+            if !is_admin {
+                if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
+                    return resp;
+                }
+            }
+            Some(cid)
+        } else {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_chat_id",
+                "chat_id must be an integer or null",
+            );
+        }
+    } else {
+        existing_cid
+    };
+
+    let bot_id_patch = match payload.get("bot_id") {
+        Some(v) if v.is_null() => Some(None),
+        Some(v) if v.as_str().is_some_and(|s| s.trim().is_empty()) => Some(None),
+        Some(v) => {
+            let Some(bid) = parse_bot_id_u64(Some(v)).filter(|id| *id > 0) else {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_bot_id", "Invalid bot_id");
+            };
+            Some(Some(bid))
+        }
+        None => None,
+    };
+    let effective_bid = match bot_id_patch {
+        Some(opt) => opt,
+        None => existing_bid,
+    };
+    if !is_admin {
+        if let Some(bid) = effective_bid {
+            if caller_owns_bot_or_admin(&state, auth.user_id, bid).is_err()
+                && !new_cid.is_some_and(|cid| {
+                    is_official_bot(&state, bid) && is_bot_member_of_chat(&state, bid, ChatId(cid))
+                })
+            {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Only bot owner or server admin can bind this bot to heartbeat",
+                );
+            }
+        }
+    }
+
+    cfg.target_chat_id = new_cid;
     if let Some(enabled) = payload.get("enabled").and_then(|v| v.as_bool()) {
         cfg.enabled = enabled;
     }
     if let Some(secs) = payload.get("interval_secs").and_then(|v| v.as_u64()) {
         cfg.interval_secs = secs.max(5);
     }
-    if let Some(chat_val) = payload.get("chat_id").or_else(|| payload.get("target_chat_id")) {
-        if chat_val.is_null() {
-            cfg.target_chat_id = None;
-        } else if let Some(cid) = chat_val.as_i64() {
-            if let Err(resp) = check_active_membership(&state, ChatId(cid), auth.user_id) {
-                return resp;
-            }
-            cfg.target_chat_id = Some(cid);
-        }
-    }
-    let requested_bot_id = parse_bot_id_u64(payload.get("bot_id"));
-    if !is_admin {
-        if let Some(bid) = requested_bot_id {
-            if caller_owns_bot_or_admin(&state, auth.user_id, bid).is_err() {
-                let allowed_official = is_official_bot(&state, bid)
-                    && cfg
-                        .target_chat_id
-                        .is_some_and(|cid| is_bot_member_of_chat(&state, bid, ChatId(cid)));
-                if !allowed_official {
-                    return err_resp(
-                        StatusCode::FORBIDDEN,
-                        "forbidden",
-                        "Only bot owner or server admin can bind this bot to heartbeat",
-                    );
-                }
-            }
-        } else if cfg.target_chat_id.is_none() {
-            if let Some(existing_bid) = state
-                .hermes
-                .store()
-                .kv_get("heartbeat", "bot_id")
-                .ok()
-                .flatten()
-                .and_then(|s| s.trim().trim_start_matches("bot_").parse::<u64>().ok())
-            {
-                if !is_official_bot(&state, existing_bid) {
-                    if let Err(resp) = caller_owns_bot_or_admin(&state, auth.user_id, existing_bid)
-                    {
-                        return resp;
-                    }
-                }
-            }
-        }
-    }
     if let Some(prompt) = payload.get("prompt").and_then(|v| v.as_str()) {
         if !prompt.trim().is_empty() {
             cfg.prompt = prompt.to_string();
         }
     }
-    if let Some(bot_id_str) = parse_optional_bot_id(payload.get("bot_id")) {
-        let _ = state.hermes.store().kv_set("heartbeat", "bot_id", &bot_id_str);
+    let _ = state
+        .hermes
+        .store()
+        .kv_set("heartbeat", "owner_user_id", &auth.user_id.0.to_string());
+    match bot_id_patch {
+        Some(Some(bid)) => {
+            let _ = state
+                .hermes
+                .store()
+                .kv_set("heartbeat", "bot_id", &bid.to_string());
+        }
+        Some(None) => {
+            let _ = state.hermes.store().kv_delete("heartbeat", "bot_id");
+        }
+        None => {}
     }
 
     state.hermes.heartbeat().set_config(cfg.clone());
@@ -4872,7 +5069,7 @@ pub async fn hermes_heartbeat_post(
         .kv_get("heartbeat", "bot_id")
         .ok()
         .flatten()
-        .and_then(|s| s.parse::<u64>().ok());
+        .and_then(|s| parse_bot_id_str_u64(&s));
 
     (
         StatusCode::OK,
@@ -5419,7 +5616,20 @@ pub async fn hermes_talk_turn(
         .map(|bid| caller_owns_bot_or_admin(&state, auth.user_id, bid).is_ok())
         .unwrap_or(true);
 
+    let is_admin = caller_is_admin(&state, auth.user_id);
+    let mut existing_db_owner: Option<u64> = None;
+    let mut existing_hermes: Option<SessionRecord> = None;
     if let Some(ref req_sid) = requested_sid {
+        let reserved_uid = extract_reserved_talk_session_owner(req_sid);
+        if let Some(reserved_uid) = reserved_uid {
+            if reserved_uid != auth.user_id.0 && !is_admin {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Caller is not authorized to access this talk session",
+                );
+            }
+        }
         let talk_check_sid = format!("hermes_{req_sid}");
         let sess_engine = sess_engine_opt.as_ref().unwrap_or(&engine);
         if let Ok(Some(existing)) = sess_engine.store().get_session(&talk_check_sid) {
@@ -5433,17 +5643,51 @@ pub async fn hermes_talk_turn(
             if let Err(resp) = authorize_hermes_session_access(&state, &auth, &existing, bot_id_u64) {
                 return resp;
             }
+            existing_hermes = Some(existing);
         }
-        if let Ok(rows) = state.db.load_talk_sessions() {
-            if let Some((_, owner_uid, _, _, _)) = rows.into_iter().find(|(sid, _, _, _, _)| sid == req_sid) {
-                if owner_uid != auth.user_id.0 && !caller_is_admin(&state, auth.user_id) {
-                    return err_resp(
-                        StatusCode::FORBIDDEN,
-                        "forbidden",
-                        "Caller is not authorized to access this talk session",
-                    );
-                }
+        existing_db_owner = match state.db.get_talk_session_owner(req_sid) {
+            Ok(owner) => owner,
+            Err(e) => return map_telegram_err(e),
+        };
+        let (owned_by_caller_in_mem, active_for_other_in_mem) = {
+            let active = state.user_active_talk_sessions.read();
+            let owned = active.get(&auth.user_id).is_some_and(|s| s == req_sid);
+            let other = active
+                .iter()
+                .any(|(uid, s)| *uid != auth.user_id && s == req_sid);
+            (owned, other)
+        };
+        let exists_in_talk_sessions = state.talk_sessions.read().contains_key(req_sid);
+        if let Some(reserved_uid) = reserved_uid {
+            if reserved_uid != auth.user_id.0
+                && existing_db_owner.is_none()
+                && existing_hermes.is_none()
+                && !active_for_other_in_mem
+                && !exists_in_talk_sessions
+            {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Caller is not authorized to pre-create another user's reserved talk session",
+                );
             }
+        }
+        if let Some(owner_uid) = existing_db_owner {
+            if owner_uid != auth.user_id.0 && !is_admin {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "Caller is not authorized to access this talk session",
+                );
+            }
+        } else if (active_for_other_in_mem || (exists_in_talk_sessions && !owned_by_caller_in_mem))
+            && !is_admin
+        {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Caller is not authorized to access this talk session",
+            );
         }
     }
 
@@ -5484,19 +5728,60 @@ pub async fn hermes_talk_turn(
         }
     }
 
-    let session_id = {
-        let mut coord = state.talk_coordinator.write();
-        let sid = requested_sid.unwrap_or_else(|| {
-            format!("talk_{}_{}", auth.user_id.0, Uuid::new_v4().simple())
+    let existing_hermes_owner = existing_hermes.as_ref().and_then(|sess| {
+        let meta: Value = serde_json::from_str(&sess.metadata_json).unwrap_or_else(|_| json!({}));
+        meta.get("owner_user_id").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .or_else(|| v.as_i64().filter(|n| *n > 0).map(|n| n as u64))
+                .or_else(|| v.as_u64().filter(|n| *n > 0))
+        })
+    });
+    let effective_owner_uid = existing_db_owner
+        .or(existing_hermes_owner)
+        .unwrap_or(auth.user_id.0);
+
+    if effective_owner_uid != auth.user_id.0 && existing_hermes.is_none() {
+        if let Some(bid) = effective_bot_id {
+            if !is_official_bot(&state, bid) && bot_has_human_owner(&state, bid) {
+                let owner_can_access_bot =
+                    caller_owns_bot_or_admin(&state, UserId(effective_owner_uid), bid).is_ok()
+                        || chat_id
+                            .is_some_and(|cid| is_bot_member_of_chat(&state, bid, ChatId(cid)));
+                if !owner_can_access_bot {
+                    return err_resp(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "Cannot bind another user's talk session to a private bot they cannot access",
+                    );
+                }
+            }
+        }
+    }
+
+    let session_id = requested_sid.unwrap_or_else(|| {
+        format!("talk_{}_{}", auth.user_id.0, Uuid::new_v4().simple())
+    });
+    {
+        let mut sessions = state.talk_sessions.write();
+        let coord = sessions.entry(session_id.clone()).or_insert_with(|| {
+            let mut c = gpui_telegram_agent::TalkCoordinator::new();
+            c.session_id = session_id.clone();
+            c
         });
-        coord.session_id = sid.clone();
+        coord.session_id = session_id.clone();
         if barge_in {
             let _ = coord.handle_barge_in();
         }
         coord.state = gpui_telegram_agent::TalkSessionState::Thinking;
         coord.signal_seq = coord.signal_seq.saturating_add(1);
-        sid
-    };
+    }
+    if effective_owner_uid == auth.user_id.0 {
+        state
+            .user_active_talk_sessions
+            .write()
+            .insert(auth.user_id, session_id.clone());
+    }
 
     let persona_bot_id = bot_id_u64.or(effective_bot_id);
     let (bot_sp, bot_model, _) = persona_bot_id
@@ -5554,6 +5839,34 @@ pub async fn hermes_talk_turn(
             false,
         );
     }
+    let run_engine = sess_engine_opt.unwrap_or(engine);
+    if effective_owner_uid != auth.user_id.0 {
+        if let Ok(sess) = run_engine.resolve_or_create_session(
+            Some(&talk_sid),
+            chat_id,
+            effective_bot_id.map(|b| b.to_string()).as_deref(),
+            "talk_mode",
+            effective_model.as_deref(),
+        ) {
+            let mut meta: Value =
+                serde_json::from_str(&sess.metadata_json).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = meta.as_object_mut() {
+                if !obj.contains_key("owner_user_id") {
+                    obj.insert(
+                        "owner_user_id".to_string(),
+                        json!(effective_owner_uid.to_string()),
+                    );
+                    let _ = run_engine.store().update_session(
+                        &talk_sid,
+                        SessionPatch {
+                            metadata: Some(meta),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
+    }
 
     let caller_scope = build_caller_scope(&state, auth.user_id);
     let req = HermesTurnRequest {
@@ -5573,7 +5886,6 @@ pub async fn hermes_talk_turn(
         ..Default::default()
     };
 
-    let run_engine = sess_engine_opt.unwrap_or(engine);
     let res = match run_engine.run_turn(req).await {
         Ok(r) => r,
         Err(e) => return map_telegram_err(e),
@@ -5582,13 +5894,18 @@ pub async fn hermes_talk_turn(
     let tts_segments = split_spoken_segments(&res.response_text);
     let now_ms = Utc::now().timestamp_millis();
     {
-        let mut coord = state.talk_coordinator.write();
+        let mut sessions = state.talk_sessions.write();
+        let coord = sessions.entry(session_id.clone()).or_insert_with(|| {
+            let mut c = gpui_telegram_agent::TalkCoordinator::new();
+            c.session_id = session_id.clone();
+            c
+        });
         coord.state = gpui_telegram_agent::TalkSessionState::Speaking;
         coord.signal_seq = coord.signal_seq.saturating_add(1);
     }
     let _ = state.db.upsert_talk_session(
         &session_id,
-        auth.user_id.0,
+        effective_owner_uid,
         "speaking",
         &json!([
             { "role": "user", "text": transcript, "ts": now_ms },
@@ -5730,6 +6047,16 @@ pub async fn openai_chat_completions(
                     "Cannot run completion on a session not owned by caller",
                 );
             }
+        } else if sid
+            .strip_prefix("hermes_")
+            .and_then(extract_reserved_talk_session_owner)
+            .is_some_and(|reserved_uid| reserved_uid != auth.user_id.0)
+        {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Caller is not authorized to pre-create another user's reserved talk session",
+            );
         }
         eng
     } else {

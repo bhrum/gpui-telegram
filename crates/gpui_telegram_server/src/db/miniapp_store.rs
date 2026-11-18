@@ -2313,6 +2313,19 @@ impl ServerDatabase {
             .map_db()?;
             tx.execute("DELETE FROM mini_apps WHERE app_id = ?1", params![app_id])
                 .map_db()?;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let internal_menu_url = format!("/miniapps/{clean_bot}/{clean_short}");
+            tx.execute(
+                "UPDATE bots_registry
+                 SET has_main_app = CASE WHEN LOWER(main_app_short_name) = LOWER(?2) THEN 0 ELSE has_main_app END,
+                     main_app_short_name = CASE WHEN LOWER(main_app_short_name) = LOWER(?2) THEN '' ELSE main_app_short_name END,
+                     menu_button_type = CASE WHEN LOWER(menu_button_url) = LOWER(?3) THEN 'commands' ELSE menu_button_type END,
+                     menu_button_url = CASE WHEN LOWER(menu_button_url) = LOWER(?3) THEN '' ELSE menu_button_url END,
+                     updated_at = ?4
+                 WHERE LOWER(username) = LOWER(?1)",
+                params![clean_bot, clean_short, internal_menu_url, now_ms],
+            )
+            .map_db()?;
             Ok(true)
         })
     }

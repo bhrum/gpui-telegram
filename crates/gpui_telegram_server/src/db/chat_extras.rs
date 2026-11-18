@@ -310,7 +310,15 @@ impl ServerDatabase {
 
     pub fn list_pinned_messages(&self, chat_id: ChatId) -> Result<Vec<i64>> {
         self.pool.with_reader(|conn| {
-            let mut stmt = conn.prepare("SELECT message_id FROM pinned_messages WHERE chat_id = ?1 ORDER BY pinned_at_ms DESC, message_id DESC").map_db()?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pm.message_id
+                     FROM pinned_messages pm
+                     INNER JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
+                     WHERE pm.chat_id = ?1 AND m.deleted_at_ms IS NULL
+                     ORDER BY pm.pinned_at_ms DESC, pm.message_id DESC",
+                )
+                .map_db()?;
             let rows = stmt.query_map(params![chat_id.0], |r| r.get(0)).map_db()?;
             rows.collect::<std::result::Result<Vec<i64>, _>>().map_db()
         })
@@ -325,8 +333,8 @@ impl ServerDatabase {
                 .prepare(
                     "SELECT pm.message_id, pm.pinned_by, pm.pinned_at_ms, m.content_json
                      FROM pinned_messages pm
-                     LEFT JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
-                     WHERE pm.chat_id = ?1
+                     INNER JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
+                     WHERE pm.chat_id = ?1 AND m.deleted_at_ms IS NULL
                      ORDER BY pm.pinned_at_ms DESC, pm.message_id DESC",
                 )
                 .map_db()?;
@@ -362,7 +370,14 @@ impl ServerDatabase {
     }
 
     fn query_pinned_ids_tx(tx: &rusqlite::Transaction<'_>, chat_id: ChatId) -> Result<Vec<i64>> {
-        let mut stmt = tx.prepare("SELECT message_id FROM pinned_messages WHERE chat_id = ?1 ORDER BY pinned_at_ms DESC, message_id DESC")
+        let mut stmt = tx
+            .prepare(
+                "SELECT pm.message_id
+                 FROM pinned_messages pm
+                 INNER JOIN messages m ON m.chat_id = pm.chat_id AND m.message_id = pm.message_id
+                 WHERE pm.chat_id = ?1 AND m.deleted_at_ms IS NULL
+                 ORDER BY pm.pinned_at_ms DESC, pm.message_id DESC",
+            )
             .map_err(|e| TelegramError::Database(e.to_string()))?;
         let rows = stmt.query_map(params![chat_id.0], |r| r.get(0)).map_err(|e| TelegramError::Database(e.to_string()))?;
         rows.collect::<std::result::Result<Vec<i64>, _>>().map_err(|e| TelegramError::Database(e.to_string()))
