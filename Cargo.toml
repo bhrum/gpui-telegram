@@ -10,6 +10,7 @@ members = [
     "crates/gpui_telegram_server",
     "crates/gpui_telegram_client",
     "crates/gpui_telegram_desktop",
+    "crates/gpui_telegram_cli",
     "crates/gpui_telegram_test_harness",
     "crates/fabushi_miniapp",
     "crates/magpie_gateway",
@@ -52,6 +53,7 @@ gpui_telegram_agent = { path = "crates/gpui_telegram_agent" }
 gpui_telegram_server = { path = "crates/gpui_telegram_server" }
 gpui_telegram_client = { path = "crates/gpui_telegram_client" }
 gpui_telegram_desktop = { path = "crates/gpui_telegram_desktop" }
+gpui_telegram_cli = { path = "crates/gpui_telegram_cli" }
 gpui_telegram_test_harness = { path = "crates/gpui_telegram_test_harness" }
 fabushi_miniapp = { path = "crates/fabushi_miniapp" }
 magpie_gateway = { path = "crates/magpie_gateway" }

@@ -3246,6 +3246,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_telegram_cli"
+version = "1.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "gpui_telegram_core",
+ "gpui_telegram_server",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gpui_telegram_client"
 version = "1.2.0"
 dependencies = [
